@@ -21,6 +21,10 @@ function formatDateRange(start: Date, end: Date): string {
 }
 
 export async function sendLoginEmail(email: string, magicLink: string): Promise<void> {
+  console.log(`[Email] Attempting to send login email to: ${email}`);
+  console.log(`[Email] From: ${config.email.fromEmail}`);
+  console.log(`[Email] API Key prefix: ${config.email.resendApiKey?.substring(0, 10)}...`);
+  
   const client = getResend();
 
   const htmlContent = `
@@ -56,13 +60,20 @@ This link expires in 15 minutes.
 If you didn't request this, you can ignore this email.
   `.trim();
 
-  await client.emails.send({
-    from: config.email.fromEmail,
-    to: email,
-    subject: 'Sign in to Crypto Grant Wire',
-    html: htmlContent,
-    text: textContent,
-  });
+  try {
+    const result = await client.emails.send({
+      from: config.email.fromEmail,
+      to: email,
+      subject: 'Sign in to Crypto Grant Wire',
+      html: htmlContent,
+      text: textContent,
+    });
+    console.log(`[Email] Send result:`, JSON.stringify(result));
+  } catch (error: any) {
+    console.error(`[Email] Failed to send:`, error?.message || error);
+    console.error(`[Email] Full error:`, JSON.stringify(error, null, 2));
+    throw error;
+  }
 }
 
 export async function sendNotificationEmail(
