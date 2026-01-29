@@ -20,6 +20,51 @@ function formatDateRange(start: Date, end: Date): string {
   return `${start.toLocaleDateString('en-US', options)} - ${end.toLocaleDateString('en-US', options)}`;
 }
 
+export async function sendLoginEmail(email: string, magicLink: string): Promise<void> {
+  const client = getResend();
+
+  const htmlContent = `
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; }
+    .container { max-width: 600px; margin: 0 auto; padding: 40px 20px; }
+    .button { display: inline-block; background: #0066cc; color: white; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-weight: 500; }
+    .footer { margin-top: 32px; font-size: 14px; color: #666; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>Sign in to Crypto Grant Wire</h2>
+    <p>Click the button below to sign in to your dashboard:</p>
+    <p style="margin: 32px 0;">
+      <a href="${magicLink}" class="button">Sign In</a>
+    </p>
+    <p class="footer">This link expires in 15 minutes.<br>If you didn't request this, you can ignore this email.</p>
+  </div>
+</body>
+</html>
+  `.trim();
+
+  const textContent = `
+Sign in to Crypto Grant Wire
+
+Click here to sign in: ${magicLink}
+
+This link expires in 15 minutes.
+If you didn't request this, you can ignore this email.
+  `.trim();
+
+  await client.emails.send({
+    from: config.email.fromEmail,
+    to: email,
+    subject: 'Sign in to Crypto Grant Wire',
+    html: htmlContent,
+    text: textContent,
+  });
+}
+
 export async function sendNotificationEmail(
   downloadUrl: string,
   stats: ProcessingStats,

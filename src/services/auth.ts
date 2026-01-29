@@ -6,6 +6,14 @@ import { MagicLinkToken } from '../types';
 // In-memory store for tokens (in production, use Redis or database)
 const tokens = new Map<string, MagicLinkToken>();
 
+// Session store for logged-in users
+interface Session {
+  email: string;
+  createdAt: Date;
+  expiresAt: Date;
+}
+const sessions = new Map<string, Session>();
+
 function generateToken(): string {
   return crypto.randomBytes(32).toString('hex');
 }
@@ -15,6 +23,27 @@ function hashToken(token: string): string {
     .createHmac('sha256', config.auth.magicLinkSecret)
     .update(token)
     .digest('hex');
+}
+
+export function createLoginMagicLink(email: string): string {
+  const token = generateToken();
+  const hashedToken = hashToken(token);
+  
+  const expiresAt = new Date();
+  expiresAt.setMinutes(expiresAt.getMinutes() + 15);
+  
+  const tokenData: MagicLinkToken = {
+    token: hashedToken,
+    email,
+    fileId: 'login',
+    expiresAt,
+    used: false,
+  };
+  
+  tokens.set(hashedToken, tokenData);
+  cleanupExpiredTokens();
+  
+  return `${config.app.url}/auth?token=${token}`;
 }
 
 export function createMagicLink(email: string, fileId: string): string {
@@ -33,14 +62,12 @@ export function createMagicLink(email: string, fileId: string): string {
   };
   
   tokens.set(hashedToken, tokenData);
-  
-  // Clean up expired tokens periodically
   cleanupExpiredTokens();
   
   return `${config.app.url}/download?token=${token}`;
 }
 
-export function validateMagicLink(token: string): { valid: boolean; fileId?: string; error?: string } {
+export function validateMagicLink(token: string): { valid: boolean; fileId?: string; email?: string; error?: string } {
   const hashedToken = hashToken(token);
   const tokenData = tokens.get(hashedToken);
   
@@ -61,11 +88,42 @@ export function validateMagicLink(token: string): { valid: boolean; fileId?: str
   tokenData.used = true;
   tokens.set(hashedToken, tokenData);
   
-  return { valid: true, fileId: tokenData.fileId };
+  return { valid: true, fileId: tokenData.fileId, email: tokenData.email };
+}
+
+export function createSessionToken(email: string): string {
+  const token = generateToken();
+  
+  const now = new Date();
+  const expiresAt = new Date(now);
+  expiresAt.setHours(expiresAt.getHours() + 24);
+  
+  sessions.set(token, {
+    email,
+    createdAt: now,
+    expiresAt,
+  });
+  
+  cleanupExpiredSessions();
+  return token;
+}
+
+export function validateSession(token: string): boolean {
+  const session = sessions.get(token);
+  
+  if (!session) {
+    return false;
+  }
+  
+  if (new Date() > session.expiresAt) {
+    sessions.delete(token);
+    return false;
+  }
+  
+  return true;
 }
 
 export function createDownloadToken(fileId: string): string {
-  // Create a one-time download token valid for 5 minutes
   const token = uuidv4();
   const hashedToken = hashToken(token);
   
@@ -90,6 +148,15 @@ function cleanupExpiredTokens(): void {
   for (const [key, value] of tokens.entries()) {
     if (now > value.expiresAt) {
       tokens.delete(key);
+    }
+  }
+}
+
+function cleanupExpiredSessions(): void {
+  const now = new Date();
+  for (const [key, value] of sessions.entries()) {
+    if (now > value.expiresAt) {
+      sessions.delete(key);
     }
   }
 }
