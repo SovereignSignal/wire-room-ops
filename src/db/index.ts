@@ -29,27 +29,38 @@ export async function getEntriesForDateRange(
   
   const query = `
     SELECT 
-      id,
-      url,
-      quick_summary,
-      category,
-      timestamp,
-      source
-    FROM entries
-    WHERE timestamp >= $1 AND timestamp < $2
-    ORDER BY category, timestamp DESC
+      s.id,
+      s.title,
+      s.summary as quick_summary,
+      c.name as category,
+      s.created_at as timestamp,
+      m.extracted_urls,
+      'telegram' as source
+    FROM summaries s
+    LEFT JOIN messages m ON s.message_id = m.id
+    LEFT JOIN categories c ON s.category_id = c.id
+    WHERE s.processing_status = 'SUCCESS'
+      AND s.created_at >= $1 
+      AND s.created_at < $2
+    ORDER BY c.name, s.created_at DESC
   `;
   
   const result = await pool.query(query, [startDate, endDate]);
   
-  return result.rows.map(row => ({
-    id: row.id,
-    url: row.url,
-    quick_summary: row.quick_summary,
-    category: row.category || 'Uncategorized',
-    timestamp: new Date(row.timestamp),
-    source: row.source,
-  }));
+  return result.rows.map(row => {
+    // Extract first URL from the JSON array
+    const urls = row.extracted_urls || [];
+    const url = Array.isArray(urls) ? urls[0] : urls;
+    
+    return {
+      id: String(row.id),
+      url: url || '',
+      quick_summary: row.quick_summary || '',
+      category: row.category || 'Uncategorized',
+      timestamp: new Date(row.timestamp),
+      source: row.source,
+    };
+  });
 }
 
 export function getDefaultDateRange(): { start: Date; end: Date } {
