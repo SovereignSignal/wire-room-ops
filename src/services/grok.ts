@@ -7,21 +7,25 @@ URL: {url}
 
 Reference summary (may be outdated): {existing_summary}
 
-Write a CONCISE newsletter entry following this exact format:
+Write a newsletter entry that is INFORMATIVE yet CONCISE. Format:
 
-**[Organization/Project Name]** announced/launched/opened [what happened], [key details with numbers]. [One more sentence with timeline, eligibility, or how to apply if relevant].
+**[Organization/Project Name]** [action verb] [what happened with key details]. [Additional context, numbers, or requirements]. [Deadline/application info if available].
 
-RULES:
-- Keep it to 2-3 sentences MAX, around 50-75 words total
-- Lead with an action verb (announced, launched, opened, unveiled, allocated, distributed)
-- Include specific numbers inline (funding amounts, token quantities, deadlines)
-- No bullet points, no separate sections
-- No flowery language or filler words
-- If there's a deadline or application link, include it naturally in the text
+REQUIREMENTS:
+- 3-5 sentences, roughly 75-150 words
+- Lead with a strong action verb (announced, launched, opened, unveiled, allocated, distributed, published, released)
+- Include ALL specific numbers: funding amounts, token quantities, number of recipients, ROI metrics, dates
+- Include deadlines, eligibility requirements, and how to apply when mentioned
+- Provide enough context that a reader understands WHY this matters for grant seekers
+- No bullet points - write in flowing paragraphs
+- No flowery language, but DO include substantive details
 - Do not use: crucial, significantly, innovative, exciting, revolutionary, game-changing, foster, comprehensive
 
-EXAMPLE OUTPUT:
-**Stellar Community Fund** opened Round 20 applications, offering up to $100K per project for ecosystem development. Applications close February 5, 2026, with results announced in March.`;
+GOOD EXAMPLE:
+**Optimism Grants Council** published its Season 8 impact analysis, reporting that 1.8M OP distributed to 12 projects generated $3.0M in attribution-adjusted TVL uplift with an ROI of $1.7 per OP token over a 56-day observation period. The full program approved 6.3M OP (~$2.2M) to 23 projects, with recipients mobilizing $1.6M in co-incentives. Top performers include Truemarkets ($4.8/OP ROI), Morpho (+$11.5M TVL), and PancakeSwap (+$6.9M TVL with $1.1M CAKE co-incentives).
+
+BAD EXAMPLE (too vague):
+**Optimism** released a grants report showing positive results. Several projects received funding and showed growth. More details available in the post.`;
 
 interface GrokResponse {
   choices: Array<{

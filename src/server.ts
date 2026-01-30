@@ -350,6 +350,7 @@ function renderLoginPage(error?: string): string {
 <html>
 <head>
   <title>Sign In - CryptoGrantWire</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cellipse cx='50' cy='35' rx='35' ry='20' fill='none' stroke='%23f5a623' stroke-width='6'/%3E%3Cellipse cx='50' cy='35' rx='20' ry='12' fill='none' stroke='%23f5a623' stroke-width='4'/%3E%3Ccircle cx='50' cy='35' r='6' fill='%23f5a623'/%3E%3Cline x1='50' y1='45' x2='50' y2='85' stroke='%23f5a623' stroke-width='6' stroke-linecap='round'/%3E%3Cline x1='35' y1='90' x2='65' y2='90' stroke='%23f5a623' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     * { box-sizing: border-box; }
@@ -442,6 +443,7 @@ function renderLoginSentPage(email: string): string {
 <html>
 <head>
   <title>Check Your Email - CryptoGrantWire</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cellipse cx='50' cy='35' rx='35' ry='20' fill='none' stroke='%23f5a623' stroke-width='6'/%3E%3Cellipse cx='50' cy='35' rx='20' ry='12' fill='none' stroke='%23f5a623' stroke-width='4'/%3E%3Ccircle cx='50' cy='35' r='6' fill='%23f5a623'/%3E%3Cline x1='50' y1='45' x2='50' y2='85' stroke='%23f5a623' stroke-width='6' stroke-linecap='round'/%3E%3Cline x1='35' y1='90' x2='65' y2='90' stroke='%23f5a623' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     * { box-sizing: border-box; }
@@ -513,6 +515,7 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
 <html>
 <head>
   <title>Dashboard - CryptoGrantWire</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cellipse cx='50' cy='35' rx='35' ry='20' fill='none' stroke='%23f5a623' stroke-width='6'/%3E%3Cellipse cx='50' cy='35' rx='20' ry='12' fill='none' stroke='%23f5a623' stroke-width='4'/%3E%3Ccircle cx='50' cy='35' r='6' fill='%23f5a623'/%3E%3Cline x1='50' y1='45' x2='50' y2='85' stroke='%23f5a623' stroke-width='6' stroke-linecap='round'/%3E%3Cline x1='35' y1='90' x2='65' y2='90' stroke='%23f5a623' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     * { box-sizing: border-box; }
@@ -1025,6 +1028,7 @@ function renderDownloadPage(filename: string, downloadToken: string): string {
 <html>
 <head>
   <title>Download - CryptoGrantWire</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cellipse cx='50' cy='35' rx='35' ry='20' fill='none' stroke='%23f5a623' stroke-width='6'/%3E%3Cellipse cx='50' cy='35' rx='20' ry='12' fill='none' stroke='%23f5a623' stroke-width='4'/%3E%3Ccircle cx='50' cy='35' r='6' fill='%23f5a623'/%3E%3Cline x1='50' y1='45' x2='50' y2='85' stroke='%23f5a623' stroke-width='6' stroke-linecap='round'/%3E%3Cline x1='35' y1='90' x2='65' y2='90' stroke='%23f5a623' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     * { box-sizing: border-box; }
@@ -1082,6 +1086,7 @@ function renderErrorPage(message: string): string {
 <html>
 <head>
   <title>Error - CryptoGrantWire</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cellipse cx='50' cy='35' rx='35' ry='20' fill='none' stroke='%23f5a623' stroke-width='6'/%3E%3Cellipse cx='50' cy='35' rx='20' ry='12' fill='none' stroke='%23f5a623' stroke-width='4'/%3E%3Ccircle cx='50' cy='35' r='6' fill='%23f5a623'/%3E%3Cline x1='50' y1='45' x2='50' y2='85' stroke='%23f5a623' stroke-width='6' stroke-linecap='round'/%3E%3Cline x1='35' y1='90' x2='65' y2='90' stroke='%23f5a623' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     * { box-sizing: border-box; }

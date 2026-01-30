@@ -13,21 +13,25 @@ Page Content:
 
 Reference summary (may be outdated): {existing_summary}
 
-Write a CONCISE newsletter entry following this exact format:
+Write a newsletter entry that is INFORMATIVE yet CONCISE. Format:
 
-**[Organization/Project Name]** announced/launched/opened [what happened], [key details with numbers]. [One more sentence with timeline, eligibility, or how to apply if relevant].
+**[Organization/Project Name]** [action verb] [what happened with key details]. [Additional context, numbers, or requirements]. [Deadline/application info if available].
 
-RULES:
-- Keep it to 2-3 sentences MAX, around 50-75 words total
-- Lead with an action verb (announced, launched, opened, unveiled, allocated, distributed, published, released)
-- Include specific numbers inline (funding amounts, token quantities, deadlines, dates)
-- No bullet points, no separate sections for "Key numbers" or "Actionable details"
-- No flowery language or filler words
-- Exclude: committee member names, historical background, mechanism explanations
+REQUIREMENTS:
+- 3-5 sentences, roughly 75-150 words
+- Lead with a strong action verb (announced, launched, opened, unveiled, allocated, distributed, published, released)
+- Include ALL specific numbers from the content: funding amounts, token quantities, number of recipients/applicants, ROI metrics, percentages, dates
+- Include deadlines, eligibility requirements, and how to apply when mentioned
+- Provide enough context that a reader understands the significance for grant seekers
+- No bullet points - write in flowing paragraphs
+- Exclude: committee member names, lengthy historical background, detailed mechanism explanations
 - Do not use: crucial, significantly, innovative, exciting, revolutionary, game-changing, foster, comprehensive
 
-EXAMPLE OUTPUT:
-**Optimism Grants Council** published its Season 8 impact analysis, showing 1.8M OP distributed to 12 projects generated $3.0M in TVL uplift with $1.7 ROI per OP token. Top performers include Truemarkets ($4.8/OP ROI) and Morpho (+$11.5M TVL).`;
+GOOD EXAMPLE:
+**Cornaro Labs** released an analysis of the EU's nearly €600M commitment to crypto grants via the Digital Europe Programme. The first funded cohort selected 9 projects from 173 applications, distributing €29.5M total. Eligibility requires consortia of at least 3 independent entities from EU member states with demonstrated blockchain expertise. The next call focuses on DeFi infrastructure, with applications due September 25, 2025 via the EU Funding & Tenders Portal.
+
+BAD EXAMPLE (too vague):
+**Cornaro Labs** published a report on EU crypto funding. The report covers funded projects and how to apply. More details in the linked analysis.`;
 
 // Fallback prompt when scraping fails
 const FALLBACK_PROMPT = `Refine this summary for the Crypto Grant Wire newsletter.
@@ -35,21 +39,25 @@ const FALLBACK_PROMPT = `Refine this summary for the Crypto Grant Wire newslette
 URL: {url}
 Existing summary: {existing_summary}
 
-Write a CONCISE newsletter entry following this exact format:
+Write a newsletter entry that is INFORMATIVE yet CONCISE. Format:
 
-**[Organization/Project Name]** announced/launched/opened [what happened], [key details with numbers]. [One more sentence with timeline, eligibility, or how to apply if relevant].
+**[Organization/Project Name]** [action verb] [what happened with key details]. [Additional context, numbers, or requirements]. [Deadline/application info if available].
 
-RULES:
-- Keep it to 2-3 sentences MAX, around 50-75 words total
-- Lead with an action verb (announced, launched, opened, unveiled, allocated, distributed, published, released)
-- Include specific numbers inline (funding amounts, token quantities, deadlines, dates)
-- No bullet points, no separate sections
-- No flowery language or filler words
+REQUIREMENTS:
+- 3-5 sentences, roughly 75-150 words
+- Lead with a strong action verb (announced, launched, opened, unveiled, allocated, distributed, published, released)
+- Include ALL specific numbers mentioned: funding amounts, token quantities, deadlines, dates
+- Include deadlines, eligibility requirements, and how to apply when available
+- Provide useful context for grant seekers
+- No bullet points - write in flowing paragraphs
 - Work with the information provided - do not say "unable to access"
 - Do not use: crucial, significantly, innovative, exciting, revolutionary, game-changing, foster, comprehensive
 
-EXAMPLE OUTPUT:
-**Stellar Community Fund** opened Round 20 applications, offering up to $100K per project for ecosystem development. Applications close February 5, 2026, with results announced in March.`;
+GOOD EXAMPLE:
+**Stellar Community Fund** opened Round 20 applications, offering grants up to $100K per project for ecosystem development tools and infrastructure. The program targets developers building on Stellar with working prototypes or established projects seeking expansion funding. Applications close February 5, 2026, with funding decisions announced in March. Apply via stellar.org/community-fund.
+
+BAD EXAMPLE (too vague):
+**Stellar** announced new grants are available. Developers can apply for funding. Check the website for details.`;
 
 let client: Anthropic | null = null;
 
