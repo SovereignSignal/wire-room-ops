@@ -2,27 +2,24 @@ import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config';
 import { DatabaseEntry } from '../types';
 
-const OPUS_PROMPT = `Summarize this webpage for a crypto grants newsletter.
+const OPUS_PROMPT = `Refine the following summary for a crypto grants newsletter. The content is from: {url}
 
-Extract:
-- Organization/project making the announcement
-- What action or announcement is being made
+Existing summary to improve:
+{existing_summary}
+
+Based on this information, provide:
+- Start with the organization or project name as a clear identifier
+- 2-3 sentence factual summary (no flowery language)
 - Key numbers (funding amounts, allocations, deadlines)
 - Actionable details (how to apply, eligibility, timeline)
 
-Provide a 2-3 sentence summary in factual, neutral tone.
+Keep tone neutral and factual.
 
-Exclude:
-- Committee member names
-- Historical background
-- Process descriptions
-- Mechanism explanations
+Exclude: committee member names, historical background, process descriptions, mechanism explanations.
 
 Do not use: crucial, significantly, innovative, exciting, revolutionary, game-changing, foster, comprehensive.
-
-Context from existing summary: {existing_summary}
-
-URL: {url}`;
+Do not start with "I cannot" or "Unable" - work with the provided summary content.
+Always lead with the organization name, not a disclaimer.`;
 
 let client: Anthropic | null = null;
 
@@ -43,7 +40,7 @@ export async function summarizeWithOpus(entry: DatabaseEntry): Promise<string> {
   const anthropic = getClient();
   
   const message = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-opus-4-5-20251101',
     max_tokens: 500,
     messages: [
       {

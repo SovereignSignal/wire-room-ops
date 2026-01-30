@@ -1,20 +1,22 @@
 import { config } from '../config';
 import { DatabaseEntry } from '../types';
 
-const GROK_PROMPT = `Summarize this X.com post for a crypto grants newsletter.
+const GROK_PROMPT = `You have access to X.com posts. Please access and summarize the following X.com/Twitter post for a crypto grants newsletter.
 
-Provide:
-- 2-3 sentence factual summary (no flowery language)
+URL to access: {url}
+
+For reference, here is a preliminary summary that may be incomplete or outdated:
+{existing_summary}
+
+Please access the actual post and provide:
+- The organization or project name as a clear title
+- 2-3 sentence factual summary of the actual post content (no flowery language)
 - Key numbers (funding amounts, dates, deadlines)
-- Organization/project names mentioned
-- Any actionable details (applications, eligibility)
+- Any actionable details (how to apply, eligibility, timeline)
 
-Keep tone neutral and factual. 
+Keep tone neutral and factual.
 Do not use: crucial, significantly, innovative, exciting, revolutionary, game-changing, foster, comprehensive.
-
-Context from existing summary: {existing_summary}
-
-URL: {url}`;
+Do not start with "Unable" or "I cannot" - always provide the organization name first.`;
 
 interface GrokResponse {
   choices: Array<{
@@ -36,7 +38,7 @@ export async function summarizeWithGrok(entry: DatabaseEntry): Promise<string> {
       'Authorization': `Bearer ${config.apis.grok.apiKey}`,
     },
     body: JSON.stringify({
-      model: 'grok-2-latest',
+      model: 'grok-3',
       messages: [
         {
           role: 'user',

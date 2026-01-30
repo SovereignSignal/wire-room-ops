@@ -5,6 +5,7 @@ import { getFile, listFiles } from './services/storage';
 import { sendLoginEmail } from './services/email';
 import { runWeeklySummaryJob } from './jobs/weekly-summary';
 import { StoredFile } from './types';
+import { jobQueue } from './services/job-queue';
 
 const app = express();
 
@@ -84,22 +85,94 @@ app.get('/dashboard', (req: Request, res: Response) => {
   res.send(renderDashboard(files, session, message));
 });
 
-// Trigger job manually
+// Trigger job manually (async with job queue)
 app.post('/api/run-job', async (req: Request, res: Response) => {
   const session = req.body.session;
-  
+
   if (!session || !validateSession(session)) {
     res.status(401).json({ error: 'Unauthorized' });
     return;
   }
-  
-  try {
-    const result = await runWeeklySummaryJob(false);
-    res.redirect(`/dashboard?session=${session}&message=Success! Processed ${result.stats.totalEntries} entries. File ready for download.`);
-  } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-    res.redirect(`/dashboard?session=${session}&message=Error: ${encodeURIComponent(errorMsg)}`);
+
+  // Parse date range from request
+  const { startDate, endDate } = req.body;
+  let dateRange: { start: Date; end: Date } | undefined;
+
+  if (startDate && endDate) {
+    dateRange = {
+      start: new Date(startDate),
+      end: new Date(endDate),
+    };
+    // Set end date to end of day
+    dateRange.end.setHours(23, 59, 59, 999);
   }
+
+  // Create job and return immediately
+  const jobId = jobQueue.createJob();
+  res.json({ jobId });
+
+  // Run job asynchronously
+  (async () => {
+    jobQueue.updateJob(jobId, { status: 'running' });
+
+    try {
+      const result = await runWeeklySummaryJob({
+        sendEmail: false,
+        dateRange,
+        onProgress: (current, total, step) => {
+          jobQueue.updateProgress(jobId, { current, total, step });
+        },
+      });
+
+      jobQueue.completeJob(jobId, result);
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      jobQueue.failJob(jobId, errorMsg);
+    }
+
+    jobQueue.cleanup();
+  })();
+});
+
+// SSE endpoint for job progress
+app.get('/api/job/:jobId/progress', (req: Request, res: Response) => {
+  const session = req.query.session as string;
+
+  if (!session || !validateSession(session)) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+
+  const { jobId } = req.params;
+  const job = jobQueue.getJob(jobId);
+
+  if (!job) {
+    res.status(404).json({ error: 'Job not found' });
+    return;
+  }
+
+  // Set up SSE
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  // Subscribe to job updates
+  const unsubscribe = jobQueue.subscribe(jobId, (status) => {
+    res.write(`data: ${JSON.stringify(status)}\n\n`);
+
+    // Close connection when job is complete or failed
+    if (status.status === 'completed' || status.status === 'failed') {
+      setTimeout(() => {
+        res.end();
+      }, 100);
+    }
+  });
+
+  // Clean up on client disconnect
+  req.on('close', () => {
+    unsubscribe();
+  });
 });
 
 // Download file
@@ -196,13 +269,13 @@ function renderLoginPage(error?: string): string {
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Sign In - Crypto Grant Wire</title>
+  <title>Sign In - CryptoGrantWire</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     * { box-sizing: border-box; }
-    body { 
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
-      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0d0d0d;
       margin: 0;
       padding: 20px;
       min-height: 100vh;
@@ -210,56 +283,64 @@ function renderLoginPage(error?: string): string {
       align-items: center;
       justify-content: center;
     }
-    .container { 
-      max-width: 400px; 
+    .container {
+      max-width: 400px;
       width: 100%;
-      background: white;
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
       padding: 48px 40px;
       border-radius: 16px;
-      box-shadow: 0 4px 24px rgba(0,0,0,0.2);
+      box-shadow: 0 4px 24px rgba(0,0,0,0.4);
     }
-    h1 { color: #1a1a2e; margin: 0 0 8px; font-size: 28px; }
-    .subtitle { color: #666; margin-bottom: 32px; }
+    .logo { margin: 0 0 8px; font-size: 28px; font-weight: 700; }
+    .logo-crypto { color: #ffffff; }
+    .logo-grant { color: #f5a623; }
+    .logo-wire { color: #ffffff; }
+    .subtitle { color: #999999; margin-bottom: 32px; }
     .form-group { margin-bottom: 20px; }
-    label { display: block; margin-bottom: 8px; font-weight: 500; color: #333; }
+    label { display: block; margin-bottom: 8px; font-weight: 500; color: #ffffff; }
     input[type="email"] {
       width: 100%;
       padding: 14px 16px;
-      border: 2px solid #e0e0e0;
+      border: 1px solid #2a2a2a;
       border-radius: 8px;
       font-size: 16px;
+      background: #0d0d0d;
+      color: #ffffff;
       transition: border-color 0.2s;
     }
+    input[type="email"]::placeholder { color: #666666; }
     input[type="email"]:focus {
       outline: none;
-      border-color: #0066cc;
+      border-color: #f5a623;
     }
     .button {
       width: 100%;
-      background: #0066cc;
-      color: white;
+      background: #f5a623;
+      color: #0d0d0d;
       padding: 14px 24px;
       border: none;
       border-radius: 8px;
       font-size: 16px;
-      font-weight: 500;
+      font-weight: 600;
       cursor: pointer;
       transition: background 0.2s;
     }
-    .button:hover { background: #0052a3; }
-    .error { 
-      background: #fee; 
-      color: #c00; 
-      padding: 12px 16px; 
-      border-radius: 8px; 
+    .button:hover { background: #e6951a; }
+    .error {
+      background: rgba(239, 83, 80, 0.15);
+      color: #ef5350;
+      padding: 12px 16px;
+      border-radius: 8px;
       margin-bottom: 20px;
       font-size: 14px;
+      border: 1px solid rgba(239, 83, 80, 0.3);
     }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1>Crypto Grant Wire</h1>
+    <h1 class="logo"><span class="logo-crypto">Crypto</span><span class="logo-grant">Grant</span><span class="logo-wire">Wire</span></h1>
     <p class="subtitle">Sign in to access your dashboard</p>
     ${error ? `<div class="error">${error}</div>` : ''}
     <form method="POST" action="/login">
@@ -280,13 +361,13 @@ function renderLoginSentPage(email: string): string {
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Check Your Email - Crypto Grant Wire</title>
+  <title>Check Your Email - CryptoGrantWire</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     * { box-sizing: border-box; }
-    body { 
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
-      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0d0d0d;
       margin: 0;
       padding: 20px;
       min-height: 100vh;
@@ -294,23 +375,24 @@ function renderLoginSentPage(email: string): string {
       align-items: center;
       justify-content: center;
     }
-    .container { 
-      max-width: 400px; 
+    .container {
+      max-width: 400px;
       width: 100%;
-      background: white;
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
       padding: 48px 40px;
       border-radius: 16px;
-      box-shadow: 0 4px 24px rgba(0,0,0,0.2);
+      box-shadow: 0 4px 24px rgba(0,0,0,0.4);
       text-align: center;
     }
     .icon { font-size: 48px; margin-bottom: 16px; }
-    h1 { color: #1a1a2e; margin: 0 0 16px; font-size: 24px; }
-    p { color: #666; line-height: 1.6; }
-    .email { font-weight: 600; color: #333; }
-    .back { 
+    h1 { color: #ffffff; margin: 0 0 16px; font-size: 24px; }
+    p { color: #999999; line-height: 1.6; }
+    .email { font-weight: 600; color: #f5a623; }
+    .back {
       display: inline-block;
       margin-top: 24px;
-      color: #0066cc;
+      color: #f5a623;
       text-decoration: none;
     }
     .back:hover { text-decoration: underline; }
@@ -330,7 +412,7 @@ function renderLoginSentPage(email: string): string {
 }
 
 function renderDashboard(files: StoredFile[], session: string, message?: string): string {
-  const fileRows = files.length > 0 
+  const fileRows = files.length > 0
     ? files.map(f => `
         <tr>
           <td>${f.filename}</td>
@@ -340,89 +422,166 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
       `).join('')
     : '<tr><td colspan="3" class="empty">No files yet. Run the job to generate summaries.</td></tr>';
 
+  // Default date range: last 7 days
+  const endDate = new Date();
+  const startDate = new Date();
+  startDate.setDate(startDate.getDate() - 7);
+  const formatDate = (d: Date) => d.toISOString().split('T')[0];
+
   return `
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Dashboard - Crypto Grant Wire</title>
+  <title>Dashboard - CryptoGrantWire</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     * { box-sizing: border-box; }
-    body { 
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
-      background: #f5f7fa;
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0d0d0d;
       margin: 0;
       padding: 0;
       min-height: 100vh;
+      color: #ffffff;
     }
     .header {
-      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-      color: white;
+      background: #1a1a1a;
+      border-bottom: 1px solid #2a2a2a;
       padding: 24px 32px;
     }
-    .header h1 { margin: 0; font-size: 24px; }
-    .header p { margin: 8px 0 0; opacity: 0.8; }
+    .header-content { max-width: 900px; margin: 0 auto; }
+    .logo { margin: 0; font-size: 24px; font-weight: 700; }
+    .logo-crypto { color: #ffffff; }
+    .logo-grant { color: #f5a623; }
+    .logo-wire { color: #ffffff; }
+    .header p { margin: 8px 0 0; color: #999999; }
     .main { padding: 32px; max-width: 900px; margin: 0 auto; }
     .card {
-      background: white;
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
       border-radius: 12px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
       padding: 24px;
       margin-bottom: 24px;
     }
-    .card h2 { margin: 0 0 16px; font-size: 18px; color: #333; }
+    .card h2 { margin: 0 0 16px; font-size: 18px; color: #ffffff; }
     .message {
       padding: 12px 16px;
       border-radius: 8px;
       margin-bottom: 24px;
       font-size: 14px;
     }
-    .message.success { background: #e8f5e9; color: #2e7d32; }
-    .message.error { background: #ffebee; color: #c62828; }
+    .message.success {
+      background: rgba(76, 175, 80, 0.15);
+      color: #4caf50;
+      border: 1px solid rgba(76, 175, 80, 0.3);
+    }
+    .message.error {
+      background: rgba(239, 83, 80, 0.15);
+      color: #ef5350;
+      border: 1px solid rgba(239, 83, 80, 0.3);
+    }
     .button {
       display: inline-block;
-      background: #0066cc;
-      color: white;
+      background: #f5a623;
+      color: #0d0d0d;
       padding: 12px 24px;
       border: none;
       border-radius: 8px;
       font-size: 14px;
-      font-weight: 500;
+      font-weight: 600;
       cursor: pointer;
       text-decoration: none;
       transition: background 0.2s;
     }
-    .button:hover { background: #0052a3; }
-    .button.secondary {
-      background: #e0e0e0;
-      color: #333;
+    .button:hover { background: #e6951a; }
+    .button:disabled {
+      background: #666666;
+      cursor: not-allowed;
     }
-    .button.secondary:hover { background: #d0d0d0; }
+    .button.secondary {
+      background: #2a2a2a;
+      color: #ffffff;
+    }
+    .button.secondary:hover { background: #3a3a3a; }
     table { width: 100%; border-collapse: collapse; }
-    th, td { padding: 12px; text-align: left; border-bottom: 1px solid #eee; }
-    th { font-weight: 600; color: #666; font-size: 12px; text-transform: uppercase; }
-    .download-link { color: #0066cc; text-decoration: none; font-weight: 500; }
+    th, td { padding: 12px; text-align: left; border-bottom: 1px solid #2a2a2a; }
+    th { font-weight: 600; color: #999999; font-size: 12px; text-transform: uppercase; }
+    td { color: #ffffff; }
+    .download-link { color: #f5a623; text-decoration: none; font-weight: 500; }
     .download-link:hover { text-decoration: underline; }
-    .empty { color: #999; text-align: center; padding: 32px; }
-    .run-form { display: flex; gap: 12px; align-items: center; }
-    .run-form p { margin: 0; color: #666; font-size: 14px; }
+    .empty { color: #666666; text-align: center; padding: 32px; }
+    .run-form { display: flex; flex-direction: column; gap: 16px; }
+    .form-row { display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap; }
+    .form-group { display: flex; flex-direction: column; gap: 6px; }
+    .form-group label { font-size: 12px; color: #999999; text-transform: uppercase; font-weight: 600; }
+    .form-group input[type="date"] {
+      padding: 10px 12px;
+      border: 1px solid #2a2a2a;
+      border-radius: 6px;
+      font-size: 14px;
+      background: #0d0d0d;
+      color: #ffffff;
+    }
+    .form-group input[type="date"]:focus {
+      outline: none;
+      border-color: #f5a623;
+    }
+    .form-description { color: #666666; font-size: 14px; margin: 0; }
+    .progress-container { display: none; }
+    .progress-container.active { display: block; }
+    .progress-bar-outer {
+      background: #2a2a2a;
+      border-radius: 8px;
+      height: 8px;
+      overflow: hidden;
+      margin-bottom: 12px;
+    }
+    .progress-bar-inner {
+      background: #f5a623;
+      height: 100%;
+      width: 0%;
+      transition: width 0.3s ease;
+    }
+    .progress-text { color: #999999; font-size: 14px; margin: 0 0 8px; }
+    .progress-step { color: #f5a623; font-size: 14px; margin: 0; }
+    .elapsed-time { color: #666666; font-size: 12px; margin-top: 8px; }
   </style>
 </head>
 <body>
   <div class="header">
-    <h1>Crypto Grant Wire</h1>
-    <p>Newsletter Automation Dashboard</p>
+    <div class="header-content">
+      <h1 class="logo"><span class="logo-crypto">Crypto</span><span class="logo-grant">Grant</span><span class="logo-wire">Wire</span></h1>
+      <p>Newsletter Automation Dashboard</p>
+    </div>
   </div>
   <div class="main">
     ${message ? `<div class="message ${message.startsWith('Error') ? 'error' : 'success'}">${decodeURIComponent(message)}</div>` : ''}
-    
+
     <div class="card">
       <h2>Generate Weekly Summary</h2>
-      <form method="POST" action="/api/run-job" class="run-form">
+      <form id="job-form" class="run-form">
         <input type="hidden" name="session" value="${session}">
-        <button type="submit" class="button">Run Job Now</button>
-        <p>Fetches entries from the last 7 days, processes with Grok/Claude, generates markdown.</p>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="startDate">Start Date</label>
+            <input type="date" id="startDate" name="startDate" value="${formatDate(startDate)}">
+          </div>
+          <div class="form-group">
+            <label for="endDate">End Date</label>
+            <input type="date" id="endDate" name="endDate" value="${formatDate(endDate)}">
+          </div>
+          <button type="submit" id="run-button" class="button">Run Job Now</button>
+        </div>
+        <p class="form-description">Fetches entries from the selected date range, processes with Grok/Claude, generates markdown.</p>
       </form>
+      <div id="progress-container" class="progress-container">
+        <p class="progress-text">Processing...</p>
+        <div class="progress-bar-outer">
+          <div id="progress-bar" class="progress-bar-inner"></div>
+        </div>
+        <p id="progress-step" class="progress-step"></p>
+        <p id="elapsed-time" class="elapsed-time"></p>
+      </div>
     </div>
 
     <div class="card">
@@ -441,6 +600,100 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
       </table>
     </div>
   </div>
+
+  <script>
+    const form = document.getElementById('job-form');
+    const runButton = document.getElementById('run-button');
+    const progressContainer = document.getElementById('progress-container');
+    const progressBar = document.getElementById('progress-bar');
+    const progressStep = document.getElementById('progress-step');
+    const elapsedTimeEl = document.getElementById('elapsed-time');
+    const session = '${session}';
+    let startTime;
+    let elapsedTimer;
+
+    function updateElapsedTime() {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      const mins = Math.floor(elapsed / 60);
+      const secs = elapsed % 60;
+      elapsedTimeEl.textContent = 'Elapsed: ' + (mins > 0 ? mins + 'm ' : '') + secs + 's';
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      const startDate = document.getElementById('startDate').value;
+      const endDate = document.getElementById('endDate').value;
+
+      runButton.disabled = true;
+      runButton.textContent = 'Starting...';
+      progressContainer.classList.add('active');
+      progressBar.style.width = '0%';
+      progressStep.textContent = 'Initializing job...';
+
+      startTime = Date.now();
+      elapsedTimer = setInterval(updateElapsedTime, 1000);
+      updateElapsedTime();
+
+      try {
+        const response = await fetch('/api/run-job', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session, startDate, endDate })
+        });
+
+        const data = await response.json();
+
+        if (data.jobId) {
+          subscribeToProgress(data.jobId);
+        } else if (data.error) {
+          showError(data.error);
+        }
+      } catch (error) {
+        showError('Failed to start job: ' + error.message);
+      }
+    });
+
+    function subscribeToProgress(jobId) {
+      const eventSource = new EventSource('/api/job/' + jobId + '/progress?session=' + session);
+
+      eventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+
+        if (data.status === 'running' && data.progress) {
+          const percent = (data.progress.current / data.progress.total) * 100;
+          progressBar.style.width = percent + '%';
+          progressStep.textContent = data.progress.step;
+        } else if (data.status === 'completed') {
+          clearInterval(elapsedTimer);
+          eventSource.close();
+          window.location.href = '/dashboard?session=' + session + '&message=' + encodeURIComponent('Success! Processed ' + (data.result?.stats?.totalEntries || 0) + ' entries. File ready for download.');
+        } else if (data.status === 'failed') {
+          clearInterval(elapsedTimer);
+          eventSource.close();
+          showError(data.error || 'Job failed');
+        }
+      };
+
+      eventSource.onerror = () => {
+        clearInterval(elapsedTimer);
+        eventSource.close();
+        showError('Lost connection to server');
+      };
+    }
+
+    function showError(message) {
+      clearInterval(elapsedTimer);
+      progressContainer.classList.remove('active');
+      runButton.disabled = false;
+      runButton.textContent = 'Run Job Now';
+
+      const errorDiv = document.createElement('div');
+      errorDiv.className = 'message error';
+      errorDiv.textContent = 'Error: ' + message;
+      document.querySelector('.main').insertBefore(errorDiv, document.querySelector('.card'));
+    }
+  </script>
 </body>
 </html>
   `.trim();
@@ -455,12 +708,13 @@ function renderDownloadPage(filename: string, downloadToken: string): string {
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Download - Crypto Grant Wire</title>
+  <title>Download - CryptoGrantWire</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     * { box-sizing: border-box; }
-    body { 
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
-      background: #f5f5f5;
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0d0d0d;
       margin: 0;
       padding: 20px;
       min-height: 100vh;
@@ -468,29 +722,30 @@ function renderDownloadPage(filename: string, downloadToken: string): string {
       align-items: center;
       justify-content: center;
     }
-    .container { 
-      max-width: 500px; 
-      background: white;
+    .container {
+      max-width: 500px;
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
       padding: 40px;
       border-radius: 12px;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+      box-shadow: 0 4px 24px rgba(0,0,0,0.4);
       text-align: center;
     }
-    h1 { color: #333; margin-bottom: 8px; font-size: 24px; }
-    .filename { color: #666; margin-bottom: 24px; font-family: monospace; }
-    .button { 
-      display: inline-block; 
-      background: #0066cc; 
-      color: white; 
-      padding: 14px 32px; 
-      text-decoration: none; 
-      border-radius: 8px; 
-      font-weight: 500;
+    h1 { color: #ffffff; margin-bottom: 8px; font-size: 24px; }
+    .filename { color: #f5a623; margin-bottom: 24px; font-family: monospace; }
+    .button {
+      display: inline-block;
+      background: #f5a623;
+      color: #0d0d0d;
+      padding: 14px 32px;
+      text-decoration: none;
+      border-radius: 8px;
+      font-weight: 600;
       font-size: 16px;
       transition: background 0.2s;
     }
-    .button:hover { background: #0052a3; }
-    .note { margin-top: 20px; font-size: 14px; color: #888; }
+    .button:hover { background: #e6951a; }
+    .note { margin-top: 20px; font-size: 14px; color: #666666; }
   </style>
 </head>
 <body>
@@ -510,11 +765,13 @@ function renderErrorPage(message: string): string {
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Error - Crypto Grant Wire</title>
+  <title>Error - CryptoGrantWire</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
-    body { 
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
-      background: #f5f5f5;
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0d0d0d;
       margin: 0;
       padding: 20px;
       min-height: 100vh;
@@ -522,22 +779,31 @@ function renderErrorPage(message: string): string {
       align-items: center;
       justify-content: center;
     }
-    .container { 
-      max-width: 500px; 
-      background: white;
+    .container {
+      max-width: 500px;
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
       padding: 40px;
       border-radius: 12px;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+      box-shadow: 0 4px 24px rgba(0,0,0,0.4);
       text-align: center;
     }
-    h1 { color: #c00; margin-bottom: 16px; }
-    p { color: #666; }
+    h1 { color: #ef5350; margin-bottom: 16px; }
+    p { color: #999999; }
+    .back {
+      display: inline-block;
+      margin-top: 24px;
+      color: #f5a623;
+      text-decoration: none;
+    }
+    .back:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
   <div class="container">
     <h1>Access Error</h1>
     <p>${message}</p>
+    <a href="/" class="back">← Back to login</a>
   </div>
 </body>
 </html>

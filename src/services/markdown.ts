@@ -26,25 +26,48 @@ function groupByCategory(entries: ProcessedEntry[]): Map<string, ProcessedEntry[
 }
 
 function extractTitle(entry: ProcessedEntry): string {
-  // Try to extract organization/project name from the enriched summary
   const summary = entry.enrichedSummary;
-  
-  // Look for patterns like "Organization announced..." or "The Project..."
-  const patterns = [
-    /^([A-Z][A-Za-z0-9\s]+?)(?:\s+(?:announced|launched|released|introduced|opened|is|has|will))/,
-    /^(?:The\s+)?([A-Z][A-Za-z0-9\s]+?)\s+/,
+
+  // Skip error indicators - go straight to fallback
+  const errorIndicators = [
+    'unable', 'i cannot', 'i can\'t', 'error', 'failed', 'cannot access',
+    'not able', 'i\'m unable', 'i am unable', 'manual review'
   ];
-  
-  for (const pattern of patterns) {
-    const match = summary.match(pattern);
-    if (match && match[1] && match[1].length < 50) {
-      return match[1].trim();
+  const lowerSummary = summary.toLowerCase();
+  const startsWithError = errorIndicators.some(indicator => lowerSummary.startsWith(indicator));
+
+  if (!startsWithError) {
+    // Look for patterns like "Organization announced..." or "The Project..."
+    const patterns = [
+      /^\*\*([A-Z][A-Za-z0-9\s\-\.]+?)\*\*/,  // **Organization Name**
+      /^([A-Z][A-Za-z0-9\s\-\.]+?)(?:\s+(?:announced|launched|released|introduced|opened|is|has|will|offers|provides|partnered))/i,
+      /^(?:The\s+)?([A-Z][A-Za-z0-9\s\-\.]+?)\s+(?:has|is|announced|launched)/i,
+    ];
+
+    for (const pattern of patterns) {
+      const match = summary.match(pattern);
+      if (match && match[1] && match[1].length < 60 && match[1].length > 2) {
+        const title = match[1].trim();
+        // Skip if it looks like an error phrase
+        if (!errorIndicators.some(e => title.toLowerCase().includes(e))) {
+          return title;
+        }
+      }
     }
   }
-  
-  // Fallback: use domain from URL
+
+  // Fallback: use domain from URL, or extract from X.com username
   try {
     const url = new URL(entry.url);
+
+    // For X.com URLs, try to extract the username as a better title
+    if (url.hostname.includes('x.com') || url.hostname.includes('twitter.com')) {
+      const pathMatch = entry.url.match(/(?:x\.com|twitter\.com)\/([^\/]+)/i);
+      if (pathMatch && pathMatch[1] && !pathMatch[1].includes('status')) {
+        return `@${pathMatch[1]}`;
+      }
+    }
+
     return url.hostname.replace('www.', '');
   } catch {
     return 'Entry';

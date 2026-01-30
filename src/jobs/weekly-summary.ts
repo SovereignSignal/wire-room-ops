@@ -14,31 +14,48 @@ export interface JobResult {
   dateRange: { start: Date; end: Date };
 }
 
-export async function runWeeklySummaryJob(sendEmail: boolean = false): Promise<JobResult> {
+export interface JobOptions {
+  sendEmail?: boolean;
+  dateRange?: { start: Date; end: Date };
+  onProgress?: (current: number, total: number, step: string) => void;
+}
+
+export async function runWeeklySummaryJob(options: JobOptions | boolean = false): Promise<JobResult> {
+  // Handle legacy boolean signature
+  const opts: JobOptions = typeof options === 'boolean'
+    ? { sendEmail: options }
+    : options;
+
+  const { sendEmail = false, dateRange: customDateRange, onProgress } = opts;
+
   console.log('=== Crypto Grant Wire Weekly Summary Job ===');
   console.log(`Started at: ${new Date().toISOString()}`);
-  
+
   // Validate configuration
   validateConfig();
   console.log('✓ Configuration validated');
-  
+  onProgress?.(0, 0, 'Configuration validated');
+
   // Get date range
-  const dateRange = getDefaultDateRange();
+  const dateRange = customDateRange || getDefaultDateRange();
   console.log(`Date range: ${dateRange.start.toISOString()} to ${dateRange.end.toISOString()}`);
   
   // Query database
   console.log('Querying database for entries...');
+  onProgress?.(0, 0, 'Querying database...');
   const entries = await getEntriesForDateRange(dateRange.start, dateRange.end);
   console.log(`Found ${entries.length} entries`);
-  
+  onProgress?.(0, entries.length, `Found ${entries.length} entries`);
+
   if (entries.length === 0) {
     throw new Error('No entries found for this date range');
   }
-  
+
   // Process entries
   console.log('Processing entries...');
   const { processed, stats } = await processAllEntries(entries, (current, total) => {
     console.log(`  Processing ${current}/${total}...`);
+    onProgress?.(current, total, `Processing entry ${current} of ${total}...`);
   });
   
   console.log(`✓ Processing complete:`);
@@ -50,18 +67,21 @@ export async function runWeeklySummaryJob(sendEmail: boolean = false): Promise<J
   
   // Generate markdown
   console.log('Generating markdown...');
+  onProgress?.(stats.totalEntries, stats.totalEntries, 'Generating markdown...');
   const result = generateMarkdown(processed, stats, dateRange);
   console.log(`✓ Markdown generated (${result.markdown.length} characters)`);
-  
+
   // Store file
   console.log('Storing file...');
+  onProgress?.(stats.totalEntries, stats.totalEntries, 'Storing file...');
   const file = storeFile(result.markdown, dateRange);
   console.log(`✓ File stored: ${file.filename} (ID: ${file.id})`);
-  
+
   // Optionally send notification email
   if (sendEmail) {
     const downloadUrl = createMagicLink(config.email.notificationEmail, file.id);
     console.log('Sending notification email...');
+    onProgress?.(stats.totalEntries, stats.totalEntries, 'Sending notification email...');
     await sendNotificationEmail(downloadUrl, stats, dateRange);
     console.log(`✓ Email sent to ${config.email.notificationEmail}`);
   }
