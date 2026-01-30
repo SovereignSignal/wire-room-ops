@@ -7,6 +7,7 @@ import { runWeeklySummaryJob } from './jobs/weekly-summary';
 import { StoredFile } from './types';
 import { jobQueue } from './services/job-queue';
 import { getAllModels } from './services/models';
+import { getSchedule, setSchedule, formatScheduleDescription, getNextRunTime, initScheduler, ScheduleConfig } from './services/scheduler';
 
 const app = express();
 
@@ -275,12 +276,12 @@ app.get('/download/:token', (req: Request, res: Response) => {
 // API: List files
 app.get('/api/files', (req: Request, res: Response) => {
   const session = req.query.session as string;
-  
+
   if (!session || !validateSession(session)) {
     res.status(401).json({ error: 'Unauthorized' });
     return;
   }
-  
+
   const files = listFiles();
   res.json(files.map(f => ({
     id: f.id,
@@ -288,6 +289,59 @@ app.get('/api/files', (req: Request, res: Response) => {
     createdAt: f.createdAt,
     dateRange: f.dateRange,
   })));
+});
+
+// API: Get schedule
+app.get('/api/schedule', (req: Request, res: Response) => {
+  const session = req.query.session as string;
+
+  if (!session || !validateSession(session)) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+
+  const schedule = getSchedule();
+  const nextRun = getNextRunTime();
+  const description = formatScheduleDescription(schedule);
+
+  res.json({
+    ...schedule,
+    description,
+    nextRun: nextRun?.toISOString() || null,
+  });
+});
+
+// API: Update schedule
+app.post('/api/schedule', (req: Request, res: Response) => {
+  const session = req.body.session;
+
+  if (!session || !validateSession(session)) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+
+  const { enabled, dayOfWeek, hour, minute, lookbackDays, grokModel, anthropicModel, timezone } = req.body;
+
+  const updates: Partial<ScheduleConfig> = {};
+
+  if (typeof enabled === 'boolean') updates.enabled = enabled;
+  if (typeof dayOfWeek === 'number') updates.dayOfWeek = dayOfWeek;
+  if (typeof hour === 'number') updates.hour = hour;
+  if (typeof minute === 'number') updates.minute = minute;
+  if (typeof lookbackDays === 'number') updates.lookbackDays = lookbackDays;
+  if (grokModel) updates.grokModel = grokModel;
+  if (anthropicModel) updates.anthropicModel = anthropicModel;
+  if (timezone) updates.timezone = timezone;
+
+  const newSchedule = setSchedule(updates);
+  const nextRun = getNextRunTime();
+  const description = formatScheduleDescription(newSchedule);
+
+  res.json({
+    ...newSchedule,
+    description,
+    nextRun: nextRun?.toISOString() || null,
+  });
 });
 
 function renderLoginPage(error?: string): string {
@@ -560,6 +614,38 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
       color: #ffffff;
     }
     .model-row { margin-top: 8px; }
+    .schedule-status {
+      margin-top: 16px;
+      padding: 12px 16px;
+      background: #0d0d0d;
+      border-radius: 8px;
+      border: 1px solid #2a2a2a;
+    }
+    .schedule-status p { margin: 0; }
+    .schedule-status .next-run {
+      color: #f5a623;
+      font-size: 13px;
+      margin-top: 8px;
+    }
+    #schedule-description { color: #999999; font-size: 14px; }
+    .form-group input[type="time"],
+    .form-group input[type="number"] {
+      padding: 10px 12px;
+      border: 1px solid #2a2a2a;
+      border-radius: 6px;
+      font-size: 14px;
+      background: #0d0d0d;
+      color: #ffffff;
+    }
+    .form-group input[type="time"]:focus,
+    .form-group input[type="number"]:focus {
+      outline: none;
+      border-color: #f5a623;
+    }
+    .save-success {
+      color: #4caf50 !important;
+      font-weight: 500;
+    }
     .form-description { color: #666666; font-size: 14px; margin: 0; }
     .progress-container { display: none; }
     .progress-container.active { display: block; }
@@ -647,6 +733,60 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
         </tbody>
       </table>
     </div>
+
+    <div class="card">
+      <h2>Scheduled Runs</h2>
+      <div id="schedule-form" class="run-form">
+        <div class="form-row">
+          <div class="form-group">
+            <label for="scheduleEnabled">Status</label>
+            <select id="scheduleEnabled">
+              <option value="false">Disabled</option>
+              <option value="true">Enabled</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="scheduleDayOfWeek">Day of Week</label>
+            <select id="scheduleDayOfWeek">
+              <option value="0">Sunday</option>
+              <option value="1">Monday</option>
+              <option value="2">Tuesday</option>
+              <option value="3">Wednesday</option>
+              <option value="4">Thursday</option>
+              <option value="5">Friday</option>
+              <option value="6">Saturday</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="scheduleTime">Time</label>
+            <input type="time" id="scheduleTime" value="09:00">
+          </div>
+          <div class="form-group">
+            <label for="scheduleLookback">Lookback Days</label>
+            <input type="number" id="scheduleLookback" min="1" max="30" value="7" style="width: 80px;">
+          </div>
+        </div>
+        <div class="form-row model-row">
+          <div class="form-group">
+            <label for="scheduleGrokModel">Grok Model</label>
+            <select id="scheduleGrokModel">
+              <option value="">Loading...</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="scheduleAnthropicModel">Claude Model</label>
+            <select id="scheduleAnthropicModel">
+              <option value="">Loading...</option>
+            </select>
+          </div>
+          <button type="button" id="save-schedule" class="button">Save Schedule</button>
+        </div>
+        <div id="schedule-status" class="schedule-status">
+          <p id="schedule-description">Loading schedule...</p>
+          <p id="schedule-next-run" class="next-run"></p>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -686,6 +826,105 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
     }
 
     loadModels();
+
+    // Schedule management
+    const scheduleEnabled = document.getElementById('scheduleEnabled');
+    const scheduleDayOfWeek = document.getElementById('scheduleDayOfWeek');
+    const scheduleTime = document.getElementById('scheduleTime');
+    const scheduleLookback = document.getElementById('scheduleLookback');
+    const scheduleGrokModel = document.getElementById('scheduleGrokModel');
+    const scheduleAnthropicModel = document.getElementById('scheduleAnthropicModel');
+    const saveScheduleBtn = document.getElementById('save-schedule');
+    const scheduleDescription = document.getElementById('schedule-description');
+    const scheduleNextRun = document.getElementById('schedule-next-run');
+
+    async function loadSchedule() {
+      try {
+        const response = await fetch('/api/schedule?session=' + session);
+        if (!response.ok) throw new Error('Failed to fetch schedule');
+        const schedule = await response.json();
+
+        scheduleEnabled.value = schedule.enabled.toString();
+        scheduleDayOfWeek.value = schedule.dayOfWeek.toString();
+        const hour = schedule.hour.toString().padStart(2, '0');
+        const minute = schedule.minute.toString().padStart(2, '0');
+        scheduleTime.value = hour + ':' + minute;
+        scheduleLookback.value = schedule.lookbackDays;
+
+        scheduleDescription.textContent = schedule.description;
+        if (schedule.nextRun) {
+          const nextDate = new Date(schedule.nextRun);
+          scheduleNextRun.textContent = 'Next run: ' + nextDate.toLocaleString();
+        } else {
+          scheduleNextRun.textContent = '';
+        }
+
+        // Also load models for schedule dropdowns
+        const modelsResponse = await fetch('/api/models?session=' + session);
+        if (modelsResponse.ok) {
+          const models = await modelsResponse.json();
+
+          scheduleGrokModel.innerHTML = models.grok.map(m =>
+            '<option value="' + m.id + '"' + (m.id === schedule.grokModel ? ' selected' : '') + '>' + m.displayName + '</option>'
+          ).join('');
+
+          scheduleAnthropicModel.innerHTML = models.anthropic.map(m =>
+            '<option value="' + m.id + '"' + (m.id === schedule.anthropicModel ? ' selected' : '') + '>' + m.displayName + '</option>'
+          ).join('');
+        }
+      } catch (error) {
+        console.error('Failed to load schedule:', error);
+        scheduleDescription.textContent = 'Failed to load schedule';
+      }
+    }
+
+    loadSchedule();
+
+    saveScheduleBtn.addEventListener('click', async () => {
+      const timeParts = scheduleTime.value.split(':');
+      const hour = parseInt(timeParts[0], 10);
+      const minute = parseInt(timeParts[1], 10);
+
+      saveScheduleBtn.disabled = true;
+      saveScheduleBtn.textContent = 'Saving...';
+
+      try {
+        const response = await fetch('/api/schedule', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            session,
+            enabled: scheduleEnabled.value === 'true',
+            dayOfWeek: parseInt(scheduleDayOfWeek.value, 10),
+            hour,
+            minute,
+            lookbackDays: parseInt(scheduleLookback.value, 10),
+            grokModel: scheduleGrokModel.value,
+            anthropicModel: scheduleAnthropicModel.value,
+          })
+        });
+
+        if (!response.ok) throw new Error('Failed to save schedule');
+        const schedule = await response.json();
+
+        scheduleDescription.textContent = schedule.description;
+        scheduleDescription.classList.add('save-success');
+        setTimeout(() => scheduleDescription.classList.remove('save-success'), 2000);
+
+        if (schedule.nextRun) {
+          const nextDate = new Date(schedule.nextRun);
+          scheduleNextRun.textContent = 'Next run: ' + nextDate.toLocaleString();
+        } else {
+          scheduleNextRun.textContent = '';
+        }
+      } catch (error) {
+        console.error('Failed to save schedule:', error);
+        scheduleDescription.textContent = 'Failed to save schedule';
+      } finally {
+        saveScheduleBtn.disabled = false;
+        saveScheduleBtn.textContent = 'Save Schedule';
+      }
+    });
 
     function updateElapsedTime() {
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
@@ -888,8 +1127,12 @@ function renderErrorPage(message: string): string {
 }
 
 export function startServer(): void {
+  // Initialize the scheduler
+  initScheduler();
+
   app.listen(config.app.port, () => {
     console.log(`Server running on port ${config.app.port}`);
+    console.log(`Scheduler initialized`);
   });
 }
 
