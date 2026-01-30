@@ -15,6 +15,10 @@ export const config = {
       apiKey: process.env.GROK_API_KEY || '',
       baseUrl: 'https://api.x.ai/v1',
     },
+    firecrawl: {
+      apiKey: process.env.FIRECRAWL_API_KEY || '',
+      baseUrl: 'https://api.firecrawl.dev/v1',
+    },
   },
   
   email: {
@@ -44,6 +48,7 @@ export function validateConfig(): void {
     ['DATABASE_URL', config.database.url],
     ['ANTHROPIC_API_KEY', config.apis.anthropic.apiKey],
     ['GROK_API_KEY', config.apis.grok.apiKey],
+    ['FIRECRAWL_API_KEY', config.apis.firecrawl.apiKey],
     ['RESEND_API_KEY', config.email.resendApiKey],
     ['NOTIFICATION_EMAIL', config.email.notificationEmail],
   ];

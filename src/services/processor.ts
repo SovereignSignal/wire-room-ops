@@ -2,6 +2,11 @@ import { DatabaseEntry, ProcessedEntry, ProcessingStats } from '../types';
 import { summarizeWithGrok, isXcomUrl } from './grok';
 import { summarizeWithOpus } from './anthropic';
 
+export interface ModelOptions {
+  grokModel?: string;
+  anthropicModel?: string;
+}
+
 const RETRY_DELAYS = [1000, 2000, 4000];
 
 async function sleep(ms: number): Promise<void> {
@@ -13,7 +18,7 @@ async function withRetry<T>(
   retries: number = 3
 ): Promise<T> {
   let lastError: Error | null = null;
-  
+
   for (let i = 0; i < retries; i++) {
     try {
       return await fn();
@@ -24,13 +29,13 @@ async function withRetry<T>(
       }
     }
   }
-  
+
   throw lastError;
 }
 
-export async function processEntry(entry: DatabaseEntry): Promise<ProcessedEntry> {
+export async function processEntry(entry: DatabaseEntry, models?: ModelOptions): Promise<ProcessedEntry> {
   const isXcom = isXcomUrl(entry.url);
-  
+
   const baseResult: ProcessedEntry = {
     id: entry.id,
     url: entry.url,
@@ -45,12 +50,12 @@ export async function processEntry(entry: DatabaseEntry): Promise<ProcessedEntry
   try {
     const summary = await withRetry(async () => {
       if (isXcom) {
-        return await summarizeWithGrok(entry);
+        return await summarizeWithGrok(entry, models?.grokModel);
       } else {
-        return await summarizeWithOpus(entry);
+        return await summarizeWithOpus(entry, models?.anthropicModel);
       }
     });
-    
+
     baseResult.enrichedSummary = summary;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -61,24 +66,35 @@ export async function processEntry(entry: DatabaseEntry): Promise<ProcessedEntry
   return baseResult;
 }
 
+export interface ProcessOptions {
+  onProgress?: (current: number, total: number) => void;
+  models?: ModelOptions;
+}
+
 export async function processAllEntries(
   entries: DatabaseEntry[],
-  onProgress?: (current: number, total: number) => void
+  optionsOrProgress?: ProcessOptions | ((current: number, total: number) => void)
 ): Promise<{ processed: ProcessedEntry[]; stats: ProcessingStats }> {
+  // Handle both old and new signatures
+  const options: ProcessOptions = typeof optionsOrProgress === 'function'
+    ? { onProgress: optionsOrProgress }
+    : optionsOrProgress || {};
+
+  const { onProgress, models } = options;
   const processed: ProcessedEntry[] = [];
   const errors: string[] = [];
-  
+
   let xcomCount = 0;
   let otherCount = 0;
-  
+
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i];
-    
+
     if (onProgress) {
       onProgress(i + 1, entries.length);
     }
-    
-    const result = await processEntry(entry);
+
+    const result = await processEntry(entry, models);
     processed.push(result);
     
     if (result.processingMethod === 'grok') {

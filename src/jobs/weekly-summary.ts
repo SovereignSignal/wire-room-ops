@@ -1,6 +1,6 @@
 import { config, validateConfig } from '../config';
 import { getEntriesForDateRange, getDefaultDateRange } from '../db';
-import { processAllEntries } from '../services/processor';
+import { processAllEntries, ModelOptions } from '../services/processor';
 import { generateMarkdown } from '../services/markdown';
 import { storeFile } from '../services/storage';
 import { StoredFile } from '../types';
@@ -18,6 +18,7 @@ export interface JobOptions {
   sendEmail?: boolean;
   dateRange?: { start: Date; end: Date };
   onProgress?: (current: number, total: number, step: string) => void;
+  models?: ModelOptions;
 }
 
 export async function runWeeklySummaryJob(options: JobOptions | boolean = false): Promise<JobResult> {
@@ -26,7 +27,7 @@ export async function runWeeklySummaryJob(options: JobOptions | boolean = false)
     ? { sendEmail: options }
     : options;
 
-  const { sendEmail = false, dateRange: customDateRange, onProgress } = opts;
+  const { sendEmail = false, dateRange: customDateRange, onProgress, models } = opts;
 
   console.log('=== Crypto Grant Wire Weekly Summary Job ===');
   console.log(`Started at: ${new Date().toISOString()}`);
@@ -53,9 +54,15 @@ export async function runWeeklySummaryJob(options: JobOptions | boolean = false)
 
   // Process entries
   console.log('Processing entries...');
-  const { processed, stats } = await processAllEntries(entries, (current, total) => {
-    console.log(`  Processing ${current}/${total}...`);
-    onProgress?.(current, total, `Processing entry ${current} of ${total}...`);
+  if (models?.grokModel) console.log(`  Using Grok model: ${models.grokModel}`);
+  if (models?.anthropicModel) console.log(`  Using Anthropic model: ${models.anthropicModel}`);
+
+  const { processed, stats } = await processAllEntries(entries, {
+    onProgress: (current, total) => {
+      console.log(`  Processing ${current}/${total}...`);
+      onProgress?.(current, total, `Processing entry ${current} of ${total}...`);
+    },
+    models,
   });
   
   console.log(`✓ Processing complete:`);

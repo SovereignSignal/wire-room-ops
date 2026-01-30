@@ -6,6 +6,7 @@ import { sendLoginEmail } from './services/email';
 import { runWeeklySummaryJob } from './jobs/weekly-summary';
 import { StoredFile } from './types';
 import { jobQueue } from './services/job-queue';
+import { getAllModels } from './services/models';
 
 const app = express();
 
@@ -85,6 +86,24 @@ app.get('/dashboard', (req: Request, res: Response) => {
   res.send(renderDashboard(files, session, message));
 });
 
+// API: Get available models
+app.get('/api/models', async (req: Request, res: Response) => {
+  const session = req.query.session as string;
+
+  if (!session || !validateSession(session)) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+
+  try {
+    const models = await getAllModels();
+    res.json(models);
+  } catch (error) {
+    console.error('Failed to fetch models:', error);
+    res.status(500).json({ error: 'Failed to fetch models' });
+  }
+});
+
 // Trigger job manually (async with job queue)
 app.post('/api/run-job', async (req: Request, res: Response) => {
   const session = req.body.session;
@@ -95,7 +114,7 @@ app.post('/api/run-job', async (req: Request, res: Response) => {
   }
 
   // Parse date range from request
-  const { startDate, endDate } = req.body;
+  const { startDate, endDate, grokModel, anthropicModel } = req.body;
   let dateRange: { start: Date; end: Date } | undefined;
 
   if (startDate && endDate) {
@@ -106,6 +125,12 @@ app.post('/api/run-job', async (req: Request, res: Response) => {
     // Set end date to end of day
     dateRange.end.setHours(23, 59, 59, 999);
   }
+
+  // Parse model options
+  const models = (grokModel || anthropicModel) ? {
+    grokModel: grokModel || undefined,
+    anthropicModel: anthropicModel || undefined,
+  } : undefined;
 
   // Create job and return immediately
   const jobId = jobQueue.createJob();
@@ -119,6 +144,7 @@ app.post('/api/run-job', async (req: Request, res: Response) => {
       const result = await runWeeklySummaryJob({
         sendEmail: false,
         dateRange,
+        models,
         onProgress: (current, total, step) => {
           jobQueue.updateProgress(jobId, { current, total, step });
         },
@@ -514,18 +540,26 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
     .form-row { display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap; }
     .form-group { display: flex; flex-direction: column; gap: 6px; }
     .form-group label { font-size: 12px; color: #999999; text-transform: uppercase; font-weight: 600; }
-    .form-group input[type="date"] {
+    .form-group input[type="date"],
+    .form-group select {
       padding: 10px 12px;
       border: 1px solid #2a2a2a;
       border-radius: 6px;
       font-size: 14px;
       background: #0d0d0d;
       color: #ffffff;
+      min-width: 180px;
     }
-    .form-group input[type="date"]:focus {
+    .form-group input[type="date"]:focus,
+    .form-group select:focus {
       outline: none;
       border-color: #f5a623;
     }
+    .form-group select option {
+      background: #1a1a1a;
+      color: #ffffff;
+    }
+    .model-row { margin-top: 8px; }
     .form-description { color: #666666; font-size: 14px; margin: 0; }
     .progress-container { display: none; }
     .progress-container.active { display: block; }
@@ -570,9 +604,23 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
             <label for="endDate">End Date</label>
             <input type="date" id="endDate" name="endDate" value="${formatDate(endDate)}">
           </div>
+        </div>
+        <div class="form-row model-row">
+          <div class="form-group">
+            <label for="grokModel">Grok Model (X.com)</label>
+            <select id="grokModel" name="grokModel">
+              <option value="">Loading models...</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="anthropicModel">Claude Model (Other)</label>
+            <select id="anthropicModel" name="anthropicModel">
+              <option value="">Loading models...</option>
+            </select>
+          </div>
           <button type="submit" id="run-button" class="button">Run Job Now</button>
         </div>
-        <p class="form-description">Fetches entries from the selected date range, processes with Grok/Claude, generates markdown.</p>
+        <p class="form-description">Fetches entries from the selected date range, processes with selected AI models, generates markdown.</p>
       </form>
       <div id="progress-container" class="progress-container">
         <p class="progress-text">Processing...</p>
@@ -608,9 +656,36 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
     const progressBar = document.getElementById('progress-bar');
     const progressStep = document.getElementById('progress-step');
     const elapsedTimeEl = document.getElementById('elapsed-time');
+    const grokModelSelect = document.getElementById('grokModel');
+    const anthropicModelSelect = document.getElementById('anthropicModel');
     const session = '${session}';
     let startTime;
     let elapsedTimer;
+
+    // Fetch and populate models on page load
+    async function loadModels() {
+      try {
+        const response = await fetch('/api/models?session=' + session);
+        if (!response.ok) throw new Error('Failed to fetch models');
+        const models = await response.json();
+
+        // Populate Grok models
+        grokModelSelect.innerHTML = models.grok.map((m, i) =>
+          '<option value="' + m.id + '"' + (i === 0 ? ' selected' : '') + '>' + m.displayName + '</option>'
+        ).join('');
+
+        // Populate Anthropic models
+        anthropicModelSelect.innerHTML = models.anthropic.map((m, i) =>
+          '<option value="' + m.id + '"' + (i === 0 ? ' selected' : '') + '>' + m.displayName + '</option>'
+        ).join('');
+      } catch (error) {
+        console.error('Failed to load models:', error);
+        grokModelSelect.innerHTML = '<option value="grok-4-1-fast-reasoning">Grok 4.1 Fast (Reasoning)</option>';
+        anthropicModelSelect.innerHTML = '<option value="claude-opus-4-5-20251101">Claude Opus 4.5</option>';
+      }
+    }
+
+    loadModels();
 
     function updateElapsedTime() {
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
@@ -624,6 +699,8 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
 
       const startDate = document.getElementById('startDate').value;
       const endDate = document.getElementById('endDate').value;
+      const grokModel = grokModelSelect.value;
+      const anthropicModel = anthropicModelSelect.value;
 
       runButton.disabled = true;
       runButton.textContent = 'Starting...';
@@ -639,7 +716,7 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
         const response = await fetch('/api/run-job', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session, startDate, endDate })
+          body: JSON.stringify({ session, startDate, endDate, grokModel, anthropicModel })
         });
 
         const data = await response.json();

@@ -26,7 +26,10 @@ interface GrokResponse {
   }>;
 }
 
-export async function summarizeWithGrok(entry: DatabaseEntry): Promise<string> {
+// Default model if none specified
+const DEFAULT_GROK_MODEL = 'grok-4-1-fast-reasoning';
+
+export async function summarizeWithGrok(entry: DatabaseEntry, model?: string): Promise<string> {
   const prompt = GROK_PROMPT
     .replace('{existing_summary}', entry.quick_summary)
     .replace('{url}', entry.url);
@@ -38,7 +41,7 @@ export async function summarizeWithGrok(entry: DatabaseEntry): Promise<string> {
       'Authorization': `Bearer ${config.apis.grok.apiKey}`,
     },
     body: JSON.stringify({
-      model: 'grok-3',
+      model: model || DEFAULT_GROK_MODEL,
       messages: [
         {
           role: 'user',

@@ -1,0 +1,170 @@
+import { config } from '../config';
+
+export interface ModelInfo {
+  id: string;
+  displayName: string;
+  created: Date;
+  provider: 'grok' | 'anthropic';
+}
+
+interface GrokModelResponse {
+  data: Array<{
+    id: string;
+    created: number;
+    object: string;
+    owned_by: string;
+  }>;
+}
+
+interface AnthropicModelResponse {
+  data: Array<{
+    type: string;
+    id: string;
+    display_name: string;
+    created_at: string;
+  }>;
+}
+
+// Cache models for 1 hour
+let grokModelsCache: { models: ModelInfo[]; fetchedAt: number } | null = null;
+let anthropicModelsCache: { models: ModelInfo[]; fetchedAt: number } | null = null;
+const CACHE_TTL = 60 * 60 * 1000; // 1 hour
+
+export async function getGrokModels(): Promise<ModelInfo[]> {
+  // Return cached if fresh
+  if (grokModelsCache && Date.now() - grokModelsCache.fetchedAt < CACHE_TTL) {
+    return grokModelsCache.models;
+  }
+
+  try {
+    const response = await fetch('https://api.x.ai/v1/models', {
+      headers: {
+        'Authorization': `Bearer ${config.apis.grok.apiKey}`,
+      },
+    });
+
+    if (!response.ok) {
+      console.error('Failed to fetch Grok models:', response.status);
+      return grokModelsCache?.models || getDefaultGrokModels();
+    }
+
+    const data = await response.json() as GrokModelResponse;
+
+    // Filter to text models only (exclude image/video generation models)
+    const textModels = data.data
+      .filter(m => !m.id.includes('image') && !m.id.includes('video') && !m.id.includes('vision'))
+      .map(m => ({
+        id: m.id,
+        displayName: formatGrokModelName(m.id),
+        created: new Date(m.created * 1000),
+        provider: 'grok' as const,
+      }))
+      .sort((a, b) => b.created.getTime() - a.created.getTime());
+
+    // Return top 5 most recent
+    const topModels = textModels.slice(0, 5);
+
+    grokModelsCache = { models: topModels, fetchedAt: Date.now() };
+    return topModels;
+  } catch (error) {
+    console.error('Error fetching Grok models:', error);
+    return grokModelsCache?.models || getDefaultGrokModels();
+  }
+}
+
+export async function getAnthropicModels(): Promise<ModelInfo[]> {
+  // Return cached if fresh
+  if (anthropicModelsCache && Date.now() - anthropicModelsCache.fetchedAt < CACHE_TTL) {
+    return anthropicModelsCache.models;
+  }
+
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/models', {
+      headers: {
+        'x-api-key': config.apis.anthropic.apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+    });
+
+    if (!response.ok) {
+      console.error('Failed to fetch Anthropic models:', response.status);
+      return anthropicModelsCache?.models || getDefaultAnthropicModels();
+    }
+
+    const data = await response.json() as AnthropicModelResponse;
+
+    const models = data.data
+      .map(m => ({
+        id: m.id,
+        displayName: m.display_name,
+        created: new Date(m.created_at),
+        provider: 'anthropic' as const,
+      }))
+      .sort((a, b) => b.created.getTime() - a.created.getTime());
+
+    // Return top 5 most recent
+    const topModels = models.slice(0, 5);
+
+    anthropicModelsCache = { models: topModels, fetchedAt: Date.now() };
+    return topModels;
+  } catch (error) {
+    console.error('Error fetching Anthropic models:', error);
+    return anthropicModelsCache?.models || getDefaultAnthropicModels();
+  }
+}
+
+function formatGrokModelName(id: string): string {
+  // Convert model ID to display name
+  // e.g., "grok-4-1-fast-reasoning" -> "Grok 4.1 Fast (Reasoning)"
+  const parts = id.replace('grok-', '').split('-');
+
+  let version = '';
+  let suffix = '';
+
+  for (const part of parts) {
+    if (/^\d+$/.test(part)) {
+      version += (version ? '.' : '') + part;
+    } else if (part === 'fast') {
+      suffix += ' Fast';
+    } else if (part === 'mini') {
+      suffix += ' Mini';
+    } else if (part === 'reasoning') {
+      suffix += ' (Reasoning)';
+    } else if (part === 'non') {
+      // Skip, handled with next part
+    } else if (part === 'code') {
+      suffix += ' Code';
+    }
+  }
+
+  if (id.includes('non-reasoning')) {
+    suffix = suffix.replace(' (Reasoning)', '') + ' (Non-Reasoning)';
+  }
+
+  return `Grok ${version}${suffix}`.trim();
+}
+
+function getDefaultGrokModels(): ModelInfo[] {
+  return [
+    { id: 'grok-4-1-fast-reasoning', displayName: 'Grok 4.1 Fast (Reasoning)', created: new Date(), provider: 'grok' },
+    { id: 'grok-4-1-fast-non-reasoning', displayName: 'Grok 4.1 Fast (Non-Reasoning)', created: new Date(), provider: 'grok' },
+    { id: 'grok-3', displayName: 'Grok 3', created: new Date(), provider: 'grok' },
+  ];
+}
+
+function getDefaultAnthropicModels(): ModelInfo[] {
+  return [
+    { id: 'claude-opus-4-5-20251101', displayName: 'Claude Opus 4.5', created: new Date(), provider: 'anthropic' },
+    { id: 'claude-sonnet-4-5-20250929', displayName: 'Claude Sonnet 4.5', created: new Date(), provider: 'anthropic' },
+    { id: 'claude-haiku-4-5-20251001', displayName: 'Claude Haiku 4.5', created: new Date(), provider: 'anthropic' },
+  ];
+}
+
+export async function getAllModels(): Promise<{ grok: ModelInfo[]; anthropic: ModelInfo[] }> {
+  const [grok, anthropic] = await Promise.all([
+    getGrokModels(),
+    getAnthropicModels(),
+  ]);
+
+  return { grok, anthropic };
+}
