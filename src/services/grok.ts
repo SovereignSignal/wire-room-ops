@@ -1,22 +1,27 @@
 import { config } from '../config';
 import { DatabaseEntry } from '../types';
 
-const GROK_PROMPT = `You have access to X.com posts. Please access and summarize the following X.com/Twitter post for a crypto grants newsletter.
+const GROK_PROMPT = `You have access to X.com posts. Access and summarize this X.com/Twitter post for the Crypto Grant Wire newsletter.
 
-URL to access: {url}
+URL: {url}
 
-For reference, here is a preliminary summary that may be incomplete or outdated:
-{existing_summary}
+Reference summary (may be outdated): {existing_summary}
 
-Please access the actual post and provide:
-- The organization or project name as a clear title
-- 2-3 sentence factual summary of the actual post content (no flowery language)
-- Key numbers (funding amounts, dates, deadlines)
-- Any actionable details (how to apply, eligibility, timeline)
+Write a CONCISE newsletter entry following this exact format:
 
-Keep tone neutral and factual.
-Do not use: crucial, significantly, innovative, exciting, revolutionary, game-changing, foster, comprehensive.
-Do not start with "Unable" or "I cannot" - always provide the organization name first.`;
+**[Organization/Project Name]** announced/launched/opened [what happened], [key details with numbers]. [One more sentence with timeline, eligibility, or how to apply if relevant].
+
+RULES:
+- Keep it to 2-3 sentences MAX, around 50-75 words total
+- Lead with an action verb (announced, launched, opened, unveiled, allocated, distributed)
+- Include specific numbers inline (funding amounts, token quantities, deadlines)
+- No bullet points, no separate sections
+- No flowery language or filler words
+- If there's a deadline or application link, include it naturally in the text
+- Do not use: crucial, significantly, innovative, exciting, revolutionary, game-changing, foster, comprehensive
+
+EXAMPLE OUTPUT:
+**Stellar Community Fund** opened Round 20 applications, offering up to $100K per project for ecosystem development. Applications close February 5, 2026, with results announced in March.`;
 
 interface GrokResponse {
   choices: Array<{

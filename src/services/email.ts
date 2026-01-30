@@ -24,40 +24,77 @@ export async function sendLoginEmail(email: string, magicLink: string): Promise<
   console.log(`[Email] Attempting to send login email to: ${email}`);
   console.log(`[Email] From: ${config.email.fromEmail}`);
   console.log(`[Email] API Key prefix: ${config.email.resendApiKey?.substring(0, 10)}...`);
-  
+
   const client = getResend();
 
   const htmlContent = `
 <!DOCTYPE html>
 <html>
 <head>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; }
-    .container { max-width: 600px; margin: 0 auto; padding: 40px 20px; }
-    .button { display: inline-block; background: #0066cc; color: white; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-weight: 500; }
-    .footer { margin-top: 32px; font-size: 14px; color: #666; }
-  </style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign in to CryptoGrantWire</title>
 </head>
-<body>
-  <div class="container">
-    <h2>Sign in to Crypto Grant Wire</h2>
-    <p>Click the button below to sign in to your dashboard:</p>
-    <p style="margin: 32px 0;">
-      <a href="${magicLink}" class="button">Sign In</a>
-    </p>
-    <p class="footer">This link expires in 15 minutes.<br>If you didn't request this, you can ignore this email.</p>
-  </div>
+<body style="margin: 0; padding: 0; background-color: #0d0d0d; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #0d0d0d;">
+    <tr>
+      <td align="center" style="padding: 40px 20px;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 480px; background-color: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 16px;">
+          <tr>
+            <td style="padding: 48px 40px; text-align: center;">
+              <!-- Logo -->
+              <h1 style="margin: 0 0 8px; font-size: 28px; font-weight: 700;">
+                <span style="color: #ffffff;">Crypto</span><span style="color: #f5a623;">Grant</span><span style="color: #ffffff;">Wire</span>
+              </h1>
+              <p style="margin: 0 0 32px; color: #999999; font-size: 16px;">Sign in to your dashboard</p>
+
+              <!-- Message -->
+              <p style="margin: 0 0 32px; color: #ffffff; font-size: 16px; line-height: 1.6;">
+                Click the button below to securely sign in to your account.
+              </p>
+
+              <!-- Button -->
+              <table role="presentation" cellspacing="0" cellpadding="0" style="margin: 0 auto;">
+                <tr>
+                  <td style="background-color: #f5a623; border-radius: 8px;">
+                    <a href="${magicLink}" target="_blank" style="display: inline-block; padding: 16px 32px; color: #0d0d0d; font-size: 16px; font-weight: 600; text-decoration: none;">
+                      Sign In
+                    </a>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Footer -->
+              <p style="margin: 32px 0 0; color: #666666; font-size: 14px; line-height: 1.5;">
+                This link expires in 15 minutes.<br>
+                If you didn't request this, you can safely ignore this email.
+              </p>
+            </td>
+          </tr>
+        </table>
+
+        <!-- Bottom text -->
+        <p style="margin: 24px 0 0; color: #666666; font-size: 12px;">
+          CryptoGrantWire Newsletter Automation
+        </p>
+      </td>
+    </tr>
+  </table>
 </body>
 </html>
   `.trim();
 
   const textContent = `
-Sign in to Crypto Grant Wire
+CryptoGrantWire - Sign In
 
-Click here to sign in: ${magicLink}
+Click here to sign in to your dashboard:
+${magicLink}
 
 This link expires in 15 minutes.
-If you didn't request this, you can ignore this email.
+If you didn't request this, you can safely ignore this email.
+
+---
+CryptoGrantWire Newsletter Automation
   `.trim();
 
   try {
@@ -88,62 +125,122 @@ export async function sendNotificationEmail(
 <!DOCTYPE html>
 <html>
 <head>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; }
-    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-    .header { margin-bottom: 24px; }
-    .stats { background: #f5f5f5; padding: 16px; border-radius: 8px; margin: 20px 0; }
-    .stats-item { margin: 8px 0; }
-    .button { display: inline-block; background: #0066cc; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; margin: 20px 0; }
-    .button:hover { background: #0052a3; }
-    .footer { margin-top: 32px; padding-top: 16px; border-top: 1px solid #eee; font-size: 14px; color: #666; }
-  </style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Weekly Summaries Ready - CryptoGrantWire</title>
 </head>
-<body>
-  <div class="container">
-    <div class="header">
-      <h2>Crypto Grant Wire Weekly Summaries Ready</h2>
-      <p>Hey Sov,</p>
-      <p>Your weekly Grant Wire summaries are ready for review.</p>
-    </div>
+<body style="margin: 0; padding: 0; background-color: #0d0d0d; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #0d0d0d;">
+    <tr>
+      <td align="center" style="padding: 40px 20px;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 520px; background-color: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 16px;">
+          <tr>
+            <td style="padding: 40px;">
+              <!-- Logo -->
+              <h1 style="margin: 0 0 8px; font-size: 24px; font-weight: 700; text-align: center;">
+                <span style="color: #ffffff;">Crypto</span><span style="color: #f5a623;">Grant</span><span style="color: #ffffff;">Wire</span>
+              </h1>
+              <p style="margin: 0 0 24px; color: #999999; font-size: 14px; text-align: center;">Newsletter Automation</p>
 
-    <div class="stats">
-      <div class="stats-item"><strong>This week:</strong> ${stats.totalEntries} entries processed</div>
-      <div class="stats-item">• ${stats.xcomEntries} from X.com (via Grok)</div>
-      <div class="stats-item">• ${stats.otherEntries} from other sources (via Opus)</div>
-      ${stats.failedProcessing > 0 ? `<div class="stats-item">• ${stats.failedProcessing} entries need manual review</div>` : ''}
-    </div>
+              <!-- Header -->
+              <h2 style="margin: 0 0 16px; color: #ffffff; font-size: 20px; font-weight: 600;">
+                Weekly Summaries Ready
+              </h2>
+              <p style="margin: 0 0 24px; color: #cccccc; font-size: 15px; line-height: 1.5;">
+                Hey Sov, your Grant Wire summaries for this week are ready for review.
+              </p>
 
-    <a href="${downloadUrl}" class="button">Download Markdown File</a>
+              <!-- Stats Box -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #0d0d0d; border: 1px solid #2a2a2a; border-radius: 12px; margin-bottom: 24px;">
+                <tr>
+                  <td style="padding: 20px;">
+                    <p style="margin: 0 0 12px; color: #f5a623; font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">
+                      This Week's Stats
+                    </p>
+                    <p style="margin: 0 0 8px; color: #ffffff; font-size: 15px;">
+                      <strong style="color: #f5a623;">${stats.totalEntries}</strong> entries processed
+                    </p>
+                    <p style="margin: 0 0 8px; color: #999999; font-size: 14px;">
+                      ${stats.xcomEntries} from X.com (via Grok)
+                    </p>
+                    <p style="margin: 0; color: #999999; font-size: 14px;">
+                      ${stats.otherEntries} from other sources (via Claude)
+                    </p>
+                    ${stats.failedProcessing > 0 ? `
+                    <p style="margin: 8px 0 0; color: #ef5350; font-size: 14px;">
+                      ${stats.failedProcessing} entries need manual review
+                    </p>
+                    ` : ''}
+                  </td>
+                </tr>
+              </table>
 
-    <p style="font-size: 14px; color: #666;">The link above requires Magic Link authentication.</p>
+              <!-- Button -->
+              <table role="presentation" cellspacing="0" cellpadding="0" width="100%">
+                <tr>
+                  <td align="center">
+                    <table role="presentation" cellspacing="0" cellpadding="0">
+                      <tr>
+                        <td style="background-color: #f5a623; border-radius: 8px;">
+                          <a href="${downloadUrl}" target="_blank" style="display: inline-block; padding: 14px 28px; color: #0d0d0d; font-size: 15px; font-weight: 600; text-decoration: none;">
+                            Download Markdown File
+                          </a>
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
 
-    <div class="footer">
-      <p>Crypto Grant Wire Automation</p>
-      <p style="font-size: 12px;">Week of ${dateRangeStr}</p>
-    </div>
-  </div>
+              <p style="margin: 16px 0 0; color: #666666; font-size: 13px; text-align: center;">
+                This link requires Magic Link authentication.
+              </p>
+
+              <!-- Footer -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top: 32px; border-top: 1px solid #2a2a2a;">
+                <tr>
+                  <td style="padding-top: 24px; text-align: center;">
+                    <p style="margin: 0; color: #666666; font-size: 13px;">
+                      Week of ${dateRangeStr}
+                    </p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+
+        <!-- Bottom text -->
+        <p style="margin: 24px 0 0; color: #666666; font-size: 12px;">
+          CryptoGrantWire Newsletter Automation
+        </p>
+      </td>
+    </tr>
+  </table>
 </body>
 </html>
   `.trim();
 
   const textContent = `
-Hey Sov,
+CryptoGrantWire - Weekly Summaries Ready
 
-Your weekly Grant Wire summaries are ready for review.
+Hey Sov, your Grant Wire summaries for this week are ready for review.
 
-This week: ${stats.totalEntries} entries processed
+THIS WEEK'S STATS
+-----------------
+${stats.totalEntries} entries processed
 - ${stats.xcomEntries} from X.com (via Grok)
-- ${stats.otherEntries} from other sources (via Opus)
+- ${stats.otherEntries} from other sources (via Claude)
 ${stats.failedProcessing > 0 ? `- ${stats.failedProcessing} entries need manual review` : ''}
 
-Download: ${downloadUrl}
+Download your file:
+${downloadUrl}
 
-The link above requires Magic Link authentication.
+(This link requires Magic Link authentication)
 
 ---
-Crypto Grant Wire Automation
 Week of ${dateRangeStr}
+CryptoGrantWire Newsletter Automation
   `.trim();
 
   await client.emails.send({

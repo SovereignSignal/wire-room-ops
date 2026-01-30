@@ -4,49 +4,52 @@ import { DatabaseEntry } from '../types';
 import { scrapeUrl, isScrapableUrl, truncateContent } from './scraper';
 
 // Prompt when we have scraped content
-const SCRAPED_CONTENT_PROMPT = `Summarize the following web page content for a crypto grants newsletter.
+const SCRAPED_CONTENT_PROMPT = `Summarize this web page for the Crypto Grant Wire newsletter.
 
 URL: {url}
 
 Page Content:
 {scraped_content}
 
-For additional context, here is a preliminary summary (may be outdated):
-{existing_summary}
+Reference summary (may be outdated): {existing_summary}
 
-Provide:
-- Start with the organization or project name as a clear identifier
-- 2-3 sentence factual summary (no flowery language)
-- Key numbers (funding amounts, allocations, deadlines)
-- Actionable details (how to apply, eligibility, timeline)
+Write a CONCISE newsletter entry following this exact format:
 
-Keep tone neutral and factual.
+**[Organization/Project Name]** announced/launched/opened [what happened], [key details with numbers]. [One more sentence with timeline, eligibility, or how to apply if relevant].
 
-Exclude: committee member names, historical background, process descriptions, mechanism explanations.
+RULES:
+- Keep it to 2-3 sentences MAX, around 50-75 words total
+- Lead with an action verb (announced, launched, opened, unveiled, allocated, distributed, published, released)
+- Include specific numbers inline (funding amounts, token quantities, deadlines, dates)
+- No bullet points, no separate sections for "Key numbers" or "Actionable details"
+- No flowery language or filler words
+- Exclude: committee member names, historical background, mechanism explanations
+- Do not use: crucial, significantly, innovative, exciting, revolutionary, game-changing, foster, comprehensive
 
-Do not use: crucial, significantly, innovative, exciting, revolutionary, game-changing, foster, comprehensive.
-Always lead with the organization name, not a disclaimer.`;
+EXAMPLE OUTPUT:
+**Optimism Grants Council** published its Season 8 impact analysis, showing 1.8M OP distributed to 12 projects generated $3.0M in TVL uplift with $1.7 ROI per OP token. Top performers include Truemarkets ($4.8/OP ROI) and Morpho (+$11.5M TVL).`;
 
 // Fallback prompt when scraping fails
-const FALLBACK_PROMPT = `Refine the following summary for a crypto grants newsletter. The content is from: {url}
+const FALLBACK_PROMPT = `Refine this summary for the Crypto Grant Wire newsletter.
 
-Note: Unable to access the original URL content directly. Working from existing summary only.
+URL: {url}
+Existing summary: {existing_summary}
 
-Existing summary to improve:
-{existing_summary}
+Write a CONCISE newsletter entry following this exact format:
 
-Based on this information, provide:
-- Start with the organization or project name as a clear identifier
-- 2-3 sentence factual summary (no flowery language)
-- Key numbers (funding amounts, allocations, deadlines)
-- Actionable details (how to apply, eligibility, timeline)
+**[Organization/Project Name]** announced/launched/opened [what happened], [key details with numbers]. [One more sentence with timeline, eligibility, or how to apply if relevant].
 
-Keep tone neutral and factual.
+RULES:
+- Keep it to 2-3 sentences MAX, around 50-75 words total
+- Lead with an action verb (announced, launched, opened, unveiled, allocated, distributed, published, released)
+- Include specific numbers inline (funding amounts, token quantities, deadlines, dates)
+- No bullet points, no separate sections
+- No flowery language or filler words
+- Work with the information provided - do not say "unable to access"
+- Do not use: crucial, significantly, innovative, exciting, revolutionary, game-changing, foster, comprehensive
 
-Exclude: committee member names, historical background, process descriptions, mechanism explanations.
-
-Do not use: crucial, significantly, innovative, exciting, revolutionary, game-changing, foster, comprehensive.
-Always lead with the organization name, not a disclaimer.`;
+EXAMPLE OUTPUT:
+**Stellar Community Fund** opened Round 20 applications, offering up to $100K per project for ecosystem development. Applications close February 5, 2026, with results announced in March.`;
 
 let client: Anthropic | null = null;
 

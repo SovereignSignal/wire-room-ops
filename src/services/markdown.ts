@@ -1,77 +1,41 @@
 import { ProcessedEntry, ProcessingStats, WeeklySummaryResult } from '../types';
 
-function formatDate(date: Date): string {
-  return date.toLocaleDateString('en-US', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-  });
-}
+function formatDateRange(start: Date, end: Date): string {
+  const startMonth = start.toLocaleDateString('en-US', { month: 'long' });
+  const endMonth = end.toLocaleDateString('en-US', { month: 'long' });
+  const startDay = start.getDate();
+  const endDay = end.getDate();
+  const year = end.getFullYear();
 
-function formatTimestamp(date: Date): string {
-  return date.toISOString();
+  if (startMonth === endMonth) {
+    return `${startMonth} ${startDay}-${endDay}, ${year}`;
+  }
+  return `${startMonth} ${startDay} - ${endMonth} ${endDay}, ${year}`;
 }
 
 function groupByCategory(entries: ProcessedEntry[]): Map<string, ProcessedEntry[]> {
   const groups = new Map<string, ProcessedEntry[]>();
-  
+
   for (const entry of entries) {
     const category = entry.category || 'Uncategorized';
     const existing = groups.get(category) || [];
     existing.push(entry);
     groups.set(category, existing);
   }
-  
+
   return groups;
 }
 
-function extractTitle(entry: ProcessedEntry): string {
-  const summary = entry.enrichedSummary;
-
-  // Skip error indicators - go straight to fallback
-  const errorIndicators = [
-    'unable', 'i cannot', 'i can\'t', 'error', 'failed', 'cannot access',
-    'not able', 'i\'m unable', 'i am unable', 'manual review'
-  ];
-  const lowerSummary = summary.toLowerCase();
-  const startsWithError = errorIndicators.some(indicator => lowerSummary.startsWith(indicator));
-
-  if (!startsWithError) {
-    // Look for patterns like "Organization announced..." or "The Project..."
-    const patterns = [
-      /^\*\*([A-Z][A-Za-z0-9\s\-\.]+?)\*\*/,  // **Organization Name**
-      /^([A-Z][A-Za-z0-9\s\-\.]+?)(?:\s+(?:announced|launched|released|introduced|opened|is|has|will|offers|provides|partnered))/i,
-      /^(?:The\s+)?([A-Z][A-Za-z0-9\s\-\.]+?)\s+(?:has|is|announced|launched)/i,
-    ];
-
-    for (const pattern of patterns) {
-      const match = summary.match(pattern);
-      if (match && match[1] && match[1].length < 60 && match[1].length > 2) {
-        const title = match[1].trim();
-        // Skip if it looks like an error phrase
-        if (!errorIndicators.some(e => title.toLowerCase().includes(e))) {
-          return title;
-        }
-      }
-    }
+// Convert **OrgName** to [**OrgName**](url) - make the bolded org name a hyperlink
+function linkifyOrgName(summary: string, url: string): string {
+  // Match **OrgName** at the start of the summary
+  const match = summary.match(/^\*\*([^*]+)\*\*/);
+  if (match) {
+    const orgName = match[1];
+    return summary.replace(/^\*\*([^*]+)\*\*/, `[**${orgName}**](${url})`);
   }
-
-  // Fallback: use domain from URL, or extract from X.com username
-  try {
-    const url = new URL(entry.url);
-
-    // For X.com URLs, try to extract the username as a better title
-    if (url.hostname.includes('x.com') || url.hostname.includes('twitter.com')) {
-      const pathMatch = entry.url.match(/(?:x\.com|twitter\.com)\/([^\/]+)/i);
-      if (pathMatch && pathMatch[1] && !pathMatch[1].includes('status')) {
-        return `@${pathMatch[1]}`;
-      }
-    }
-
-    return url.hostname.replace('www.', '');
-  } catch {
-    return 'Entry';
-  }
+  // If no match, prepend with a linked source
+  return `[Source](${url}): ${summary}`;
 }
 
 export function generateMarkdown(
@@ -81,19 +45,12 @@ export function generateMarkdown(
 ): WeeklySummaryResult {
   const generatedAt = new Date();
   const grouped = groupByCategory(entries);
-  
+
   const lines: string[] = [];
-  
-  // Header
-  lines.push('# Crypto Grant Wire Weekly Summaries');
-  lines.push(`## Week of ${formatDate(dateRange.start)} - ${formatDate(dateRange.end)}`);
-  lines.push('');
-  lines.push(`Generated: ${formatTimestamp(generatedAt)}`);
-  lines.push(`Total entries: ${stats.totalEntries}`);
-  lines.push(`X.com entries (via Grok): ${stats.xcomEntries}`);
-  lines.push(`Other entries (via Opus): ${stats.otherEntries}`);
-  lines.push('');
-  lines.push('---');
+
+  // Header - cleaner format matching newsletter style
+  lines.push("# Sov's Crypto Grant Wire Weekly Update");
+  lines.push(`### ${formatDateRange(dateRange.start, dateRange.end)}`);
   lines.push('');
 
   // Entries by category
@@ -106,47 +63,29 @@ export function generateMarkdown(
 
   for (const category of sortedCategories) {
     const categoryEntries = grouped.get(category) || [];
-    
+
+    lines.push('---');
+    lines.push('');
     lines.push(`## ${category}`);
     lines.push('');
-    
+
     for (const entry of categoryEntries) {
-      const title = extractTitle(entry);
-      
-      lines.push(`### ${title}`);
-      lines.push(`**Source:** ${entry.url}`);
-      lines.push(`**Category:** ${entry.category}`);
-      lines.push(`**Summary:** ${entry.enrichedSummary}`);
-      
+      // Output the summary with the org name as a hyperlink
+      const linkedSummary = linkifyOrgName(entry.enrichedSummary, entry.url);
+      lines.push(linkedSummary);
+
       if (entry.processingError) {
-        lines.push(`**⚠️ Processing Note:** ${entry.processingError}`);
+        lines.push(`*⚠️ ${entry.processingError}*`);
       }
-      
-      lines.push('');
-      lines.push('---');
+
       lines.push('');
     }
   }
 
-  // Processing notes
-  lines.push('## Processing Notes');
+  // Footer with stats (minimal)
+  lines.push('---');
   lines.push('');
-  lines.push(`- Entries processed: ${stats.totalEntries}`);
-  lines.push(`- X.com entries (Grok): ${stats.xcomEntries}`);
-  lines.push(`- Other entries (Opus): ${stats.otherEntries}`);
-  lines.push(`- Successfully processed: ${stats.successfulProcessing}`);
-  lines.push(`- Failed/manual review needed: ${stats.failedProcessing}`);
-  lines.push(`- Categories found: ${stats.categories.join(', ')}`);
-  
-  // List any errors
-  const errors = entries.filter(e => e.processingError);
-  if (errors.length > 0) {
-    lines.push('');
-    lines.push('### Entries requiring manual review:');
-    for (const entry of errors) {
-      lines.push(`- ${entry.url}: ${entry.processingError}`);
-    }
-  }
+  lines.push(`*Generated from ${stats.totalEntries} entries (${stats.xcomEntries} from X.com, ${stats.otherEntries} from other sources). ${stats.failedProcessing > 0 ? `${stats.failedProcessing} entries may need manual review.` : ''}*`);
 
   return {
     markdown: lines.join('\n'),

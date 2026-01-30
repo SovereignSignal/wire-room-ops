@@ -5,6 +5,7 @@ export interface ScrapeResult {
   content: string;
   title?: string;
   url: string;
+  resolvedUrl?: string;
   error?: string;
 }
 
@@ -24,8 +25,101 @@ interface FirecrawlResponse {
 
 const RETRY_DELAYS = [1000, 2000, 4000];
 
+// Common URL shorteners that need resolution
+const URL_SHORTENERS = [
+  't.co',
+  'bit.ly',
+  'tinyurl.com',
+  'goo.gl',
+  'ow.ly',
+  'is.gd',
+  'buff.ly',
+  'short.link',
+  'rb.gy',
+];
+
 async function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Check if URL is a shortened URL that needs resolution
+export function isShortUrl(url: string): boolean {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    return URL_SHORTENERS.some(shortener => hostname === shortener || hostname.endsWith('.' + shortener));
+  } catch {
+    return false;
+  }
+}
+
+// Resolve shortened URL to final destination
+export async function resolveUrl(url: string): Promise<string> {
+  if (!isShortUrl(url)) {
+    return url;
+  }
+
+  try {
+    console.log(`    Resolving shortened URL: ${url}`);
+    const response = await fetch(url, {
+      method: 'HEAD',
+      redirect: 'follow',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; CryptoGrantWire/1.0)',
+      },
+    });
+
+    const resolvedUrl = response.url;
+    if (resolvedUrl && resolvedUrl !== url) {
+      console.log(`    Resolved to: ${resolvedUrl}`);
+      return resolvedUrl;
+    }
+    return url;
+  } catch (error) {
+    // If HEAD fails, try GET with manual redirect following
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        redirect: 'manual',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; CryptoGrantWire/1.0)',
+        },
+      });
+
+      const location = response.headers.get('location');
+      if (location) {
+        // Handle relative redirects
+        if (location.startsWith('/')) {
+          const parsed = new URL(url);
+          return `${parsed.protocol}//${parsed.host}${location}`;
+        }
+        console.log(`    Resolved to: ${location}`);
+        return location;
+      }
+    } catch {
+      // Ignore secondary error
+    }
+
+    console.log(`    Could not resolve URL, using original: ${url}`);
+    return url;
+  }
+}
+
+// Extract and resolve all URLs from text content
+export async function extractAndResolveUrls(text: string): Promise<Map<string, string>> {
+  const urlRegex = /https?:\/\/[^\s<>"{}|\\^`\[\]]+/gi;
+  const matches = text.match(urlRegex) || [];
+  const urlMap = new Map<string, string>();
+
+  for (const url of matches) {
+    // Clean URL (remove trailing punctuation)
+    const cleanUrl = url.replace(/[.,;:!?)]+$/, '');
+    if (!urlMap.has(cleanUrl)) {
+      const resolved = await resolveUrl(cleanUrl);
+      urlMap.set(cleanUrl, resolved);
+    }
+  }
+
+  return urlMap;
 }
 
 export async function scrapeUrl(url: string): Promise<ScrapeResult> {
