@@ -100,21 +100,104 @@ function normalizeUrl(url: string): string {
 
 export function getDefaultDateRange(): { start: Date; end: Date } {
   const now = new Date();
-  
+
   if (config.dateRange.startDate && config.dateRange.endDate) {
     return {
       start: new Date(config.dateRange.startDate),
       end: new Date(config.dateRange.endDate),
     };
   }
-  
+
   // Default: Last 7 days ending today
   const end = new Date(now);
   end.setHours(23, 59, 59, 999);
-  
+
   const start = new Date(end);
   start.setDate(start.getDate() - 7);
   start.setHours(0, 0, 0, 0);
-  
+
   return { start, end };
+}
+
+// Schedule configuration persistence
+export interface StoredScheduleConfig {
+  enabled: boolean;
+  dayOfWeek: number;
+  hour: number;
+  minute: number;
+  lookbackDays: number;
+  grokModel?: string;
+  anthropicModel?: string;
+  timezone: string;
+}
+
+export async function ensureScheduleTable(): Promise<void> {
+  const pool = getPool();
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS schedule_config (
+      id INTEGER PRIMARY KEY DEFAULT 1,
+      enabled BOOLEAN NOT NULL DEFAULT false,
+      day_of_week INTEGER NOT NULL DEFAULT 3,
+      hour INTEGER NOT NULL DEFAULT 9,
+      minute INTEGER NOT NULL DEFAULT 0,
+      lookback_days INTEGER NOT NULL DEFAULT 7,
+      grok_model TEXT,
+      anthropic_model TEXT,
+      timezone TEXT NOT NULL DEFAULT 'America/Los_Angeles',
+      updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT single_row CHECK (id = 1)
+    )
+  `);
+}
+
+export async function getScheduleConfig(): Promise<StoredScheduleConfig | null> {
+  const pool = getPool();
+  const result = await pool.query(`
+    SELECT enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone
+    FROM schedule_config
+    WHERE id = 1
+  `);
+
+  if (result.rows.length === 0) {
+    return null;
+  }
+
+  const row = result.rows[0];
+  return {
+    enabled: row.enabled,
+    dayOfWeek: row.day_of_week,
+    hour: row.hour,
+    minute: row.minute,
+    lookbackDays: row.lookback_days,
+    grokModel: row.grok_model || undefined,
+    anthropicModel: row.anthropic_model || undefined,
+    timezone: row.timezone,
+  };
+}
+
+export async function saveScheduleConfig(config: StoredScheduleConfig): Promise<void> {
+  const pool = getPool();
+  await pool.query(`
+    INSERT INTO schedule_config (id, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, updated_at)
+    VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP)
+    ON CONFLICT (id) DO UPDATE SET
+      enabled = $1,
+      day_of_week = $2,
+      hour = $3,
+      minute = $4,
+      lookback_days = $5,
+      grok_model = $6,
+      anthropic_model = $7,
+      timezone = $8,
+      updated_at = CURRENT_TIMESTAMP
+  `, [
+    config.enabled,
+    config.dayOfWeek,
+    config.hour,
+    config.minute,
+    config.lookbackDays,
+    config.grokModel || null,
+    config.anthropicModel || null,
+    config.timezone,
+  ]);
 }

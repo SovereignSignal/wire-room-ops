@@ -71,7 +71,7 @@ function getClient(): Anthropic {
 }
 
 // Default model if none specified
-const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-20250514';
+const DEFAULT_ANTHROPIC_MODEL = 'claude-opus-4-5-20251101';
 
 export async function summarizeWithOpus(entry: DatabaseEntry, model?: string): Promise<string> {
   let prompt: string;
