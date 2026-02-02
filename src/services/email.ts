@@ -251,3 +251,202 @@ CryptoGrantWire Newsletter Automation
     text: textContent,
   });
 }
+
+export async function sendTestAlertEmail(): Promise<void> {
+  const client = getResend();
+  const now = new Date();
+  const timestamp = now.toLocaleString('en-US', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  });
+
+  const htmlContent = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Test Alert - CryptoGrantWire</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #0d0d0d; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #0d0d0d;">
+    <tr>
+      <td align="center" style="padding: 40px 20px;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 480px; background-color: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 16px;">
+          <tr>
+            <td style="padding: 48px 40px; text-align: center;">
+              <!-- Logo -->
+              <h1 style="margin: 0 0 8px; font-size: 28px; font-weight: 700;">
+                <span style="color: #ffffff;">Crypto</span><span style="color: #f5a623;">Grant</span><span style="color: #ffffff;">Wire</span>
+              </h1>
+              <p style="margin: 0 0 32px; color: #999999; font-size: 16px;">Test Alert</p>
+
+              <!-- Success Icon -->
+              <div style="margin-bottom: 24px; font-size: 48px;">✅</div>
+
+              <!-- Message -->
+              <h2 style="margin: 0 0 16px; color: #4caf50; font-size: 20px; font-weight: 600;">
+                Email Alerts Are Working!
+              </h2>
+              <p style="margin: 0 0 24px; color: #cccccc; font-size: 15px; line-height: 1.6;">
+                This is a test alert to verify that your email notifications are configured correctly.
+                If you received this email, your scheduled alerts will work properly.
+              </p>
+
+              <!-- Timestamp -->
+              <p style="margin: 0; color: #666666; font-size: 13px;">
+                Sent at: ${timestamp}
+              </p>
+            </td>
+          </tr>
+        </table>
+
+        <!-- Bottom text -->
+        <p style="margin: 24px 0 0; color: #666666; font-size: 12px;">
+          CryptoGrantWire Newsletter Automation
+        </p>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+  `.trim();
+
+  const textContent = `
+CryptoGrantWire - Test Alert
+
+Email Alerts Are Working!
+
+This is a test alert to verify that your email notifications are configured correctly.
+If you received this email, your scheduled alerts will work properly.
+
+Sent at: ${timestamp}
+
+---
+CryptoGrantWire Newsletter Automation
+  `.trim();
+
+  console.log(`[Email] Sending test alert to: ${config.email.notificationEmail}`);
+
+  await client.emails.send({
+    from: config.email.fromEmail,
+    to: config.email.notificationEmail,
+    subject: 'Test Alert - CryptoGrantWire',
+    html: htmlContent,
+    text: textContent,
+  });
+
+  console.log(`[Email] Test alert sent successfully`);
+}
+
+export async function sendScheduledJobFailureEmail(errorMessage: string, jobStartTime: Date): Promise<void> {
+  const client = getResend();
+  const timestamp = jobStartTime.toLocaleString('en-US', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  });
+
+  const htmlContent = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Scheduled Job Failed - CryptoGrantWire</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #0d0d0d; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #0d0d0d;">
+    <tr>
+      <td align="center" style="padding: 40px 20px;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 520px; background-color: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 16px;">
+          <tr>
+            <td style="padding: 48px 40px; text-align: center;">
+              <!-- Logo -->
+              <h1 style="margin: 0 0 8px; font-size: 28px; font-weight: 700;">
+                <span style="color: #ffffff;">Crypto</span><span style="color: #f5a623;">Grant</span><span style="color: #ffffff;">Wire</span>
+              </h1>
+              <p style="margin: 0 0 32px; color: #999999; font-size: 16px;">Scheduled Job Alert</p>
+
+              <!-- Error Icon -->
+              <div style="margin-bottom: 24px; font-size: 48px;">⚠️</div>
+
+              <!-- Message -->
+              <h2 style="margin: 0 0 16px; color: #ef5350; font-size: 20px; font-weight: 600;">
+                Scheduled Job Failed
+              </h2>
+              <p style="margin: 0 0 24px; color: #cccccc; font-size: 15px; line-height: 1.6;">
+                The scheduled weekly summary job failed to complete. Please check the dashboard or server logs for more details.
+              </p>
+
+              <!-- Error Details Box -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #0d0d0d; border: 1px solid rgba(239, 83, 80, 0.3); border-radius: 12px; margin-bottom: 24px;">
+                <tr>
+                  <td style="padding: 20px;">
+                    <p style="margin: 0 0 8px; color: #ef5350; font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">
+                      Error Message
+                    </p>
+                    <p style="margin: 0; color: #ffffff; font-size: 14px; font-family: monospace; word-break: break-word;">
+                      ${errorMessage}
+                    </p>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Timestamp -->
+              <p style="margin: 0; color: #666666; font-size: 13px;">
+                Job started at: ${timestamp}
+              </p>
+            </td>
+          </tr>
+        </table>
+
+        <!-- Bottom text -->
+        <p style="margin: 24px 0 0; color: #666666; font-size: 12px;">
+          CryptoGrantWire Newsletter Automation
+        </p>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+  `.trim();
+
+  const textContent = `
+CryptoGrantWire - Scheduled Job Failed
+
+The scheduled weekly summary job failed to complete.
+
+ERROR MESSAGE
+-------------
+${errorMessage}
+
+Job started at: ${timestamp}
+
+Please check the dashboard or server logs for more details.
+
+---
+CryptoGrantWire Newsletter Automation
+  `.trim();
+
+  console.log(`[Email] Sending scheduled job failure notification to: ${config.email.notificationEmail}`);
+
+  await client.emails.send({
+    from: config.email.fromEmail,
+    to: config.email.notificationEmail,
+    subject: '⚠️ CryptoGrantWire Scheduled Job Failed',
+    html: htmlContent,
+    text: textContent,
+  });
+
+  console.log(`[Email] Scheduled job failure notification sent successfully`);
+}

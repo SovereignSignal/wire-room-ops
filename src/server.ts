@@ -7,7 +7,7 @@ import { runWeeklySummaryJob } from './jobs/weekly-summary';
 import { StoredFile } from './types';
 import { jobQueue } from './services/job-queue';
 import { getAllModels } from './services/models';
-import { getSchedule, setSchedule, formatScheduleDescription, getNextRunTime, initScheduler, ScheduleConfig } from './services/scheduler';
+import { getSchedule, setSchedule, formatScheduleDescription, getNextRunTime, initScheduler, ScheduleConfig, sendTestAlert, getSchedulerStatus } from './services/scheduler';
 
 const app = express();
 
@@ -312,7 +312,7 @@ app.get('/api/schedule', (req: Request, res: Response) => {
 });
 
 // API: Update schedule
-app.post('/api/schedule', (req: Request, res: Response) => {
+app.post('/api/schedule', async (req: Request, res: Response) => {
   const session = req.body.session;
 
   if (!session || !validateSession(session)) {
@@ -333,15 +333,55 @@ app.post('/api/schedule', (req: Request, res: Response) => {
   if (anthropicModel) updates.anthropicModel = anthropicModel;
   if (timezone) updates.timezone = timezone;
 
-  const newSchedule = setSchedule(updates);
-  const nextRun = getNextRunTime();
-  const description = formatScheduleDescription(newSchedule);
+  try {
+    const newSchedule = await setSchedule(updates);
+    const nextRun = getNextRunTime();
+    const description = formatScheduleDescription(newSchedule);
 
-  res.json({
-    ...newSchedule,
-    description,
-    nextRun: nextRun?.toISOString() || null,
-  });
+    res.json({
+      ...newSchedule,
+      description,
+      nextRun: nextRun?.toISOString() || null,
+    });
+  } catch (error) {
+    console.error('Failed to update schedule:', error);
+    res.status(500).json({ error: 'Failed to update schedule' });
+  }
+});
+
+// API: Send test alert to verify email configuration
+app.post('/api/test-alert', async (req: Request, res: Response) => {
+  const session = req.body.session;
+
+  if (!session || !validateSession(session)) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+
+  try {
+    const result = await sendTestAlert();
+    if (result.success) {
+      res.json({ success: true, message: result.message });
+    } else {
+      res.status(500).json({ success: false, error: result.message });
+    }
+  } catch (error) {
+    console.error('Failed to send test alert:', error);
+    res.status(500).json({ success: false, error: 'Failed to send test alert' });
+  }
+});
+
+// API: Get scheduler status (for debugging)
+app.get('/api/scheduler-status', (req: Request, res: Response) => {
+  const session = req.query.session as string;
+
+  if (!session || !validateSession(session)) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+
+  const status = getSchedulerStatus();
+  res.json(status);
 });
 
 function renderLoginPage(error?: string): string {
@@ -668,6 +708,62 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
     .progress-text { color: #999999; font-size: 14px; margin: 0 0 8px; }
     .progress-step { color: #f5a623; font-size: 14px; margin: 0; }
     .elapsed-time { color: #666666; font-size: 12px; margin-top: 8px; }
+    .scheduler-health {
+      margin-top: 24px;
+      padding-top: 24px;
+      border-top: 1px solid #2a2a2a;
+    }
+    .scheduler-health h3 {
+      margin: 0 0 16px;
+      font-size: 14px;
+      color: #999999;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+    }
+    .status-item {
+      background: #0d0d0d;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      padding: 12px 16px;
+    }
+    .status-item .label {
+      font-size: 11px;
+      color: #666666;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+    .status-item .value {
+      font-size: 14px;
+      color: #ffffff;
+    }
+    .status-item .value.success { color: #4caf50; }
+    .status-item .value.error { color: #ef5350; }
+    .status-item .value.warning { color: #f5a623; }
+    .status-item .value.muted { color: #666666; }
+    .status-item .error-msg {
+      font-size: 12px;
+      color: #ef5350;
+      margin-top: 4px;
+      font-family: monospace;
+      word-break: break-word;
+    }
+    .refresh-btn {
+      background: transparent;
+      border: 1px solid #2a2a2a;
+      color: #999999;
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+      margin-left: 12px;
+    }
+    .refresh-btn:hover { border-color: #f5a623; color: #f5a623; }
   </style>
 </head>
 <body>
@@ -783,10 +879,34 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
             </select>
           </div>
           <button type="button" id="save-schedule" class="button">Save Schedule</button>
+          <button type="button" id="test-alert" class="button secondary">Test Alert</button>
         </div>
         <div id="schedule-status" class="schedule-status">
           <p id="schedule-description">Loading schedule...</p>
           <p id="schedule-next-run" class="next-run"></p>
+        </div>
+
+        <div class="scheduler-health">
+          <h3>Scheduler Health <button id="refresh-status" class="refresh-btn">Refresh</button></h3>
+          <div class="status-grid">
+            <div class="status-item">
+              <div class="label">Scheduler Status</div>
+              <div id="scheduler-running" class="value muted">Loading...</div>
+            </div>
+            <div class="status-item">
+              <div class="label">Server Started</div>
+              <div id="scheduler-started" class="value muted">Loading...</div>
+            </div>
+            <div class="status-item">
+              <div class="label">Last Job Run</div>
+              <div id="last-job-run" class="value muted">Loading...</div>
+            </div>
+            <div class="status-item">
+              <div class="label">Last Job Result</div>
+              <div id="last-job-status" class="value muted">Loading...</div>
+              <div id="last-job-error" class="error-msg" style="display: none;"></div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -883,6 +1003,145 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
 
     loadSchedule();
 
+    // Scheduler health status
+    const schedulerRunningEl = document.getElementById('scheduler-running');
+    const schedulerStartedEl = document.getElementById('scheduler-started');
+    const lastJobRunEl = document.getElementById('last-job-run');
+    const lastJobStatusEl = document.getElementById('last-job-status');
+    const lastJobErrorEl = document.getElementById('last-job-error');
+    const refreshStatusBtn = document.getElementById('refresh-status');
+
+    function formatRelativeTime(dateStr) {
+      if (!dateStr) return null;
+      const date = new Date(dateStr);
+      const now = new Date();
+      const diffMs = now - date;
+      const diffMins = Math.floor(diffMs / 60000);
+      const diffHours = Math.floor(diffMs / 3600000);
+      const diffDays = Math.floor(diffMs / 86400000);
+
+      if (diffMins < 1) return 'Just now';
+      if (diffMins < 60) return diffMins + ' min ago';
+      if (diffHours < 24) return diffHours + ' hour' + (diffHours > 1 ? 's' : '') + ' ago';
+      if (diffDays < 7) return diffDays + ' day' + (diffDays > 1 ? 's' : '') + ' ago';
+      return date.toLocaleDateString();
+    }
+
+    async function loadSchedulerStatus() {
+      try {
+        const response = await fetch('/api/scheduler-status?session=' + session);
+        if (!response.ok) throw new Error('Failed to fetch status');
+        const status = await response.json();
+
+        // Scheduler running status
+        if (status.isRunning) {
+          schedulerRunningEl.textContent = 'Active';
+          schedulerRunningEl.className = 'value success';
+        } else if (status.config.enabled) {
+          schedulerRunningEl.textContent = 'Not Running (restart needed)';
+          schedulerRunningEl.className = 'value error';
+        } else {
+          schedulerRunningEl.textContent = 'Disabled';
+          schedulerRunningEl.className = 'value muted';
+        }
+
+        // Server started time
+        if (status.schedulerStartedAt) {
+          const startedAt = formatRelativeTime(status.schedulerStartedAt);
+          schedulerStartedEl.textContent = startedAt;
+          schedulerStartedEl.className = 'value';
+        } else {
+          schedulerStartedEl.textContent = 'Not started';
+          schedulerStartedEl.className = 'value muted';
+        }
+
+        // Last job run
+        if (status.lastJobRun) {
+          const lastRun = formatRelativeTime(status.lastJobRun);
+          lastJobRunEl.textContent = lastRun;
+          lastJobRunEl.className = 'value';
+        } else {
+          lastJobRunEl.textContent = 'Never';
+          lastJobRunEl.className = 'value muted';
+        }
+
+        // Last job status
+        if (status.lastJobStatus === 'success') {
+          lastJobStatusEl.textContent = 'Success';
+          lastJobStatusEl.className = 'value success';
+          lastJobErrorEl.style.display = 'none';
+        } else if (status.lastJobStatus === 'failed') {
+          lastJobStatusEl.textContent = 'Failed';
+          lastJobStatusEl.className = 'value error';
+          if (status.lastJobError) {
+            lastJobErrorEl.textContent = status.lastJobError;
+            lastJobErrorEl.style.display = 'block';
+          }
+        } else {
+          lastJobStatusEl.textContent = 'No runs yet';
+          lastJobStatusEl.className = 'value muted';
+          lastJobErrorEl.style.display = 'none';
+        }
+      } catch (error) {
+        console.error('Failed to load scheduler status:', error);
+        schedulerRunningEl.textContent = 'Error loading status';
+        schedulerRunningEl.className = 'value error';
+      }
+    }
+
+    loadSchedulerStatus();
+
+    refreshStatusBtn.addEventListener('click', () => {
+      refreshStatusBtn.textContent = 'Refreshing...';
+      loadSchedulerStatus().then(() => {
+        refreshStatusBtn.textContent = 'Refresh';
+      });
+    });
+
+    const testAlertBtn = document.getElementById('test-alert');
+
+    testAlertBtn.addEventListener('click', async () => {
+      testAlertBtn.disabled = true;
+      testAlertBtn.textContent = 'Sending...';
+
+      try {
+        const response = await fetch('/api/test-alert', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session })
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+          testAlertBtn.textContent = 'Sent!';
+          testAlertBtn.style.background = '#4caf50';
+          setTimeout(() => {
+            testAlertBtn.textContent = 'Test Alert';
+            testAlertBtn.style.background = '';
+            testAlertBtn.disabled = false;
+          }, 3000);
+        } else {
+          testAlertBtn.textContent = 'Failed';
+          testAlertBtn.style.background = '#ef5350';
+          setTimeout(() => {
+            testAlertBtn.textContent = 'Test Alert';
+            testAlertBtn.style.background = '';
+            testAlertBtn.disabled = false;
+          }, 3000);
+        }
+      } catch (error) {
+        console.error('Failed to send test alert:', error);
+        testAlertBtn.textContent = 'Error';
+        testAlertBtn.style.background = '#ef5350';
+        setTimeout(() => {
+          testAlertBtn.textContent = 'Test Alert';
+          testAlertBtn.style.background = '';
+          testAlertBtn.disabled = false;
+        }, 3000);
+      }
+    });
+
     saveScheduleBtn.addEventListener('click', async () => {
       const timeParts = scheduleTime.value.split(':');
       const hour = parseInt(timeParts[0], 10);
@@ -920,6 +1179,9 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
         } else {
           scheduleNextRun.textContent = '';
         }
+
+        // Refresh scheduler health status after saving
+        loadSchedulerStatus();
       } catch (error) {
         console.error('Failed to save schedule:', error);
         scheduleDescription.textContent = 'Failed to save schedule';
@@ -1131,9 +1393,9 @@ function renderErrorPage(message: string): string {
   `.trim();
 }
 
-export function startServer(): void {
-  // Initialize the scheduler
-  initScheduler();
+export async function startServer(): Promise<void> {
+  // Initialize the scheduler (loads config from database)
+  await initScheduler();
 
   app.listen(config.app.port, () => {
     console.log(`Server running on port ${config.app.port}`);
