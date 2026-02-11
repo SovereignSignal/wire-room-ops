@@ -81,7 +81,7 @@ export async function runWeeklySummaryJob(options: JobOptions | boolean = false)
   // Store file
   console.log('Storing file...');
   onProgress?.(stats.totalEntries, stats.totalEntries, 'Storing file...');
-  const file = storeFile(result.markdown, dateRange);
+  const file = await storeFile(result.markdown, dateRange);
   console.log(`✓ File stored: ${file.filename} (ID: ${file.id})`);
 
   // Optionally send notification email

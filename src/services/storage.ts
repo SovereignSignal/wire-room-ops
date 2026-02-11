@@ -1,13 +1,64 @@
 import { v4 as uuidv4 } from 'uuid';
 import { StoredFile } from '../types';
+import { getPool } from '../db';
 
-// In-memory storage (in production, use S3, Railway volume, or database)
-const files = new Map<string, StoredFile>();
+// In-memory cache (backed by database)
+const filesCache = new Map<string, StoredFile>();
+let cacheLoaded = false;
 
-export function storeFile(
+async function ensureFilesTable(): Promise<void> {
+  const pool = getPool();
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS generated_files (
+      id TEXT PRIMARY KEY,
+      filename TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+      date_range_start TIMESTAMP WITH TIME ZONE,
+      date_range_end TIMESTAMP WITH TIME ZONE
+    )
+  `);
+}
+
+async function loadFilesFromDb(): Promise<void> {
+  if (cacheLoaded) return;
+  
+  try {
+    await ensureFilesTable();
+    const pool = getPool();
+    const result = await pool.query(`
+      SELECT id, filename, content, created_at, date_range_start, date_range_end
+      FROM generated_files
+      ORDER BY created_at DESC
+      LIMIT 20
+    `);
+    
+    for (const row of result.rows) {
+      const file: StoredFile = {
+        id: row.id,
+        filename: row.filename,
+        content: row.content,
+        createdAt: new Date(row.created_at),
+        dateRange: {
+          start: new Date(row.date_range_start),
+          end: new Date(row.date_range_end),
+        },
+      };
+      filesCache.set(file.id, file);
+    }
+    cacheLoaded = true;
+    console.log(`[Storage] Loaded ${result.rows.length} files from database`);
+  } catch (error) {
+    console.error('[Storage] Failed to load files from database:', error);
+  }
+}
+
+export async function storeFile(
   content: string,
   dateRange: { start: Date; end: Date }
-): StoredFile {
+): Promise<StoredFile> {
+  await ensureFilesTable();
+  
   const id = uuidv4();
   const now = new Date();
   
@@ -21,20 +72,68 @@ export function storeFile(
     dateRange,
   };
   
-  files.set(id, file);
+  // Save to database
+  const pool = getPool();
+  await pool.query(`
+    INSERT INTO generated_files (id, filename, content, created_at, date_range_start, date_range_end)
+    VALUES ($1, $2, $3, $4, $5, $6)
+  `, [id, filename, content, now, dateRange.start, dateRange.end]);
+  
+  // Update cache
+  filesCache.set(id, file);
   
   // Clean up old files (keep last 10)
-  cleanupOldFiles();
+  await cleanupOldFiles();
   
+  console.log(`[Storage] File stored: ${filename}`);
   return file;
 }
 
-export function getFile(id: string): StoredFile | null {
-  return files.get(id) || null;
+export async function getFile(id: string): Promise<StoredFile | null> {
+  await loadFilesFromDb();
+  
+  // Check cache first
+  if (filesCache.has(id)) {
+    return filesCache.get(id)!;
+  }
+  
+  // Try database
+  try {
+    const pool = getPool();
+    const result = await pool.query(`
+      SELECT id, filename, content, created_at, date_range_start, date_range_end
+      FROM generated_files
+      WHERE id = $1
+    `, [id]);
+    
+    if (result.rows.length === 0) {
+      return null;
+    }
+    
+    const row = result.rows[0];
+    const file: StoredFile = {
+      id: row.id,
+      filename: row.filename,
+      content: row.content,
+      createdAt: new Date(row.created_at),
+      dateRange: {
+        start: new Date(row.date_range_start),
+        end: new Date(row.date_range_end),
+      },
+    };
+    
+    filesCache.set(file.id, file);
+    return file;
+  } catch (error) {
+    console.error('[Storage] Failed to get file from database:', error);
+    return null;
+  }
 }
 
-export function listFiles(): StoredFile[] {
-  return Array.from(files.values()).sort(
+export async function listFiles(): Promise<StoredFile[]> {
+  await loadFilesFromDb();
+  
+  return Array.from(filesCache.values()).sort(
     (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
   );
 }
@@ -43,12 +142,29 @@ function formatDateForFilename(date: Date): string {
   return date.toISOString().split('T')[0];
 }
 
-function cleanupOldFiles(): void {
-  const allFiles = listFiles();
-  if (allFiles.length > 10) {
-    const toDelete = allFiles.slice(10);
-    for (const file of toDelete) {
-      files.delete(file.id);
+async function cleanupOldFiles(): Promise<void> {
+  try {
+    const pool = getPool();
+    
+    // Keep only the 10 most recent files
+    await pool.query(`
+      DELETE FROM generated_files
+      WHERE id NOT IN (
+        SELECT id FROM generated_files
+        ORDER BY created_at DESC
+        LIMIT 10
+      )
+    `);
+    
+    // Refresh cache
+    const allFiles = await listFiles();
+    if (allFiles.length > 10) {
+      const toDelete = allFiles.slice(10);
+      for (const file of toDelete) {
+        filesCache.delete(file.id);
+      }
     }
+  } catch (error) {
+    console.error('[Storage] Failed to cleanup old files:', error);
   }
 }

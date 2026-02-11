@@ -74,7 +74,7 @@ app.get('/auth', (req: Request, res: Response) => {
 });
 
 // Dashboard - main interface
-app.get('/dashboard', (req: Request, res: Response) => {
+app.get('/dashboard', async (req: Request, res: Response) => {
   const session = req.query.session as string;
   
   if (!session || !validateSession(session)) {
@@ -82,7 +82,7 @@ app.get('/dashboard', (req: Request, res: Response) => {
     return;
   }
   
-  const files = listFiles();
+  const files = await listFiles();
   const message = req.query.message as string;
   res.send(renderDashboard(files, session, message));
 });
@@ -203,7 +203,7 @@ app.get('/api/job/:jobId/progress', (req: Request, res: Response) => {
 });
 
 // Download file
-app.get('/file/:fileId', (req: Request, res: Response) => {
+app.get('/file/:fileId', async (req: Request, res: Response) => {
   const session = req.query.session as string;
   const fileId = req.params.fileId;
   
@@ -212,7 +212,7 @@ app.get('/file/:fileId', (req: Request, res: Response) => {
     return;
   }
   
-  const file = getFile(fileId);
+  const file = await getFile(fileId);
   
   if (!file) {
     res.status(404).send(renderErrorPage('File not found'));
@@ -227,7 +227,7 @@ app.get('/file/:fileId', (req: Request, res: Response) => {
 // Resend download link for the most recent file
 app.post('/resend-link', async (req: Request, res: Response) => {
   try {
-    const files = listFiles();
+    const files = await listFiles();
     
     if (files.length === 0) {
       res.send(renderErrorPage('No files available. Please run the job first.'));
@@ -252,7 +252,7 @@ app.post('/resend-link', async (req: Request, res: Response) => {
 });
 
 // Legacy download endpoint for email links
-app.get('/download', (req: Request, res: Response) => {
+app.get('/download', async (req: Request, res: Response) => {
   const token = req.query.token as string;
   
   if (!token) {
@@ -267,7 +267,7 @@ app.get('/download', (req: Request, res: Response) => {
     return;
   }
   
-  const file = getFile(validation.fileId);
+  const file = await getFile(validation.fileId);
   
   if (!file) {
     res.status(404).send(renderErrorPage('File not found'));
@@ -279,7 +279,7 @@ app.get('/download', (req: Request, res: Response) => {
 });
 
 // Legacy file download
-app.get('/download/:token', (req: Request, res: Response) => {
+app.get('/download/:token', async (req: Request, res: Response) => {
   const token = req.params.token;
   const validation = validateMagicLink(token);
   
@@ -288,7 +288,7 @@ app.get('/download/:token', (req: Request, res: Response) => {
     return;
   }
   
-  const file = getFile(validation.fileId);
+  const file = await getFile(validation.fileId);
   
   if (!file) {
     res.status(404).send(renderErrorPage('File not found'));
@@ -301,7 +301,7 @@ app.get('/download/:token', (req: Request, res: Response) => {
 });
 
 // API: List files
-app.get('/api/files', (req: Request, res: Response) => {
+app.get('/api/files', async (req: Request, res: Response) => {
   const session = req.query.session as string;
 
   if (!session || !validateSession(session)) {
@@ -309,8 +309,8 @@ app.get('/api/files', (req: Request, res: Response) => {
     return;
   }
 
-  const files = listFiles();
-  res.json(files.map(f => ({
+  const files = await listFiles();
+  res.json(files.map((f: StoredFile) => ({
     id: f.id,
     filename: f.filename,
     createdAt: f.createdAt,
