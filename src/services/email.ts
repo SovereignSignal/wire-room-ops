@@ -450,3 +450,74 @@ CryptoGrantWire Newsletter Automation
 
   console.log(`[Email] Scheduled job failure notification sent successfully`);
 }
+
+export async function sendResendLinkEmail(email: string, downloadUrl: string, filename: string): Promise<void> {
+  const client = getResend();
+
+  console.log(`[Email] Sending resend link email to: ${email}`);
+
+  const htmlContent = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>New Download Link - CryptoGrantWire</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #0d0d0d; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #0d0d0d;">
+    <tr>
+      <td align="center" style="padding: 40px 20px;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 520px; background-color: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 16px;">
+          <tr>
+            <td style="padding: 48px 40px; text-align: center;">
+              <h1 style="margin: 0 0 8px; font-size: 28px; font-weight: 700;">
+                <span style="color: #ffffff;">Crypto</span><span style="color: #f5a623;">Grant</span><span style="color: #ffffff;">Wire</span>
+              </h1>
+              <p style="margin: 0 0 32px; color: #999999; font-size: 16px;">Fresh Download Link</p>
+
+              <h2 style="margin: 0 0 16px; color: #ffffff; font-size: 20px; font-weight: 600;">
+                Your new download link is ready
+              </h2>
+              <p style="margin: 0 0 8px; color: #999999; font-size: 14px;">File:</p>
+              <p style="margin: 0 0 32px; color: #f5a623; font-size: 14px; font-family: monospace;">${filename}</p>
+
+              <a href="${downloadUrl}" style="display: inline-block; background-color: #f5a623; color: #0d0d0d; padding: 16px 32px; text-decoration: none; border-radius: 8px; font-size: 16px; font-weight: 600;">
+                Download File
+              </a>
+
+              <p style="margin: 32px 0 0; color: #666666; font-size: 12px;">
+                This link expires in 24 hours.
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+  `.trim();
+
+  const textContent = `
+CryptoGrantWire - Fresh Download Link
+
+Your new download link is ready.
+
+File: ${filename}
+
+Download: ${downloadUrl}
+
+This link expires in 24 hours.
+  `.trim();
+
+  await client.emails.send({
+    from: config.email.fromEmail,
+    to: email,
+    subject: 'CryptoGrantWire - Fresh Download Link',
+    html: htmlContent,
+    text: textContent,
+  });
+
+  console.log(`[Email] Resend link email sent successfully`);
+}

@@ -224,6 +224,33 @@ app.get('/file/:fileId', (req: Request, res: Response) => {
   res.send(file.content);
 });
 
+// Resend download link for the most recent file
+app.post('/resend-link', async (req: Request, res: Response) => {
+  try {
+    const files = listFiles();
+    
+    if (files.length === 0) {
+      res.send(renderErrorPage('No files available. Please run the job first.'));
+      return;
+    }
+    
+    // Get the most recent file
+    const latestFile = files[0];
+    
+    // Create a new magic link and send email
+    const { createMagicLink } = require('./services/auth');
+    const { sendResendLinkEmail } = require('./services/email');
+    
+    const downloadUrl = createMagicLink(config.email.notificationEmail, latestFile.id);
+    await sendResendLinkEmail(config.email.notificationEmail, downloadUrl, latestFile.filename);
+    
+    res.send(renderResendSuccessPage());
+  } catch (error) {
+    console.error('Failed to resend link:', error);
+    res.send(renderErrorPage('Failed to resend link. Please try again.'));
+  }
+});
+
 // Legacy download endpoint for email links
 app.get('/download', (req: Request, res: Response) => {
   const token = req.query.token as string;
@@ -236,7 +263,7 @@ app.get('/download', (req: Request, res: Response) => {
   const validation = validateMagicLink(token);
   
   if (!validation.valid || !validation.fileId) {
-    res.send(renderErrorPage(validation.error || 'Invalid link'));
+    res.send(renderExpiredLinkPage(validation.error || 'Invalid link'));
     return;
   }
   
@@ -1336,6 +1363,127 @@ function renderDownloadPage(filename: string, downloadToken: string): string {
     <p class="filename">${filename}</p>
     <a href="/download/${downloadToken}" class="button">Download Markdown</a>
     <p class="note">This is a one-time download link.</p>
+  </div>
+</body>
+</html>
+  `.trim();
+}
+
+function renderExpiredLinkPage(message: string): string {
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Link Expired - CryptoGrantWire</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cellipse cx='50' cy='35' rx='35' ry='20' fill='none' stroke='%23f5a623' stroke-width='6'/%3E%3Cellipse cx='50' cy='35' rx='20' ry='12' fill='none' stroke='%23f5a623' stroke-width='4'/%3E%3Ccircle cx='50' cy='35' r='6' fill='%23f5a623'/%3E%3Cline x1='50' y1='45' x2='50' y2='85' stroke='%23f5a623' stroke-width='6' stroke-linecap='round'/%3E%3Cline x1='35' y1='90' x2='65' y2='90' stroke='%23f5a623' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0d0d0d;
+      margin: 0;
+      padding: 20px;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .container {
+      max-width: 500px;
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      padding: 40px;
+      border-radius: 12px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+      text-align: center;
+    }
+    h1 { color: #ef5350; margin-bottom: 16px; }
+    p { color: #999999; margin-bottom: 24px; }
+    .button {
+      display: inline-block;
+      background: #f5a623;
+      color: #0d0d0d;
+      padding: 12px 24px;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      margin-bottom: 16px;
+    }
+    .button:hover { background: #e09000; }
+    .back {
+      display: block;
+      margin-top: 16px;
+      color: #f5a623;
+      text-decoration: none;
+    }
+    .back:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Link Expired</h1>
+    <p>${message}</p>
+    <form method="POST" action="/resend-link" style="display: inline;">
+      <button type="submit" class="button">Resend Download Link</button>
+    </form>
+    <a href="/" class="back">← Back to login</a>
+  </div>
+</body>
+</html>
+  `.trim();
+}
+
+function renderResendSuccessPage(): string {
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Link Sent - CryptoGrantWire</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cellipse cx='50' cy='35' rx='35' ry='20' fill='none' stroke='%23f5a623' stroke-width='6'/%3E%3Cellipse cx='50' cy='35' rx='20' ry='12' fill='none' stroke='%23f5a623' stroke-width='4'/%3E%3Ccircle cx='50' cy='35' r='6' fill='%23f5a623'/%3E%3Cline x1='50' y1='45' x2='50' y2='85' stroke='%23f5a623' stroke-width='6' stroke-linecap='round'/%3E%3Cline x1='35' y1='90' x2='65' y2='90' stroke='%23f5a623' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0d0d0d;
+      margin: 0;
+      padding: 20px;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .container {
+      max-width: 500px;
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      padding: 40px;
+      border-radius: 12px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+      text-align: center;
+    }
+    .icon { font-size: 48px; margin-bottom: 16px; }
+    h1 { color: #4caf50; margin-bottom: 16px; }
+    p { color: #999999; }
+    .back {
+      display: inline-block;
+      margin-top: 24px;
+      color: #f5a623;
+      text-decoration: none;
+    }
+    .back:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="icon">✉️</div>
+    <h1>Link Sent!</h1>
+    <p>A fresh download link has been sent to your email.<br>Check your inbox and click the new link.</p>
+    <a href="/" class="back">← Back to login</a>
   </div>
 </body>
 </html>
