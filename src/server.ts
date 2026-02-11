@@ -1395,11 +1395,16 @@ function renderErrorPage(message: string): string {
 
 export async function startServer(): Promise<void> {
   // Initialize the scheduler (loads config from database)
-  await initScheduler();
+  // Wrapped in try-catch so scheduler issues don't prevent server from starting
+  try {
+    await initScheduler();
+    console.log('Scheduler initialized');
+  } catch (error) {
+    console.error('Scheduler initialization failed (non-fatal):', error);
+  }
 
   app.listen(config.app.port, () => {
     console.log(`Server running on port ${config.app.port}`);
-    console.log(`Scheduler initialized`);
   });
 }
 
