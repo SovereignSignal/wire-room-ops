@@ -370,7 +370,7 @@ app.post('/api/schedule', async (req: Request, res: Response) => {
     return;
   }
 
-  const { enabled, dayOfWeek, hour, minute, lookbackDays, grokModel, anthropicModel, timezone } = req.body;
+  const { enabled, dayOfWeek, hour, minute, lookbackDays, grokModel, anthropicModel, timezone, wire } = req.body;
 
   const updates: Partial<ScheduleConfig> = {};
 
@@ -382,6 +382,7 @@ app.post('/api/schedule', async (req: Request, res: Response) => {
   if (grokModel) updates.grokModel = grokModel;
   if (anthropicModel) updates.anthropicModel = anthropicModel;
   if (timezone) updates.timezone = timezone;
+  if (wire !== undefined) updates.wire = wire || undefined;
 
   try {
     const newSchedule = await setSchedule(updates);
@@ -920,6 +921,12 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
             <label for="scheduleLookback">Lookback Days</label>
             <input type="number" id="scheduleLookback" min="1" max="30" value="7" style="width: 80px;">
           </div>
+          <div class="form-group">
+            <label for="scheduleWire">Feed</label>
+            <select id="scheduleWire">
+              <option value="">Loading feeds...</option>
+            </select>
+          </div>
         </div>
         <div class="form-row model-row">
           <div class="form-group">
@@ -1036,6 +1043,7 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
     const scheduleLookback = document.getElementById('scheduleLookback');
     const scheduleGrokModel = document.getElementById('scheduleGrokModel');
     const scheduleAnthropicModel = document.getElementById('scheduleAnthropicModel');
+    const scheduleWire = document.getElementById('scheduleWire');
     const saveScheduleBtn = document.getElementById('save-schedule');
     const scheduleDescription = document.getElementById('schedule-description');
     const scheduleNextRun = document.getElementById('schedule-next-run');
@@ -1059,6 +1067,18 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
           scheduleNextRun.textContent = 'Next run: ' + nextDate.toLocaleString();
         } else {
           scheduleNextRun.textContent = '';
+        }
+
+        // Load wires for schedule dropdown
+        const wiresResponse = await fetch('/api/wires?session=' + session);
+        if (wiresResponse.ok) {
+          const wires = await wiresResponse.json();
+          let wireOptions = '<option value="">All Feeds</option>';
+          wires.forEach(w => {
+            const selected = w.wire === schedule.wire ? ' selected' : '';
+            wireOptions += '<option value="' + w.wire + '"' + selected + '>' + w.displayName + '</option>';
+          });
+          scheduleWire.innerHTML = wireOptions;
         }
 
         // Also load models for schedule dropdowns
@@ -1242,6 +1262,7 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
             lookbackDays: parseInt(scheduleLookback.value, 10),
             grokModel: scheduleGrokModel.value,
             anthropicModel: scheduleAnthropicModel.value,
+            wire: scheduleWire.value || undefined,
           })
         });
 

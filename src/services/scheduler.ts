@@ -4,6 +4,7 @@ import { config } from '../config';
 import { sendNotificationEmail, sendTestAlertEmail, sendScheduledJobFailureEmail } from './email';
 import { createMagicLink } from './auth';
 import { ensureScheduleTable, getScheduleConfig, saveScheduleConfig, StoredScheduleConfig } from '../db';
+import { Wire } from '../types';
 
 export interface ScheduleConfig {
   enabled: boolean;
@@ -14,6 +15,7 @@ export interface ScheduleConfig {
   grokModel?: string;
   anthropicModel?: string;
   timezone: string;
+  wire?: string; // Optional wire/feed filter
 }
 
 // Default schedule: Wednesday at 9:00 AM, look back 7 days
@@ -99,6 +101,9 @@ async function executeScheduledJob(): Promise<void> {
 
     console.log(`[Scheduler] Date range: ${startDate.toISOString()} to ${endDate.toISOString()}`);
 
+    const wireLabel = currentSchedule.wire || 'all feeds';
+    console.log(`[Scheduler] Running for: ${wireLabel}`);
+
     const result = await runWeeklySummaryJob({
       sendEmail: false,
       dateRange: { start: startDate, end: endDate },
@@ -106,6 +111,7 @@ async function executeScheduledJob(): Promise<void> {
         grokModel: currentSchedule.grokModel,
         anthropicModel: currentSchedule.anthropicModel,
       },
+      wire: (currentSchedule.wire as Wire) || undefined,
     });
 
     // Send notification email with download link

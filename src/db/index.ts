@@ -154,6 +154,7 @@ export interface StoredScheduleConfig {
   grokModel?: string;
   anthropicModel?: string;
   timezone: string;
+  wire?: string;
 }
 
 export async function ensureScheduleTable(): Promise<void> {
@@ -169,16 +170,22 @@ export async function ensureScheduleTable(): Promise<void> {
       grok_model TEXT,
       anthropic_model TEXT,
       timezone TEXT NOT NULL DEFAULT 'America/Los_Angeles',
+      wire TEXT,
       updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
       CONSTRAINT single_row CHECK (id = 1)
     )
   `);
+  
+  // Add wire column if it doesn't exist (for existing installations)
+  await pool.query(`
+    ALTER TABLE schedule_config ADD COLUMN IF NOT EXISTS wire TEXT
+  `).catch(() => {});
 }
 
 export async function getScheduleConfig(): Promise<StoredScheduleConfig | null> {
   const pool = getPool();
   const result = await pool.query(`
-    SELECT enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone
+    SELECT enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire
     FROM schedule_config
     WHERE id = 1
   `);
@@ -197,14 +204,15 @@ export async function getScheduleConfig(): Promise<StoredScheduleConfig | null> 
     grokModel: row.grok_model || undefined,
     anthropicModel: row.anthropic_model || undefined,
     timezone: row.timezone,
+    wire: row.wire || undefined,
   };
 }
 
 export async function saveScheduleConfig(config: StoredScheduleConfig): Promise<void> {
   const pool = getPool();
   await pool.query(`
-    INSERT INTO schedule_config (id, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, updated_at)
-    VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP)
+    INSERT INTO schedule_config (id, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, updated_at)
+    VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
     ON CONFLICT (id) DO UPDATE SET
       enabled = $1,
       day_of_week = $2,
@@ -214,6 +222,7 @@ export async function saveScheduleConfig(config: StoredScheduleConfig): Promise<
       grok_model = $6,
       anthropic_model = $7,
       timezone = $8,
+      wire = $9,
       updated_at = CURRENT_TIMESTAMP
   `, [
     config.enabled,
@@ -224,6 +233,7 @@ export async function saveScheduleConfig(config: StoredScheduleConfig): Promise<
     config.grokModel || null,
     config.anthropicModel || null,
     config.timezone,
+    config.wire || null,
   ]);
 }
 
