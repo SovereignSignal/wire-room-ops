@@ -3,7 +3,7 @@ import { getEntriesForDateRange, getDefaultDateRange } from '../db';
 import { processAllEntries, ModelOptions } from '../services/processor';
 import { generateMarkdown } from '../services/markdown';
 import { storeFile } from '../services/storage';
-import { StoredFile } from '../types';
+import { StoredFile, Wire } from '../types';
 import { createMagicLink } from '../services/auth';
 import { sendNotificationEmail } from '../services/email';
 import { ProcessingStats } from '../types';
@@ -12,6 +12,7 @@ export interface JobResult {
   file: StoredFile;
   stats: ProcessingStats;
   dateRange: { start: Date; end: Date };
+  wire?: Wire;
 }
 
 export interface JobOptions {
@@ -19,6 +20,7 @@ export interface JobOptions {
   dateRange?: { start: Date; end: Date };
   onProgress?: (current: number, total: number, step: string) => void;
   models?: ModelOptions;
+  wire?: Wire | Wire[];
 }
 
 export async function runWeeklySummaryJob(options: JobOptions | boolean = false): Promise<JobResult> {
@@ -27,9 +29,10 @@ export async function runWeeklySummaryJob(options: JobOptions | boolean = false)
     ? { sendEmail: options }
     : options;
 
-  const { sendEmail = false, dateRange: customDateRange, onProgress, models } = opts;
+  const { sendEmail = false, dateRange: customDateRange, onProgress, models, wire } = opts;
 
-  console.log('=== Crypto Grant Wire Weekly Summary Job ===');
+  const wireLabel = wire ? (Array.isArray(wire) ? wire.join(', ') : wire) : 'all';
+  console.log(`=== Grant Wire Weekly Summary Job (${wireLabel}) ===`);
   console.log(`Started at: ${new Date().toISOString()}`);
 
   // Validate configuration
@@ -43,8 +46,11 @@ export async function runWeeklySummaryJob(options: JobOptions | boolean = false)
   
   // Query database
   console.log('Querying database for entries...');
+  if (wire) {
+    console.log(`  Filtering by wire: ${wireLabel}`);
+  }
   onProgress?.(0, 0, 'Querying database...');
-  const entries = await getEntriesForDateRange(dateRange.start, dateRange.end);
+  const entries = await getEntriesForDateRange(dateRange.start, dateRange.end, wire);
   console.log(`Found ${entries.length} entries`);
   onProgress?.(0, entries.length, `Found ${entries.length} entries`);
 
@@ -72,10 +78,16 @@ export async function runWeeklySummaryJob(options: JobOptions | boolean = false)
   console.log(`  - Successful: ${stats.successfulProcessing}`);
   console.log(`  - Failed: ${stats.failedProcessing}`);
   
+  // Log wire breakdown if available
+  if (stats.entriesByWire) {
+    console.log(`  - By wire: crypto=${stats.entriesByWire.crypto}, ai=${stats.entriesByWire.ai}, oss=${stats.entriesByWire.oss}`);
+  }
+  
   // Generate markdown
   console.log('Generating markdown...');
   onProgress?.(stats.totalEntries, stats.totalEntries, 'Generating markdown...');
-  const result = generateMarkdown(processed, stats, dateRange);
+  const singleWire = wire && !Array.isArray(wire) ? wire : undefined;
+  const result = generateMarkdown(processed, stats, dateRange, singleWire);
   console.log(`✓ Markdown generated (${result.markdown.length} characters)`);
 
   // Store file
@@ -95,7 +107,8 @@ export async function runWeeklySummaryJob(options: JobOptions | boolean = false)
   
   console.log('\n=== Job completed successfully ===');
   
-  return { file, stats, dateRange };
+  const resultWire = wire && !Array.isArray(wire) ? wire : undefined;
+  return { file, stats, dateRange, wire: resultWire };
 }
 
 // Run if called directly (CLI mode)

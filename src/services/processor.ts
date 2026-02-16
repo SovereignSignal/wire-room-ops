@@ -1,4 +1,4 @@
-import { DatabaseEntry, ProcessedEntry, ProcessingStats } from '../types';
+import { DatabaseEntry, ProcessedEntry, ProcessingStats, Wire } from '../types';
 import { summarizeWithGrok, isXcomUrl } from './grok';
 import { summarizeWithOpus } from './anthropic';
 
@@ -43,6 +43,7 @@ export async function processEntry(entry: DatabaseEntry, models?: ModelOptions):
     category: entry.category || 'Uncategorized',
     timestamp: entry.timestamp,
     source: entry.source,
+    wire: entry.wire,
     enrichedSummary: '',
     processingMethod: isXcom ? 'grok' : 'opus',
   };
@@ -86,6 +87,7 @@ export async function processAllEntries(
 
   let xcomCount = 0;
   let otherCount = 0;
+  const wireCount: Record<Wire, number> = { crypto: 0, ai: 0, oss: 0 };
 
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i];
@@ -101,6 +103,10 @@ export async function processAllEntries(
       xcomCount++;
     } else {
       otherCount++;
+    }
+    
+    if (entry.wire) {
+      wireCount[entry.wire]++;
     }
     
     if (result.processingError) {
@@ -122,6 +128,7 @@ export async function processAllEntries(
     successfulProcessing: processed.filter(p => !p.processingError).length,
     failedProcessing: processed.filter(p => p.processingError).length,
     categories,
+    entriesByWire: wireCount,
   };
 
   return { processed, stats };

@@ -1,6 +1,6 @@
 import { Pool } from 'pg';
 import { config } from '../config';
-import { DatabaseEntry } from '../types';
+import { DatabaseEntry, Wire } from '../types';
 
 let pool: Pool | null = null;
 
@@ -21,11 +21,33 @@ export async function closePool(): Promise<void> {
   }
 }
 
+export interface DateRangeOptions {
+  startDate: Date;
+  endDate: Date;
+  wire?: Wire | Wire[];
+}
+
 export async function getEntriesForDateRange(
   startDate: Date,
-  endDate: Date
+  endDate: Date,
+  wire?: Wire | Wire[]
 ): Promise<DatabaseEntry[]> {
   const pool = getPool();
+
+  // Build wire filter clause
+  let wireClause = '';
+  const params: (Date | string | string[])[] = [startDate, endDate];
+  
+  if (wire) {
+    const wires = Array.isArray(wire) ? wire : [wire];
+    if (wires.length === 1) {
+      wireClause = 'AND s.wire = $3';
+      params.push(wires[0]);
+    } else {
+      wireClause = 'AND s.wire = ANY($3)';
+      params.push(wires);
+    }
+  }
 
   const query = `
     SELECT
@@ -35,17 +57,19 @@ export async function getEntriesForDateRange(
       c.name as category,
       s.created_at as timestamp,
       m.extracted_urls,
-      'telegram' as source
+      'telegram' as source,
+      s.wire
     FROM summaries s
     LEFT JOIN messages m ON s.message_id = m.id
     LEFT JOIN categories c ON s.category_id = c.id
     WHERE s.processing_status = 'SUCCESS'
       AND s.created_at >= $1
       AND s.created_at < $2
+      ${wireClause}
     ORDER BY c.name, s.created_at DESC
   `;
 
-  const result = await pool.query(query, [startDate, endDate]);
+  const result = await pool.query(query, params);
 
   const entries = result.rows.map(row => {
     // Extract first URL from the JSON array
@@ -59,6 +83,7 @@ export async function getEntriesForDateRange(
       category: row.category || 'Uncategorized',
       timestamp: new Date(row.timestamp),
       source: row.source,
+      wire: row.wire as Wire | undefined,
     };
   });
 
@@ -200,4 +225,34 @@ export async function saveScheduleConfig(config: StoredScheduleConfig): Promise<
     config.anthropicModel || null,
     config.timezone,
   ]);
+}
+
+export interface WireInfo {
+  wire: string;
+  displayName: string;
+  entryCount: number;
+}
+
+export async function getAvailableWires(): Promise<WireInfo[]> {
+  const pool = getPool();
+  
+  // Get distinct wires from channel_configs with entry counts
+  const result = await pool.query(`
+    SELECT 
+      cc.wire,
+      COUNT(DISTINCT s.id) as entry_count
+    FROM channel_configs cc
+    LEFT JOIN messages m ON m.channel_config_id = cc.id
+    LEFT JOIN summaries s ON s.message_id = m.id AND s.processing_status = 'SUCCESS'
+    WHERE cc.wire IS NOT NULL
+    GROUP BY cc.wire
+    ORDER BY cc.wire
+  `);
+
+  // Format display names (capitalize first letter)
+  return result.rows.map(row => ({
+    wire: row.wire,
+    displayName: row.wire.charAt(0).toUpperCase() + row.wire.slice(1).toUpperCase(),
+    entryCount: parseInt(row.entry_count, 10) || 0,
+  }));
 }

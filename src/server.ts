@@ -2,6 +2,7 @@ import express, { Request, Response } from 'express';
 import { config } from './config';
 import { validateMagicLink, createDownloadToken, createSessionToken, validateSession, createLoginMagicLink } from './services/auth';
 import { getFile, listFiles } from './services/storage';
+import { getAvailableWires } from './db';
 import { sendLoginEmail } from './services/email';
 import { runWeeklySummaryJob } from './jobs/weekly-summary';
 import { StoredFile } from './types';
@@ -105,6 +106,24 @@ app.get('/api/models', async (req: Request, res: Response) => {
   }
 });
 
+// API: Get available wires (feeds) from database
+app.get('/api/wires', async (req: Request, res: Response) => {
+  const session = req.query.session as string;
+
+  if (!session || !validateSession(session)) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+
+  try {
+    const wires = await getAvailableWires();
+    res.json(wires);
+  } catch (error) {
+    console.error('Failed to fetch wires:', error);
+    res.status(500).json({ error: 'Failed to fetch wires' });
+  }
+});
+
 // Trigger job manually (async with job queue)
 app.post('/api/run-job', async (req: Request, res: Response) => {
   const session = req.body.session;
@@ -115,7 +134,7 @@ app.post('/api/run-job', async (req: Request, res: Response) => {
   }
 
   // Parse date range from request
-  const { startDate, endDate, grokModel, anthropicModel } = req.body;
+  const { startDate, endDate, grokModel, anthropicModel, wire } = req.body;
   let dateRange: { start: Date; end: Date } | undefined;
 
   if (startDate && endDate) {
@@ -133,6 +152,9 @@ app.post('/api/run-job', async (req: Request, res: Response) => {
     anthropicModel: anthropicModel || undefined,
   } : undefined;
 
+  // Parse wire filter (can be single value or array)
+  const wireFilter = wire ? (Array.isArray(wire) ? wire : [wire].filter(Boolean)) : undefined;
+
   // Create job and return immediately
   const jobId = jobQueue.createJob();
   res.json({ jobId });
@@ -146,6 +168,7 @@ app.post('/api/run-job', async (req: Request, res: Response) => {
         sendEmail: false,
         dateRange,
         models,
+        wire: wireFilter?.length === 1 ? wireFilter[0] : wireFilter,
         onProgress: (current, total, step) => {
           jobQueue.updateProgress(jobId, { current, total, step });
         },
@@ -416,8 +439,8 @@ function renderLoginPage(error?: string): string {
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Sign In - CryptoGrantWire</title>
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cellipse cx='50' cy='35' rx='35' ry='20' fill='none' stroke='%23f5a623' stroke-width='6'/%3E%3Cellipse cx='50' cy='35' rx='20' ry='12' fill='none' stroke='%23f5a623' stroke-width='4'/%3E%3Ccircle cx='50' cy='35' r='6' fill='%23f5a623'/%3E%3Cline x1='50' y1='45' x2='50' y2='85' stroke='%23f5a623' stroke-width='6' stroke-linecap='round'/%3E%3Cline x1='35' y1='90' x2='65' y2='90' stroke='%23f5a623' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E">
+  <title>Sign In - Grant Wire Summarizer</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     * { box-sizing: border-box; }
@@ -488,7 +511,7 @@ function renderLoginPage(error?: string): string {
 </head>
 <body>
   <div class="container">
-    <h1 class="logo"><span class="logo-crypto">Crypto</span><span class="logo-grant">Grant</span><span class="logo-wire">Wire</span></h1>
+    <h1 class="logo">📡 <span class="logo-grant">Grant</span><span class="logo-wire">Wire</span></h1>
     <p class="subtitle">Sign in to access your dashboard</p>
     ${error ? `<div class="error">${error}</div>` : ''}
     <form method="POST" action="/login">
@@ -509,8 +532,8 @@ function renderLoginSentPage(email: string): string {
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Check Your Email - CryptoGrantWire</title>
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cellipse cx='50' cy='35' rx='35' ry='20' fill='none' stroke='%23f5a623' stroke-width='6'/%3E%3Cellipse cx='50' cy='35' rx='20' ry='12' fill='none' stroke='%23f5a623' stroke-width='4'/%3E%3Ccircle cx='50' cy='35' r='6' fill='%23f5a623'/%3E%3Cline x1='50' y1='45' x2='50' y2='85' stroke='%23f5a623' stroke-width='6' stroke-linecap='round'/%3E%3Cline x1='35' y1='90' x2='65' y2='90' stroke='%23f5a623' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E">
+  <title>Check Your Email - Grant Wire Summarizer</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     * { box-sizing: border-box; }
@@ -581,8 +604,8 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Dashboard - CryptoGrantWire</title>
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cellipse cx='50' cy='35' rx='35' ry='20' fill='none' stroke='%23f5a623' stroke-width='6'/%3E%3Cellipse cx='50' cy='35' rx='20' ry='12' fill='none' stroke='%23f5a623' stroke-width='4'/%3E%3Ccircle cx='50' cy='35' r='6' fill='%23f5a623'/%3E%3Cline x1='50' y1='45' x2='50' y2='85' stroke='%23f5a623' stroke-width='6' stroke-linecap='round'/%3E%3Cline x1='35' y1='90' x2='65' y2='90' stroke='%23f5a623' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E">
+  <title>Dashboard - Grant Wire Summarizer</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     * { box-sizing: border-box; }
@@ -796,7 +819,7 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
 <body>
   <div class="header">
     <div class="header-content">
-      <h1 class="logo"><span class="logo-crypto">Crypto</span><span class="logo-grant">Grant</span><span class="logo-wire">Wire</span></h1>
+      <h1 class="logo">📡 <span class="logo-grant">Grant</span><span class="logo-wire">Wire</span></h1>
       <p>Newsletter Automation Dashboard</p>
     </div>
   </div>
@@ -815,6 +838,12 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
           <div class="form-group">
             <label for="endDate">End Date</label>
             <input type="date" id="endDate" name="endDate" value="${formatDate(endDate)}">
+          </div>
+          <div class="form-group">
+            <label for="wireFilter">Feed</label>
+            <select id="wireFilter" name="wire">
+              <option value="">Loading feeds...</option>
+            </select>
           </div>
         </div>
         <div class="form-row model-row">
@@ -976,6 +1005,29 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
     }
 
     loadModels();
+
+    // Fetch and populate wires/feeds on page load
+    const wireFilterSelect = document.getElementById('wireFilter');
+    
+    async function loadWires() {
+      try {
+        const response = await fetch('/api/wires?session=' + session);
+        if (!response.ok) throw new Error('Failed to fetch wires');
+        const wires = await response.json();
+
+        // Build options: "All Feeds" first, then each wire
+        let options = '<option value="">All Feeds</option>';
+        wires.forEach(w => {
+          options += '<option value="' + w.wire + '">' + w.displayName + ' (' + w.entryCount + ' entries)</option>';
+        });
+        wireFilterSelect.innerHTML = options;
+      } catch (error) {
+        console.error('Failed to load wires:', error);
+        wireFilterSelect.innerHTML = '<option value="">All Feeds</option>';
+      }
+    }
+
+    loadWires();
 
     // Schedule management
     const scheduleEnabled = document.getElementById('scheduleEnabled');
@@ -1232,6 +1284,7 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
       const endDate = document.getElementById('endDate').value;
       const grokModel = grokModelSelect.value;
       const anthropicModel = anthropicModelSelect.value;
+      const wireFilter = document.getElementById('wireFilter').value;
 
       runButton.disabled = true;
       runButton.textContent = 'Starting...';
@@ -1247,7 +1300,7 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
         const response = await fetch('/api/run-job', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session, startDate, endDate, grokModel, anthropicModel })
+          body: JSON.stringify({ session, startDate, endDate, grokModel, anthropicModel, wire: wireFilter || undefined })
         });
 
         const data = await response.json();
@@ -1316,8 +1369,8 @@ function renderDownloadPage(filename: string, downloadToken: string): string {
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Download - CryptoGrantWire</title>
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cellipse cx='50' cy='35' rx='35' ry='20' fill='none' stroke='%23f5a623' stroke-width='6'/%3E%3Cellipse cx='50' cy='35' rx='20' ry='12' fill='none' stroke='%23f5a623' stroke-width='4'/%3E%3Ccircle cx='50' cy='35' r='6' fill='%23f5a623'/%3E%3Cline x1='50' y1='45' x2='50' y2='85' stroke='%23f5a623' stroke-width='6' stroke-linecap='round'/%3E%3Cline x1='35' y1='90' x2='65' y2='90' stroke='%23f5a623' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E">
+  <title>Download - Grant Wire Summarizer</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     * { box-sizing: border-box; }
@@ -1374,8 +1427,8 @@ function renderExpiredLinkPage(message: string): string {
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Link Expired - CryptoGrantWire</title>
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cellipse cx='50' cy='35' rx='35' ry='20' fill='none' stroke='%23f5a623' stroke-width='6'/%3E%3Cellipse cx='50' cy='35' rx='20' ry='12' fill='none' stroke='%23f5a623' stroke-width='4'/%3E%3Ccircle cx='50' cy='35' r='6' fill='%23f5a623'/%3E%3Cline x1='50' y1='45' x2='50' y2='85' stroke='%23f5a623' stroke-width='6' stroke-linecap='round'/%3E%3Cline x1='35' y1='90' x2='65' y2='90' stroke='%23f5a623' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E">
+  <title>Link Expired - Grant Wire Summarizer</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     * { box-sizing: border-box; }
@@ -1442,8 +1495,8 @@ function renderResendSuccessPage(): string {
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Link Sent - CryptoGrantWire</title>
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cellipse cx='50' cy='35' rx='35' ry='20' fill='none' stroke='%23f5a623' stroke-width='6'/%3E%3Cellipse cx='50' cy='35' rx='20' ry='12' fill='none' stroke='%23f5a623' stroke-width='4'/%3E%3Ccircle cx='50' cy='35' r='6' fill='%23f5a623'/%3E%3Cline x1='50' y1='45' x2='50' y2='85' stroke='%23f5a623' stroke-width='6' stroke-linecap='round'/%3E%3Cline x1='35' y1='90' x2='65' y2='90' stroke='%23f5a623' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E">
+  <title>Link Sent - Grant Wire Summarizer</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     * { box-sizing: border-box; }
@@ -1495,8 +1548,8 @@ function renderErrorPage(message: string): string {
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Error - CryptoGrantWire</title>
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cellipse cx='50' cy='35' rx='35' ry='20' fill='none' stroke='%23f5a623' stroke-width='6'/%3E%3Cellipse cx='50' cy='35' rx='20' ry='12' fill='none' stroke='%23f5a623' stroke-width='4'/%3E%3Ccircle cx='50' cy='35' r='6' fill='%23f5a623'/%3E%3Cline x1='50' y1='45' x2='50' y2='85' stroke='%23f5a623' stroke-width='6' stroke-linecap='round'/%3E%3Cline x1='35' y1='90' x2='65' y2='90' stroke='%23f5a623' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E">
+  <title>Error - Grant Wire Summarizer</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     * { box-sizing: border-box; }

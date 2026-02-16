@@ -1,3 +1,5 @@
+export type Wire = 'crypto' | 'ai' | 'oss';
+
 export interface DatabaseEntry {
   id: string;
   url: string;
@@ -5,6 +7,7 @@ export interface DatabaseEntry {
   category: string;
   timestamp: Date;
   source: string;
+  wire?: Wire;
 }
 
 export interface ProcessedEntry {
@@ -14,6 +17,7 @@ export interface ProcessedEntry {
   category: string;
   timestamp: Date;
   source: string;
+  wire?: Wire;
   enrichedSummary: string;
   processingMethod: 'grok' | 'opus';
   processingError?: string;
@@ -26,6 +30,7 @@ export interface ProcessingStats {
   successfulProcessing: number;
   failedProcessing: number;
   categories: string[];
+  entriesByWire?: Record<Wire, number>;
 }
 
 export interface WeeklySummaryResult {
@@ -36,6 +41,7 @@ export interface WeeklySummaryResult {
     end: Date;
   };
   generatedAt: Date;
+  wire?: Wire;
 }
 
 export interface MagicLinkToken {
