@@ -104,10 +104,11 @@ export async function syncOrgFromEntry(
     return { orgName, action: 'skipped', reason: 'Name too short' };
   }
 
-  // Check if org already exists in main CRM
+  // Check if org already exists in main CRM (via local cache)
   const match = await findOrgMatch(orgName);
 
   if (match) {
+    console.log(`[CRM Sync] "${orgName}" matched in cache as "${match.orgName}"`);
     await updateOrgLastSeen(match.orgId);
     return {
       orgName,
@@ -117,10 +118,13 @@ export async function syncOrgFromEntry(
     };
   }
 
-  // Search in main CRM via Notion search
+  // Search in main CRM via Notion database query
   const searchResults = await searchOrgs(orgName);
+  console.log(`[CRM Sync] "${orgName}" Notion search returned ${searchResults.length} results`);
+  
   if (searchResults.length > 0) {
     const bestMatch = searchResults[0];
+    console.log(`[CRM Sync] "${orgName}" matched in main CRM as "${bestMatch.name}"`);
     addToCache(bestMatch);
     await updateOrgLastSeen(bestMatch.id);
     return {
@@ -131,6 +135,8 @@ export async function syncOrgFromEntry(
       reason: 'Found via Notion search',
     };
   }
+  
+  console.log(`[CRM Sync] "${orgName}" not found in main CRM, checking staging...`);
 
   // If staging is configured and enabled, check staging and create there
   if (options.useStaging && isStagingConfigured()) {
