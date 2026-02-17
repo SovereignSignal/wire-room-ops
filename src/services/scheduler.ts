@@ -237,10 +237,14 @@ export function getNextRunTime(scheduleId?: string): Date | null {
   }
 
   const now = new Date();
-  const next = new Date(now);
 
-  // Find the next occurrence of the scheduled day/time
-  const currentDay = now.getDay();
+  // Get current time in the schedule's timezone
+  const tzNow = new Date(now.toLocaleString('en-US', { timeZone: schedule.timezone }));
+  const tzOffset = tzNow.getTime() - now.getTime();
+
+  // Calculate next run in timezone-local time
+  const next = new Date(tzNow);
+  const currentDay = tzNow.getDay();
   const targetDay = schedule.dayOfWeek;
 
   let daysUntilTarget = targetDay - currentDay;
@@ -248,15 +252,16 @@ export function getNextRunTime(scheduleId?: string): Date | null {
     daysUntilTarget += 7;
   }
 
-  next.setDate(now.getDate() + daysUntilTarget);
+  next.setDate(tzNow.getDate() + daysUntilTarget);
   next.setHours(schedule.hour, schedule.minute, 0, 0);
 
   // If the time has already passed today and it's the target day, add 7 days
-  if (next <= now) {
+  if (next <= tzNow) {
     next.setDate(next.getDate() + 7);
   }
 
-  return next;
+  // Convert back from timezone-local to real time
+  return new Date(next.getTime() - tzOffset);
 }
 
 export function isSchedulerRunning(): boolean {

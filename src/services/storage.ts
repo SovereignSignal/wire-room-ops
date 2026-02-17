@@ -145,8 +145,8 @@ function formatDateForFilename(date: Date): string {
 async function cleanupOldFiles(): Promise<void> {
   try {
     const pool = getPool();
-    
-    // Keep only the 10 most recent files
+
+    // Keep only the 10 most recent files in DB
     await pool.query(`
       DELETE FROM generated_files
       WHERE id NOT IN (
@@ -155,14 +155,12 @@ async function cleanupOldFiles(): Promise<void> {
         LIMIT 10
       )
     `);
-    
-    // Refresh cache
-    const allFiles = await listFiles();
-    if (allFiles.length > 10) {
-      const toDelete = allFiles.slice(10);
-      for (const file of toDelete) {
-        filesCache.delete(file.id);
-      }
+
+    // Prune in-memory cache to match
+    const sorted = Array.from(filesCache.values())
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    for (const file of sorted.slice(10)) {
+      filesCache.delete(file.id);
     }
   } catch (error) {
     console.error('[Storage] Failed to cleanup old files:', error);

@@ -2,13 +2,13 @@ import express, { Request, Response } from 'express';
 import { config } from './config';
 import { validateMagicLink, createDownloadToken, createSessionToken, validateSession, createLoginMagicLink } from './services/auth';
 import { getFile, listFiles } from './services/storage';
-import { getAvailableWires } from './db';
+import { getAvailableWires, closePool } from './db';
 import { sendLoginEmail } from './services/email';
 import { runWeeklySummaryJob } from './jobs/weekly-summary';
 import { StoredFile } from './types';
 import { jobQueue } from './services/job-queue';
 import { getAllModels } from './services/models';
-import { getSchedule, getSchedules, setSchedule, addSchedule, removeSchedule, formatScheduleDescription, getNextRunTime, initScheduler, ScheduleConfig, sendTestAlert, getSchedulerStatus } from './services/scheduler';
+import { getSchedule, getSchedules, setSchedule, addSchedule, removeSchedule, formatScheduleDescription, getNextRunTime, initScheduler, stopScheduler, ScheduleConfig, sendTestAlert, getSchedulerStatus } from './services/scheduler';
 import { runCrmSyncJob, getStagingOrgs, CrmSyncJobResult } from './services/crm-sync';
 import { isStagingConfigured } from './services/notion';
 
@@ -25,6 +25,16 @@ function escapeHtml(str: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
+}
+
+// Auth middleware - checks session from query string or request body
+function requireAuth(req: Request, res: Response, next: Function): void {
+  const session = (req.query.session || req.body?.session) as string;
+  if (!session || !validateSession(session)) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+  next();
 }
 
 // Simple in-memory rate limiter
@@ -123,14 +133,7 @@ app.get('/dashboard', async (req: Request, res: Response) => {
 });
 
 // API: Get available models
-app.get('/api/models', async (req: Request, res: Response) => {
-  const session = req.query.session as string;
-
-  if (!session || !validateSession(session)) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
-
+app.get('/api/models', requireAuth, async (req: Request, res: Response) => {
   try {
     const models = await getAllModels();
     res.json(models);
@@ -141,14 +144,7 @@ app.get('/api/models', async (req: Request, res: Response) => {
 });
 
 // API: Get available wires (feeds) from database
-app.get('/api/wires', async (req: Request, res: Response) => {
-  const session = req.query.session as string;
-
-  if (!session || !validateSession(session)) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
-
+app.get('/api/wires', requireAuth, async (req: Request, res: Response) => {
   try {
     const wires = await getAvailableWires();
     res.json(wires);
@@ -159,14 +155,7 @@ app.get('/api/wires', async (req: Request, res: Response) => {
 });
 
 // Trigger job manually (async with job queue)
-app.post('/api/run-job', async (req: Request, res: Response) => {
-  const session = req.body.session;
-
-  if (!session || !validateSession(session)) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
-
+app.post('/api/run-job', requireAuth, async (req: Request, res: Response) => {
   if (!rateLimit('run-job', 3, 5 * 60 * 1000)) {
     res.status(429).json({ error: 'Too many job requests. Please wait before trying again.' });
     return;
@@ -226,14 +215,7 @@ app.post('/api/run-job', async (req: Request, res: Response) => {
 });
 
 // SSE endpoint for job progress
-app.get('/api/job/:jobId/progress', (req: Request, res: Response) => {
-  const session = req.query.session as string;
-
-  if (!session || !validateSession(session)) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
-
+app.get('/api/job/:jobId/progress', requireAuth, (req: Request, res: Response) => {
   const { jobId } = req.params;
   const job = jobQueue.getJob(jobId);
 
@@ -373,13 +355,7 @@ app.get('/download/:token', async (req: Request, res: Response) => {
 });
 
 // API: List files
-app.get('/api/files', async (req: Request, res: Response) => {
-  const session = req.query.session as string;
-
-  if (!session || !validateSession(session)) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
+app.get('/api/files', requireAuth, async (req: Request, res: Response) => {
 
   const files = await listFiles();
   res.json(files.map((f: StoredFile) => ({
@@ -391,14 +367,7 @@ app.get('/api/files', async (req: Request, res: Response) => {
 });
 
 // API: List all schedules
-app.get('/api/schedules', (req: Request, res: Response) => {
-  const session = req.query.session as string;
-
-  if (!session || !validateSession(session)) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
-
+app.get('/api/schedules', requireAuth, (req: Request, res: Response) => {
   const schedules = getSchedules().map(schedule => ({
     ...schedule,
     description: formatScheduleDescription(schedule),
@@ -409,14 +378,8 @@ app.get('/api/schedules', (req: Request, res: Response) => {
 });
 
 // API: Get single schedule (legacy compatibility)
-app.get('/api/schedule', (req: Request, res: Response) => {
-  const session = req.query.session as string;
+app.get('/api/schedule', requireAuth, (req: Request, res: Response) => {
   const id = req.query.id as string;
-
-  if (!session || !validateSession(session)) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
 
   const schedule = getSchedule(id);
   if (!schedule) {
@@ -453,14 +416,7 @@ function validateScheduleParams(body: Record<string, any>): string | null {
 }
 
 // API: Create new schedule
-app.post('/api/schedules', async (req: Request, res: Response) => {
-  const session = req.body.session;
-
-  if (!session || !validateSession(session)) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
-
+app.post('/api/schedules', requireAuth, async (req: Request, res: Response) => {
   const validationError = validateScheduleParams(req.body);
   if (validationError) {
     res.status(400).json({ error: validationError });
@@ -499,14 +455,8 @@ app.post('/api/schedules', async (req: Request, res: Response) => {
 });
 
 // API: Update schedule
-app.put('/api/schedules/:id', async (req: Request, res: Response) => {
-  const session = req.body.session;
+app.put('/api/schedules/:id', requireAuth, async (req: Request, res: Response) => {
   const id = req.params.id;
-
-  if (!session || !validateSession(session)) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
 
   const validationError = validateScheduleParams(req.body);
   if (validationError) {
@@ -551,14 +501,8 @@ app.put('/api/schedules/:id', async (req: Request, res: Response) => {
 });
 
 // API: Delete schedule
-app.delete('/api/schedules/:id', async (req: Request, res: Response) => {
-  const session = req.query.session as string;
+app.delete('/api/schedules/:id', requireAuth, async (req: Request, res: Response) => {
   const id = req.params.id;
-
-  if (!session || !validateSession(session)) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
 
   try {
     const deleted = await removeSchedule(id);
@@ -574,14 +518,8 @@ app.delete('/api/schedules/:id', async (req: Request, res: Response) => {
 });
 
 // API: Update schedule (legacy POST compatibility)
-app.post('/api/schedule', async (req: Request, res: Response) => {
-  const session = req.body.session;
+app.post('/api/schedule', requireAuth, async (req: Request, res: Response) => {
   const id = req.body.id;
-
-  if (!session || !validateSession(session)) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
 
   const { name, enabled, dayOfWeek, hour, minute, lookbackDays, grokModel, anthropicModel, timezone, wire } = req.body;
 
@@ -627,13 +565,7 @@ app.post('/api/schedule', async (req: Request, res: Response) => {
 });
 
 // API: Send test alert to verify email configuration
-app.post('/api/test-alert', async (req: Request, res: Response) => {
-  const session = req.body.session;
-
-  if (!session || !validateSession(session)) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
+app.post('/api/test-alert', requireAuth, async (req: Request, res: Response) => {
 
   try {
     const result = await sendTestAlert();
@@ -649,27 +581,13 @@ app.post('/api/test-alert', async (req: Request, res: Response) => {
 });
 
 // API: Get scheduler status (for debugging)
-app.get('/api/scheduler-status', (req: Request, res: Response) => {
-  const session = req.query.session as string;
-
-  if (!session || !validateSession(session)) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
-
+app.get('/api/scheduler-status', requireAuth, (req: Request, res: Response) => {
   const status = getSchedulerStatus();
   res.json(status);
 });
 
 // API: Run CRM sync job
-app.post('/api/crm-sync', async (req: Request, res: Response) => {
-  const session = req.body.session;
-
-  if (!session || !validateSession(session)) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
-
+app.post('/api/crm-sync', requireAuth, async (req: Request, res: Response) => {
   const { lookbackDays, wire } = req.body;
 
   try {
@@ -690,14 +608,7 @@ app.post('/api/crm-sync', async (req: Request, res: Response) => {
 });
 
 // API: Get CRM sync status (staging orgs count, config status)
-app.get('/api/crm-sync/status', async (req: Request, res: Response) => {
-  const session = req.query.session as string;
-
-  if (!session || !validateSession(session)) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
-
+app.get('/api/crm-sync/status', requireAuth, async (req: Request, res: Response) => {
   try {
     const stagingConfigured = isStagingConfigured();
     let pendingOrgs: number = 0;
@@ -718,14 +629,8 @@ app.get('/api/crm-sync/status', async (req: Request, res: Response) => {
 });
 
 // API: Get staging orgs list
-app.get('/api/crm-sync/staging-orgs', async (req: Request, res: Response) => {
-  const session = req.query.session as string;
+app.get('/api/crm-sync/staging-orgs', requireAuth, async (req: Request, res: Response) => {
   const status = req.query.status as 'Pending' | 'Approved' | 'Rejected' | undefined;
-
-  if (!session || !validateSession(session)) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
 
   try {
     const orgs = await getStagingOrgs(status);
@@ -2150,9 +2055,28 @@ export async function startServer(): Promise<void> {
     console.error('Scheduler initialization failed (non-fatal):', error);
   }
 
-  app.listen(config.app.port, () => {
+  const server = app.listen(config.app.port, () => {
     console.log(`Server running on port ${config.app.port}`);
   });
+
+  // Graceful shutdown
+  const shutdown = async (signal: string) => {
+    console.log(`\n[Server] ${signal} received, shutting down gracefully...`);
+    stopScheduler();
+    server.close(async () => {
+      await closePool();
+      console.log('[Server] Shutdown complete');
+      process.exit(0);
+    });
+    // Force exit after 10s if graceful shutdown stalls
+    setTimeout(() => {
+      console.error('[Server] Forced shutdown after timeout');
+      process.exit(1);
+    }, 10000);
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 export { app };
