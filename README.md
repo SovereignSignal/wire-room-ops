@@ -6,7 +6,9 @@ Automated weekly newsletter preparation for Crypto Grant Wire. Pulls pre-categor
 
 - **Multi-AI Processing**: Routes X.com/Twitter URLs to Grok API (with live tweet access) and other URLs to Claude (with Firecrawl web scraping)
 - **Web Dashboard**: Modern dark-themed UI with magic link authentication
-- **Scheduled Jobs**: Configurable automated runs with cron-based scheduling, persisted to database
+- **Multi-Feed Support**: Filter by wire/feed (crypto, ai, oss) for targeted summaries
+- **Scheduled Jobs**: Multiple configurable schedules with cron-based scheduling, persisted to database
+- **CRM Integration**: Notion-based org tracking with staging database workflow for new organizations
 - **Health Monitoring**: Real-time scheduler status, job history, and failure notifications
 - **Model Selection**: Dynamic model loading from Grok and Anthropic APIs with UI selection
 - **Email Notifications**: Branded emails for login, job completion, test alerts, and failure notifications
@@ -177,10 +179,16 @@ src/
 | `/api/files` | GET | List recent generated files |
 | `/api/run-job` | POST | Trigger summary job manually |
 | `/api/job/:jobId/progress` | GET | SSE endpoint for job progress updates |
-| `/api/schedule` | GET | Get current schedule configuration |
-| `/api/schedule` | POST | Update schedule configuration |
+| `/api/schedules` | GET | List all schedule configurations |
+| `/api/schedules` | POST | Create new schedule |
+| `/api/schedules/:id` | PUT | Update schedule configuration |
+| `/api/schedules/:id` | DELETE | Delete a schedule |
+| `/api/schedule` | GET/POST | Legacy single-schedule endpoints |
 | `/api/scheduler-status` | GET | Get scheduler health and job history |
 | `/api/test-alert` | POST | Send test email to verify configuration |
+| `/api/crm-sync` | POST | Run CRM org sync job |
+| `/api/crm-sync/status` | GET | Get CRM sync status (staging config, pending count) |
+| `/api/crm-sync/staging-orgs` | GET | List organizations in staging database |
 
 ## Dashboard Features
 
@@ -210,6 +218,37 @@ The web dashboard provides:
 - Server start time
 - Last job run time
 - Last job result (Success/Failed with error details)
+
+### CRM Org Sync
+- View staging database configuration status
+- Set lookback period (days) for sync
+- Run manual sync to identify new organizations
+- View pending org count awaiting review
+
+## CRM Integration
+
+The app integrates with Notion for organization tracking:
+
+1. **Main Orgs Database**: Your existing CRM with known organizations
+2. **Staging Database**: New organizations discovered from entries, pending review
+
+### Sync Workflow
+1. Entries are scanned for organization names (from `entities.orgs` field)
+2. Each org is checked against the main CRM via local cache and Notion search
+3. New orgs are created in the staging database with status "Pending"
+4. Review pending orgs in Notion and set status to "Approved" or "Rejected"
+5. Use Notion automation to copy approved orgs to main CRM
+
+### Staging Database Schema
+| Property | Type | Description |
+|----------|------|-------------|
+| Name | title | Organization name |
+| Wire | select | crypto / ai / oss |
+| Source Type | select | Social / Blog / Forum / etc. |
+| First Seen | date | When first encountered |
+| Entry Title | text | Title of entry where org appeared |
+| Entry URL | url | Link to original source |
+| Status | select | Pending / Approved / Rejected |
 
 ## How It Works
 
@@ -248,6 +287,11 @@ Default schedule: Wednesday at 9:00 AM Pacific, looking back 7 days.
 | `PORT` | Server port (default: 3000) | No |
 | `START_DATE` | Override start date for CLI job (ISO format) | No |
 | `END_DATE` | Override end date for CLI job (ISO format) | No |
+| `NOTION_API_KEY` | Notion integration API key | No* |
+| `NOTION_ORGS_DB_ID` | Main organizations database ID | No* |
+| `NOTION_STAGING_ORGS_DB_ID` | Staging database for new orgs | No* |
+
+*Required for CRM integration features
 
 ## Authentication
 

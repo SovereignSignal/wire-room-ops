@@ -136,6 +136,34 @@ Scheduler restarts automatically when you save schedule config via the dashboard
 ### Files disappear after restart
 Files are stored in-memory. This is by design for simplicity.
 
+## CRM Sync System
+
+### Overview
+The CRM sync identifies organizations mentioned in entries and tracks them in Notion:
+- **Main Orgs DB**: Known organizations with aliases for matching
+- **Staging DB**: New organizations pending review
+
+### Sync Flow (`src/services/crm-sync.ts`)
+1. `runCrmSyncJob()` fetches entries for date range
+2. Extracts org names from `entities.orgs` field
+3. `syncOrgFromEntry()` checks local cache, then Notion search
+4. If no match found, creates org in staging DB via `createStagingOrg()`
+
+### Org Cache (`src/services/org-cache.ts`)
+- In-memory cache of org names and aliases from main CRM
+- Refreshed before each sync run
+- Supports fuzzy matching via normalized names
+
+### Notion Integration (`src/services/notion.ts`)
+- Rate-limited API calls (350ms delay)
+- `isStagingConfigured()` checks if staging DB ID is set
+- `checkStagingOrgExists()` prevents duplicates in staging
+
+### Environment Variables for CRM
+- `NOTION_API_KEY` - Notion integration token
+- `NOTION_ORGS_DB_ID` - Main organizations database
+- `NOTION_STAGING_ORGS_DB_ID` - Staging database for new orgs
+
 ## Code Style Notes
 
 - TypeScript strict mode
