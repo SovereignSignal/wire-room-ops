@@ -149,6 +149,25 @@ export async function searchOrgs(query: string): Promise<NotionOrg[]> {
   if (!client) return [];
 
   try {
+    // First, try direct database query with name filter (more reliable)
+    const dbResponse = await rateLimitedRequest(() =>
+      client.databases.query({
+        database_id: config.apis.notion.orgsDbId,
+        filter: {
+          property: 'Name',
+          title: { contains: query },
+        },
+        page_size: 10,
+      })
+    );
+
+    if (dbResponse.results.length > 0) {
+      return dbResponse.results
+        .filter((page): page is PageObjectResponse => isFullPage(page))
+        .map(page => parseOrgPage(page));
+    }
+
+    // Fallback to global search if database query returns nothing
     const response = await rateLimitedRequest(() =>
       client.search({
         query,
@@ -423,34 +442,20 @@ export async function checkStagingOrgExists(name: string): Promise<boolean> {
   const normalizedName = name.toLowerCase().trim();
 
   try {
+    // Use contains filter for case-insensitive matching
     const response = await rateLimitedRequest(() =>
-      client.databases.query({
-        database_id: config.apis.notion.stagingOrgsDbId,
-        filter: {
-          property: 'Name',
-          title: { equals: name },
-        },
-        page_size: 1,
-      })
-    );
-
-    if (response.results.length > 0) {
-      return true;
-    }
-
-    // Also check with case-insensitive search
-    const searchResponse = await rateLimitedRequest(() =>
       client.databases.query({
         database_id: config.apis.notion.stagingOrgsDbId,
         filter: {
           property: 'Name',
           title: { contains: name },
         },
-        page_size: 10,
+        page_size: 20,
       })
     );
 
-    return searchResponse.results.some((page) => {
+    // Check for exact match (case-insensitive)
+    return response.results.some((page) => {
       if (!isFullPage(page)) return false;
       const props = (page as PageObjectResponse).properties as Record<string, any>;
       const pageName = props['Name']?.title?.[0]?.plain_text?.toLowerCase().trim();
