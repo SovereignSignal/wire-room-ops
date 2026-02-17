@@ -1,6 +1,18 @@
-import { Wire } from '../types';
-import { createOrg, searchOrgs, updateOrgLastSeen, NotionOrg, isNotionConfigured } from './notion';
+import { Wire, DatabaseEntry } from '../types';
+import { 
+  createOrg, 
+  searchOrgs, 
+  updateOrgLastSeen, 
+  NotionOrg, 
+  isNotionConfigured,
+  isStagingConfigured,
+  createStagingOrg,
+  checkStagingOrgExists,
+  getStagingOrgs,
+  StagingOrg,
+} from './notion';
 import { findOrgMatch, addToCache, refreshCache, getCacheStats } from './org-cache';
+import { getEntriesForDateRange } from '../db';
 
 export interface TeleSumEntry {
   id: number;
@@ -85,12 +97,14 @@ function inferSourceType(sourceType?: string): string | undefined {
 
 export async function syncOrgFromEntry(
   orgName: string,
-  entry: TeleSumEntry
+  entry: TeleSumEntry,
+  options: { useStaging?: boolean } = {}
 ): Promise<SyncResult> {
   if (!orgName || orgName.trim().length < 2) {
     return { orgName, action: 'skipped', reason: 'Name too short' };
   }
 
+  // Check if org already exists in main CRM
   const match = await findOrgMatch(orgName);
 
   if (match) {
@@ -103,6 +117,7 @@ export async function syncOrgFromEntry(
     };
   }
 
+  // Search in main CRM via Notion search
   const searchResults = await searchOrgs(orgName);
   if (searchResults.length > 0) {
     const bestMatch = searchResults[0];
@@ -117,6 +132,45 @@ export async function syncOrgFromEntry(
     };
   }
 
+  // If staging is configured and enabled, check staging and create there
+  if (options.useStaging && isStagingConfigured()) {
+    // Check if already in staging
+    const existsInStaging = await checkStagingOrgExists(orgName);
+    if (existsInStaging) {
+      return {
+        orgName,
+        action: 'skipped',
+        reason: 'Already in staging database',
+      };
+    }
+
+    // Create in staging database
+    const stagingOrg = await createStagingOrg({
+      name: orgName,
+      wire: entry.wire,
+      sourceType: inferSourceType(entry.source?.type),
+      entryTitle: entry.title,
+      entryUrl: entry.source?.url,
+    });
+
+    if (stagingOrg) {
+      return {
+        orgName,
+        action: 'created',
+        notionOrgId: stagingOrg.id,
+        notionOrgName: stagingOrg.name,
+        reason: 'Created in staging database',
+      };
+    }
+
+    return {
+      orgName,
+      action: 'error',
+      reason: 'Failed to create org in staging database',
+    };
+  }
+
+  // Fallback: create directly in main CRM (legacy behavior)
   const twitterUrl = extractTwitterUrl(entry.source?.url);
   const websiteUrl = extractWebsiteUrl(entry.source?.url, entry.source?.type);
 
@@ -147,7 +201,7 @@ export async function syncOrgFromEntry(
 
 export async function syncEntry(
   entry: TeleSumEntry,
-  options: { filterByCategory?: boolean } = {}
+  options: { filterByCategory?: boolean; useStaging?: boolean } = {}
 ): Promise<EntrySyncResult> {
   const result: EntrySyncResult = {
     entryId: entry.id,
@@ -166,7 +220,7 @@ export async function syncEntry(
   const uniqueOrgs = [...new Set(entry.orgs)];
 
   for (const orgName of uniqueOrgs) {
-    const syncResult = await syncOrgFromEntry(orgName, entry);
+    const syncResult = await syncOrgFromEntry(orgName, entry, { useStaging: options.useStaging });
     result.orgsProcessed.push(syncResult);
   }
 
@@ -177,6 +231,7 @@ export async function syncEntries(
   entries: TeleSumEntry[],
   options: {
     filterByCategory?: boolean;
+    useStaging?: boolean;
     onProgress?: (current: number, total: number) => void;
   } = {}
 ): Promise<{
@@ -210,7 +265,10 @@ export async function syncEntries(
       options.onProgress(i + 1, entries.length);
     }
 
-    const result = await syncEntry(entries[i], { filterByCategory: options.filterByCategory });
+    const result = await syncEntry(entries[i], { 
+      filterByCategory: options.filterByCategory,
+      useStaging: options.useStaging,
+    });
     results.push(result);
 
     for (const orgResult of result.orgsProcessed) {
@@ -244,6 +302,40 @@ export async function syncEntries(
       orgsErrored,
     },
   };
+}
+
+export async function syncDatabaseEntries(
+  entries: { id: string; title?: string; url?: string; category?: string; wire?: Wire; orgs?: string[] }[],
+  options: {
+    filterByCategory?: boolean;
+    useStaging?: boolean;
+    onProgress?: (current: number, total: number) => void;
+  } = {}
+): Promise<{
+  results: EntrySyncResult[];
+  stats: {
+    entriesProcessed: number;
+    orgsMatched: number;
+    orgsCreated: number;
+    orgsSkipped: number;
+    orgsErrored: number;
+  };
+}> {
+  // Convert DatabaseEntry format to TeleSumEntry format
+  const teleSumEntries: TeleSumEntry[] = entries.map(entry => ({
+    id: parseInt(entry.id, 10) || 0,
+    title: entry.title,
+    category: entry.category,
+    orgs: entry.orgs || [],
+    amounts: [],
+    source: {
+      url: entry.url,
+    },
+    published_at: new Date().toISOString(),
+    wire: entry.wire,
+  }));
+
+  return syncEntries(teleSumEntries, options);
 }
 
 export async function fetchTeleSumEntries(
@@ -286,3 +378,120 @@ export async function fetchTeleSumEntries(
     return [];
   }
 }
+
+export interface CrmSyncJobResult {
+  success: boolean;
+  entriesProcessed: number;
+  orgsMatched: number;
+  orgsCreated: number;
+  orgsSkipped: number;
+  orgsErrored: number;
+  error?: string;
+  duration: number;
+}
+
+export async function runCrmSyncJob(options: {
+  lookbackDays?: number;
+  wire?: Wire | Wire[];
+  useStaging?: boolean;
+  onProgress?: (current: number, total: number) => void;
+} = {}): Promise<CrmSyncJobResult> {
+  const startTime = Date.now();
+  const lookbackDays = options.lookbackDays ?? 1; // Default to last 24 hours
+  
+  console.log(`[CRM Sync] Starting sync job with ${lookbackDays} day lookback`);
+
+  if (!isNotionConfigured()) {
+    return {
+      success: false,
+      entriesProcessed: 0,
+      orgsMatched: 0,
+      orgsCreated: 0,
+      orgsSkipped: 0,
+      orgsErrored: 0,
+      error: 'Notion API not configured',
+      duration: Date.now() - startTime,
+    };
+  }
+
+  // Use staging by default if configured
+  const useStaging = options.useStaging ?? isStagingConfigured();
+
+  if (useStaging && !isStagingConfigured()) {
+    return {
+      success: false,
+      entriesProcessed: 0,
+      orgsMatched: 0,
+      orgsCreated: 0,
+      orgsSkipped: 0,
+      orgsErrored: 0,
+      error: 'Staging database not configured (NOTION_STAGING_ORGS_DB_ID)',
+      duration: Date.now() - startTime,
+    };
+  }
+
+  try {
+    // Calculate date range
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - lookbackDays);
+    startDate.setHours(0, 0, 0, 0);
+    endDate.setHours(23, 59, 59, 999);
+
+    console.log(`[CRM Sync] Fetching entries from ${startDate.toISOString()} to ${endDate.toISOString()}`);
+
+    // Fetch entries from database
+    const entries = await getEntriesForDateRange(startDate, endDate, options.wire);
+    
+    console.log(`[CRM Sync] Found ${entries.length} entries to process`);
+
+    if (entries.length === 0) {
+      return {
+        success: true,
+        entriesProcessed: 0,
+        orgsMatched: 0,
+        orgsCreated: 0,
+        orgsSkipped: 0,
+        orgsErrored: 0,
+        duration: Date.now() - startTime,
+      };
+    }
+
+    // Filter entries that have orgs
+    const entriesWithOrgs = entries.filter(e => e.orgs && e.orgs.length > 0);
+    console.log(`[CRM Sync] ${entriesWithOrgs.length} entries have organization data`);
+
+    // Run sync
+    const { stats } = await syncDatabaseEntries(entriesWithOrgs, {
+      useStaging,
+      onProgress: options.onProgress,
+    });
+
+    console.log(`[CRM Sync] Sync complete: ${stats.orgsMatched} matched, ${stats.orgsCreated} created, ${stats.orgsSkipped} skipped, ${stats.orgsErrored} errored`);
+
+    return {
+      success: true,
+      entriesProcessed: stats.entriesProcessed,
+      orgsMatched: stats.orgsMatched,
+      orgsCreated: stats.orgsCreated,
+      orgsSkipped: stats.orgsSkipped,
+      orgsErrored: stats.orgsErrored,
+      duration: Date.now() - startTime,
+    };
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[CRM Sync] Job failed:', error);
+    return {
+      success: false,
+      entriesProcessed: 0,
+      orgsMatched: 0,
+      orgsCreated: 0,
+      orgsSkipped: 0,
+      orgsErrored: 0,
+      error: errorMsg,
+      duration: Date.now() - startTime,
+    };
+  }
+}
+
+export { getStagingOrgs, StagingOrg };

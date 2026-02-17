@@ -58,7 +58,8 @@ export async function getEntriesForDateRange(
       s.created_at as timestamp,
       m.extracted_urls,
       'telegram' as source,
-      s.wire
+      s.wire,
+      s.entities
     FROM summaries s
     LEFT JOIN messages m ON s.message_id = m.id
     LEFT JOIN categories c ON s.category_id = c.id
@@ -76,6 +77,10 @@ export async function getEntriesForDateRange(
     const urls = row.extracted_urls || [];
     const url = Array.isArray(urls) ? urls[0] : urls;
 
+    // Extract orgs from entities (supports both 'orgs' and legacy 'protocols' field)
+    const entities = row.entities || {};
+    const orgs = entities.orgs || entities.protocols || [];
+
     return {
       id: String(row.id),
       url: url || '',
@@ -84,6 +89,8 @@ export async function getEntriesForDateRange(
       timestamp: new Date(row.timestamp),
       source: row.source,
       wire: row.wire as Wire | undefined,
+      title: row.title || undefined,
+      orgs: Array.isArray(orgs) ? orgs : [],
     };
   });
 

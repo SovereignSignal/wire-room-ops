@@ -19,6 +19,10 @@ export function isNotionConfigured(): boolean {
   return Boolean(config.apis.notion.apiKey);
 }
 
+export function isStagingConfigured(): boolean {
+  return Boolean(config.apis.notion.apiKey && config.apis.notion.stagingOrgsDbId);
+}
+
 export interface NotionOrg {
   id: string;
   name: string;
@@ -38,6 +42,25 @@ export interface CreateOrgParams {
   sourceType?: string;
   twitter?: string;
   website?: string;
+}
+
+export interface StagingOrg {
+  id: string;
+  name: string;
+  wire?: string;
+  sourceType?: string;
+  firstSeen?: string;
+  entryTitle?: string;
+  entryUrl?: string;
+  status?: 'Pending' | 'Approved' | 'Rejected';
+}
+
+export interface CreateStagingOrgParams {
+  name: string;
+  wire?: Wire;
+  sourceType?: string;
+  entryTitle?: string;
+  entryUrl?: string;
 }
 
 const RATE_LIMIT_DELAY_MS = 350;
@@ -256,4 +279,185 @@ function parseOrgPage(page: PageObjectResponse): NotionOrg {
     lastSeen: getDate('Last Seen'),
     autoCreated: getCheckbox('Auto-created'),
   };
+}
+
+function parseStagingOrgPage(page: PageObjectResponse): StagingOrg {
+  const props = page.properties as Record<string, any>;
+
+  const getName = (): string => {
+    const titleProp = props['Name'];
+    if (titleProp?.title?.[0]?.plain_text) {
+      return titleProp.title[0].plain_text;
+    }
+    return 'Unknown';
+  };
+
+  const getSelect = (key: string): string | undefined => {
+    return props[key]?.select?.name;
+  };
+
+  const getUrl = (key: string): string | undefined => {
+    return props[key]?.url;
+  };
+
+  const getDate = (key: string): string | undefined => {
+    return props[key]?.date?.start;
+  };
+
+  const getText = (key: string): string | undefined => {
+    const prop = props[key];
+    if (prop?.rich_text?.[0]?.plain_text) {
+      return prop.rich_text[0].plain_text;
+    }
+    return undefined;
+  };
+
+  return {
+    id: page.id,
+    name: getName(),
+    wire: getSelect('Wire'),
+    sourceType: getSelect('Source Type'),
+    firstSeen: getDate('First Seen'),
+    entryTitle: getText('Entry Title'),
+    entryUrl: getUrl('Entry URL'),
+    status: getSelect('Status') as StagingOrg['status'],
+  };
+}
+
+export async function createStagingOrg(params: CreateStagingOrgParams): Promise<StagingOrg | null> {
+  const client = getNotionClient();
+  if (!client || !config.apis.notion.stagingOrgsDbId) return null;
+
+  const properties: any = {
+    Name: {
+      title: [{ text: { content: params.name } }],
+    },
+    'First Seen': {
+      date: { start: new Date().toISOString().split('T')[0] },
+    },
+    Status: {
+      select: { name: 'Pending' },
+    },
+  };
+
+  if (params.wire) {
+    const wireValue = params.wire.toUpperCase();
+    properties['Wire'] = { select: { name: wireValue } };
+  }
+
+  if (params.sourceType) {
+    properties['Source Type'] = { select: { name: params.sourceType } };
+  }
+
+  if (params.entryTitle) {
+    properties['Entry Title'] = {
+      rich_text: [{ text: { content: params.entryTitle.slice(0, 2000) } }],
+    };
+  }
+
+  if (params.entryUrl) {
+    properties['Entry URL'] = { url: params.entryUrl };
+  }
+
+  try {
+    const response = await rateLimitedRequest(() =>
+      client.pages.create({
+        parent: { database_id: config.apis.notion.stagingOrgsDbId },
+        properties,
+      })
+    );
+
+    return parseStagingOrgPage(response as PageObjectResponse);
+  } catch (error) {
+    console.error('Error creating staging org in Notion:', error);
+    return null;
+  }
+}
+
+export async function getStagingOrgs(status?: 'Pending' | 'Approved' | 'Rejected'): Promise<StagingOrg[]> {
+  const client = getNotionClient();
+  if (!client || !config.apis.notion.stagingOrgsDbId) return [];
+
+  const filter = status
+    ? {
+        property: 'Status',
+        select: { equals: status },
+      }
+    : undefined;
+
+  try {
+    const allOrgs: StagingOrg[] = [];
+    let hasMore = true;
+    let startCursor: string | undefined;
+
+    while (hasMore) {
+      const response = await rateLimitedRequest(() =>
+        client.databases.query({
+          database_id: config.apis.notion.stagingOrgsDbId,
+          filter,
+          start_cursor: startCursor,
+          page_size: 100,
+        })
+      );
+
+      allOrgs.push(
+        ...response.results
+          .filter((page): page is PageObjectResponse => isFullPage(page))
+          .map(page => parseStagingOrgPage(page))
+      );
+      hasMore = response.has_more;
+      startCursor = response.next_cursor ?? undefined;
+    }
+
+    return allOrgs;
+  } catch (error) {
+    console.error('Error fetching staging orgs from Notion:', error);
+    return [];
+  }
+}
+
+export async function checkStagingOrgExists(name: string): Promise<boolean> {
+  const client = getNotionClient();
+  if (!client || !config.apis.notion.stagingOrgsDbId) return false;
+
+  const normalizedName = name.toLowerCase().trim();
+
+  try {
+    const response = await rateLimitedRequest(() =>
+      client.databases.query({
+        database_id: config.apis.notion.stagingOrgsDbId,
+        filter: {
+          property: 'Name',
+          title: { equals: name },
+        },
+        page_size: 1,
+      })
+    );
+
+    if (response.results.length > 0) {
+      return true;
+    }
+
+    // Also check with case-insensitive search
+    const searchResponse = await rateLimitedRequest(() =>
+      client.databases.query({
+        database_id: config.apis.notion.stagingOrgsDbId,
+        filter: {
+          property: 'Name',
+          title: { contains: name },
+        },
+        page_size: 10,
+      })
+    );
+
+    return searchResponse.results.some((page) => {
+      if (!isFullPage(page)) return false;
+      const props = (page as PageObjectResponse).properties as Record<string, any>;
+      const pageName = props['Name']?.title?.[0]?.plain_text?.toLowerCase().trim();
+      return pageName === normalizedName;
+    });
+  } catch (error) {
+    console.error('Error checking staging org exists:', error);
+    return false;
+  }
 }

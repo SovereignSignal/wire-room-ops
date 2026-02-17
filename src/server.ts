@@ -9,6 +9,8 @@ import { StoredFile } from './types';
 import { jobQueue } from './services/job-queue';
 import { getAllModels } from './services/models';
 import { getSchedule, getSchedules, setSchedule, addSchedule, removeSchedule, formatScheduleDescription, getNextRunTime, initScheduler, ScheduleConfig, sendTestAlert, getSchedulerStatus } from './services/scheduler';
+import { runCrmSyncJob, getStagingOrgs, CrmSyncJobResult } from './services/crm-sync';
+import { isStagingConfigured } from './services/notion';
 
 const app = express();
 
@@ -582,6 +584,81 @@ app.get('/api/scheduler-status', (req: Request, res: Response) => {
   res.json(status);
 });
 
+// API: Run CRM sync job
+app.post('/api/crm-sync', async (req: Request, res: Response) => {
+  const session = req.body.session;
+
+  if (!session || !validateSession(session)) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+
+  const { lookbackDays, wire } = req.body;
+
+  try {
+    const result = await runCrmSyncJob({
+      lookbackDays: lookbackDays ? parseInt(lookbackDays, 10) : 1,
+      wire: wire || undefined,
+      useStaging: true,
+    });
+
+    res.json(result);
+  } catch (error) {
+    console.error('CRM sync failed:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error instanceof Error ? error.message : 'Unknown error' 
+    });
+  }
+});
+
+// API: Get CRM sync status (staging orgs count, config status)
+app.get('/api/crm-sync/status', async (req: Request, res: Response) => {
+  const session = req.query.session as string;
+
+  if (!session || !validateSession(session)) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+
+  try {
+    const stagingConfigured = isStagingConfigured();
+    let pendingOrgs: number = 0;
+
+    if (stagingConfigured) {
+      const orgs = await getStagingOrgs('Pending');
+      pendingOrgs = orgs.length;
+    }
+
+    res.json({
+      stagingConfigured,
+      pendingOrgs,
+    });
+  } catch (error) {
+    console.error('Failed to get CRM sync status:', error);
+    res.status(500).json({ error: 'Failed to get status' });
+  }
+});
+
+// API: Get staging orgs list
+app.get('/api/crm-sync/staging-orgs', async (req: Request, res: Response) => {
+  const session = req.query.session as string;
+  const status = req.query.status as 'Pending' | 'Approved' | 'Rejected' | undefined;
+
+  if (!session || !validateSession(session)) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+
+  try {
+    const orgs = await getStagingOrgs(status);
+    res.json({ orgs });
+  } catch (error) {
+    console.error('Failed to get staging orgs:', error);
+    res.status(500).json({ error: 'Failed to get staging orgs' });
+  }
+});
+
 function renderLoginPage(error?: string): string {
   return `
 <!DOCTYPE html>
@@ -1142,6 +1219,33 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
         </div>
       </div>
     </div>
+
+    <div class="card">
+      <h2>CRM Org Sync</h2>
+      <p class="form-description" style="margin-bottom: 16px;">Sync organization names from entries to Notion staging database for review.</p>
+      <div id="crm-sync-status" style="margin-bottom: 16px;">
+        <div class="status-grid">
+          <div class="status-item">
+            <div class="label">Staging DB</div>
+            <div id="crm-staging-configured" class="value muted">Loading...</div>
+          </div>
+          <div class="status-item">
+            <div class="label">Pending Orgs</div>
+            <div id="crm-pending-count" class="value muted">Loading...</div>
+          </div>
+        </div>
+      </div>
+      <div class="form-row" style="align-items: flex-end;">
+        <div class="form-group">
+          <label for="crmLookbackDays">Lookback Days</label>
+          <input type="number" id="crmLookbackDays" min="1" max="30" value="1" style="width: 80px;">
+        </div>
+        <button type="button" id="run-crm-sync" class="button">Run CRM Sync</button>
+      </div>
+      <div id="crm-sync-result" style="display: none; margin-top: 16px; padding: 12px 16px; background: #0d0d0d; border-radius: 8px; border: 1px solid #2a2a2a;">
+        <p style="margin: 0; color: #999;">Sync results will appear here</p>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -1655,6 +1759,70 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
       errorDiv.textContent = 'Error: ' + message;
       document.querySelector('.main').insertBefore(errorDiv, document.querySelector('.card'));
     }
+
+    // CRM Sync functionality
+    const crmStagingEl = document.getElementById('crm-staging-configured');
+    const crmPendingEl = document.getElementById('crm-pending-count');
+    const crmLookbackInput = document.getElementById('crmLookbackDays');
+    const runCrmSyncBtn = document.getElementById('run-crm-sync');
+    const crmResultEl = document.getElementById('crm-sync-result');
+
+    async function loadCrmStatus() {
+      try {
+        const response = await fetch('/api/crm-sync/status?session=' + session);
+        if (!response.ok) throw new Error('Failed to fetch');
+        const data = await response.json();
+        
+        crmStagingEl.textContent = data.stagingConfigured ? 'Configured' : 'Not Configured';
+        crmStagingEl.className = 'value ' + (data.stagingConfigured ? 'success' : 'warning');
+        
+        crmPendingEl.textContent = data.stagingConfigured ? data.pendingOrgs.toString() : '-';
+        crmPendingEl.className = 'value ' + (data.pendingOrgs > 0 ? 'warning' : 'muted');
+      } catch (error) {
+        crmStagingEl.textContent = 'Error';
+        crmStagingEl.className = 'value error';
+        crmPendingEl.textContent = '-';
+      }
+    }
+
+    loadCrmStatus();
+
+    runCrmSyncBtn.addEventListener('click', async () => {
+      const lookbackDays = crmLookbackInput.value || 1;
+      
+      runCrmSyncBtn.disabled = true;
+      runCrmSyncBtn.textContent = 'Running...';
+      crmResultEl.style.display = 'block';
+      crmResultEl.innerHTML = '<p style="margin: 0; color: #f5a623;">Syncing organizations...</p>';
+
+      try {
+        const response = await fetch('/api/crm-sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session, lookbackDays })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+          crmResultEl.innerHTML = '<p style="margin: 0; color: #4caf50;">Sync complete!</p>' +
+            '<p style="margin: 8px 0 0; color: #999; font-size: 13px;">' +
+            'Entries: ' + data.entriesProcessed + ' | ' +
+            'Matched: ' + data.orgsMatched + ' | ' +
+            'Created: ' + data.orgsCreated + ' | ' +
+            'Skipped: ' + data.orgsSkipped + ' | ' +
+            'Duration: ' + (data.duration / 1000).toFixed(1) + 's</p>';
+          loadCrmStatus();
+        } else {
+          crmResultEl.innerHTML = '<p style="margin: 0; color: #ef5350;">Sync failed: ' + (data.error || 'Unknown error') + '</p>';
+        }
+      } catch (error) {
+        crmResultEl.innerHTML = '<p style="margin: 0; color: #ef5350;">Error: ' + error.message + '</p>';
+      } finally {
+        runCrmSyncBtn.disabled = false;
+        runCrmSyncBtn.textContent = 'Run CRM Sync';
+      }
+    });
   </script>
 </body>
 </html>

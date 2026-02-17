@@ -8,6 +8,8 @@ export interface DatabaseEntry {
   timestamp: Date;
   source: string;
   wire?: Wire;
+  title?: string;
+  orgs?: string[];
 }
 
 export interface ProcessedEntry {
