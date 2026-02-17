@@ -78,8 +78,21 @@ export async function getEntriesForDateRange(
     const url = Array.isArray(urls) ? urls[0] : urls;
 
     // Extract orgs from entities (supports both 'orgs' and legacy 'protocols' field)
-    const entities = row.entities || {};
+    // Handle case where entities might be a string that needs parsing
+    let entities = row.entities || {};
+    if (typeof entities === 'string') {
+      try {
+        entities = JSON.parse(entities);
+      } catch {
+        entities = {};
+      }
+    }
     const orgs = entities.orgs || entities.protocols || [];
+    
+    // Debug: log first few entries to see structure
+    if (result.rows.indexOf(row) < 3) {
+      console.log(`[DB Debug] Entry ${row.id} entities type: ${typeof row.entities}, orgs: ${JSON.stringify(orgs).slice(0, 100)}`);
+    }
 
     return {
       id: String(row.id),
