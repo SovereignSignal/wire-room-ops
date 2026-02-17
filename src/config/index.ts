@@ -19,6 +19,12 @@ export const config = {
       apiKey: process.env.FIRECRAWL_API_KEY || '',
       baseUrl: 'https://api.firecrawl.dev/v1',
     },
+    notion: {
+      apiKey: process.env.NOTION_API_KEY || '',
+      orgsDbId: process.env.NOTION_ORGS_DB_ID || '301000c0-d590-819f-9619-000bac2ea702',
+      oppsDbId: process.env.NOTION_OPPS_DB_ID || '301000c0-d590-81fc-9828-000bb5409ede',
+      crmPageId: process.env.NOTION_CRM_PAGE_ID || '301000c0d5908049b313f8170819ece3',
+    },
   },
   
   email: {

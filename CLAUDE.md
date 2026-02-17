@@ -34,11 +34,14 @@ src/
 └── services/
     ├── anthropic.ts   # Claude API calls with scraping integration
     ├── auth.ts        # Magic links, sessions, tokens
+    ├── crm-sync.ts    # Notion CRM sync - org matching and auto-creation
     ├── email.ts       # Resend email templates (4 types)
     ├── grok.ts        # Grok API calls for X.com
     ├── job-queue.ts   # SSE-based job progress tracking
     ├── markdown.ts    # Output generation with category grouping
     ├── models.ts      # Dynamic model fetching from both APIs
+    ├── notion.ts      # Notion API client with rate limiting
+    ├── org-cache.ts   # Local alias cache for org name matching
     ├── processor.ts   # Entry processing with retry logic
     ├── scheduler.ts   # node-cron scheduling with health tracking
     ├── scraper.ts     # Firecrawl integration, URL resolution
