@@ -1075,6 +1075,20 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
             <label for="scheduleLookback">Lookback Days</label>
             <input type="number" id="scheduleLookback" min="1" max="30" value="7" style="width: 80px;">
           </div>
+          <div class="form-group">
+            <label for="scheduleTimezone">Timezone</label>
+            <select id="scheduleTimezone">
+              <option value="America/Los_Angeles">Pacific (LA)</option>
+              <option value="America/Denver">Mountain (Denver)</option>
+              <option value="America/Chicago">Central (Chicago)</option>
+              <option value="America/New_York">Eastern (NY)</option>
+              <option value="UTC">UTC</option>
+              <option value="Europe/London">London</option>
+              <option value="Europe/Paris">Paris</option>
+              <option value="Asia/Tokyo">Tokyo</option>
+              <option value="Asia/Singapore">Singapore</option>
+            </select>
+          </div>
         </div>
         <div class="form-row model-row">
           <div class="form-group">
@@ -1203,6 +1217,7 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
     const scheduleGrokModel = document.getElementById('scheduleGrokModel');
     const scheduleAnthropicModel = document.getElementById('scheduleAnthropicModel');
     const scheduleWire = document.getElementById('scheduleWire');
+    const scheduleTimezone = document.getElementById('scheduleTimezone');
     const saveScheduleBtn = document.getElementById('save-schedule');
     const cancelScheduleBtn = document.getElementById('cancel-schedule');
     const addScheduleBtn = document.getElementById('add-schedule');
@@ -1249,11 +1264,20 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
         const time = hour12 + ':' + s.minute.toString().padStart(2, '0') + ' ' + ampm;
         const feed = s.wire ? s.wire.toUpperCase() : 'All';
         const status = s.enabled ? '<span style="color: #4caf50;">Enabled</span>' : '<span style="color: #666;">Disabled</span>';
-        const nextRun = s.nextRun ? new Date(s.nextRun).toLocaleString() : '-';
+        const tz = s.timezone || 'America/Los_Angeles';
+        const tzShort = tz.split('/').pop().replace('_', ' ');
+        let nextRun = '-';
+        if (s.nextRun) {
+          try {
+            nextRun = new Date(s.nextRun).toLocaleString('en-US', { timeZone: tz, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+          } catch (e) {
+            nextRun = new Date(s.nextRun).toLocaleString();
+          }
+        }
         
         html += '<tr>';
         html += '<td>' + (s.name || 'Untitled') + '</td>';
-        html += '<td>' + day + ' @ ' + time + '</td>';
+        html += '<td>' + day + ' @ ' + time + ' <span style="color: #666; font-size: 11px;">(' + tzShort + ')</span></td>';
         html += '<td>' + feed + '</td>';
         html += '<td>' + status + '</td>';
         html += '<td style="font-size: 12px;">' + nextRun + '</td>';
@@ -1306,6 +1330,7 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
         scheduleDayOfWeek.value = schedule.dayOfWeek.toString();
         scheduleTime.value = schedule.hour.toString().padStart(2, '0') + ':' + schedule.minute.toString().padStart(2, '0');
         scheduleLookback.value = schedule.lookbackDays;
+        scheduleTimezone.value = schedule.timezone || 'America/Los_Angeles';
       } else {
         scheduleId.value = '';
         scheduleName.value = 'New Schedule';
@@ -1313,6 +1338,7 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
         scheduleDayOfWeek.value = '3';
         scheduleTime.value = '09:00';
         scheduleLookback.value = '7';
+        scheduleTimezone.value = 'America/Los_Angeles';
       }
     }
     
@@ -1508,6 +1534,7 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
           hour,
           minute,
           lookbackDays: parseInt(scheduleLookback.value, 10),
+          timezone: scheduleTimezone.value,
           grokModel: scheduleGrokModel.value,
           anthropicModel: scheduleAnthropicModel.value,
           wire: scheduleWire.value || undefined,
