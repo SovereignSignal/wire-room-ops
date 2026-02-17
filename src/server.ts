@@ -1280,7 +1280,7 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
         html += '<td>' + day + ' @ ' + time + ' <span style="color: #666; font-size: 11px;">(' + tzShort + ')</span></td>';
         html += '<td>' + feed + '</td>';
         html += '<td>' + status + '</td>';
-        html += '<td style="font-size: 12px;">' + nextRun + '</td>';
+        html += '<td style="font-size: 12px;">' + nextRun + (s.nextRun ? ' <span style="color: #666; font-size: 10px;">(' + (tz === 'UTC' ? 'UTC' : tzShort) + ')</span>' : '') + '</td>';
         html += '<td>';
         html += '<button class="edit-schedule" data-id="' + s.id + '" style="background: #2a2a2a; border: none; color: #f5a623; padding: 6px 12px; border-radius: 4px; cursor: pointer; margin-right: 8px;">Edit</button>';
         html += '<button class="delete-schedule" data-id="' + s.id + '" data-name="' + (s.name || 'Untitled') + '" style="background: #2a2a2a; border: none; color: #ef5350; padding: 6px 12px; border-radius: 4px; cursor: pointer;">Delete</button>';
