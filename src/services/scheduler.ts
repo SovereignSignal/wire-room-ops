@@ -3,10 +3,12 @@ import { runWeeklySummaryJob } from '../jobs/weekly-summary';
 import { config } from '../config';
 import { sendNotificationEmail, sendTestAlertEmail, sendScheduledJobFailureEmail } from './email';
 import { createMagicLink } from './auth';
-import { ensureScheduleTable, getScheduleConfig, saveScheduleConfig, StoredScheduleConfig } from '../db';
+import { ensureScheduleTable, getAllSchedules, getScheduleById, createSchedule, updateSchedule, deleteSchedule as dbDeleteSchedule, StoredScheduleConfig } from '../db';
 import { Wire } from '../types';
 
 export interface ScheduleConfig {
+  id: string;
+  name: string;
   enabled: boolean;
   dayOfWeek: number; // 0 = Sunday, 1 = Monday, ..., 6 = Saturday
   hour: number; // 0-23
@@ -18,8 +20,9 @@ export interface ScheduleConfig {
   wire?: string; // Optional wire/feed filter
 }
 
-// Default schedule: Wednesday at 9:00 AM, look back 7 days
-const DEFAULT_SCHEDULE: ScheduleConfig = {
+// Default schedule template for new schedules
+const DEFAULT_SCHEDULE_TEMPLATE: Omit<ScheduleConfig, 'id'> = {
+  name: 'New Schedule',
   enabled: false,
   dayOfWeek: 3, // Wednesday
   hour: 9,
@@ -28,41 +31,74 @@ const DEFAULT_SCHEDULE: ScheduleConfig = {
   timezone: 'America/Los_Angeles',
 };
 
-// In-memory cache of schedule config (loaded from DB on init)
-let currentSchedule: ScheduleConfig = { ...DEFAULT_SCHEDULE };
-let scheduledTask: ScheduledTask | null = null;
+// In-memory cache of all schedules
+let schedules: Map<string, ScheduleConfig> = new Map();
+let scheduledTasks: Map<string, ScheduledTask> = new Map();
 let isInitialized = false;
 
-// Job execution tracking
-let lastJobRun: Date | null = null;
-let lastJobStatus: 'success' | 'failed' | null = null;
-let lastJobError: string | null = null;
+// Job execution tracking per schedule
+interface JobStatus {
+  lastRun: Date | null;
+  status: 'success' | 'failed' | null;
+  error: string | null;
+}
+let jobStatuses: Map<string, JobStatus> = new Map();
 let schedulerStartTime: Date | null = null;
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
-export function getSchedule(): ScheduleConfig {
-  return { ...currentSchedule };
+export function getSchedules(): ScheduleConfig[] {
+  return Array.from(schedules.values());
 }
 
-export async function setSchedule(newSchedule: Partial<ScheduleConfig>): Promise<ScheduleConfig> {
-  currentSchedule = { ...currentSchedule, ...newSchedule };
+export function getSchedule(id?: string): ScheduleConfig | null {
+  if (id) {
+    return schedules.get(id) || null;
+  }
+  // Legacy: return first schedule
+  const all = getSchedules();
+  return all.length > 0 ? all[0] : null;
+}
 
-  // Persist to database
-  await saveScheduleConfig(currentSchedule as StoredScheduleConfig);
+export async function addSchedule(newSchedule?: Partial<Omit<ScheduleConfig, 'id'>>): Promise<ScheduleConfig> {
+  const scheduleData = { ...DEFAULT_SCHEDULE_TEMPLATE, ...newSchedule };
+  const created = await createSchedule(scheduleData);
+  
+  schedules.set(created.id, created);
+  
+  if (created.enabled) {
+    startScheduleTask(created);
+  }
+  
+  console.log(`[Scheduler] Created new schedule: ${created.name} (${created.id})`);
+  return created;
+}
 
-  // Restart the scheduler with new config
-  if (scheduledTask) {
-    scheduledTask.stop();
-    scheduledTask = null;
+export async function setSchedule(id: string, updates: Partial<Omit<ScheduleConfig, 'id'>>): Promise<ScheduleConfig | null> {
+  const updated = await updateSchedule(id, updates);
+  if (!updated) return null;
+
+  schedules.set(id, updated);
+
+  // Restart the task if it exists
+  stopScheduleTask(id);
+  if (updated.enabled) {
+    startScheduleTask(updated);
   }
 
-  if (currentSchedule.enabled) {
-    startScheduler();
-  }
+  console.log(`[Scheduler] Updated schedule: ${updated.name} (${id})`);
+  return updated;
+}
 
-  console.log(`[Scheduler] Schedule updated and persisted:`, formatScheduleDescription(currentSchedule));
-  return { ...currentSchedule };
+export async function removeSchedule(id: string): Promise<boolean> {
+  stopScheduleTask(id);
+  const deleted = await dbDeleteSchedule(id);
+  if (deleted) {
+    schedules.delete(id);
+    jobStatuses.delete(id);
+    console.log(`[Scheduler] Deleted schedule: ${id}`);
+  }
+  return deleted;
 }
 
 export function formatScheduleDescription(schedule: ScheduleConfig): string {
@@ -84,89 +120,119 @@ function buildCronExpression(schedule: ScheduleConfig): string {
   return `${schedule.minute} ${schedule.hour} * * ${schedule.dayOfWeek}`;
 }
 
-async function executeScheduledJob(): Promise<void> {
-  const jobStartTime = new Date();
-  console.log(`[Scheduler] Starting scheduled job at ${jobStartTime.toISOString()}`);
-  lastJobRun = jobStartTime;
-
-  try {
-    // Calculate date range based on lookback days
-    const endDate = new Date();
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - currentSchedule.lookbackDays);
-
-    // Set to start/end of day
-    startDate.setHours(0, 0, 0, 0);
-    endDate.setHours(23, 59, 59, 999);
-
-    console.log(`[Scheduler] Date range: ${startDate.toISOString()} to ${endDate.toISOString()}`);
-
-    const wireLabel = currentSchedule.wire || 'all feeds';
-    console.log(`[Scheduler] Running for: ${wireLabel}`);
-
-    const result = await runWeeklySummaryJob({
-      sendEmail: false,
-      dateRange: { start: startDate, end: endDate },
-      models: {
-        grokModel: currentSchedule.grokModel,
-        anthropicModel: currentSchedule.anthropicModel,
-      },
-      wire: (currentSchedule.wire as Wire) || undefined,
-    });
-
-    // Send notification email with download link
-    const downloadUrl = createMagicLink(config.email.notificationEmail, result.file.id);
-    await sendNotificationEmail(downloadUrl, result.stats, result.dateRange);
-
-    lastJobStatus = 'success';
-    lastJobError = null;
-    console.log(`[Scheduler] Job completed successfully. Email sent.`);
-  } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-    lastJobStatus = 'failed';
-    lastJobError = errorMsg;
-    console.error(`[Scheduler] Job failed:`, error);
-
-    // Send failure notification email
-    try {
-      await sendScheduledJobFailureEmail(errorMsg, jobStartTime);
-      console.log(`[Scheduler] Failure notification email sent.`);
-    } catch (emailError) {
-      console.error(`[Scheduler] Failed to send failure notification:`, emailError);
+function createJobExecutor(schedule: ScheduleConfig) {
+  return async function executeScheduledJob(): Promise<void> {
+    const jobStartTime = new Date();
+    console.log(`[Scheduler] Starting job for "${schedule.name}" at ${jobStartTime.toISOString()}`);
+    
+    // Get fresh schedule data in case it was updated
+    const currentScheduleData = schedules.get(schedule.id);
+    if (!currentScheduleData) {
+      console.log(`[Scheduler] Schedule ${schedule.id} no longer exists, skipping`);
+      return;
     }
+
+    const status: JobStatus = { lastRun: jobStartTime, status: null, error: null };
+    jobStatuses.set(schedule.id, status);
+
+    try {
+      // Calculate date range based on lookback days
+      const endDate = new Date();
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - currentScheduleData.lookbackDays);
+
+      // Set to start/end of day
+      startDate.setHours(0, 0, 0, 0);
+      endDate.setHours(23, 59, 59, 999);
+
+      console.log(`[Scheduler] Date range: ${startDate.toISOString()} to ${endDate.toISOString()}`);
+
+      const wireLabel = currentScheduleData.wire || 'all feeds';
+      console.log(`[Scheduler] Running for: ${wireLabel}`);
+
+      const result = await runWeeklySummaryJob({
+        sendEmail: false,
+        dateRange: { start: startDate, end: endDate },
+        models: {
+          grokModel: currentScheduleData.grokModel,
+          anthropicModel: currentScheduleData.anthropicModel,
+        },
+        wire: (currentScheduleData.wire as Wire) || undefined,
+      });
+
+      // Send notification email with download link
+      const downloadUrl = createMagicLink(config.email.notificationEmail, result.file.id);
+      await sendNotificationEmail(downloadUrl, result.stats, result.dateRange);
+
+      status.status = 'success';
+      status.error = null;
+      console.log(`[Scheduler] Job "${schedule.name}" completed successfully. Email sent.`);
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      status.status = 'failed';
+      status.error = errorMsg;
+      console.error(`[Scheduler] Job "${schedule.name}" failed:`, error);
+
+      // Send failure notification email
+      try {
+        await sendScheduledJobFailureEmail(errorMsg, jobStartTime);
+        console.log(`[Scheduler] Failure notification email sent.`);
+      } catch (emailError) {
+        console.error(`[Scheduler] Failed to send failure notification:`, emailError);
+      }
+    }
+  };
+}
+
+function startScheduleTask(schedule: ScheduleConfig): void {
+  if (!schedule.enabled) {
+    return;
+  }
+
+  const cronExpression = buildCronExpression(schedule);
+
+  console.log(`[Scheduler] Starting task for "${schedule.name}" with cron: ${cronExpression}`);
+
+  const task = cron.schedule(cronExpression, createJobExecutor(schedule), {
+    timezone: schedule.timezone,
+  });
+
+  task.start();
+  scheduledTasks.set(schedule.id, task);
+}
+
+function stopScheduleTask(id: string): void {
+  const task = scheduledTasks.get(id);
+  if (task) {
+    task.stop();
+    scheduledTasks.delete(id);
+    console.log(`[Scheduler] Stopped task for schedule ${id}`);
   }
 }
 
 export function startScheduler(): void {
-  if (!currentSchedule.enabled) {
-    console.log('[Scheduler] Scheduler is disabled');
-    return;
+  // Start all enabled schedules
+  for (const schedule of schedules.values()) {
+    if (schedule.enabled) {
+      startScheduleTask(schedule);
+    }
   }
-
-  const cronExpression = buildCronExpression(currentSchedule);
-
-  console.log(`[Scheduler] Starting scheduler with cron: ${cronExpression}`);
-  console.log(`[Scheduler] ${formatScheduleDescription(currentSchedule)}`);
-
-  scheduledTask = cron.schedule(cronExpression, executeScheduledJob, {
-    timezone: currentSchedule.timezone,
-  });
-
-  scheduledTask.start();
   schedulerStartTime = new Date();
 }
 
 export function stopScheduler(): void {
-  if (scheduledTask) {
-    scheduledTask.stop();
-    scheduledTask = null;
-    schedulerStartTime = null;
-    console.log('[Scheduler] Scheduler stopped');
+  for (const [id, task] of scheduledTasks.entries()) {
+    task.stop();
+    console.log(`[Scheduler] Stopped task ${id}`);
   }
+  scheduledTasks.clear();
+  schedulerStartTime = null;
+  console.log('[Scheduler] All schedulers stopped');
 }
 
-export function getNextRunTime(): Date | null {
-  if (!currentSchedule.enabled) {
+export function getNextRunTime(scheduleId?: string): Date | null {
+  const schedule = scheduleId ? schedules.get(scheduleId) : getSchedules().find(s => s.enabled);
+  if (!schedule || !schedule.enabled) {
     return null;
   }
 
@@ -175,7 +241,7 @@ export function getNextRunTime(): Date | null {
 
   // Find the next occurrence of the scheduled day/time
   const currentDay = now.getDay();
-  const targetDay = currentSchedule.dayOfWeek;
+  const targetDay = schedule.dayOfWeek;
 
   let daysUntilTarget = targetDay - currentDay;
   if (daysUntilTarget < 0) {
@@ -183,7 +249,7 @@ export function getNextRunTime(): Date | null {
   }
 
   next.setDate(now.getDate() + daysUntilTarget);
-  next.setHours(currentSchedule.hour, currentSchedule.minute, 0, 0);
+  next.setHours(schedule.hour, schedule.minute, 0, 0);
 
   // If the time has already passed today and it's the target day, add 7 days
   if (next <= now) {
@@ -194,30 +260,55 @@ export function getNextRunTime(): Date | null {
 }
 
 export function isSchedulerRunning(): boolean {
-  return scheduledTask !== null;
+  return scheduledTasks.size > 0;
 }
 
-export interface SchedulerStatus {
+export interface ScheduleStatus {
+  id: string;
+  name: string;
   isRunning: boolean;
-  schedulerStartedAt: string | null;
   lastJobRun: string | null;
   lastJobStatus: 'success' | 'failed' | null;
   lastJobError: string | null;
   nextRun: string | null;
   cronExpression: string | null;
+  description: string;
   config: ScheduleConfig;
 }
 
+export interface SchedulerStatus {
+  isRunning: boolean;
+  schedulerStartedAt: string | null;
+  activeSchedules: number;
+  totalSchedules: number;
+  schedules: ScheduleStatus[];
+}
+
 export function getSchedulerStatus(): SchedulerStatus {
+  const scheduleStatuses: ScheduleStatus[] = [];
+  
+  for (const schedule of schedules.values()) {
+    const jobStatus = jobStatuses.get(schedule.id);
+    scheduleStatuses.push({
+      id: schedule.id,
+      name: schedule.name,
+      isRunning: scheduledTasks.has(schedule.id),
+      lastJobRun: jobStatus?.lastRun?.toISOString() || null,
+      lastJobStatus: jobStatus?.status || null,
+      lastJobError: jobStatus?.error || null,
+      nextRun: getNextRunTime(schedule.id)?.toISOString() || null,
+      cronExpression: schedule.enabled ? buildCronExpression(schedule) : null,
+      description: formatScheduleDescription(schedule),
+      config: schedule,
+    });
+  }
+
   return {
-    isRunning: scheduledTask !== null,
+    isRunning: scheduledTasks.size > 0,
     schedulerStartedAt: schedulerStartTime?.toISOString() || null,
-    lastJobRun: lastJobRun?.toISOString() || null,
-    lastJobStatus,
-    lastJobError,
-    nextRun: getNextRunTime()?.toISOString() || null,
-    cronExpression: currentSchedule.enabled ? buildCronExpression(currentSchedule) : null,
-    config: { ...currentSchedule },
+    activeSchedules: scheduledTasks.size,
+    totalSchedules: schedules.size,
+    schedules: scheduleStatuses,
   };
 }
 
@@ -248,30 +339,36 @@ export async function initScheduler(): Promise<void> {
     await ensureScheduleTable();
     console.log('[Scheduler] Schedule table ready');
 
-    // Load saved config from database
-    const savedConfig = await getScheduleConfig();
+    // Load all schedules from database
+    const savedSchedules = await getAllSchedules();
 
-    if (savedConfig) {
-      currentSchedule = savedConfig;
-      console.log(`[Scheduler] Loaded schedule from database: ${formatScheduleDescription(currentSchedule)}`);
+    if (savedSchedules.length > 0) {
+      for (const schedule of savedSchedules) {
+        schedules.set(schedule.id, schedule);
+      }
+      console.log(`[Scheduler] Loaded ${savedSchedules.length} schedule(s) from database`);
     } else {
-      // No saved config - save the defaults
-      await saveScheduleConfig(DEFAULT_SCHEDULE);
-      console.log('[Scheduler] No saved schedule found, using defaults');
+      // No saved schedules - create a default one
+      const defaultSchedule = await createSchedule(DEFAULT_SCHEDULE_TEMPLATE);
+      schedules.set(defaultSchedule.id, defaultSchedule);
+      console.log('[Scheduler] No saved schedules found, created default');
     }
 
-    // Start the scheduler if enabled
-    if (currentSchedule.enabled) {
-      startScheduler();
-      console.log(`[Scheduler] Scheduler started. Next run: ${getNextRunTime()?.toISOString() || 'N/A'}`);
-    } else {
-      console.log('[Scheduler] Scheduler is disabled');
+    // Start all enabled schedules
+    let enabledCount = 0;
+    for (const schedule of schedules.values()) {
+      if (schedule.enabled) {
+        startScheduleTask(schedule);
+        enabledCount++;
+      }
     }
+
+    schedulerStartTime = new Date();
+    console.log(`[Scheduler] Started ${enabledCount} enabled schedule(s)`);
 
     isInitialized = true;
   } catch (error) {
     console.error('[Scheduler] Failed to initialize scheduler:', error);
-    // Continue with defaults if database fails
     isInitialized = true;
   }
 }

@@ -146,6 +146,8 @@ export function getDefaultDateRange(): { start: Date; end: Date } {
 
 // Schedule configuration persistence
 export interface StoredScheduleConfig {
+  id: string;
+  name: string;
   enabled: boolean;
   dayOfWeek: number;
   hour: number;
@@ -155,13 +157,18 @@ export interface StoredScheduleConfig {
   anthropicModel?: string;
   timezone: string;
   wire?: string;
+  createdAt?: Date;
+  updatedAt?: Date;
 }
 
 export async function ensureScheduleTable(): Promise<void> {
   const pool = getPool();
+  
+  // Create new schedules table (supports multiple schedules)
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS schedule_config (
-      id INTEGER PRIMARY KEY DEFAULT 1,
+    CREATE TABLE IF NOT EXISTS schedules (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      name TEXT NOT NULL DEFAULT 'Untitled Schedule',
       enabled BOOLEAN NOT NULL DEFAULT false,
       day_of_week INTEGER NOT NULL DEFAULT 3,
       hour INTEGER NOT NULL DEFAULT 9,
@@ -171,31 +178,58 @@ export async function ensureScheduleTable(): Promise<void> {
       anthropic_model TEXT,
       timezone TEXT NOT NULL DEFAULT 'America/Los_Angeles',
       wire TEXT,
-      updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-      CONSTRAINT single_row CHECK (id = 1)
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
     )
   `);
-  
-  // Add wire column if it doesn't exist (for existing installations)
-  await pool.query(`
-    ALTER TABLE schedule_config ADD COLUMN IF NOT EXISTS wire TEXT
-  `).catch(() => {});
-}
 
-export async function getScheduleConfig(): Promise<StoredScheduleConfig | null> {
-  const pool = getPool();
-  const result = await pool.query(`
-    SELECT enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire
-    FROM schedule_config
-    WHERE id = 1
+  // Migrate data from old schedule_config table if it exists
+  const oldTableExists = await pool.query(`
+    SELECT EXISTS (
+      SELECT FROM information_schema.tables 
+      WHERE table_name = 'schedule_config'
+    )
   `);
 
-  if (result.rows.length === 0) {
-    return null;
+  if (oldTableExists.rows[0].exists) {
+    const oldConfig = await pool.query(`SELECT * FROM schedule_config WHERE id = 1`);
+    if (oldConfig.rows.length > 0) {
+      const row = oldConfig.rows[0];
+      // Check if we already migrated
+      const existingSchedules = await pool.query(`SELECT COUNT(*) FROM schedules`);
+      if (parseInt(existingSchedules.rows[0].count, 10) === 0) {
+        await pool.query(`
+          INSERT INTO schedules (name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        `, [
+          'Default Schedule',
+          row.enabled,
+          row.day_of_week,
+          row.hour,
+          row.minute,
+          row.lookback_days,
+          row.grok_model,
+          row.anthropic_model,
+          row.timezone,
+          row.wire,
+        ]);
+        console.log('[DB] Migrated schedule from schedule_config to schedules table');
+      }
+    }
   }
+}
 
-  const row = result.rows[0];
-  return {
+export async function getAllSchedules(): Promise<StoredScheduleConfig[]> {
+  const pool = getPool();
+  const result = await pool.query(`
+    SELECT id, name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, created_at, updated_at
+    FROM schedules
+    ORDER BY created_at ASC
+  `);
+
+  return result.rows.map(row => ({
+    id: row.id,
+    name: row.name,
     enabled: row.enabled,
     dayOfWeek: row.day_of_week,
     hour: row.hour,
@@ -205,26 +239,49 @@ export async function getScheduleConfig(): Promise<StoredScheduleConfig | null> 
     anthropicModel: row.anthropic_model || undefined,
     timezone: row.timezone,
     wire: row.wire || undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
+}
+
+export async function getScheduleById(id: string): Promise<StoredScheduleConfig | null> {
+  const pool = getPool();
+  const result = await pool.query(`
+    SELECT id, name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, created_at, updated_at
+    FROM schedules
+    WHERE id = $1
+  `, [id]);
+
+  if (result.rows.length === 0) {
+    return null;
+  }
+
+  const row = result.rows[0];
+  return {
+    id: row.id,
+    name: row.name,
+    enabled: row.enabled,
+    dayOfWeek: row.day_of_week,
+    hour: row.hour,
+    minute: row.minute,
+    lookbackDays: row.lookback_days,
+    grokModel: row.grok_model || undefined,
+    anthropicModel: row.anthropic_model || undefined,
+    timezone: row.timezone,
+    wire: row.wire || undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 
-export async function saveScheduleConfig(config: StoredScheduleConfig): Promise<void> {
+export async function createSchedule(config: Omit<StoredScheduleConfig, 'id' | 'createdAt' | 'updatedAt'>): Promise<StoredScheduleConfig> {
   const pool = getPool();
-  await pool.query(`
-    INSERT INTO schedule_config (id, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, updated_at)
-    VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
-    ON CONFLICT (id) DO UPDATE SET
-      enabled = $1,
-      day_of_week = $2,
-      hour = $3,
-      minute = $4,
-      lookback_days = $5,
-      grok_model = $6,
-      anthropic_model = $7,
-      timezone = $8,
-      wire = $9,
-      updated_at = CURRENT_TIMESTAMP
+  const result = await pool.query(`
+    INSERT INTO schedules (name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    RETURNING id, name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, created_at, updated_at
   `, [
+    config.name,
     config.enabled,
     config.dayOfWeek,
     config.hour,
@@ -235,6 +292,103 @@ export async function saveScheduleConfig(config: StoredScheduleConfig): Promise<
     config.timezone,
     config.wire || null,
   ]);
+
+  const row = result.rows[0];
+  return {
+    id: row.id,
+    name: row.name,
+    enabled: row.enabled,
+    dayOfWeek: row.day_of_week,
+    hour: row.hour,
+    minute: row.minute,
+    lookbackDays: row.lookback_days,
+    grokModel: row.grok_model || undefined,
+    anthropicModel: row.anthropic_model || undefined,
+    timezone: row.timezone,
+    wire: row.wire || undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function updateSchedule(id: string, config: Partial<Omit<StoredScheduleConfig, 'id' | 'createdAt' | 'updatedAt'>>): Promise<StoredScheduleConfig | null> {
+  const pool = getPool();
+  
+  // Build dynamic update query
+  const updates: string[] = [];
+  const values: any[] = [];
+  let paramIndex = 1;
+
+  if (config.name !== undefined) { updates.push(`name = $${paramIndex++}`); values.push(config.name); }
+  if (config.enabled !== undefined) { updates.push(`enabled = $${paramIndex++}`); values.push(config.enabled); }
+  if (config.dayOfWeek !== undefined) { updates.push(`day_of_week = $${paramIndex++}`); values.push(config.dayOfWeek); }
+  if (config.hour !== undefined) { updates.push(`hour = $${paramIndex++}`); values.push(config.hour); }
+  if (config.minute !== undefined) { updates.push(`minute = $${paramIndex++}`); values.push(config.minute); }
+  if (config.lookbackDays !== undefined) { updates.push(`lookback_days = $${paramIndex++}`); values.push(config.lookbackDays); }
+  if (config.grokModel !== undefined) { updates.push(`grok_model = $${paramIndex++}`); values.push(config.grokModel || null); }
+  if (config.anthropicModel !== undefined) { updates.push(`anthropic_model = $${paramIndex++}`); values.push(config.anthropicModel || null); }
+  if (config.timezone !== undefined) { updates.push(`timezone = $${paramIndex++}`); values.push(config.timezone); }
+  if (config.wire !== undefined) { updates.push(`wire = $${paramIndex++}`); values.push(config.wire || null); }
+
+  if (updates.length === 0) {
+    return getScheduleById(id);
+  }
+
+  updates.push(`updated_at = CURRENT_TIMESTAMP`);
+  values.push(id);
+
+  const result = await pool.query(`
+    UPDATE schedules SET ${updates.join(', ')}
+    WHERE id = $${paramIndex}
+    RETURNING id, name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, created_at, updated_at
+  `, values);
+
+  if (result.rows.length === 0) {
+    return null;
+  }
+
+  const row = result.rows[0];
+  return {
+    id: row.id,
+    name: row.name,
+    enabled: row.enabled,
+    dayOfWeek: row.day_of_week,
+    hour: row.hour,
+    minute: row.minute,
+    lookbackDays: row.lookback_days,
+    grokModel: row.grok_model || undefined,
+    anthropicModel: row.anthropic_model || undefined,
+    timezone: row.timezone,
+    wire: row.wire || undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function deleteSchedule(id: string): Promise<boolean> {
+  const pool = getPool();
+  const result = await pool.query(`DELETE FROM schedules WHERE id = $1`, [id]);
+  return (result.rowCount ?? 0) > 0;
+}
+
+// Legacy compatibility - get first schedule or null
+export async function getScheduleConfig(): Promise<StoredScheduleConfig | null> {
+  const schedules = await getAllSchedules();
+  return schedules.length > 0 ? schedules[0] : null;
+}
+
+// Legacy compatibility - save/update first schedule
+export async function saveScheduleConfig(config: Omit<StoredScheduleConfig, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }): Promise<void> {
+  if (config.id) {
+    await updateSchedule(config.id, config);
+  } else {
+    const schedules = await getAllSchedules();
+    if (schedules.length > 0) {
+      await updateSchedule(schedules[0].id, config);
+    } else {
+      await createSchedule(config);
+    }
+  }
 }
 
 export interface WireInfo {
