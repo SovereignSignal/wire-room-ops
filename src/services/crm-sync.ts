@@ -460,6 +460,14 @@ export async function runCrmSyncJob(options: {
     // Filter entries that have orgs
     const entriesWithOrgs = entries.filter(e => e.orgs && e.orgs.length > 0);
     console.log(`[CRM Sync] ${entriesWithOrgs.length} entries have organization data`);
+    
+    // Debug: log sample of entries with orgs
+    if (entriesWithOrgs.length > 0) {
+      console.log(`[CRM Sync] Sample orgs:`, entriesWithOrgs.slice(0, 3).map(e => ({ id: e.id, orgs: e.orgs })));
+    } else {
+      // Log sample entries to debug why no orgs
+      console.log(`[CRM Sync] No entries with orgs. Sample entries:`, entries.slice(0, 3).map(e => ({ id: e.id, orgs: e.orgs })));
+    }
 
     // Run sync
     const { stats } = await syncDatabaseEntries(entriesWithOrgs, {
