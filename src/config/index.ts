@@ -21,10 +21,10 @@ export const config = {
     },
     notion: {
       apiKey: process.env.NOTION_API_KEY || '',
-      orgsDbId: process.env.NOTION_ORGS_DB_ID || '301000c0-d590-81c4-8435-c6db7782db12',
-      oppsDbId: process.env.NOTION_OPPS_DB_ID || '301000c0-d590-81fc-9828-000bb5409ede',
-      crmPageId: process.env.NOTION_CRM_PAGE_ID || '301000c0d5908049b313f8170819ece3',
-      stagingOrgsDbId: process.env.NOTION_STAGING_ORGS_DB_ID || '30a000c0-d590-804d-8986-c780b860a78a',
+      orgsDbId: process.env.NOTION_ORGS_DB_ID || '',
+      oppsDbId: process.env.NOTION_OPPS_DB_ID || '',
+      crmPageId: process.env.NOTION_CRM_PAGE_ID || '',
+      stagingOrgsDbId: process.env.NOTION_STAGING_ORGS_DB_ID || '',
     },
   },
   
@@ -35,7 +35,7 @@ export const config = {
   },
   
   auth: {
-    magicLinkSecret: process.env.MAGIC_LINK_SECRET || 'change-me-in-production',
+    magicLinkSecret: process.env.MAGIC_LINK_SECRET || '',
     tokenExpiryHours: 24,
   },
   
@@ -58,6 +58,7 @@ export function validateConfig(): void {
     ['FIRECRAWL_API_KEY', config.apis.firecrawl.apiKey],
     ['RESEND_API_KEY', config.email.resendApiKey],
     ['NOTIFICATION_EMAIL', config.email.notificationEmail],
+    ['MAGIC_LINK_SECRET', config.auth.magicLinkSecret],
   ];
   
   const missing = required.filter(([, value]) => !value).map(([name]) => name);

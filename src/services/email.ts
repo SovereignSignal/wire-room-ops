@@ -21,9 +21,7 @@ function formatDateRange(start: Date, end: Date): string {
 }
 
 export async function sendLoginEmail(email: string, magicLink: string): Promise<void> {
-  console.log(`[Email] Attempting to send login email to: ${email}`);
-  console.log(`[Email] From: ${config.email.fromEmail}`);
-  console.log(`[Email] API Key prefix: ${config.email.resendApiKey?.substring(0, 10)}...`);
+  console.log(`[Email] Sending login email to: ${email}`);
 
   const client = getResend();
 

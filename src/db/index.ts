@@ -8,7 +8,9 @@ export function getPool(): Pool {
   if (!pool) {
     pool = new Pool({
       connectionString: config.database.url,
-      ssl: config.database.url.includes('localhost') ? false : { rejectUnauthorized: false },
+      ssl: config.database.url.includes('localhost') ? false : {
+        rejectUnauthorized: process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false',
+      },
     });
   }
   return pool;
@@ -88,11 +90,6 @@ export async function getEntriesForDateRange(
       }
     }
     const orgs = entities.orgs || entities.protocols || [];
-    
-    // Debug: log first few entries to see structure
-    if (result.rows.indexOf(row) < 3) {
-      console.log(`[DB Debug] Entry ${row.id} entities type: ${typeof row.entities}, orgs: ${JSON.stringify(orgs).slice(0, 100)}`);
-    }
 
     return {
       id: String(row.id),

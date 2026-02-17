@@ -17,6 +17,16 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// HTML escaping to prevent XSS
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
 // Health check
 app.get('/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -245,7 +255,7 @@ app.get('/file/:fileId', async (req: Request, res: Response) => {
   }
   
   res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="${file.filename}"`);
+  res.setHeader('Content-Disposition', `attachment; filename="${file.filename.replace(/"/g, '\\"')}"`);
   res.send(file.content);
 });
 
@@ -321,7 +331,7 @@ app.get('/download/:token', async (req: Request, res: Response) => {
   }
   
   res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="${file.filename}"`);
+  res.setHeader('Content-Disposition', `attachment; filename="${file.filename.replace(/"/g, '\\"')}"`);
   res.send(file.content);
 });
 
@@ -738,7 +748,7 @@ function renderLoginPage(error?: string): string {
   <div class="container">
     <h1 class="logo">📡 <span class="logo-grant">Grant</span><span class="logo-wire">Wire</span></h1>
     <p class="subtitle">Sign in to access your dashboard</p>
-    ${error ? `<div class="error">${error}</div>` : ''}
+    ${error ? `<div class="error">${escapeHtml(error)}</div>` : ''}
     <form method="POST" action="/login">
       <div class="form-group">
         <label for="email">Email address</label>
@@ -799,7 +809,7 @@ function renderLoginSentPage(email: string): string {
   <div class="container">
     <div class="icon">✉️</div>
     <h1>Check your email</h1>
-    <p>We sent a magic link to<br><span class="email">${email}</span></p>
+    <p>We sent a magic link to<br><span class="email">${escapeHtml(email)}</span></p>
     <p>Click the link in the email to sign in.</p>
     <a href="/" class="back">← Back to login</a>
   </div>
@@ -1049,7 +1059,7 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
     </div>
   </div>
   <div class="main">
-    ${message ? `<div class="message ${message.startsWith('Error') ? 'error' : 'success'}">${decodeURIComponent(message)}</div>` : ''}
+    ${message ? `<div class="message ${message.startsWith('Error') ? 'error' : 'success'}">${escapeHtml(decodeURIComponent(message))}</div>` : ''}
 
     <div class="card">
       <h2>Generate Weekly Summary</h2>
@@ -1257,7 +1267,7 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
     const elapsedTimeEl = document.getElementById('elapsed-time');
     const grokModelSelect = document.getElementById('grokModel');
     const anthropicModelSelect = document.getElementById('anthropicModel');
-    const session = '${session}';
+    const session = ${JSON.stringify(session)};
     let startTime;
     let elapsedTimer;
 
@@ -1948,7 +1958,7 @@ function renderExpiredLinkPage(message: string): string {
 <body>
   <div class="container">
     <h1>Link Expired</h1>
-    <p>${message}</p>
+    <p>${escapeHtml(message)}</p>
     <form method="POST" action="/resend-link" style="display: inline;">
       <button type="submit" class="button">Resend Download Link</button>
     </form>
@@ -2055,7 +2065,7 @@ function renderErrorPage(message: string): string {
 <body>
   <div class="container">
     <h1>Access Error</h1>
-    <p>${message}</p>
+    <p>${escapeHtml(message)}</p>
     <a href="/" class="back">← Back to login</a>
   </div>
 </body>

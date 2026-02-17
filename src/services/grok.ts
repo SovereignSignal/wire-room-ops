@@ -77,6 +77,11 @@ export async function summarizeWithGrok(entry: DatabaseEntry, model?: string): P
 }
 
 export function isXcomUrl(url: string): boolean {
-  const lowerUrl = url.toLowerCase();
-  return lowerUrl.includes('x.com') || lowerUrl.includes('twitter.com');
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    return hostname === 'x.com' || hostname === 'twitter.com'
+      || hostname.endsWith('.x.com') || hostname.endsWith('.twitter.com');
+  } catch {
+    return false;
+  }
 }
