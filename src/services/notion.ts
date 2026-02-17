@@ -64,16 +64,15 @@ export interface CreateStagingOrgParams {
 }
 
 const RATE_LIMIT_DELAY_MS = 350;
-let lastRequestTime = 0;
+let requestQueue: Promise<unknown> = Promise.resolve();
 
-async function rateLimitedRequest<T>(fn: () => Promise<T>): Promise<Awaited<T>> {
-  const now = Date.now();
-  const timeSinceLastRequest = now - lastRequestTime;
-  if (timeSinceLastRequest < RATE_LIMIT_DELAY_MS) {
-    await sleep(RATE_LIMIT_DELAY_MS - timeSinceLastRequest);
-  }
-  lastRequestTime = Date.now();
-  const result = await fn();
+async function rateLimitedRequest<T>(fn: () => Promise<T>): Promise<T> {
+  const result = requestQueue.then(async () => {
+    await sleep(RATE_LIMIT_DELAY_MS);
+    return fn();
+  });
+  // Chain onto queue so next request waits for this one
+  requestQueue = result.then(() => {}, () => {});
   return result;
 }
 

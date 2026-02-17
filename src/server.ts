@@ -27,6 +27,22 @@ function escapeHtml(str: string): string {
     .replace(/'/g, '&#039;');
 }
 
+// Simple in-memory rate limiter
+const rateLimitStore = new Map<string, number[]>();
+
+function rateLimit(key: string, maxRequests: number, windowMs: number): boolean {
+  const now = Date.now();
+  const timestamps = rateLimitStore.get(key) || [];
+  const recent = timestamps.filter(t => now - t < windowMs);
+  if (recent.length >= maxRequests) {
+    rateLimitStore.set(key, recent);
+    return false;
+  }
+  recent.push(now);
+  rateLimitStore.set(key, recent);
+  return true;
+}
+
 // Health check
 app.get('/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -44,18 +60,24 @@ app.get('/', (req: Request, res: Response) => {
 
 // Handle login request - send magic link
 app.post('/login', async (req: Request, res: Response) => {
+  const clientIp = req.ip || 'unknown';
+  if (!rateLimit(`login:${clientIp}`, 5, 15 * 60 * 1000)) {
+    res.status(429).send(renderLoginPage('Too many login attempts. Please try again later.'));
+    return;
+  }
+
   const email = req.body.email?.toLowerCase().trim();
-  
+
   if (!email) {
     res.send(renderLoginPage('Please enter your email address'));
     return;
   }
-  
+
   if (email !== config.email.notificationEmail.toLowerCase()) {
     res.send(renderLoginPage('Email not authorized'));
     return;
   }
-  
+
   try {
     const magicLink = createLoginMagicLink(email);
     await sendLoginEmail(email, magicLink);
@@ -145,6 +167,11 @@ app.post('/api/run-job', async (req: Request, res: Response) => {
     return;
   }
 
+  if (!rateLimit('run-job', 3, 5 * 60 * 1000)) {
+    res.status(429).json({ error: 'Too many job requests. Please wait before trying again.' });
+    return;
+  }
+
   // Parse date range from request
   const { startDate, endDate, grokModel, anthropicModel, wire } = req.body;
   let dateRange: { start: Date; end: Date } | undefined;
@@ -190,10 +217,12 @@ app.post('/api/run-job', async (req: Request, res: Response) => {
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       jobQueue.failJob(jobId, errorMsg);
+    } finally {
+      jobQueue.cleanup();
     }
-
-    jobQueue.cleanup();
-  })();
+  })().catch(error => {
+    console.error('Unexpected error in job runner:', error);
+  });
 });
 
 // SSE endpoint for job progress
@@ -260,7 +289,15 @@ app.get('/file/:fileId', async (req: Request, res: Response) => {
 });
 
 // Resend download link for the most recent file
+// Rate-limited since it triggers email sends and is accessible without auth
+// (called from expired download link pages)
 app.post('/resend-link', async (req: Request, res: Response) => {
+  const clientIp = req.ip || 'unknown';
+  if (!rateLimit(`resend:${clientIp}`, 3, 15 * 60 * 1000)) {
+    res.status(429).send(renderErrorPage('Too many requests. Please try again later.'));
+    return;
+  }
+
   try {
     const files = await listFiles();
     
@@ -397,12 +434,36 @@ app.get('/api/schedule', (req: Request, res: Response) => {
   });
 });
 
+// Validate schedule numeric parameters
+function validateScheduleParams(body: Record<string, any>): string | null {
+  const { dayOfWeek, hour, minute, lookbackDays } = body;
+  if (typeof dayOfWeek === 'number' && (dayOfWeek < 0 || dayOfWeek > 6)) {
+    return 'dayOfWeek must be between 0 (Sunday) and 6 (Saturday)';
+  }
+  if (typeof hour === 'number' && (hour < 0 || hour > 23)) {
+    return 'hour must be between 0 and 23';
+  }
+  if (typeof minute === 'number' && (minute < 0 || minute > 59)) {
+    return 'minute must be between 0 and 59';
+  }
+  if (typeof lookbackDays === 'number' && (lookbackDays < 1 || lookbackDays > 365)) {
+    return 'lookbackDays must be between 1 and 365';
+  }
+  return null;
+}
+
 // API: Create new schedule
 app.post('/api/schedules', async (req: Request, res: Response) => {
   const session = req.body.session;
 
   if (!session || !validateSession(session)) {
     res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+
+  const validationError = validateScheduleParams(req.body);
+  if (validationError) {
+    res.status(400).json({ error: validationError });
     return;
   }
 
@@ -444,6 +505,12 @@ app.put('/api/schedules/:id', async (req: Request, res: Response) => {
 
   if (!session || !validateSession(session)) {
     res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+
+  const validationError = validateScheduleParams(req.body);
+  if (validationError) {
+    res.status(400).json({ error: validationError });
     return;
   }
 
