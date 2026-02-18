@@ -2,6 +2,15 @@ import { Resend } from 'resend';
 import { config } from '../config';
 import { ProcessingStats } from '../types';
 
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
 let resend: Resend | null = null;
 
 function getResend(): Resend {
@@ -55,7 +64,7 @@ export async function sendLoginEmail(email: string, magicLink: string): Promise<
               <table role="presentation" cellspacing="0" cellpadding="0" style="margin: 0 auto;">
                 <tr>
                   <td style="background-color: #f5a623; border-radius: 8px;">
-                    <a href="${magicLink}" target="_blank" style="display: inline-block; padding: 16px 32px; color: #0d0d0d; font-size: 16px; font-weight: 600; text-decoration: none;">
+                    <a href="${escapeHtml(magicLink)}" target="_blank" style="display: inline-block; padding: 16px 32px; color: #0d0d0d; font-size: 16px; font-weight: 600; text-decoration: none;">
                       Sign In
                     </a>
                   </td>
@@ -180,7 +189,7 @@ export async function sendNotificationEmail(
                     <table role="presentation" cellspacing="0" cellpadding="0">
                       <tr>
                         <td style="background-color: #f5a623; border-radius: 8px;">
-                          <a href="${downloadUrl}" target="_blank" style="display: inline-block; padding: 14px 28px; color: #0d0d0d; font-size: 15px; font-weight: 600; text-decoration: none;">
+                          <a href="${escapeHtml(downloadUrl)}" target="_blank" style="display: inline-block; padding: 14px 28px; color: #0d0d0d; font-size: 15px; font-weight: 600; text-decoration: none;">
                             Download Markdown File
                           </a>
                         </td>
@@ -394,7 +403,7 @@ export async function sendScheduledJobFailureEmail(errorMessage: string, jobStar
                       Error Message
                     </p>
                     <p style="margin: 0; color: #ffffff; font-size: 14px; font-family: monospace; word-break: break-word;">
-                      ${errorMessage}
+                      ${escapeHtml(errorMessage)}
                     </p>
                   </td>
                 </tr>
@@ -478,9 +487,9 @@ export async function sendResendLinkEmail(email: string, downloadUrl: string, fi
                 Your new download link is ready
               </h2>
               <p style="margin: 0 0 8px; color: #999999; font-size: 14px;">File:</p>
-              <p style="margin: 0 0 32px; color: #f5a623; font-size: 14px; font-family: monospace;">${filename}</p>
+              <p style="margin: 0 0 32px; color: #f5a623; font-size: 14px; font-family: monospace;">${escapeHtml(filename)}</p>
 
-              <a href="${downloadUrl}" style="display: inline-block; background-color: #f5a623; color: #0d0d0d; padding: 16px 32px; text-decoration: none; border-radius: 8px; font-size: 16px; font-weight: 600;">
+              <a href="${escapeHtml(downloadUrl)}" style="display: inline-block; background-color: #f5a623; color: #0d0d0d; padding: 16px 32px; text-decoration: none; border-radius: 8px; font-size: 16px; font-weight: 600;">
                 Download File
               </a>
 

@@ -1,4 +1,5 @@
 import express, { Request, Response } from 'express';
+import cookieParser from 'cookie-parser';
 import { config } from './config';
 import { validateMagicLink, createDownloadToken, createSessionToken, validateSession, createLoginMagicLink } from './services/auth';
 import { getFile, listFiles } from './services/storage';
@@ -16,6 +17,7 @@ const app = express();
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
 
 // HTML escaping to prevent XSS
 function escapeHtml(str: string): string {
@@ -27,9 +29,9 @@ function escapeHtml(str: string): string {
     .replace(/'/g, '&#039;');
 }
 
-// Auth middleware - checks session from query string or request body
+// Auth middleware - checks session from HttpOnly cookie (with POST body fallback)
 function requireAuth(req: Request, res: Response, next: Function): void {
-  const session = (req.query.session || req.body?.session) as string;
+  const session = (req.cookies?.session || req.body?.session) as string;
   if (!session || !validateSession(session)) {
     res.status(401).json({ error: 'Unauthorized' });
     return;
@@ -60,9 +62,9 @@ app.get('/health', (_req: Request, res: Response) => {
 
 // Landing page - login form
 app.get('/', (req: Request, res: Response) => {
-  const session = req.query.session as string;
+  const session = req.cookies?.session as string;
   if (session && validateSession(session)) {
-    res.redirect(`/dashboard?session=${session}`);
+    res.redirect('/dashboard');
     return;
   }
   res.send(renderLoginPage());
@@ -98,38 +100,44 @@ app.post('/login', async (req: Request, res: Response) => {
   }
 });
 
-// Magic link auth - creates session and redirects to dashboard
+// Magic link auth - creates session cookie and redirects to dashboard
 app.get('/auth', (req: Request, res: Response) => {
   const token = req.query.token as string;
-  
+
   if (!token) {
     res.redirect('/?error=invalid');
     return;
   }
-  
+
   const validation = validateMagicLink(token);
-  
+
   if (!validation.valid) {
     res.send(renderErrorPage(validation.error || 'Invalid or expired link'));
     return;
   }
-  
+
   const sessionToken = createSessionToken(validation.email || config.email.notificationEmail);
-  res.redirect(`/dashboard?session=${sessionToken}`);
+  res.cookie('session', sessionToken, {
+    httpOnly: true,
+    secure: config.app.port !== 3000,
+    sameSite: 'lax',
+    maxAge: 24 * 60 * 60 * 1000,
+  });
+  res.redirect('/dashboard');
 });
 
 // Dashboard - main interface
 app.get('/dashboard', async (req: Request, res: Response) => {
-  const session = req.query.session as string;
-  
+  const session = req.cookies?.session as string;
+
   if (!session || !validateSession(session)) {
     res.redirect('/');
     return;
   }
-  
+
   const files = await listFiles();
   const message = req.query.message as string;
-  res.send(renderDashboard(files, session, message));
+  res.send(renderDashboard(files, message));
 });
 
 // API: Get available models
@@ -250,9 +258,9 @@ app.get('/api/job/:jobId/progress', requireAuth, (req: Request, res: Response) =
 
 // Download file
 app.get('/file/:fileId', async (req: Request, res: Response) => {
-  const session = req.query.session as string;
+  const session = req.cookies?.session as string;
   const fileId = req.params.fileId;
-  
+
   if (!session || !validateSession(session)) {
     res.redirect('/');
     return;
@@ -790,13 +798,13 @@ function renderLoginSentPage(email: string): string {
   `.trim();
 }
 
-function renderDashboard(files: StoredFile[], session: string, message?: string): string {
+function renderDashboard(files: StoredFile[], message?: string): string {
   const fileRows = files.length > 0
     ? files.map(f => `
         <tr>
-          <td>${f.filename}</td>
+          <td>${escapeHtml(f.filename)}</td>
           <td>${new Date(f.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
-          <td><a href="/file/${f.id}?session=${session}" class="download-link">Download</a></td>
+          <td><a href="/file/${encodeURIComponent(f.id)}" class="download-link">Download</a></td>
         </tr>
       `).join('')
     : '<tr><td colspan="3" class="empty">No files yet. Run the job to generate summaries.</td></tr>';
@@ -1036,7 +1044,6 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
     <div class="card">
       <h2>Generate Weekly Summary</h2>
       <form id="job-form" class="run-form">
-        <input type="hidden" name="session" value="${session}">
         <div class="form-row">
           <div class="form-group">
             <label for="startDate">Start Date</label>
@@ -1231,6 +1238,12 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
   </div>
 
   <script>
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
     const form = document.getElementById('job-form');
     const runButton = document.getElementById('run-button');
     const progressContainer = document.getElementById('progress-container');
@@ -1239,25 +1252,24 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
     const elapsedTimeEl = document.getElementById('elapsed-time');
     const grokModelSelect = document.getElementById('grokModel');
     const anthropicModelSelect = document.getElementById('anthropicModel');
-    const session = ${JSON.stringify(session)};
     let startTime;
     let elapsedTimer;
 
     // Fetch and populate models on page load
     async function loadModels() {
       try {
-        const response = await fetch('/api/models?session=' + session);
+        const response = await fetch('/api/models');
         if (!response.ok) throw new Error('Failed to fetch models');
         const models = await response.json();
 
         // Populate Grok models
         grokModelSelect.innerHTML = models.grok.map((m, i) =>
-          '<option value="' + m.id + '"' + (i === 0 ? ' selected' : '') + '>' + m.displayName + '</option>'
+          '<option value="' + escapeHtml(m.id) + '"' + (i === 0 ? ' selected' : '') + '>' + escapeHtml(m.displayName) + '</option>'
         ).join('');
 
         // Populate Anthropic models
         anthropicModelSelect.innerHTML = models.anthropic.map((m, i) =>
-          '<option value="' + m.id + '"' + (i === 0 ? ' selected' : '') + '>' + m.displayName + '</option>'
+          '<option value="' + escapeHtml(m.id) + '"' + (i === 0 ? ' selected' : '') + '>' + escapeHtml(m.displayName) + '</option>'
         ).join('');
       } catch (error) {
         console.error('Failed to load models:', error);
@@ -1273,14 +1285,14 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
     
     async function loadWires() {
       try {
-        const response = await fetch('/api/wires?session=' + session);
+        const response = await fetch('/api/wires');
         if (!response.ok) throw new Error('Failed to fetch wires');
         const wires = await response.json();
 
         // Build options: "All Feeds" first, then each wire
         let options = '<option value="">All Feeds</option>';
         wires.forEach(w => {
-          options += '<option value="' + w.wire + '">' + w.displayName + ' (' + w.entryCount + ' entries)</option>';
+          options += '<option value="' + escapeHtml(w.wire) + '">' + escapeHtml(w.displayName) + ' (' + w.entryCount + ' entries)</option>';
         });
         wireFilterSelect.innerHTML = options;
       } catch (error) {
@@ -1315,9 +1327,9 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
       try {
         // Load wires and models first
         const [wiresRes, modelsRes, schedulesRes] = await Promise.all([
-          fetch('/api/wires?session=' + session),
-          fetch('/api/models?session=' + session),
-          fetch('/api/schedules?session=' + session)
+          fetch('/api/wires'),
+          fetch('/api/models'),
+          fetch('/api/schedules')
         ]);
         
         if (wiresRes.ok) cachedWires = await wiresRes.json();
@@ -1362,14 +1374,14 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
         }
         
         html += '<tr>';
-        html += '<td>' + (s.name || 'Untitled') + '</td>';
-        html += '<td>' + day + ' @ ' + time + ' <span style="color: #666; font-size: 11px;">(' + tzShort + ')</span></td>';
-        html += '<td>' + feed + '</td>';
+        html += '<td>' + escapeHtml(s.name || 'Untitled') + '</td>';
+        html += '<td>' + day + ' @ ' + time + ' <span style="color: #666; font-size: 11px;">(' + escapeHtml(tzShort) + ')</span></td>';
+        html += '<td>' + escapeHtml(feed) + '</td>';
         html += '<td>' + status + '</td>';
-        html += '<td style="font-size: 12px;">' + nextRun + (s.nextRun ? ' <span style="color: #666; font-size: 10px;">(' + (tz === 'UTC' ? 'UTC' : tzShort) + ')</span>' : '') + '</td>';
+        html += '<td style="font-size: 12px;">' + escapeHtml(nextRun) + (s.nextRun ? ' <span style="color: #666; font-size: 10px;">(' + escapeHtml(tz === 'UTC' ? 'UTC' : tzShort) + ')</span>' : '') + '</td>';
         html += '<td>';
-        html += '<button class="edit-schedule" data-id="' + s.id + '" style="background: #2a2a2a; border: none; color: #f5a623; padding: 6px 12px; border-radius: 4px; cursor: pointer; margin-right: 8px;">Edit</button>';
-        html += '<button class="delete-schedule" data-id="' + s.id + '" data-name="' + (s.name || 'Untitled') + '" style="background: #2a2a2a; border: none; color: #ef5350; padding: 6px 12px; border-radius: 4px; cursor: pointer;">Delete</button>';
+        html += '<button class="edit-schedule" data-id="' + escapeHtml(s.id) + '" style="background: #2a2a2a; border: none; color: #f5a623; padding: 6px 12px; border-radius: 4px; cursor: pointer; margin-right: 8px;">Edit</button>';
+        html += '<button class="delete-schedule" data-id="' + escapeHtml(s.id) + '" data-name="' + escapeHtml(s.name || 'Untitled') + '" style="background: #2a2a2a; border: none; color: #ef5350; padding: 6px 12px; border-radius: 4px; cursor: pointer;">Delete</button>';
         html += '</td>';
         html += '</tr>';
       });
@@ -1391,17 +1403,17 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
       let wireOptions = '<option value="">All Feeds</option>';
       cachedWires.forEach(w => {
         const selected = schedule && w.wire === schedule.wire ? ' selected' : '';
-        wireOptions += '<option value="' + w.wire + '"' + selected + '>' + w.displayName + '</option>';
+        wireOptions += '<option value="' + escapeHtml(w.wire) + '"' + selected + '>' + escapeHtml(w.displayName) + '</option>';
       });
       scheduleWire.innerHTML = wireOptions;
-      
+
       // Models
       scheduleGrokModel.innerHTML = cachedModels.grok.map(m =>
-        '<option value="' + m.id + '"' + (schedule && m.id === schedule.grokModel ? ' selected' : '') + '>' + m.displayName + '</option>'
+        '<option value="' + escapeHtml(m.id) + '"' + (schedule && m.id === schedule.grokModel ? ' selected' : '') + '>' + escapeHtml(m.displayName) + '</option>'
       ).join('');
-      
+
       scheduleAnthropicModel.innerHTML = cachedModels.anthropic.map(m =>
-        '<option value="' + m.id + '"' + (schedule && m.id === schedule.anthropicModel ? ' selected' : '') + '>' + m.displayName + '</option>'
+        '<option value="' + escapeHtml(m.id) + '"' + (schedule && m.id === schedule.anthropicModel ? ' selected' : '') + '>' + escapeHtml(m.displayName) + '</option>'
       ).join('');
     }
     
@@ -1435,7 +1447,7 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
     
     async function editSchedule(id) {
       try {
-        const response = await fetch('/api/schedule?session=' + session + '&id=' + id);
+        const response = await fetch('/api/schedule?id=' + encodeURIComponent(id));
         if (!response.ok) throw new Error('Failed to fetch schedule');
         const schedule = await response.json();
         showScheduleForm(schedule);
@@ -1446,9 +1458,9 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
     
     async function deleteSchedule(id, name) {
       if (!confirm('Delete schedule "' + name + '"?')) return;
-      
+
       try {
-        const response = await fetch('/api/schedules/' + id + '?session=' + session, { method: 'DELETE' });
+        const response = await fetch('/api/schedules/' + encodeURIComponent(id), { method: 'DELETE' });
         if (!response.ok) throw new Error('Failed to delete');
         loadSchedules();
         loadSchedulerStatus();
@@ -1489,7 +1501,7 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
 
     async function loadSchedulerStatus() {
       try {
-        const response = await fetch('/api/scheduler-status?session=' + session);
+        const response = await fetch('/api/scheduler-status');
         if (!response.ok) throw new Error('Failed to fetch status');
         const status = await response.json();
 
@@ -1568,7 +1580,7 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
         const response = await fetch('/api/test-alert', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session })
+          body: '{}'
         });
 
         const result = await response.json();
@@ -1613,7 +1625,6 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
 
       try {
         const body = {
-          session,
           name: scheduleName.value,
           enabled: scheduleEnabled.value === 'true',
           dayOfWeek: parseInt(scheduleDayOfWeek.value, 10),
@@ -1629,7 +1640,7 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
         let response;
         if (id) {
           // Update existing
-          response = await fetch('/api/schedules/' + id, {
+          response = await fetch('/api/schedules/' + encodeURIComponent(id), {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
@@ -1687,7 +1698,7 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
         const response = await fetch('/api/run-job', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session, startDate, endDate, grokModel, anthropicModel, wire: wireFilter || undefined })
+          body: JSON.stringify({ startDate, endDate, grokModel, anthropicModel, wire: wireFilter || undefined })
         });
 
         const data = await response.json();
@@ -1703,7 +1714,7 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
     });
 
     function subscribeToProgress(jobId) {
-      const eventSource = new EventSource('/api/job/' + jobId + '/progress?session=' + session);
+      const eventSource = new EventSource('/api/job/' + jobId + '/progress');
 
       eventSource.onmessage = (event) => {
         const data = JSON.parse(event.data);
@@ -1715,7 +1726,7 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
         } else if (data.status === 'completed') {
           clearInterval(elapsedTimer);
           eventSource.close();
-          window.location.href = '/dashboard?session=' + session + '&message=' + encodeURIComponent('Success! Processed ' + (data.result?.stats?.totalEntries || 0) + ' entries. File ready for download.');
+          window.location.href = '/dashboard?message=' + encodeURIComponent('Success! Processed ' + (data.result?.stats?.totalEntries || 0) + ' entries. File ready for download.');
         } else if (data.status === 'failed') {
           clearInterval(elapsedTimer);
           eventSource.close();
@@ -1751,7 +1762,7 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
 
     async function loadCrmStatus() {
       try {
-        const response = await fetch('/api/crm-sync/status?session=' + session);
+        const response = await fetch('/api/crm-sync/status');
         if (!response.ok) throw new Error('Failed to fetch');
         const data = await response.json();
         
@@ -1781,25 +1792,35 @@ function renderDashboard(files: StoredFile[], session: string, message?: string)
         const response = await fetch('/api/crm-sync', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session, lookbackDays })
+          body: JSON.stringify({ lookbackDays })
         });
 
         const data = await response.json();
 
         if (data.success) {
-          crmResultEl.innerHTML = '<p style="margin: 0; color: #4caf50;">Sync complete!</p>' +
-            '<p style="margin: 8px 0 0; color: #999; font-size: 13px;">' +
-            'Entries: ' + data.entriesProcessed + ' | ' +
-            'Matched: ' + data.orgsMatched + ' | ' +
-            'Created: ' + data.orgsCreated + ' | ' +
-            'Skipped: ' + data.orgsSkipped + ' | ' +
-            'Duration: ' + (data.duration / 1000).toFixed(1) + 's</p>';
+          const p1 = document.createElement('p');
+          p1.style.cssText = 'margin: 0; color: #4caf50;';
+          p1.textContent = 'Sync complete!';
+          const p2 = document.createElement('p');
+          p2.style.cssText = 'margin: 8px 0 0; color: #999; font-size: 13px;';
+          p2.textContent = 'Entries: ' + data.entriesProcessed + ' | Matched: ' + data.orgsMatched + ' | Created: ' + data.orgsCreated + ' | Skipped: ' + data.orgsSkipped + ' | Duration: ' + (data.duration / 1000).toFixed(1) + 's';
+          crmResultEl.innerHTML = '';
+          crmResultEl.appendChild(p1);
+          crmResultEl.appendChild(p2);
           loadCrmStatus();
         } else {
-          crmResultEl.innerHTML = '<p style="margin: 0; color: #ef5350;">Sync failed: ' + (data.error || 'Unknown error') + '</p>';
+          const p = document.createElement('p');
+          p.style.cssText = 'margin: 0; color: #ef5350;';
+          p.textContent = 'Sync failed: ' + (data.error || 'Unknown error');
+          crmResultEl.innerHTML = '';
+          crmResultEl.appendChild(p);
         }
       } catch (error) {
-        crmResultEl.innerHTML = '<p style="margin: 0; color: #ef5350;">Error: ' + error.message + '</p>';
+        const p = document.createElement('p');
+        p.style.cssText = 'margin: 0; color: #ef5350;';
+        p.textContent = 'Error: ' + error.message;
+        crmResultEl.innerHTML = '';
+        crmResultEl.appendChild(p);
       } finally {
         runCrmSyncBtn.disabled = false;
         runCrmSyncBtn.textContent = 'Run CRM Sync';
@@ -1864,8 +1885,8 @@ function renderDownloadPage(filename: string, downloadToken: string): string {
 <body>
   <div class="container">
     <h1>Your file is ready</h1>
-    <p class="filename">${filename}</p>
-    <a href="/download/${downloadToken}" class="button">Download Markdown</a>
+    <p class="filename">${escapeHtml(filename)}</p>
+    <a href="/download/${encodeURIComponent(downloadToken)}" class="button">Download Markdown</a>
     <p class="note">This is a one-time download link.</p>
   </div>
 </body>
