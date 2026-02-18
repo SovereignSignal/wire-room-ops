@@ -101,9 +101,10 @@ CREATE TABLE categories (
   name TEXT NOT NULL
 );
 
--- Schedule configuration (auto-created by app)
-CREATE TABLE schedule_config (
-  id INTEGER PRIMARY KEY DEFAULT 1,
+-- Multiple schedule configurations (auto-created by app)
+CREATE TABLE schedules (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL DEFAULT 'Untitled Schedule',
   enabled BOOLEAN NOT NULL DEFAULT false,
   day_of_week INTEGER NOT NULL DEFAULT 3,  -- 0=Sunday, 6=Saturday
   hour INTEGER NOT NULL DEFAULT 9,
@@ -112,8 +113,19 @@ CREATE TABLE schedule_config (
   grok_model TEXT,
   anthropic_model TEXT,
   timezone TEXT NOT NULL DEFAULT 'America/Los_Angeles',
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT single_row CHECK (id = 1)
+  wire TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Generated files (auto-created by app)
+CREATE TABLE generated_files (
+  id TEXT PRIMARY KEY,
+  filename TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+  date_range_start TIMESTAMP WITH TIME ZONE,
+  date_range_end TIMESTAMP WITH TIME ZONE
 );
 ```
 
@@ -149,7 +161,7 @@ src/
 │   ├── processor.ts    # Entry processing with retry logic
 │   ├── scheduler.ts    # Cron-based job scheduling with health tracking
 │   ├── scraper.ts      # Firecrawl web scraping, URL resolution
-│   └── storage.ts      # In-memory file storage
+│   └── storage.ts      # Postgres-backed file storage with in-memory cache
 ├── types/
 │   └── index.ts        # TypeScript interfaces
 ├── index.ts            # Application entry point
@@ -257,7 +269,7 @@ The app integrates with Notion for organization tracking:
 3. **Scrape**: For non-X.com URLs, Firecrawl scrapes the page content
 4. **Process**: Each URL is summarized with retry logic (3 attempts with exponential backoff)
 5. **Generate**: Markdown file organized by category with hyperlinked organization names
-6. **Store**: File saved in-memory with unique ID (keeps last 10 files)
+6. **Store**: File saved to Postgres with unique ID (keeps last 10 files)
 7. **Notify**: Optional email sent with magic link to download
 
 ## Scheduled Jobs
@@ -282,7 +294,7 @@ Default schedule: Wednesday at 9:00 AM Pacific, looking back 7 days.
 | `RESEND_API_KEY` | Resend email API key | Yes |
 | `NOTIFICATION_EMAIL` | Email for notifications and login | Yes |
 | `MAGIC_LINK_SECRET` | Secret for token hashing | Yes |
-| `APP_URL` | Public URL of the app | Yes |
+| `APP_URL` | Public URL of the app (default: `http://localhost:3000`) | No |
 | `FROM_EMAIL` | Sender email (default: `noreply@cryptograntwire.com`) | No |
 | `PORT` | Server port (default: 3000) | No |
 | `START_DATE` | Override start date for CLI job (ISO format) | No |
@@ -302,7 +314,7 @@ The app uses magic link authentication:
 3. Clicking link creates a 24-hour session
 4. Session token passed via query parameter
 
-Sessions and tokens are stored in-memory (reset on server restart).
+Sessions and tokens are stored in-memory (reset on server restart). Generated files are persisted to Postgres.
 
 ## AI Models
 
