@@ -93,33 +93,35 @@ export function validateMagicLink(token: string): { valid: boolean; fileId?: str
 
 export function createSessionToken(email: string): string {
   const token = generateToken();
-  
+  const hashedToken = hashToken(token);
+
   const now = new Date();
   const expiresAt = new Date(now);
   expiresAt.setHours(expiresAt.getHours() + 24);
-  
-  sessions.set(token, {
+
+  sessions.set(hashedToken, {
     email,
     createdAt: now,
     expiresAt,
   });
-  
+
   cleanupExpiredSessions();
   return token;
 }
 
 export function validateSession(token: string): boolean {
-  const session = sessions.get(token);
-  
+  const hashedToken = hashToken(token);
+  const session = sessions.get(hashedToken);
+
   if (!session) {
     return false;
   }
-  
+
   if (new Date() > session.expiresAt) {
-    sessions.delete(token);
+    sessions.delete(hashedToken);
     return false;
   }
-  
+
   return true;
 }
 

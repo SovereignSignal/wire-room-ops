@@ -42,6 +42,17 @@ function requireAuth(req: Request, res: Response, next: Function): void {
 // Simple in-memory rate limiter
 const rateLimitStore = new Map<string, number[]>();
 
+// Cleanup stale rate limit entries every 15 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, timestamps] of rateLimitStore.entries()) {
+    const recent = timestamps.filter(t => now - t < 15 * 60 * 1000);
+    if (recent.length === 0) {
+      rateLimitStore.delete(key);
+    }
+  }
+}, 15 * 60 * 1000);
+
 function rateLimit(key: string, maxRequests: number, windowMs: number): boolean {
   const now = Date.now();
   const timestamps = rateLimitStore.get(key) || [];
@@ -119,7 +130,7 @@ app.get('/auth', (req: Request, res: Response) => {
   const sessionToken = createSessionToken(validation.email || config.email.notificationEmail);
   res.cookie('session', sessionToken, {
     httpOnly: true,
-    secure: config.app.port !== 3000,
+    secure: config.app.url.startsWith('https'),
     sameSite: 'lax',
     maxAge: 24 * 60 * 60 * 1000,
   });
@@ -174,10 +185,24 @@ app.post('/api/run-job', requireAuth, async (req: Request, res: Response) => {
   let dateRange: { start: Date; end: Date } | undefined;
 
   if (startDate && endDate) {
-    dateRange = {
-      start: new Date(startDate),
-      end: new Date(endDate),
-    };
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      res.status(400).json({ error: 'Invalid date format' });
+      return;
+    }
+    if (end < start) {
+      res.status(400).json({ error: 'End date must be after start date' });
+      return;
+    }
+    const diffDays = (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24);
+    if (diffDays > 90) {
+      res.status(400).json({ error: 'Date range cannot exceed 90 days' });
+      return;
+    }
+
+    dateRange = { start, end };
     // Set end date to end of day
     dateRange.end.setHours(23, 59, 59, 999);
   }
