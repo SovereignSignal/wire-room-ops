@@ -452,6 +452,32 @@ export interface FeedRecord {
   updatedAt: Date;
 }
 
+export interface ScanPromptRecord {
+  id: string;
+  wire: string;
+  label: string;
+  promptText: string;
+  responseFormat: string | null;
+  isActive: boolean;
+  sortOrder: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+function parseScanPromptRow(row: any): ScanPromptRecord {
+  return {
+    id: row.id,
+    wire: row.wire,
+    label: row.label,
+    promptText: row.prompt_text,
+    responseFormat: row.response_format || null,
+    isActive: row.is_active ?? true,
+    sortOrder: row.sort_order ?? 0,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 const SEED_FEEDS: Record<string, { displayName: string; titleTemplate: string }> = {
   crypto: { displayName: 'Crypto', titleTemplate: "Sov's Crypto Grant Wire Weekly Update" },
   ai: { displayName: 'AI', titleTemplate: "Sov's AI Grant Wire Weekly Update" },
@@ -688,4 +714,145 @@ export async function ensureScanTables(): Promise<void> {
   `);
 
   console.log('[DB] Scan pipeline tables ready');
+}
+
+export async function ensureScanPromptsTable(): Promise<void> {
+  const pool = getPool();
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS scan_prompts (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      wire TEXT NOT NULL,
+      label TEXT NOT NULL,
+      prompt_text TEXT NOT NULL,
+      response_format TEXT,
+      is_active BOOLEAN DEFAULT true,
+      sort_order INTEGER DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_scan_prompts_wire ON scan_prompts(wire)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_scan_prompts_wire_order ON scan_prompts(wire, sort_order)`);
+
+  // updated_at trigger
+  await pool.query(`
+    CREATE OR REPLACE FUNCTION update_scan_prompts_updated_at()
+    RETURNS TRIGGER AS $$
+    BEGIN
+      NEW.updated_at = NOW();
+      RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql
+  `);
+  await pool.query(`DROP TRIGGER IF EXISTS scan_prompts_updated_at ON scan_prompts`);
+  await pool.query(`
+    CREATE TRIGGER scan_prompts_updated_at
+      BEFORE UPDATE ON scan_prompts
+      FOR EACH ROW
+      EXECUTE FUNCTION update_scan_prompts_updated_at()
+  `);
+
+  // Add prompt_id FK to scan_entries (nullable, for Phase 2 tracking)
+  await pool.query(`
+    DO $$ BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'scan_entries' AND column_name = 'prompt_id'
+      ) THEN
+        ALTER TABLE scan_entries ADD COLUMN prompt_id UUID REFERENCES scan_prompts(id);
+      END IF;
+    END $$
+  `);
+
+  console.log('[DB] Scan prompts table ready');
+}
+
+export async function getAllScanPrompts(wire?: string, activeOnly?: boolean): Promise<ScanPromptRecord[]> {
+  const pool = getPool();
+  const conditions: string[] = [];
+  const values: any[] = [];
+  let paramIndex = 1;
+
+  if (wire) {
+    conditions.push(`wire = $${paramIndex++}`);
+    values.push(wire);
+  }
+  if (activeOnly) {
+    conditions.push(`is_active = true`);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const result = await pool.query(
+    `SELECT * FROM scan_prompts ${whereClause} ORDER BY wire, sort_order ASC, created_at ASC`,
+    values
+  );
+
+  return result.rows.map(parseScanPromptRow);
+}
+
+export async function getScanPromptById(id: string): Promise<ScanPromptRecord | null> {
+  const pool = getPool();
+  const result = await pool.query(`SELECT * FROM scan_prompts WHERE id = $1`, [id]);
+  return result.rows.length > 0 ? parseScanPromptRow(result.rows[0]) : null;
+}
+
+export async function createScanPrompt(params: {
+  wire: string;
+  label: string;
+  promptText: string;
+  responseFormat?: string;
+  isActive?: boolean;
+  sortOrder?: number;
+}): Promise<ScanPromptRecord> {
+  const pool = getPool();
+  const result = await pool.query(`
+    INSERT INTO scan_prompts (wire, label, prompt_text, response_format, is_active, sort_order)
+    VALUES ($1, $2, $3, $4, $5, $6)
+    RETURNING *
+  `, [
+    params.wire,
+    params.label,
+    params.promptText,
+    params.responseFormat || null,
+    params.isActive ?? true,
+    params.sortOrder ?? 0,
+  ]);
+
+  return parseScanPromptRow(result.rows[0]);
+}
+
+export async function updateScanPrompt(
+  id: string,
+  updates: Partial<{ wire: string; label: string; promptText: string; responseFormat: string | null; isActive: boolean; sortOrder: number }>
+): Promise<ScanPromptRecord | null> {
+  const pool = getPool();
+  const setClauses: string[] = [];
+  const values: any[] = [];
+  let paramIndex = 1;
+
+  if (updates.wire !== undefined) { setClauses.push(`wire = $${paramIndex++}`); values.push(updates.wire); }
+  if (updates.label !== undefined) { setClauses.push(`label = $${paramIndex++}`); values.push(updates.label); }
+  if (updates.promptText !== undefined) { setClauses.push(`prompt_text = $${paramIndex++}`); values.push(updates.promptText); }
+  if (updates.responseFormat !== undefined) { setClauses.push(`response_format = $${paramIndex++}`); values.push(updates.responseFormat); }
+  if (updates.isActive !== undefined) { setClauses.push(`is_active = $${paramIndex++}`); values.push(updates.isActive); }
+  if (updates.sortOrder !== undefined) { setClauses.push(`sort_order = $${paramIndex++}`); values.push(updates.sortOrder); }
+
+  if (setClauses.length === 0) return getScanPromptById(id);
+
+  values.push(id);
+  const result = await pool.query(`
+    UPDATE scan_prompts SET ${setClauses.join(', ')}
+    WHERE id = $${paramIndex}
+    RETURNING *
+  `, values);
+
+  return result.rows.length > 0 ? parseScanPromptRow(result.rows[0]) : null;
+}
+
+export async function deleteScanPrompt(id: string): Promise<boolean> {
+  const pool = getPool();
+  const result = await pool.query(`DELETE FROM scan_prompts WHERE id = $1`, [id]);
+  return (result.rowCount ?? 0) > 0;
 }

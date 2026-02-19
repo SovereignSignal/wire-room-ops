@@ -76,6 +76,52 @@ export async function summarizeWithGrok(entry: DatabaseEntry, model?: string): P
   return data.choices[0].message.content.trim();
 }
 
+// Default model for scan prompts — cheaper than reasoning model for data extraction
+const DEFAULT_SCAN_MODEL = 'grok-3-fast';
+
+export async function executeScanPrompt(
+  promptText: string,
+  options?: { model?: string; responseFormat?: string | null }
+): Promise<{ content: string; model: string; tokensUsed?: number }> {
+  const model = options?.model || DEFAULT_SCAN_MODEL;
+
+  let fullPrompt = promptText;
+  if (options?.responseFormat) {
+    fullPrompt += `\n\nRespond using this format:\n${options.responseFormat}`;
+  }
+
+  const response = await fetch(`${config.apis.grok.baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${config.apis.grok.apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages: [{ role: 'user', content: fullPrompt }],
+      max_tokens: 4000,
+      temperature: 0.3,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Grok API error: ${response.status} - ${errorText}`);
+  }
+
+  const data = await response.json() as GrokResponse & { usage?: { total_tokens?: number } };
+
+  if (!data.choices?.[0]?.message?.content) {
+    throw new Error('Grok API returned empty response');
+  }
+
+  return {
+    content: data.choices[0].message.content.trim(),
+    model,
+    tokensUsed: data.usage?.total_tokens,
+  };
+}
+
 export function isXcomUrl(url: string): boolean {
   try {
     const hostname = new URL(url).hostname.toLowerCase();

@@ -13,7 +13,7 @@ async function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function withRetry<T>(
+export async function withRetry<T>(
   fn: () => Promise<T>,
   retries: number = 3
 ): Promise<T> {

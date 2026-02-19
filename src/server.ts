@@ -3,7 +3,7 @@ import cookieParser from 'cookie-parser';
 import { config } from './config';
 import { validateMagicLink, createDownloadToken, createSessionToken, validateSession, createLoginMagicLink } from './services/auth';
 import { getFile, listFiles } from './services/storage';
-import { getAvailableWires, closePool, getAllFeeds, getFeedByKey, createFeed, updateFeed, archiveFeed, getEntryCountsByWire } from './db';
+import { getAvailableWires, closePool, getAllFeeds, getFeedByKey, createFeed, updateFeed, archiveFeed, getEntryCountsByWire, getAllScanPrompts, getScanPromptById, createScanPrompt, updateScanPrompt, deleteScanPrompt } from './db';
 import { sendLoginEmail } from './services/email';
 import { runWeeklySummaryJob } from './jobs/weekly-summary';
 import { StoredFile } from './types';
@@ -15,6 +15,8 @@ import { isStagingConfigured } from './services/notion';
 import { buildSubmission, buildBatchSubmission } from './services/intake';
 import { runDailyIntake, getDailyQueue, getIntakeStats } from './jobs/daily-intake';
 import { getPool } from './db';
+import { executeScanPrompt } from './services/grok';
+import { withRetry } from './services/processor';
 
 const app = express();
 
@@ -927,6 +929,160 @@ app.get('/api/scan/stats', requireAuth, async (req: Request, res: Response) => {
   }
 });
 
+// API: List scan prompts
+app.get('/api/scan/prompts', requireAuth, async (req: Request, res: Response) => {
+  const wire = req.query.wire as string | undefined;
+  const active = req.query.active as string | undefined;
+  const activeOnly = active === 'true' ? true : active === 'false' ? false : undefined;
+
+  try {
+    const prompts = await getAllScanPrompts(wire || undefined, activeOnly ?? undefined);
+    res.json(prompts);
+  } catch (error) {
+    console.error('Failed to fetch scan prompts:', error);
+    res.status(500).json({ error: 'Failed to fetch scan prompts' });
+  }
+});
+
+// API: Create scan prompt
+app.post('/api/scan/prompts', requireAuth, async (req: Request, res: Response) => {
+  const { wire, label, promptText, responseFormat, isActive, sortOrder } = req.body;
+
+  if (!wire || typeof wire !== 'string') {
+    res.status(400).json({ error: 'wire is required' });
+    return;
+  }
+  if (!label || typeof label !== 'string') {
+    res.status(400).json({ error: 'label is required' });
+    return;
+  }
+  if (!promptText || typeof promptText !== 'string' || promptText.trim().length === 0) {
+    res.status(400).json({ error: 'promptText is required and must be non-empty' });
+    return;
+  }
+
+  // Validate wire against feeds
+  try {
+    const feeds = await getAllFeeds();
+    const validKeys = feeds.map(f => f.key);
+    if (!validKeys.includes(wire)) {
+      res.status(400).json({ error: `Invalid wire "${wire}". Valid: ${validKeys.join(', ')}` });
+      return;
+    }
+
+    const prompt = await createScanPrompt({
+      wire,
+      label,
+      promptText,
+      responseFormat: responseFormat || undefined,
+      isActive: isActive ?? true,
+      sortOrder: typeof sortOrder === 'number' ? sortOrder : undefined,
+    });
+
+    res.json(prompt);
+  } catch (error) {
+    console.error('Failed to create scan prompt:', error);
+    res.status(500).json({ error: 'Failed to create scan prompt' });
+  }
+});
+
+// API: Update scan prompt
+app.put('/api/scan/prompts/:id', requireAuth, async (req: Request, res: Response) => {
+  const { id } = req.params;
+  if (!id || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    res.status(400).json({ error: 'Invalid prompt ID' });
+    return;
+  }
+
+  const { wire, label, promptText, responseFormat, isActive, sortOrder } = req.body;
+  const updates: Record<string, any> = {};
+
+  if (wire !== undefined) {
+    // Validate wire against feeds
+    const feeds = await getAllFeeds();
+    const validKeys = feeds.map(f => f.key);
+    if (!validKeys.includes(wire)) {
+      res.status(400).json({ error: `Invalid wire "${wire}". Valid: ${validKeys.join(', ')}` });
+      return;
+    }
+    updates.wire = wire;
+  }
+  if (label !== undefined) updates.label = label;
+  if (promptText !== undefined) updates.promptText = promptText;
+  if (responseFormat !== undefined) updates.responseFormat = responseFormat || null;
+  if (isActive !== undefined) updates.isActive = isActive;
+  if (sortOrder !== undefined) updates.sortOrder = sortOrder;
+
+  try {
+    const updated = await updateScanPrompt(id, updates);
+    if (!updated) {
+      res.status(404).json({ error: 'Prompt not found' });
+      return;
+    }
+    res.json(updated);
+  } catch (error) {
+    console.error('Failed to update scan prompt:', error);
+    res.status(500).json({ error: 'Failed to update scan prompt' });
+  }
+});
+
+// API: Delete scan prompt
+app.delete('/api/scan/prompts/:id', requireAuth, async (req: Request, res: Response) => {
+  const { id } = req.params;
+  if (!id || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    res.status(400).json({ error: 'Invalid prompt ID' });
+    return;
+  }
+
+  try {
+    const deleted = await deleteScanPrompt(id);
+    if (!deleted) {
+      res.status(404).json({ error: 'Prompt not found' });
+      return;
+    }
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Failed to delete scan prompt:', error);
+    res.status(500).json({ error: 'Failed to delete scan prompt' });
+  }
+});
+
+// API: Test-run a scan prompt against Grok
+app.post('/api/scan/prompts/:id/test', requireAuth, async (req: Request, res: Response) => {
+  const { id } = req.params;
+  if (!id || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    res.status(400).json({ error: 'Invalid prompt ID' });
+    return;
+  }
+
+  if (!rateLimit('scan-prompt-test', 5, 5 * 60 * 1000)) {
+    res.status(429).json({ error: 'Too many test requests. Max 5 per 5 minutes.' });
+    return;
+  }
+
+  try {
+    const prompt = await getScanPromptById(id);
+    if (!prompt) {
+      res.status(404).json({ error: 'Prompt not found' });
+      return;
+    }
+
+    const result = await withRetry(() => executeScanPrompt(prompt.promptText, {
+      responseFormat: prompt.responseFormat,
+    }));
+
+    res.json({
+      success: true,
+      content: result.content,
+      model: result.model,
+      tokensUsed: result.tokensUsed,
+    });
+  } catch (error) {
+    console.error('Scan prompt test failed:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Test run failed' });
+  }
+});
+
 function renderLoginPage(error?: string): string {
   return `
 <!DOCTYPE html>
@@ -1604,6 +1760,53 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       </div>
       <div id="queue-results">
         <p style="color: #666;">Click "Load Queue" to view entries.</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Prompt Management <button type="button" id="add-prompt" class="button" style="float: right; padding: 8px 16px; font-size: 13px;">+ Add Prompt</button></h2>
+      <p class="form-description" style="margin-bottom: 16px;">Manage scan prompts for automated Grok queries. Test prompts to preview output before scheduling.</p>
+      <div id="prompts-list"></div>
+      <div id="prompt-form" class="run-form" style="display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid #2a2a2a;">
+        <input type="hidden" id="promptEditId" value="">
+        <div class="form-row">
+          <div class="form-group">
+            <label for="promptWire">Wire</label>
+            <select id="promptWire">
+              <option value="">Loading feeds...</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="promptLabel">Label</label>
+            <input type="text" id="promptLabel" placeholder="e.g. Action Scan" style="background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 10px 12px; color: #fff; width: 180px;">
+          </div>
+          <div class="form-group">
+            <label for="promptSortOrder">Order</label>
+            <input type="number" id="promptSortOrder" value="0" min="0" style="width: 70px;">
+          </div>
+          <div class="form-group">
+            <label for="promptIsActive">Status</label>
+            <select id="promptIsActive">
+              <option value="true">Active</option>
+              <option value="false">Inactive</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group" style="margin-top: 12px;">
+          <label for="promptText">Prompt Text</label>
+          <textarea id="promptText" rows="6" placeholder="Enter the scan prompt..." style="width: 100%; padding: 10px 12px; border: 1px solid #2a2a2a; border-radius: 6px; font-size: 13px; font-family: monospace; background: #0d0d0d; color: #ffffff; resize: vertical;"></textarea>
+        </div>
+        <div class="form-group" style="margin-top: 12px;">
+          <label for="promptResponseFormat">Response Format (optional)</label>
+          <textarea id="promptResponseFormat" rows="3" placeholder="Optional structured output format..." style="width: 100%; padding: 10px 12px; border: 1px solid #2a2a2a; border-radius: 6px; font-size: 13px; font-family: monospace; background: #0d0d0d; color: #ffffff; resize: vertical;"></textarea>
+        </div>
+        <div style="margin-top: 12px;">
+          <button type="button" id="save-prompt" class="button">Save Prompt</button>
+          <button type="button" id="cancel-prompt" class="button secondary" style="margin-left: 8px;">Cancel</button>
+        </div>
+      </div>
+      <div id="prompt-test-result" style="display: none; margin-top: 16px; padding: 12px 16px; background: #0d0d0d; border-radius: 8px; border: 1px solid #2a2a2a;">
+        <p style="margin: 0; color: #999;">Test results will appear here</p>
       </div>
     </div>
   </div>
@@ -2441,6 +2644,248 @@ function renderDashboard(files: StoredFile[], message?: string): string {
     }
 
     loadQueueBtn.addEventListener('click', loadQueue);
+
+    // Prompt Management
+    const promptsListEl = document.getElementById('prompts-list');
+    const promptForm = document.getElementById('prompt-form');
+    const promptEditIdEl = document.getElementById('promptEditId');
+    const promptWireSelect = document.getElementById('promptWire');
+    const promptLabelInput = document.getElementById('promptLabel');
+    const promptSortOrderInput = document.getElementById('promptSortOrder');
+    const promptIsActiveSelect = document.getElementById('promptIsActive');
+    const promptTextInput = document.getElementById('promptText');
+    const promptResponseFormatInput = document.getElementById('promptResponseFormat');
+    const savePromptBtn = document.getElementById('save-prompt');
+    const cancelPromptBtn = document.getElementById('cancel-prompt');
+    const addPromptBtn = document.getElementById('add-prompt');
+    const promptTestResultEl = document.getElementById('prompt-test-result');
+    let promptsCache = {};
+
+    async function loadPromptFeeds() {
+      try {
+        const response = await fetch('/api/feeds');
+        if (!response.ok) throw new Error('Failed');
+        const feeds = await response.json();
+        let opts = '';
+        feeds.forEach(function(f) {
+          opts += '<option value="' + escapeHtml(f.key) + '">' + escapeHtml(f.displayName) + '</option>';
+        });
+        promptWireSelect.innerHTML = opts;
+      } catch (e) {
+        console.error('Failed to load prompt feeds:', e);
+      }
+    }
+
+    loadPromptFeeds();
+
+    async function loadPrompts() {
+      try {
+        const response = await fetch('/api/scan/prompts');
+        if (!response.ok) throw new Error('Failed to fetch prompts');
+        const prompts = await response.json();
+        promptsCache = {};
+        prompts.forEach(function(p) { promptsCache[p.id] = p; });
+        renderPromptsList(prompts);
+      } catch (error) {
+        console.error('Failed to load prompts:', error);
+        promptsListEl.innerHTML = '<p style="color: #ef5350;">Failed to load prompts</p>';
+      }
+    }
+
+    function renderPromptsList(prompts) {
+      if (prompts.length === 0) {
+        promptsListEl.innerHTML = '<p style="color: #666;">No prompts configured. Click "+ Add Prompt" to create one.</p>';
+        return;
+      }
+
+      let html = '<table><thead><tr><th>Wire</th><th>Label</th><th>Status</th><th>Order</th><th>Prompt</th><th>Actions</th></tr></thead><tbody>';
+
+      prompts.forEach(function(p) {
+        const truncated = (p.promptText || '').length > 80 ? p.promptText.substring(0, 80) + '...' : p.promptText;
+        const statusColor = p.isActive ? '#4caf50' : '#666';
+        const statusText = p.isActive ? 'Active' : 'Inactive';
+
+        html += '<tr id="prompt-row-' + p.id + '">';
+        html += '<td><code style="background: #0d0d0d; padding: 2px 6px; border-radius: 4px;">' + escapeHtml(p.wire) + '</code></td>';
+        html += '<td>' + escapeHtml(p.label) + '</td>';
+        html += '<td><span style="color: ' + statusColor + ';">' + statusText + '</span></td>';
+        html += '<td>' + p.sortOrder + '</td>';
+        html += '<td style="font-size: 12px; color: #999; max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">' + escapeHtml(truncated) + '</td>';
+        html += '<td style="white-space: nowrap;">';
+        html += '<button class="toggle-prompt" data-id="' + p.id + '" data-active="' + p.isActive + '" style="background: #2a2a2a; border: none; color: ' + (p.isActive ? '#f5a623' : '#4caf50') + '; padding: 6px 10px; border-radius: 4px; cursor: pointer; margin-right: 4px; font-size: 12px;">' + (p.isActive ? 'Disable' : 'Enable') + '</button>';
+        html += '<button class="test-prompt" data-id="' + p.id + '" style="background: #2a2a2a; border: none; color: #9c27b0; padding: 6px 10px; border-radius: 4px; cursor: pointer; margin-right: 4px; font-size: 12px;">Test</button>';
+        html += '<button class="edit-prompt" data-id="' + p.id + '" style="background: #2a2a2a; border: none; color: #f5a623; padding: 6px 10px; border-radius: 4px; cursor: pointer; margin-right: 4px; font-size: 12px;">Edit</button>';
+        html += '<button class="delete-prompt" data-id="' + p.id + '" data-label="' + escapeHtml(p.label) + '" style="background: #2a2a2a; border: none; color: #ef5350; padding: 6px 10px; border-radius: 4px; cursor: pointer; font-size: 12px;">Delete</button>';
+        html += '</td>';
+        html += '</tr>';
+        html += '<tr id="prompt-test-row-' + p.id + '" style="display: none;"><td colspan="6" style="padding: 12px; background: #0d0d0d;"><div class="prompt-test-output" style="font-family: monospace; font-size: 12px; white-space: pre-wrap; color: #ccc; max-height: 300px; overflow-y: auto;"></div></td></tr>';
+      });
+
+      html += '</tbody></table>';
+      promptsListEl.innerHTML = html;
+
+      // Toggle active/inactive
+      document.querySelectorAll('.toggle-prompt').forEach(function(btn) {
+        btn.addEventListener('click', async function() {
+          const id = btn.dataset.id;
+          const newActive = btn.dataset.active === 'true' ? false : true;
+          btn.disabled = true;
+          try {
+            const resp = await fetch('/api/scan/prompts/' + id, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ isActive: newActive })
+            });
+            if (!resp.ok) throw new Error('Failed');
+            loadPrompts();
+          } catch (e) {
+            console.error('Toggle failed:', e);
+          } finally {
+            btn.disabled = false;
+          }
+        });
+      });
+
+      // Test prompt
+      document.querySelectorAll('.test-prompt').forEach(function(btn) {
+        btn.addEventListener('click', async function() {
+          const id = btn.dataset.id;
+          const testRow = document.getElementById('prompt-test-row-' + id);
+          const outputEl = testRow.querySelector('.prompt-test-output');
+
+          // Toggle visibility if already showing
+          if (testRow.style.display === 'table-row') {
+            testRow.style.display = 'none';
+            return;
+          }
+
+          testRow.style.display = 'table-row';
+          outputEl.textContent = 'Running test...';
+          outputEl.style.color = '#f5a623';
+          btn.disabled = true;
+          btn.textContent = 'Running...';
+
+          try {
+            const resp = await fetch('/api/scan/prompts/' + id + '/test', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' }
+            });
+            const data = await resp.json();
+
+            if (data.success) {
+              let info = 'Model: ' + escapeHtml(data.model);
+              if (data.tokensUsed) info += ' | Tokens: ' + data.tokensUsed;
+              outputEl.innerHTML = '<p style="margin: 0 0 8px; color: #4caf50; font-size: 11px;">' + info + '</p>' + escapeHtml(data.content);
+              outputEl.style.color = '#ccc';
+            } else {
+              outputEl.textContent = 'Error: ' + (data.error || 'Unknown error');
+              outputEl.style.color = '#ef5350';
+            }
+          } catch (e) {
+            outputEl.textContent = 'Error: ' + e.message;
+            outputEl.style.color = '#ef5350';
+          } finally {
+            btn.disabled = false;
+            btn.textContent = 'Test';
+          }
+        });
+      });
+
+      // Edit prompt
+      document.querySelectorAll('.edit-prompt').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          const id = btn.dataset.id;
+          const p = promptsCache[id];
+          if (!p) return;
+          promptEditIdEl.value = id;
+          promptWireSelect.value = p.wire;
+          promptLabelInput.value = p.label;
+          promptSortOrderInput.value = p.sortOrder;
+          promptIsActiveSelect.value = String(p.isActive);
+          promptTextInput.value = p.promptText;
+          promptResponseFormatInput.value = p.responseFormat || '';
+          promptForm.style.display = 'block';
+        });
+      });
+
+      // Delete prompt
+      document.querySelectorAll('.delete-prompt').forEach(function(btn) {
+        btn.addEventListener('click', async function() {
+          const id = btn.dataset.id;
+          const label = btn.dataset.label;
+          if (!confirm('Delete prompt "' + label + '"? This cannot be undone.')) return;
+          btn.disabled = true;
+          try {
+            const resp = await fetch('/api/scan/prompts/' + id, { method: 'DELETE' });
+            if (!resp.ok) throw new Error('Failed');
+            loadPrompts();
+          } catch (e) {
+            console.error('Delete failed:', e);
+          } finally {
+            btn.disabled = false;
+          }
+        });
+      });
+    }
+
+    loadPrompts();
+
+    addPromptBtn.addEventListener('click', function() {
+      promptEditIdEl.value = '';
+      promptWireSelect.selectedIndex = 0;
+      promptLabelInput.value = '';
+      promptSortOrderInput.value = '0';
+      promptIsActiveSelect.value = 'true';
+      promptTextInput.value = '';
+      promptResponseFormatInput.value = '';
+      promptForm.style.display = 'block';
+    });
+
+    cancelPromptBtn.addEventListener('click', function() {
+      promptForm.style.display = 'none';
+    });
+
+    savePromptBtn.addEventListener('click', async function() {
+      const editId = promptEditIdEl.value;
+      const wire = promptWireSelect.value;
+      const label = promptLabelInput.value.trim();
+      const sortOrder = parseInt(promptSortOrderInput.value) || 0;
+      const isActive = promptIsActiveSelect.value === 'true';
+      const promptTextVal = promptTextInput.value.trim();
+      const responseFormat = promptResponseFormatInput.value.trim();
+
+      if (!wire) { alert('Please select a wire/feed'); return; }
+      if (!label) { alert('Label is required'); return; }
+      if (!promptTextVal) { alert('Prompt text is required'); return; }
+
+      savePromptBtn.disabled = true;
+      savePromptBtn.textContent = 'Saving...';
+
+      try {
+        const body = { wire, label, sortOrder, isActive, promptText: promptTextVal, responseFormat: responseFormat || null };
+        const url = editId ? '/api/scan/prompts/' + editId : '/api/scan/prompts';
+        const method = editId ? 'PUT' : 'POST';
+
+        const resp = await fetch(url, {
+          method: method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+
+        if (!resp.ok) {
+          const data = await resp.json();
+          throw new Error(data.error || 'Failed to save');
+        }
+
+        promptForm.style.display = 'none';
+        loadPrompts();
+      } catch (e) {
+        alert('Error: ' + e.message);
+      } finally {
+        savePromptBtn.disabled = false;
+        savePromptBtn.textContent = 'Save Prompt';
+      }
+    });
 
     runCrmSyncBtn.addEventListener('click', async () => {
       const lookbackDays = crmLookbackInput.value || 1;
