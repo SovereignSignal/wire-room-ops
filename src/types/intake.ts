@@ -3,8 +3,7 @@
  * These extend the existing grant-wire-summarizer type system.
  */
 
-// Re-export the Wire type from the main app
-export type Wire = 'crypto' | 'ai' | 'oss';
+// Wire values are dynamic (driven by feeds table), so we use string
 
 // Which prompt variant produced this result
 export type PromptVariant = 'A' | 'B' | 'C';
@@ -42,7 +41,7 @@ export interface RawScanResult {
  * A complete scan submission: all results from one prompt run.
  */
 export interface ScanSubmission {
-  wire: Wire;
+  wire: string;
   promptVariant: PromptVariant;
   scanDate: string;           // ISO date string (YYYY-MM-DD)
   source: ScanSource;
@@ -63,7 +62,7 @@ export interface ScanEntry {
   amountCurrency: string | null;    // USD, EUR, GBP, INR, etc.
   deadline: string | null;
   deadlineParsed: Date | null;      // Parsed deadline for sorting
-  wire: Wire;
+  wire: string;
   promptVariant: PromptVariant;
   scanSource: ScanSource;
   scanDate: Date;
@@ -106,7 +105,7 @@ export interface QualityBreakdown {
  */
 export interface IntakeRunSummary {
   runDate: string;
-  wire: Wire | 'all';
+  wire: string | 'all';
   totalIngested: number;
   duplicatesFound: number;
   newUnique: number;
@@ -125,7 +124,7 @@ export interface IntakeRunSummary {
  * Configuration for the daily intake job.
  */
 export interface IntakeJobConfig {
-  wire?: Wire;                      // Filter to specific wire, or all
+  wire?: string;                     // Filter to specific wire, or all
   qualityThreshold: number;         // Minimum score to enter the queue (default: 40)
   dedupeWindow: number;             // Days to look back for duplicates (default: 14)
   sendBriefing: boolean;            // Email daily briefing
@@ -154,7 +153,7 @@ export interface SeenUrl {
   normalizedUrl: string;
   firstSeenEntryId: number;
   firstSeenDate: Date;
-  wire: Wire;
+  wire: string;
 }
 
 /**
@@ -163,6 +162,6 @@ export interface SeenUrl {
 export interface SeenName {
   nameNormalized: string;
   entryId: number;
-  wire: Wire;
+  wire: string;
   firstSeen: Date;
 }

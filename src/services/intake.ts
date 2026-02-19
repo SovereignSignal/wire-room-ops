@@ -10,7 +10,6 @@
  */
 
 import type {
-  Wire,
   PromptVariant,
   ScanSource,
   RawScanResult,
@@ -273,7 +272,7 @@ export function parseDeadline(deadline: string | null): Date | null {
  */
 export function buildSubmission(
   rawText: string,
-  wire: Wire,
+  wire: string,
   promptVariant: PromptVariant,
   scanDate: string,
   source: ScanSource = 'x-scan'
@@ -295,8 +294,9 @@ export function buildSubmission(
  */
 export function buildBatchSubmission(
   rawText: string,
-  wire: Wire,
-  scanDate: string
+  wire: string,
+  scanDate: string,
+  source: ScanSource = 'x-scan'
 ): ScanSubmission[] {
   const submissions: ScanSubmission[] = [];
 
@@ -338,7 +338,7 @@ export function buildBatchSubmission(
         wire,
         promptVariant: section.variant,
         scanDate,
-        source: 'x-scan',
+        source,
         results,
       });
     }

@@ -17,7 +17,6 @@
 
 import type { Pool } from 'pg';
 import type {
-  Wire,
   PromptVariant,
   ScanSource,
   ScanSubmission,
@@ -73,14 +72,14 @@ export async function runDailyIntake(
   const progress = options.onProgress || (() => {});
 
   const runDate = submissions[0]?.scanDate || new Date().toISOString().split('T')[0];
-  const wire = submissions.length === 1 ? submissions[0].wire : ('all' as Wire | 'all');
+  const wire = submissions.length === 1 ? submissions[0].wire : 'all';
 
   progress('Starting intake pipeline...', 0);
 
   // Flatten all results from all submissions
   const allResults: Array<{
     result: { name: string; description: string; deadline: string | null; sourceUrl: string; amount: string | null };
-    wire: Wire;
+    wire: string;
     promptVariant: PromptVariant;
     scanSource: ScanSource;
     scanDate: string;
@@ -274,7 +273,7 @@ export async function runDailyIntake(
 
   const summary: IntakeRunSummary = {
     runDate,
-    wire: wire as Wire | 'all',
+    wire,
     totalIngested: allResults.length,
     duplicatesFound,
     newUnique: uniqueEntryIds.length,
@@ -316,7 +315,7 @@ export async function runDailyIntake(
  */
 export async function getDailyQueue(
   pool: Pool,
-  wire: Wire | null = null,
+  wire: string | null = null,
   minScore: number = 40,
   date: string | null = null
 ): Promise<ScanEntry[]> {
@@ -345,7 +344,7 @@ export async function getDailyQueue(
  */
 export async function getEnrichmentQueue(
   pool: Pool,
-  wire: Wire | null = null,
+  wire: string | null = null,
   limit: number = 50
 ): Promise<ScanEntry[]> {
   const wireClause = wire ? 'AND wire = $2' : '';

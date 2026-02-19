@@ -11,7 +11,7 @@
  */
 
 import type { Pool } from 'pg';
-import type { Wire, DedupResult, ScanEntry } from '../types/intake';
+import type { DedupResult, ScanEntry } from '../types/intake';
 import { normalizeUrl, normalizeName, extractNameTokens } from './intake';
 
 // ============================================================
@@ -28,7 +28,7 @@ import { normalizeUrl, normalizeName, extractNameTokens } from './intake';
  */
 export async function checkDuplicate(
   pool: Pool,
-  entry: { sourceUrl: string; name: string; wire: Wire },
+  entry: { sourceUrl: string; name: string; wire: string },
   lookbackDays: number = 14
 ): Promise<DedupResult> {
   // Layer 1: URL exact match (fastest)
@@ -69,7 +69,7 @@ export async function checkDuplicate(
 async function checkUrlMatch(
   pool: Pool,
   sourceUrl: string,
-  wire: Wire
+  wire: string
 ): Promise<DedupResult> {
   const normalized = normalizeUrl(sourceUrl);
 
@@ -114,7 +114,7 @@ async function checkUrlMatch(
 async function checkNameMatch(
   pool: Pool,
   name: string,
-  wire: Wire,
+  wire: string,
   lookbackDays: number
 ): Promise<DedupResult> {
   const normalized = normalizeName(name);
@@ -255,7 +255,7 @@ export async function registerSeen(
     id: number;
     sourceUrl: string;
     name: string;
-    wire: Wire;
+    wire: string;
     scanDate: string;
   }
 ): Promise<void> {
@@ -288,7 +288,7 @@ export async function registerSeen(
  */
 export async function getDedupStats(
   pool: Pool,
-  wire: Wire | null,
+  wire: string | null,
   startDate: string,
   endDate: string
 ): Promise<{

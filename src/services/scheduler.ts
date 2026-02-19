@@ -3,7 +3,7 @@ import { runWeeklySummaryJob } from '../jobs/weekly-summary';
 import { config } from '../config';
 import { sendNotificationEmail, sendTestAlertEmail, sendScheduledJobFailureEmail } from './email';
 import { createMagicLink } from './auth';
-import { ensureScheduleTable, getAllSchedules, getScheduleById, createSchedule, updateSchedule, deleteSchedule as dbDeleteSchedule, StoredScheduleConfig, ensureFeedsTable } from '../db';
+import { ensureScheduleTable, getAllSchedules, getScheduleById, createSchedule, updateSchedule, deleteSchedule as dbDeleteSchedule, StoredScheduleConfig, ensureFeedsTable, ensureScanTables } from '../db';
 
 export interface ScheduleConfig {
   id: string;
@@ -344,6 +344,8 @@ export async function initScheduler(): Promise<void> {
     console.log('[Scheduler] Schedule table ready');
     await ensureFeedsTable();
     console.log('[Scheduler] Feeds table ready');
+    await ensureScanTables();
+    console.log('[Scheduler] Scan pipeline tables ready');
 
     // Load all schedules from database
     const savedSchedules = await getAllSchedules();

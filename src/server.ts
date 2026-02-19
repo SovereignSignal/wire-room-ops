@@ -12,6 +12,9 @@ import { getAllModels } from './services/models';
 import { getSchedule, getSchedules, setSchedule, addSchedule, removeSchedule, formatScheduleDescription, getNextRunTime, initScheduler, stopScheduler, ScheduleConfig, sendTestAlert, getSchedulerStatus } from './services/scheduler';
 import { runCrmSyncJob, getStagingOrgs, CrmSyncJobResult } from './services/crm-sync';
 import { isStagingConfigured } from './services/notion';
+import { buildSubmission, buildBatchSubmission } from './services/intake';
+import { runDailyIntake, getDailyQueue, getIntakeStats } from './jobs/daily-intake';
+import { getPool } from './db';
 
 const app = express();
 
@@ -809,6 +812,121 @@ app.get('/api/crm-sync/staging-orgs', requireAuth, async (req: Request, res: Res
   }
 });
 
+// API: Submit a single scan prompt result
+app.post('/api/scan/submit', requireAuth, async (req: Request, res: Response) => {
+  const { wire, promptVariant, scanDate, rawText, source } = req.body;
+
+  try {
+    // Validate wire against feeds table
+    const feeds = await getAllFeeds();
+    const validKeys = feeds.map(f => f.key);
+    if (!wire || !validKeys.includes(wire)) {
+      res.status(400).json({ error: `Invalid wire "${wire}". Valid: ${validKeys.join(', ')}` });
+      return;
+    }
+    if (!promptVariant || !['A', 'B', 'C'].includes(promptVariant)) {
+      res.status(400).json({ error: 'promptVariant must be A, B, or C' });
+      return;
+    }
+    if (!scanDate || isNaN(Date.parse(scanDate))) {
+      res.status(400).json({ error: 'scanDate must be a valid date string (YYYY-MM-DD)' });
+      return;
+    }
+    if (!rawText || typeof rawText !== 'string' || rawText.trim().length === 0) {
+      res.status(400).json({ error: 'rawText is required and must be non-empty' });
+      return;
+    }
+
+    const submission = buildSubmission(
+      rawText,
+      wire,
+      promptVariant,
+      scanDate,
+      source || 'x-scan'
+    );
+
+    const pool = getPool();
+    const summary = await runDailyIntake(pool, [submission]);
+
+    res.json({ success: true, summary });
+  } catch (error) {
+    console.error('Scan submit failed:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
+  }
+});
+
+// API: Submit batch scan (all prompts for a wire)
+app.post('/api/scan/submit-batch', requireAuth, async (req: Request, res: Response) => {
+  const { wire, scanDate, rawText, source } = req.body;
+
+  try {
+    const feeds = await getAllFeeds();
+    const validKeys = feeds.map(f => f.key);
+    if (!wire || !validKeys.includes(wire)) {
+      res.status(400).json({ error: `Invalid wire "${wire}". Valid: ${validKeys.join(', ')}` });
+      return;
+    }
+    if (!scanDate || isNaN(Date.parse(scanDate))) {
+      res.status(400).json({ error: 'scanDate must be a valid date string (YYYY-MM-DD)' });
+      return;
+    }
+    if (!rawText || typeof rawText !== 'string' || rawText.trim().length === 0) {
+      res.status(400).json({ error: 'rawText is required and must be non-empty' });
+      return;
+    }
+
+    const submissions = buildBatchSubmission(
+      rawText,
+      wire,
+      scanDate,
+      source || 'x-scan'
+    );
+
+    if (submissions.length === 0) {
+      res.status(400).json({ error: 'Could not parse any prompt sections from rawText. Expected headers like "Prompt A", "Prompt B", etc.' });
+      return;
+    }
+
+    const pool = getPool();
+    const summary = await runDailyIntake(pool, submissions);
+
+    res.json({ success: true, summary });
+  } catch (error) {
+    console.error('Scan batch submit failed:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
+  }
+});
+
+// API: Get daily scan queue
+app.get('/api/scan/queue', requireAuth, async (req: Request, res: Response) => {
+  const wire = (req.query.wire as string) || null;
+  const minScore = parseInt(req.query.minScore as string) || 40;
+  const date = (req.query.date as string) || null;
+
+  try {
+    const pool = getPool();
+    const entries = await getDailyQueue(pool, wire, minScore, date);
+    res.json({ entries, count: entries.length });
+  } catch (error) {
+    console.error('Failed to get scan queue:', error);
+    res.status(500).json({ error: 'Failed to get scan queue' });
+  }
+});
+
+// API: Get intake stats
+app.get('/api/scan/stats', requireAuth, async (req: Request, res: Response) => {
+  const days = parseInt(req.query.days as string) || 7;
+
+  try {
+    const pool = getPool();
+    const stats = await getIntakeStats(pool, days);
+    res.json(stats);
+  } catch (error) {
+    console.error('Failed to get intake stats:', error);
+    res.status(500).json({ error: 'Failed to get intake stats' });
+  }
+});
+
 function renderLoginPage(error?: string): string {
   return `
 <!DOCTYPE html>
@@ -1417,6 +1535,75 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       </div>
       <div id="crm-sync-result" style="display: none; margin-top: 16px; padding: 12px 16px; background: #0d0d0d; border-radius: 8px; border: 1px solid #2a2a2a;">
         <p style="margin: 0; color: #999;">Sync results will appear here</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Scan Intake</h2>
+      <p class="form-description" style="margin-bottom: 16px;">Paste structured Grok scan output to ingest, deduplicate, and score entries.</p>
+      <div class="run-form">
+        <div class="form-row">
+          <div class="form-group">
+            <label for="scanWire">Feed</label>
+            <select id="scanWire">
+              <option value="">Loading feeds...</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="scanMode">Mode</label>
+            <select id="scanMode">
+              <option value="single">Single Prompt</option>
+              <option value="batch">Batch (All Prompts)</option>
+            </select>
+          </div>
+          <div class="form-group" id="scanVariantGroup">
+            <label for="scanVariant">Prompt Variant</label>
+            <select id="scanVariant">
+              <option value="A">A - Action</option>
+              <option value="B">B - Landscape</option>
+              <option value="C">C - Open Sweep</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="scanDate">Scan Date</label>
+            <input type="date" id="scanDate" value="${formatDate(endDate)}">
+          </div>
+        </div>
+        <div class="form-group" style="margin-top: 12px;">
+          <label for="scanRawText">Raw Scan Output</label>
+          <textarea id="scanRawText" rows="8" placeholder="Paste structured Grok output here..." style="width: 100%; padding: 10px 12px; border: 1px solid #2a2a2a; border-radius: 6px; font-size: 13px; font-family: monospace; background: #0d0d0d; color: #ffffff; resize: vertical;"></textarea>
+        </div>
+        <div style="margin-top: 12px;">
+          <button type="button" id="process-scan" class="button">Process Scan</button>
+        </div>
+      </div>
+      <div id="scan-result" style="display: none; margin-top: 16px; padding: 12px 16px; background: #0d0d0d; border-radius: 8px; border: 1px solid #2a2a2a;">
+        <p style="margin: 0; color: #999;">Results will appear here</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Daily Queue</h2>
+      <p class="form-description" style="margin-bottom: 16px;">View today's high-quality scan entries ready for review.</p>
+      <div class="form-row" style="margin-bottom: 16px;">
+        <div class="form-group">
+          <label for="queueWire">Feed Filter</label>
+          <select id="queueWire">
+            <option value="">All Feeds</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="queueMinScore">Min Score</label>
+          <input type="number" id="queueMinScore" min="0" max="100" value="40" style="width: 80px;">
+        </div>
+        <div class="form-group">
+          <label for="queueDate">Date</label>
+          <input type="date" id="queueDate" value="${formatDate(endDate)}">
+        </div>
+        <button type="button" id="load-queue" class="button secondary">Load Queue</button>
+      </div>
+      <div id="queue-results">
+        <p style="color: #666;">Click "Load Queue" to view entries.</p>
       </div>
     </div>
   </div>
@@ -2099,6 +2286,161 @@ function renderDashboard(files: StoredFile[], message?: string): string {
     }
 
     loadCrmStatus();
+
+    // Populate scan intake feed dropdown
+    const scanWireSelect = document.getElementById('scanWire');
+    const queueWireSelect = document.getElementById('queueWire');
+
+    async function loadScanFeeds() {
+      try {
+        const response = await fetch('/api/feeds');
+        if (!response.ok) throw new Error('Failed to fetch feeds');
+        const feeds = await response.json();
+
+        let scanOptions = '';
+        let queueOptions = '<option value="">All Feeds</option>';
+        feeds.forEach(function(f) {
+          scanOptions += '<option value="' + escapeHtml(f.key) + '">' + escapeHtml(f.displayName) + '</option>';
+          queueOptions += '<option value="' + escapeHtml(f.key) + '">' + escapeHtml(f.displayName) + '</option>';
+        });
+        scanWireSelect.innerHTML = scanOptions;
+        queueWireSelect.innerHTML = queueOptions;
+      } catch (error) {
+        console.error('Failed to load scan feeds:', error);
+      }
+    }
+
+    loadScanFeeds();
+
+    // Scan mode toggle — hide variant selector in batch mode
+    const scanModeSelect = document.getElementById('scanMode');
+    const scanVariantGroup = document.getElementById('scanVariantGroup');
+    scanModeSelect.addEventListener('change', function() {
+      scanVariantGroup.style.display = scanModeSelect.value === 'batch' ? 'none' : 'flex';
+    });
+
+    // Process scan
+    const processScanBtn = document.getElementById('process-scan');
+    const scanResultEl = document.getElementById('scan-result');
+
+    processScanBtn.addEventListener('click', async function() {
+      const wire = scanWireSelect.value;
+      const mode = scanModeSelect.value;
+      const variant = document.getElementById('scanVariant').value;
+      const scanDate = document.getElementById('scanDate').value;
+      const rawText = document.getElementById('scanRawText').value;
+
+      if (!wire) { alert('Please select a feed'); return; }
+      if (!rawText.trim()) { alert('Please paste scan output'); return; }
+
+      processScanBtn.disabled = true;
+      processScanBtn.textContent = 'Processing...';
+      scanResultEl.style.display = 'block';
+      scanResultEl.innerHTML = '<p style="margin: 0; color: #f5a623;">Processing scan...</p>';
+
+      try {
+        const endpoint = mode === 'batch' ? '/api/scan/submit-batch' : '/api/scan/submit';
+        const body = mode === 'batch'
+          ? { wire, scanDate, rawText }
+          : { wire, promptVariant: variant, scanDate, rawText };
+
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+
+        const data = await response.json();
+
+        if (data.success && data.summary) {
+          const s = data.summary;
+          let html = '<p style="margin: 0 0 8px; color: #4caf50; font-weight: 600;">Intake complete!</p>';
+          html += '<p style="margin: 0; color: #999; font-size: 13px;">';
+          html += 'Ingested: ' + s.totalIngested + ' | Duplicates: ' + s.duplicatesFound;
+          html += ' | Unique: ' + s.newUnique + ' | Avg Score: ' + s.averageQualityScore;
+          html += ' | High Quality: ' + s.highQualityCount;
+          html += '</p>';
+
+          if (s.byPrompt && Object.keys(s.byPrompt).length > 0) {
+            html += '<p style="margin: 8px 0 4px; color: #999; font-size: 12px; text-transform: uppercase;">By Prompt:</p>';
+            for (var key in s.byPrompt) {
+              var p = s.byPrompt[key];
+              html += '<p style="margin: 0; color: #ccc; font-size: 12px;">' + escapeHtml(key) + ': ' + p.total + ' total, ' + p.duplicates + ' dupes, avg ' + p.avgScore + '</p>';
+            }
+          }
+
+          if (s.topFinds && s.topFinds.length > 0) {
+            html += '<p style="margin: 8px 0 4px; color: #999; font-size: 12px; text-transform: uppercase;">Top Finds:</p>';
+            s.topFinds.slice(0, 5).forEach(function(e) {
+              html += '<p style="margin: 0; color: #ccc; font-size: 12px;">[' + (e.quality_score || '-') + '] ' + escapeHtml(e.name) + (e.amount ? ' — ' + escapeHtml(e.amount) : '') + '</p>';
+            });
+          }
+
+          scanResultEl.innerHTML = html;
+          loadQueue();
+        } else {
+          scanResultEl.innerHTML = '<p style="margin: 0; color: #ef5350;">Error: ' + escapeHtml(data.error || 'Unknown error') + '</p>';
+        }
+      } catch (error) {
+        scanResultEl.innerHTML = '<p style="margin: 0; color: #ef5350;">Error: ' + escapeHtml(error.message) + '</p>';
+      } finally {
+        processScanBtn.disabled = false;
+        processScanBtn.textContent = 'Process Scan';
+      }
+    });
+
+    // Daily queue
+    const loadQueueBtn = document.getElementById('load-queue');
+    const queueResultsEl = document.getElementById('queue-results');
+
+    async function loadQueue() {
+      const wire = queueWireSelect.value;
+      const minScore = document.getElementById('queueMinScore').value || '40';
+      const date = document.getElementById('queueDate').value;
+
+      const params = new URLSearchParams();
+      if (wire) params.set('wire', wire);
+      params.set('minScore', minScore);
+      if (date) params.set('date', date);
+
+      try {
+        const response = await fetch('/api/scan/queue?' + params.toString());
+        if (!response.ok) throw new Error('Failed to load queue');
+        const data = await response.json();
+
+        if (data.entries.length === 0) {
+          queueResultsEl.innerHTML = '<p style="color: #666;">No entries found for these filters.</p>';
+          return;
+        }
+
+        let html = '<table><thead><tr><th>Name</th><th>Amount</th><th>Deadline</th><th>Score</th><th>Wire</th><th>Source</th><th>Status</th></tr></thead><tbody>';
+        data.entries.forEach(function(e) {
+          html += '<tr>';
+          html += '<td>' + escapeHtml(e.name || '') + '</td>';
+          html += '<td>' + escapeHtml(e.amount || '-') + '</td>';
+          html += '<td>' + escapeHtml(e.deadline || '-') + '</td>';
+          html += '<td>' + (e.quality_score != null ? e.quality_score : '-') + '</td>';
+          html += '<td><code style="background: #0d0d0d; padding: 2px 6px; border-radius: 4px;">' + escapeHtml(e.wire || '') + '</code></td>';
+          html += '<td>';
+          if (e.source_url) {
+            html += '<a href="' + escapeHtml(e.source_url) + '" target="_blank" class="download-link" style="font-size: 12px;">Link</a>';
+          } else {
+            html += '-';
+          }
+          html += '</td>';
+          html += '<td><span style="color: ' + (e.status === 'queued' ? '#4caf50' : '#f5a623') + ';">' + escapeHtml(e.status || '') + '</span></td>';
+          html += '</tr>';
+        });
+        html += '</tbody></table>';
+        html += '<p style="color: #666; font-size: 12px; margin-top: 8px;">' + data.count + ' entries</p>';
+
+        queueResultsEl.innerHTML = html;
+      } catch (error) {
+        queueResultsEl.innerHTML = '<p style="color: #ef5350;">Failed to load queue: ' + escapeHtml(error.message) + '</p>';
+      }
+    }
+
+    loadQueueBtn.addEventListener('click', loadQueue);
 
     runCrmSyncBtn.addEventListener('click', async () => {
       const lookbackDays = crmLookbackInput.value || 1;
