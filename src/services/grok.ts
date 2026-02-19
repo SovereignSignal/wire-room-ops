@@ -76,8 +76,22 @@ export async function summarizeWithGrok(entry: DatabaseEntry, model?: string): P
   return data.choices[0].message.content.trim();
 }
 
-// Default model for scan prompts — cheaper than reasoning model for data extraction
-const DEFAULT_SCAN_MODEL = 'grok-3-fast';
+// Default model for scan prompts — uses Responses API with x_search tool
+const DEFAULT_SCAN_MODEL = 'grok-4-1-fast';
+
+// Response format for the /v1/responses endpoint
+interface ResponsesAPIOutput {
+  type: string;
+  id?: string;
+  role?: string;
+  content?: Array<{ type: string; text?: string }>;
+}
+
+interface ResponsesAPIResponse {
+  id: string;
+  output: ResponsesAPIOutput[];
+  usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number };
+}
 
 export async function executeScanPrompt(
   promptText: string,
@@ -90,7 +104,9 @@ export async function executeScanPrompt(
     fullPrompt += `\n\nRespond using this format:\n${options.responseFormat}`;
   }
 
-  const response = await fetch(`${config.apis.grok.baseUrl}/chat/completions`, {
+  // Use the Responses API with x_search tool for real-time X.com scanning
+  const baseUrl = config.apis.grok.baseUrl.replace(/\/v1$/, '');
+  const response = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -98,9 +114,8 @@ export async function executeScanPrompt(
     },
     body: JSON.stringify({
       model,
-      messages: [{ role: 'user', content: fullPrompt }],
-      max_tokens: 4000,
-      temperature: 0.3,
+      input: [{ role: 'user', content: fullPrompt }],
+      tools: [{ type: 'x_search' }],
     }),
   });
 
@@ -109,16 +124,32 @@ export async function executeScanPrompt(
     throw new Error(`Grok API error: ${response.status} - ${errorText}`);
   }
 
-  const data = await response.json() as GrokResponse & { usage?: { total_tokens?: number } };
+  const data = await response.json() as ResponsesAPIResponse;
 
-  if (!data.choices?.[0]?.message?.content) {
-    throw new Error('Grok API returned empty response');
+  // Extract text from the Responses API output
+  let textContent = '';
+  for (const item of data.output || []) {
+    if (item.type === 'message' && item.content) {
+      for (const block of item.content) {
+        if (block.type === 'output_text' && block.text) {
+          textContent += block.text;
+        }
+      }
+    }
   }
 
+  if (!textContent) {
+    throw new Error('Grok Responses API returned empty text content');
+  }
+
+  const totalTokens = data.usage
+    ? (data.usage.input_tokens || 0) + (data.usage.output_tokens || 0)
+    : undefined;
+
   return {
-    content: data.choices[0].message.content.trim(),
+    content: textContent.trim(),
     model,
-    tokensUsed: data.usage?.total_tokens,
+    tokensUsed: totalTokens,
   };
 }
 
