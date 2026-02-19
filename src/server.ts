@@ -1530,21 +1530,26 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         if (!response.ok) throw new Error('Failed to fetch status');
         const status = await response.json();
 
+        // Find the most recent schedule that has run a job
+        const latestSchedule = (status.schedules || [])
+          .filter(function(s) { return s.lastJobRun; })
+          .sort(function(a, b) { return new Date(b.lastJobRun) - new Date(a.lastJobRun); })[0] || null;
+
         // Scheduler running status
         if (status.isRunning) {
-          schedulerRunningEl.textContent = 'Active';
+          schedulerRunningEl.textContent = 'Active (' + status.activeSchedules + ' schedule' + (status.activeSchedules !== 1 ? 's' : '') + ')';
           schedulerRunningEl.className = 'value success';
-        } else if (status.config.enabled) {
+        } else if (status.totalSchedules > 0) {
           schedulerRunningEl.textContent = 'Not Running (restart needed)';
           schedulerRunningEl.className = 'value error';
         } else {
-          schedulerRunningEl.textContent = 'Disabled';
+          schedulerRunningEl.textContent = 'No Schedules';
           schedulerRunningEl.className = 'value muted';
         }
 
         // Server started time
         if (status.schedulerStartedAt) {
-          const startedAt = formatRelativeTime(status.schedulerStartedAt);
+          var startedAt = formatRelativeTime(status.schedulerStartedAt);
           schedulerStartedEl.textContent = startedAt;
           schedulerStartedEl.className = 'value';
         } else {
@@ -1552,26 +1557,28 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           schedulerStartedEl.className = 'value muted';
         }
 
-        // Last job run
-        if (status.lastJobRun) {
-          const lastRun = formatRelativeTime(status.lastJobRun);
-          lastJobRunEl.textContent = lastRun;
+        // Last job run (from most recent schedule)
+        if (latestSchedule && latestSchedule.lastJobRun) {
+          var lastRun = formatRelativeTime(latestSchedule.lastJobRun);
+          lastJobRunEl.textContent = lastRun + ' (' + latestSchedule.name + ')';
           lastJobRunEl.className = 'value';
         } else {
           lastJobRunEl.textContent = 'Never';
           lastJobRunEl.className = 'value muted';
         }
 
-        // Last job status
-        if (status.lastJobStatus === 'success') {
+        // Last job status (from most recent schedule)
+        var lastStatus = latestSchedule ? latestSchedule.lastJobStatus : null;
+        var lastError = latestSchedule ? latestSchedule.lastJobError : null;
+        if (lastStatus === 'success') {
           lastJobStatusEl.textContent = 'Success';
           lastJobStatusEl.className = 'value success';
           lastJobErrorEl.style.display = 'none';
-        } else if (status.lastJobStatus === 'failed') {
+        } else if (lastStatus === 'failed') {
           lastJobStatusEl.textContent = 'Failed';
           lastJobStatusEl.className = 'value error';
-          if (status.lastJobError) {
-            lastJobErrorEl.textContent = status.lastJobError;
+          if (lastError) {
+            lastJobErrorEl.textContent = lastError;
             lastJobErrorEl.style.display = 'block';
           }
         } else {
