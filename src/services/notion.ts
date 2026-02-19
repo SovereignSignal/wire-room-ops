@@ -1,7 +1,6 @@
 import { Client, isFullPage } from '@notionhq/client';
 import type { QueryDatabaseResponse, SearchResponse, PageObjectResponse } from '@notionhq/client/build/src/api-endpoints';
 import { config } from '../config';
-import { Wire } from '../types';
 
 let notionClient: Client | null = null;
 
@@ -38,7 +37,7 @@ export interface NotionOrg {
 
 export interface CreateOrgParams {
   name: string;
-  wire?: Wire;
+  wire?: string;
   sourceType?: string;
   twitter?: string;
   website?: string;
@@ -57,7 +56,7 @@ export interface StagingOrg {
 
 export interface CreateStagingOrgParams {
   name: string;
-  wire?: Wire;
+  wire?: string;
   sourceType?: string;
   entryTitle?: string;
   entryUrl?: string;

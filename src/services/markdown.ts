@@ -1,4 +1,4 @@
-import { ProcessedEntry, ProcessingStats, WeeklySummaryResult, Wire } from '../types';
+import { ProcessedEntry, ProcessingStats, WeeklySummaryResult } from '../types';
 
 function formatDateRange(start: Date, end: Date): string {
   const startMonth = start.toLocaleDateString('en-US', { month: 'long' });
@@ -38,25 +38,20 @@ function linkifyOrgName(summary: string, url: string): string {
   return `[Source](${url}): ${summary}`;
 }
 
-const WIRE_TITLES: Record<Wire, string> = {
-  crypto: "Sov's Crypto Grant Wire Weekly Update",
-  ai: "Sov's AI Grant Wire Weekly Update",
-  oss: "Sov's OSS Grant Wire Weekly Update",
-};
-
 export function generateMarkdown(
   entries: ProcessedEntry[],
   stats: ProcessingStats,
   dateRange: { start: Date; end: Date },
-  wire?: Wire
+  wire?: string,
+  feedTitle?: string,
 ): WeeklySummaryResult {
   const generatedAt = new Date();
   const grouped = groupByCategory(entries);
 
   const lines: string[] = [];
 
-  // Header - customize based on wire if provided
-  const title = wire ? WIRE_TITLES[wire] : "Sov's Crypto Grant Wire Weekly Update";
+  // Header - use feed title from DB, or fall back to generic
+  const title = feedTitle || "Grant Wire Weekly Update";
   lines.push(`# ${title}`);
   lines.push(`### ${formatDateRange(dateRange.start, dateRange.end)}`);
   lines.push('');

@@ -1,4 +1,4 @@
-import { Wire, DatabaseEntry } from '../types';
+import { DatabaseEntry } from '../types';
 import { 
   createOrg, 
   searchOrgs, 
@@ -27,7 +27,7 @@ export interface TeleSumEntry {
     type?: string;
   };
   published_at: string;
-  wire?: Wire;
+  wire?: string;
 }
 
 export interface SyncResult {
@@ -311,7 +311,7 @@ export async function syncEntries(
 }
 
 export async function syncDatabaseEntries(
-  entries: { id: string; title?: string; url?: string; category?: string; wire?: Wire; orgs?: string[] }[],
+  entries: { id: string; title?: string; url?: string; category?: string; wire?: string; orgs?: string[] }[],
   options: {
     filterByCategory?: boolean;
     useStaging?: boolean;
@@ -350,7 +350,7 @@ export async function fetchTeleSumEntries(
     dateFrom?: Date;
     dateTo?: Date;
     category?: string;
-    wire?: Wire;
+    wire?: string;
     limit?: number;
   } = {}
 ): Promise<TeleSumEntry[]> {
@@ -398,7 +398,7 @@ export interface CrmSyncJobResult {
 
 export async function runCrmSyncJob(options: {
   lookbackDays?: number;
-  wire?: Wire | Wire[];
+  wire?: string | string[];
   useStaging?: boolean;
   onProgress?: (current: number, total: number) => void;
 } = {}): Promise<CrmSyncJobResult> {

@@ -1,9 +1,9 @@
 import { config, validateConfig } from '../config';
-import { getEntriesForDateRange, getDefaultDateRange } from '../db';
+import { getEntriesForDateRange, getDefaultDateRange, getFeedByKey } from '../db';
 import { processAllEntries, ModelOptions } from '../services/processor';
 import { generateMarkdown } from '../services/markdown';
 import { storeFile } from '../services/storage';
-import { StoredFile, Wire } from '../types';
+import { StoredFile } from '../types';
 import { createMagicLink } from '../services/auth';
 import { sendNotificationEmail } from '../services/email';
 import { ProcessingStats } from '../types';
@@ -12,7 +12,7 @@ export interface JobResult {
   file: StoredFile;
   stats: ProcessingStats;
   dateRange: { start: Date; end: Date };
-  wire?: Wire;
+  wire?: string;
 }
 
 export interface JobOptions {
@@ -20,7 +20,7 @@ export interface JobOptions {
   dateRange?: { start: Date; end: Date };
   onProgress?: (current: number, total: number, step: string) => void;
   models?: ModelOptions;
-  wire?: Wire | Wire[];
+  wire?: string | string[];
 }
 
 export async function runWeeklySummaryJob(options: JobOptions | boolean = false): Promise<JobResult> {
@@ -80,14 +80,16 @@ export async function runWeeklySummaryJob(options: JobOptions | boolean = false)
   
   // Log wire breakdown if available
   if (stats.entriesByWire) {
-    console.log(`  - By wire: crypto=${stats.entriesByWire.crypto}, ai=${stats.entriesByWire.ai}, oss=${stats.entriesByWire.oss}`);
+    const wireBreakdown = Object.entries(stats.entriesByWire).map(([w, c]) => `${w}=${c}`).join(', ');
+    console.log(`  - By wire: ${wireBreakdown}`);
   }
-  
+
   // Generate markdown
   console.log('Generating markdown...');
   onProgress?.(stats.totalEntries, stats.totalEntries, 'Generating markdown...');
   const singleWire = wire && !Array.isArray(wire) ? wire : undefined;
-  const result = generateMarkdown(processed, stats, dateRange, singleWire);
+  const feed = singleWire ? await getFeedByKey(singleWire) : null;
+  const result = generateMarkdown(processed, stats, dateRange, singleWire, feed?.titleTemplate || undefined);
   console.log(`✓ Markdown generated (${result.markdown.length} characters)`);
 
   // Store file

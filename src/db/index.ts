@@ -1,6 +1,6 @@
 import { Pool } from 'pg';
 import { config } from '../config';
-import { DatabaseEntry, Wire } from '../types';
+import { DatabaseEntry } from '../types';
 
 let pool: Pool | null = null;
 
@@ -26,13 +26,13 @@ export async function closePool(): Promise<void> {
 export interface DateRangeOptions {
   startDate: Date;
   endDate: Date;
-  wire?: Wire | Wire[];
+  wire?: string | string[];
 }
 
 export async function getEntriesForDateRange(
   startDate: Date,
   endDate: Date,
-  wire?: Wire | Wire[]
+  wire?: string | string[]
 ): Promise<DatabaseEntry[]> {
   const pool = getPool();
 
@@ -98,7 +98,7 @@ export async function getEntriesForDateRange(
       category: row.category || 'Uncategorized',
       timestamp: new Date(row.timestamp),
       source: row.source,
-      wire: row.wire as Wire | undefined,
+      wire: row.wire || undefined,
       title: row.title || undefined,
       orgs: Array.isArray(orgs) ? orgs : [],
     };
@@ -414,26 +414,170 @@ export interface WireInfo {
   entryCount: number;
 }
 
-export async function getAvailableWires(): Promise<WireInfo[]> {
+export async function getEntryCountsByWire(): Promise<Record<string, number>> {
   const pool = getPool();
-  
-  // Get distinct wires from channel_configs with entry counts
   const result = await pool.query(`
-    SELECT 
-      cc.wire,
-      COUNT(DISTINCT s.id) as entry_count
-    FROM channel_configs cc
-    LEFT JOIN messages m ON m.channel_config_id = cc.id
-    LEFT JOIN summaries s ON s.message_id = m.id AND s.processing_status = 'SUCCESS'
-    WHERE cc.wire IS NOT NULL
-    GROUP BY cc.wire
-    ORDER BY cc.wire
+    SELECT s.wire, COUNT(DISTINCT s.id) as entry_count
+    FROM summaries s
+    WHERE s.processing_status = 'SUCCESS' AND s.wire IS NOT NULL
+    GROUP BY s.wire
+  `);
+  const counts: Record<string, number> = {};
+  for (const row of result.rows) {
+    counts[row.wire] = parseInt(row.entry_count, 10) || 0;
+  }
+  return counts;
+}
+
+export async function getAvailableWires(): Promise<WireInfo[]> {
+  const feeds = await getAllFeeds(false);
+  const counts = await getEntryCountsByWire();
+
+  return feeds.map(f => ({
+    wire: f.key,
+    displayName: f.displayName,
+    entryCount: counts[f.key] || 0,
+  }));
+}
+
+// --- Feeds table management ---
+
+export interface FeedRecord {
+  key: string;
+  displayName: string;
+  titleTemplate: string | null;
+  sortOrder: number;
+  archived: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const SEED_FEEDS: Record<string, { displayName: string; titleTemplate: string }> = {
+  crypto: { displayName: 'Crypto', titleTemplate: "Sov's Crypto Grant Wire Weekly Update" },
+  ai: { displayName: 'AI', titleTemplate: "Sov's AI Grant Wire Weekly Update" },
+  oss: { displayName: 'OSS', titleTemplate: "Sov's OSS Grant Wire Weekly Update" },
+};
+
+export async function ensureFeedsTable(): Promise<void> {
+  const pool = getPool();
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS feeds (
+      key TEXT PRIMARY KEY,
+      display_name TEXT NOT NULL,
+      title_template TEXT,
+      sort_order INTEGER DEFAULT 0,
+      archived BOOLEAN DEFAULT false,
+      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    )
   `);
 
-  // Format display names (capitalize first letter)
-  return result.rows.map(row => ({
-    wire: row.wire,
-    displayName: row.wire.charAt(0).toUpperCase() + row.wire.slice(1).toUpperCase(),
-    entryCount: parseInt(row.entry_count, 10) || 0,
-  }));
+  // Seed known feeds
+  let sortIdx = 0;
+  for (const [key, data] of Object.entries(SEED_FEEDS)) {
+    await pool.query(`
+      INSERT INTO feeds (key, display_name, title_template, sort_order)
+      VALUES ($1, $2, $3, $4)
+      ON CONFLICT (key) DO NOTHING
+    `, [key, data.displayName, data.titleTemplate, sortIdx++]);
+  }
+
+  // Auto-discover from channel_configs
+  try {
+    const discovered = await pool.query(`
+      SELECT DISTINCT wire FROM channel_configs WHERE wire IS NOT NULL
+    `);
+
+    for (const row of discovered.rows) {
+      const wireKey = row.wire as string;
+      if (!SEED_FEEDS[wireKey]) {
+        // Auto-generate display name: capitalize first letter of each word
+        const displayName = wireKey.charAt(0).toUpperCase() + wireKey.slice(1);
+        await pool.query(`
+          INSERT INTO feeds (key, display_name, sort_order)
+          VALUES ($1, $2, $3)
+          ON CONFLICT (key) DO NOTHING
+        `, [wireKey, displayName, 100]);
+      }
+    }
+  } catch {
+    // channel_configs table may not exist in all environments
+    console.log('[DB] channel_configs not available for feed auto-discovery');
+  }
+
+  console.log('[DB] Feeds table ready');
+}
+
+function parseFeedRow(row: any): FeedRecord {
+  return {
+    key: row.key,
+    displayName: row.display_name,
+    titleTemplate: row.title_template || null,
+    sortOrder: row.sort_order ?? 0,
+    archived: row.archived ?? false,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function getAllFeeds(includeArchived = false): Promise<FeedRecord[]> {
+  const pool = getPool();
+  const query = includeArchived
+    ? `SELECT * FROM feeds ORDER BY sort_order ASC, key ASC`
+    : `SELECT * FROM feeds WHERE archived = false ORDER BY sort_order ASC, key ASC`;
+
+  const result = await pool.query(query);
+  return result.rows.map(parseFeedRow);
+}
+
+export async function getFeedByKey(key: string): Promise<FeedRecord | null> {
+  const pool = getPool();
+  const result = await pool.query(`SELECT * FROM feeds WHERE key = $1`, [key]);
+  return result.rows.length > 0 ? parseFeedRow(result.rows[0]) : null;
+}
+
+export async function createFeed(params: { key: string; displayName: string; titleTemplate?: string; sortOrder?: number }): Promise<FeedRecord> {
+  const pool = getPool();
+  const result = await pool.query(`
+    INSERT INTO feeds (key, display_name, title_template, sort_order)
+    VALUES ($1, $2, $3, $4)
+    RETURNING *
+  `, [params.key, params.displayName, params.titleTemplate || null, params.sortOrder ?? 0]);
+
+  return parseFeedRow(result.rows[0]);
+}
+
+export async function updateFeed(key: string, updates: { displayName?: string; titleTemplate?: string; sortOrder?: number }): Promise<FeedRecord | null> {
+  const pool = getPool();
+
+  const setClauses: string[] = [];
+  const values: any[] = [];
+  let paramIndex = 1;
+
+  if (updates.displayName !== undefined) { setClauses.push(`display_name = $${paramIndex++}`); values.push(updates.displayName); }
+  if (updates.titleTemplate !== undefined) { setClauses.push(`title_template = $${paramIndex++}`); values.push(updates.titleTemplate || null); }
+  if (updates.sortOrder !== undefined) { setClauses.push(`sort_order = $${paramIndex++}`); values.push(updates.sortOrder); }
+
+  if (setClauses.length === 0) return getFeedByKey(key);
+
+  setClauses.push(`updated_at = CURRENT_TIMESTAMP`);
+  values.push(key);
+
+  const result = await pool.query(`
+    UPDATE feeds SET ${setClauses.join(', ')}
+    WHERE key = $${paramIndex}
+    RETURNING *
+  `, values);
+
+  return result.rows.length > 0 ? parseFeedRow(result.rows[0]) : null;
+}
+
+export async function archiveFeed(key: string): Promise<boolean> {
+  const pool = getPool();
+  const result = await pool.query(`
+    UPDATE feeds SET archived = true, updated_at = CURRENT_TIMESTAMP
+    WHERE key = $1
+  `, [key]);
+  return (result.rowCount ?? 0) > 0;
 }

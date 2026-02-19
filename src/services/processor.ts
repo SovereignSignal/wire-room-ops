@@ -1,4 +1,4 @@
-import { DatabaseEntry, ProcessedEntry, ProcessingStats, Wire } from '../types';
+import { DatabaseEntry, ProcessedEntry, ProcessingStats } from '../types';
 import { summarizeWithGrok, isXcomUrl } from './grok';
 import { summarizeWithOpus } from './anthropic';
 
@@ -87,7 +87,7 @@ export async function processAllEntries(
 
   let xcomCount = 0;
   let otherCount = 0;
-  const wireCount: Record<Wire, number> = { crypto: 0, ai: 0, oss: 0 };
+  const wireCount: Record<string, number> = {};
 
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i];
@@ -98,15 +98,15 @@ export async function processAllEntries(
 
     const result = await processEntry(entry, models);
     processed.push(result);
-    
+
     if (result.processingMethod === 'grok') {
       xcomCount++;
     } else {
       otherCount++;
     }
-    
+
     if (entry.wire) {
-      wireCount[entry.wire]++;
+      wireCount[entry.wire] = (wireCount[entry.wire] || 0) + 1;
     }
     
     if (result.processingError) {

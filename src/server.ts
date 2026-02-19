@@ -3,7 +3,7 @@ import cookieParser from 'cookie-parser';
 import { config } from './config';
 import { validateMagicLink, createDownloadToken, createSessionToken, validateSession, createLoginMagicLink } from './services/auth';
 import { getFile, listFiles } from './services/storage';
-import { getAvailableWires, closePool } from './db';
+import { getAvailableWires, closePool, getAllFeeds, getFeedByKey, createFeed, updateFeed, archiveFeed, getEntryCountsByWire } from './db';
 import { sendLoginEmail } from './services/email';
 import { runWeeklySummaryJob } from './jobs/weekly-summary';
 import { StoredFile } from './types';
@@ -170,6 +170,141 @@ app.get('/api/wires', requireAuth, async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Failed to fetch wires:', error);
     res.status(500).json({ error: 'Failed to fetch wires' });
+  }
+});
+
+// API: List feeds (CRUD)
+app.get('/api/feeds', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const includeArchived = req.query.includeArchived === 'true';
+    const feeds = await getAllFeeds(includeArchived);
+    const counts = await getEntryCountsByWire();
+
+    res.json(feeds.map(f => ({
+      key: f.key,
+      displayName: f.displayName,
+      titleTemplate: f.titleTemplate,
+      sortOrder: f.sortOrder,
+      archived: f.archived,
+      entryCount: counts[f.key] || 0,
+    })));
+  } catch (error) {
+    console.error('Failed to fetch feeds:', error);
+    res.status(500).json({ error: 'Failed to fetch feeds' });
+  }
+});
+
+// API: Create feed
+app.post('/api/feeds', requireAuth, async (req: Request, res: Response) => {
+  const { key, displayName, titleTemplate, sortOrder } = req.body;
+
+  if (!key || typeof key !== 'string') {
+    res.status(400).json({ error: 'key is required' });
+    return;
+  }
+  if (!displayName || typeof displayName !== 'string') {
+    res.status(400).json({ error: 'displayName is required' });
+    return;
+  }
+
+  const normalizedKey = key.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+  if (normalizedKey !== key) {
+    res.status(400).json({ error: 'key must be lowercase alphanumeric (with - or _)' });
+    return;
+  }
+  if (normalizedKey.length === 0 || normalizedKey.length > 50) {
+    res.status(400).json({ error: 'key must be between 1 and 50 characters' });
+    return;
+  }
+  if (displayName.length > 100) {
+    res.status(400).json({ error: 'displayName must be 100 characters or fewer' });
+    return;
+  }
+  if (titleTemplate && typeof titleTemplate === 'string' && titleTemplate.length > 500) {
+    res.status(400).json({ error: 'titleTemplate must be 500 characters or fewer' });
+    return;
+  }
+
+  try {
+    const existing = await getFeedByKey(normalizedKey);
+    if (existing) {
+      res.status(409).json({ error: 'Feed with this key already exists' });
+      return;
+    }
+
+    const feed = await createFeed({
+      key: normalizedKey,
+      displayName,
+      titleTemplate: titleTemplate || undefined,
+      sortOrder: typeof sortOrder === 'number' ? sortOrder : undefined,
+    });
+
+    res.json({
+      key: feed.key,
+      displayName: feed.displayName,
+      titleTemplate: feed.titleTemplate,
+      sortOrder: feed.sortOrder,
+      archived: feed.archived,
+      entryCount: 0,
+    });
+  } catch (error) {
+    console.error('Failed to create feed:', error);
+    res.status(500).json({ error: 'Failed to create feed' });
+  }
+});
+
+// API: Update feed
+app.put('/api/feeds/:key', requireAuth, async (req: Request, res: Response) => {
+  const { key } = req.params;
+  if (!key || !/^[a-z0-9_-]+$/.test(key)) {
+    res.status(400).json({ error: 'Invalid feed key' });
+    return;
+  }
+  const { displayName, titleTemplate, sortOrder } = req.body;
+
+  const updates: { displayName?: string; titleTemplate?: string; sortOrder?: number } = {};
+  if (displayName !== undefined) updates.displayName = displayName;
+  if (titleTemplate !== undefined) updates.titleTemplate = titleTemplate;
+  if (typeof sortOrder === 'number') updates.sortOrder = sortOrder;
+
+  try {
+    const updated = await updateFeed(key, updates);
+    if (!updated) {
+      res.status(404).json({ error: 'Feed not found' });
+      return;
+    }
+
+    res.json({
+      key: updated.key,
+      displayName: updated.displayName,
+      titleTemplate: updated.titleTemplate,
+      sortOrder: updated.sortOrder,
+      archived: updated.archived,
+    });
+  } catch (error) {
+    console.error('Failed to update feed:', error);
+    res.status(500).json({ error: 'Failed to update feed' });
+  }
+});
+
+// API: Archive (soft-delete) feed
+app.delete('/api/feeds/:key', requireAuth, async (req: Request, res: Response) => {
+  const { key } = req.params;
+  if (!key || !/^[a-z0-9_-]+$/.test(key)) {
+    res.status(400).json({ error: 'Invalid feed key' });
+    return;
+  }
+
+  try {
+    const archived = await archiveFeed(key);
+    if (!archived) {
+      res.status(404).json({ error: 'Feed not found' });
+      return;
+    }
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Failed to archive feed:', error);
+    res.status(500).json({ error: 'Failed to archive feed' });
   }
 });
 
@@ -1129,6 +1264,30 @@ function renderDashboard(files: StoredFile[], message?: string): string {
     </div>
 
     <div class="card">
+      <h2>Feed Management <button type="button" id="add-feed" class="button" style="float: right; padding: 8px 16px; font-size: 13px;">+ Add Feed</button></h2>
+      <div id="feeds-list"></div>
+      <div id="feed-form" class="run-form" style="display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid #2a2a2a;">
+        <input type="hidden" id="feedEditKey" value="">
+        <div class="form-row">
+          <div class="form-group">
+            <label for="feedKey">Key</label>
+            <input type="text" id="feedKey" placeholder="e.g. defi" style="background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 10px 12px; color: #fff; width: 120px;">
+          </div>
+          <div class="form-group">
+            <label for="feedDisplayName">Display Name</label>
+            <input type="text" id="feedDisplayName" placeholder="e.g. DeFi" style="background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 10px 12px; color: #fff; width: 150px;">
+          </div>
+          <div class="form-group">
+            <label for="feedTitleTemplate">Title Template</label>
+            <input type="text" id="feedTitleTemplate" placeholder="Sov's DeFi Grant Wire Weekly Update" style="background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 10px 12px; color: #fff; width: 320px;">
+          </div>
+          <button type="button" id="save-feed" class="button">Save</button>
+          <button type="button" id="cancel-feed" class="button secondary">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
       <h2>Scheduled Runs <button type="button" id="add-schedule" class="button" style="float: right; padding: 8px 16px; font-size: 13px;">+ Add Schedule</button></h2>
       <div id="schedules-list"></div>
       
@@ -1307,26 +1466,154 @@ function renderDashboard(files: StoredFile[], message?: string): string {
 
     // Fetch and populate wires/feeds on page load
     const wireFilterSelect = document.getElementById('wireFilter');
-    
+
     async function loadWires() {
       try {
-        const response = await fetch('/api/wires');
-        if (!response.ok) throw new Error('Failed to fetch wires');
-        const wires = await response.json();
+        const response = await fetch('/api/feeds');
+        if (!response.ok) throw new Error('Failed to fetch feeds');
+        const feeds = await response.json();
 
-        // Build options: "All Feeds" first, then each wire
+        // Build options: "All Feeds" first, then each feed
         let options = '<option value="">All Feeds</option>';
-        wires.forEach(w => {
-          options += '<option value="' + escapeHtml(w.wire) + '">' + escapeHtml(w.displayName) + ' (' + w.entryCount + ' entries)</option>';
+        feeds.forEach(function(f) {
+          options += '<option value="' + escapeHtml(f.key) + '">' + escapeHtml(f.displayName) + ' (' + f.entryCount + ' entries)</option>';
         });
         wireFilterSelect.innerHTML = options;
       } catch (error) {
-        console.error('Failed to load wires:', error);
+        console.error('Failed to load feeds:', error);
         wireFilterSelect.innerHTML = '<option value="">All Feeds</option>';
       }
     }
 
     loadWires();
+
+    // Feed management
+    const feedsListEl = document.getElementById('feeds-list');
+    const feedForm = document.getElementById('feed-form');
+    const feedEditKeyEl = document.getElementById('feedEditKey');
+    const feedKeyInput = document.getElementById('feedKey');
+    const feedDisplayNameInput = document.getElementById('feedDisplayName');
+    const feedTitleTemplateInput = document.getElementById('feedTitleTemplate');
+    const saveFeedBtn = document.getElementById('save-feed');
+    const cancelFeedBtn = document.getElementById('cancel-feed');
+    const addFeedBtn = document.getElementById('add-feed');
+
+    async function loadFeeds() {
+      try {
+        const response = await fetch('/api/feeds');
+        if (!response.ok) throw new Error('Failed to fetch feeds');
+        const feeds = await response.json();
+        renderFeedsList(feeds);
+      } catch (error) {
+        console.error('Failed to load feeds:', error);
+        feedsListEl.innerHTML = '<p style="color: #ef5350;">Failed to load feeds</p>';
+      }
+    }
+
+    function renderFeedsList(feeds) {
+      if (feeds.length === 0) {
+        feedsListEl.innerHTML = '<p style="color: #666;">No feeds configured. Click "+ Add Feed" to create one.</p>';
+        return;
+      }
+
+      let html = '<table><thead><tr><th>Key</th><th>Display Name</th><th>Entries</th><th>Title Template</th><th>Actions</th></tr></thead><tbody>';
+
+      feeds.forEach(function(f) {
+        html += '<tr>';
+        html += '<td><code style="background: #0d0d0d; padding: 2px 6px; border-radius: 4px;">' + escapeHtml(f.key) + '</code></td>';
+        html += '<td>' + escapeHtml(f.displayName) + '</td>';
+        html += '<td>' + f.entryCount + '</td>';
+        html += '<td style="font-size: 12px; color: #999;">' + escapeHtml(f.titleTemplate || '-') + '</td>';
+        html += '<td>';
+        html += '<button class="edit-feed" data-key="' + escapeHtml(f.key) + '" data-display="' + escapeHtml(f.displayName) + '" data-template="' + escapeHtml(f.titleTemplate || '') + '" style="background: #2a2a2a; border: none; color: #f5a623; padding: 6px 12px; border-radius: 4px; cursor: pointer; margin-right: 8px;">Edit</button>';
+        html += '<button class="archive-feed" data-key="' + escapeHtml(f.key) + '" data-display="' + escapeHtml(f.displayName) + '" style="background: #2a2a2a; border: none; color: #ef5350; padding: 6px 12px; border-radius: 4px; cursor: pointer;">Archive</button>';
+        html += '</td>';
+        html += '</tr>';
+      });
+
+      html += '</tbody></table>';
+      feedsListEl.innerHTML = html;
+
+      document.querySelectorAll('.edit-feed').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          feedEditKeyEl.value = btn.dataset.key;
+          feedKeyInput.value = btn.dataset.key;
+          feedKeyInput.disabled = true;
+          feedDisplayNameInput.value = btn.dataset.display;
+          feedTitleTemplateInput.value = btn.dataset.template;
+          feedForm.style.display = 'block';
+        });
+      });
+      document.querySelectorAll('.archive-feed').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          if (!confirm('Archive feed "' + btn.dataset.display + '"? It will be hidden from dropdowns.')) return;
+          fetch('/api/feeds/' + encodeURIComponent(btn.dataset.key), { method: 'DELETE' })
+            .then(function(r) { if (!r.ok) throw new Error('Failed'); loadFeeds(); loadWires(); loadSchedules(); })
+            .catch(function(e) { console.error(e); alert('Failed to archive feed'); });
+        });
+      });
+    }
+
+    addFeedBtn.addEventListener('click', function() {
+      feedEditKeyEl.value = '';
+      feedKeyInput.value = '';
+      feedKeyInput.disabled = false;
+      feedDisplayNameInput.value = '';
+      feedTitleTemplateInput.value = '';
+      feedForm.style.display = 'block';
+    });
+
+    cancelFeedBtn.addEventListener('click', function() {
+      feedForm.style.display = 'none';
+    });
+
+    saveFeedBtn.addEventListener('click', async function() {
+      const editKey = feedEditKeyEl.value;
+      const key = feedKeyInput.value.trim();
+      const displayName = feedDisplayNameInput.value.trim();
+      const titleTemplate = feedTitleTemplateInput.value.trim();
+
+      if (!displayName) { alert('Display name is required'); return; }
+
+      saveFeedBtn.disabled = true;
+      saveFeedBtn.textContent = 'Saving...';
+
+      try {
+        let response;
+        if (editKey) {
+          response = await fetch('/api/feeds/' + encodeURIComponent(editKey), {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ displayName, titleTemplate: titleTemplate || undefined })
+          });
+        } else {
+          if (!key) { alert('Key is required'); saveFeedBtn.disabled = false; saveFeedBtn.textContent = 'Save'; return; }
+          response = await fetch('/api/feeds', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ key, displayName, titleTemplate: titleTemplate || undefined })
+          });
+        }
+
+        if (!response.ok) {
+          const err = await response.json();
+          throw new Error(err.error || 'Failed to save');
+        }
+
+        feedForm.style.display = 'none';
+        loadFeeds();
+        loadWires();
+        loadSchedules();
+      } catch (error) {
+        console.error('Failed to save feed:', error);
+        alert('Failed to save feed: ' + error.message);
+      } finally {
+        saveFeedBtn.disabled = false;
+        saveFeedBtn.textContent = 'Save';
+      }
+    });
+
+    loadFeeds();
 
     // Schedule management
     const schedulesListEl = document.getElementById('schedules-list');
@@ -1350,14 +1637,14 @@ function renderDashboard(files: StoredFile[], message?: string): string {
 
     async function loadSchedules() {
       try {
-        // Load wires and models first
-        const [wiresRes, modelsRes, schedulesRes] = await Promise.all([
-          fetch('/api/wires'),
+        // Load feeds and models first
+        const [feedsRes, modelsRes, schedulesRes] = await Promise.all([
+          fetch('/api/feeds'),
           fetch('/api/models'),
           fetch('/api/schedules')
         ]);
-        
-        if (wiresRes.ok) cachedWires = await wiresRes.json();
+
+        if (feedsRes.ok) cachedWires = await feedsRes.json();
         if (modelsRes.ok) cachedModels = await modelsRes.json();
         
         if (!schedulesRes.ok) throw new Error('Failed to fetch schedules');
@@ -1385,7 +1672,8 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         const hour12 = s.hour % 12 || 12;
         const ampm = s.hour >= 12 ? 'PM' : 'AM';
         const time = hour12 + ':' + s.minute.toString().padStart(2, '0') + ' ' + ampm;
-        const feed = s.wire ? s.wire.toUpperCase() : 'All';
+        const feedMatch = cachedWires.find(function(f) { return f.key === s.wire; });
+        const feed = s.wire ? (feedMatch ? feedMatch.displayName : s.wire) : 'All';
         const status = s.enabled ? '<span style="color: #4caf50;">Enabled</span>' : '<span style="color: #666;">Disabled</span>';
         const tz = s.timezone || 'America/Los_Angeles';
         const tzShort = tz.split('/').pop().replace('_', ' ');
@@ -1424,11 +1712,11 @@ function renderDashboard(files: StoredFile[], message?: string): string {
     }
     
     function populateFormDropdowns(schedule) {
-      // Wires
+      // Feeds
       let wireOptions = '<option value="">All Feeds</option>';
-      cachedWires.forEach(w => {
-        const selected = schedule && w.wire === schedule.wire ? ' selected' : '';
-        wireOptions += '<option value="' + escapeHtml(w.wire) + '"' + selected + '>' + escapeHtml(w.displayName) + '</option>';
+      cachedWires.forEach(function(f) {
+        const selected = schedule && f.key === schedule.wire ? ' selected' : '';
+        wireOptions += '<option value="' + escapeHtml(f.key) + '"' + selected + '>' + escapeHtml(f.displayName) + '</option>';
       });
       scheduleWire.innerHTML = wireOptions;
 
