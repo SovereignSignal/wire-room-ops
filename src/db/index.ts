@@ -9,7 +9,7 @@ export function getPool(): Pool {
     pool = new Pool({
       connectionString: config.database.url,
       ssl: config.database.url.includes('localhost') ? false : {
-        rejectUnauthorized: process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false',
+        rejectUnauthorized: false,
       },
     });
   }
