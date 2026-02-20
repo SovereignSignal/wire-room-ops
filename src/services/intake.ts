@@ -36,6 +36,10 @@ export function parseStructuredOutput(text: string): RawScanResult[] {
   const jsonResults = parseJsonOutput(text);
   if (jsonResults.length > 0) return jsonResults;
 
+  // Strategy 4: Try X-post format (@Handle  Description / URL / date blocks)
+  const xPosts = parseXPostFormat(text);
+  if (xPosts.length > 0) return xPosts;
+
   // Strategy 3: Try lenient numbered list (no bold required, flexible URL detection)
   const lenient = parseLenientNumberedList(text);
   if (lenient.length > 0) return lenient;
@@ -258,6 +262,105 @@ function parseLenientNumberedList(text: string): RawScanResult[] {
 
   return results;
 }
+
+/**
+ * Strategy 4: Parse X-post format from Grok Responses API with x_search.
+ * Grok returns entries as blocks separated by blank lines:
+ *
+ * @Handle  Brief description
+ * [multi-line tweet content]
+ * https://x.com/handle/status/...
+ * YYYY-MM-DD
+ */
+/**
+ * Strategy 4: Parse X-post format from Grok Responses API with x_search.
+ * Grok returns entries as blocks separated by blank lines:
+ *
+ * @Handle \u2014 Brief description
+ * [multi-line tweet content]
+ * https://x.com/handle/status/...
+ * YYYY-MM-DD
+ */
+function parseXPostFormat(text: string): RawScanResult[] {
+  const results: RawScanResult[] = [];
+
+  // Strip the "Model:" header line if present
+  let content = text.replace(/^Model:.*\n/, '');
+
+  // Split into blocks by @Handle headers
+  const blocks: string[] = [];
+  let currentBlock = '';
+
+  for (const line of content.split('\n')) {
+    // New block starts with @Handle followed by em-dash, en-dash, or hyphen
+    if (/^@\w+\s*[\u2014\u2013\-]\s+/.test(line) && currentBlock.trim()) {
+      blocks.push(currentBlock.trim());
+      currentBlock = line + '\n';
+    } else {
+      currentBlock += line + '\n';
+    }
+  }
+  if (currentBlock.trim()) blocks.push(currentBlock.trim());
+
+  for (const block of blocks) {
+    const lines = block.split('\n').map(l => l.trim()).filter(Boolean);
+    if (lines.length === 0) continue;
+
+    // First line should be @Handle \u2014 Description
+    const headerMatch = lines[0].match(/^@(\w+)\s*[\u2014\u2013\-]\s+(.+)/);
+    if (!headerMatch) continue;
+
+    const handle = headerMatch[1];
+    const title = headerMatch[2].trim();
+
+    // Collect description from body lines (skip header, URL, and date lines)
+    let sourceUrl = '';
+    const bodyLines: string[] = [];
+
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i];
+
+      // X.com URL
+      if (/^https?:\/\/(x\.com|twitter\.com)\/\S+/.test(line)) {
+        sourceUrl = line;
+        continue;
+      }
+
+      // Date line (YYYY-MM-DD)
+      if (/^\d{4}-\d{2}-\d{2}$/.test(line)) {
+        continue;
+      }
+
+      bodyLines.push(line);
+    }
+
+    // Build description from body (first 300 chars)
+    const description = bodyLines.join(' ').substring(0, 300).trim() || title;
+
+    // Extract amount from combined text
+    const fullText = title + ' ' + bodyLines.join(' ');
+    const amount = extractAmount(fullText);
+
+    // Extract deadline from body text
+    let deadline: string | null = null;
+    const deadlineMatch = fullText.match(/(?:deadline|due|closes|apply by)[:\s]+([^\n,]+)/i)
+      || fullText.match(/(?:registration|applications?)\s*(?:close|end|due)[:\s]+([^\n,]+)/i);
+    if (deadlineMatch) {
+      deadline = deadlineMatch[1].trim();
+    }
+
+    results.push({
+      name: handle + ': ' + title.substring(0, 100),
+      description,
+      amount,
+      deadline,
+      sourceUrl,
+    });
+  }
+
+  return results;
+}
+
 
 function finalizeLenientEntry(entry: Partial<RawScanResult>): RawScanResult {
   return {
