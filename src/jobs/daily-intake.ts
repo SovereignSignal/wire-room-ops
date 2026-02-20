@@ -83,6 +83,8 @@ export async function runDailyIntake(
     promptVariant: PromptVariant;
     scanSource: ScanSource;
     scanDate: string;
+    promptId?: string;
+    submittedBy?: string;
   }> = [];
 
   for (const sub of submissions) {
@@ -93,6 +95,8 @@ export async function runDailyIntake(
         promptVariant: sub.promptVariant,
         scanSource: sub.source,
         scanDate: sub.scanDate,
+        promptId: sub.promptId,
+        submittedBy: sub.submittedBy,
       });
     }
   }
@@ -110,8 +114,8 @@ export async function runDailyIntake(
     const res = await pool.query(
       `INSERT INTO scan_entries
        (name, description, source_url, amount, amount_numeric, amount_currency,
-        deadline, deadline_parsed, wire, prompt_variant, scan_source, scan_date, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'raw')
+        deadline, deadline_parsed, wire, prompt_variant, scan_source, scan_date, status, prompt_id, submitted_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'raw', $13, $14)
        RETURNING id`,
       [
         item.result.name,
@@ -126,6 +130,8 @@ export async function runDailyIntake(
         item.promptVariant,
         item.scanSource,
         item.scanDate,
+        item.promptId || null,
+        item.submittedBy || null,
       ]
     );
 

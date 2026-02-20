@@ -48,6 +48,19 @@ export const config = {
     startDate: process.env.START_DATE,
     endDate: process.env.END_DATE,
   },
+
+  telegram: {
+    botToken: process.env.TELEGRAM_BOT_TOKEN || '',
+    webhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET || '',
+    allowedUserIds: (process.env.TELEGRAM_ALLOWED_USER_IDS || '').split(',').map(s => s.trim()).filter(Boolean),
+    defaultWire: process.env.TELEGRAM_DEFAULT_WIRE || 'crypto',
+  },
+
+  inboundEmail: {
+    allowedSenders: (process.env.INBOUND_EMAIL_ALLOWED_SENDERS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
+    inboundAddress: process.env.INBOUND_EMAIL_ADDRESS || '',
+    webhookSigningSecret: process.env.RESEND_WEBHOOK_SECRET || '',
+  },
 };
 
 export function validateConfig(): void {

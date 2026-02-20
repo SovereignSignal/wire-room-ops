@@ -6,13 +6,13 @@
 // Wire values are dynamic (driven by feeds table), so we use string
 
 // Which prompt variant produced this result
-export type PromptVariant = 'A' | 'B' | 'C';
+export type PromptVariant = 'A' | 'B' | 'C' | 'N';
 
 // Prompt strategy labels (for human readability)
 export type PromptStrategy = 'Action' | 'Landscape' | 'Open Sweep';
 
 // Where the result came from
-export type ScanSource = 'x-scan' | 'web-search';
+export type ScanSource = 'x-scan' | 'web-search' | 'telegram' | 'email';
 
 // Processing state for scan results as they move through the pipeline
 export type ScanStatus =
@@ -23,7 +23,8 @@ export type ScanStatus =
   | 'queued'        // Ready for AI enrichment (passed quality threshold)
   | 'enriched'      // AI summary generated
   | 'published'     // Included in a newsletter output
-  | 'archived';     // Below quality threshold, kept for reference
+  | 'archived'      // Below quality threshold, kept for reference
+  | 'skipped';      // Manually skipped by user
 
 /**
  * A single result as parsed from a structured scan output.
@@ -46,6 +47,8 @@ export interface ScanSubmission {
   scanDate: string;           // ISO date string (YYYY-MM-DD)
   source: ScanSource;
   results: RawScanResult[];
+  promptId?: string;          // UUID of the scan_prompt that produced these results
+  submittedBy?: string;       // Who submitted (e.g. 'telegram:12345', 'email:user@example.com')
 }
 
 /**
@@ -70,6 +73,7 @@ export interface ScanEntry {
   qualityScore: number | null;      // 0-100 quality score
   duplicateOfId: number | null;     // Points to the original if this is a dupe
   duplicateReason: string | null;   // Why it was flagged as duplicate
+  submittedBy: string | null;       // Who submitted (e.g. 'telegram:12345', 'email:user@example.com')
   createdAt: Date;
   updatedAt: Date;
 }

@@ -17,22 +17,22 @@ import { runDailyIntake, getDailyQueue, getIntakeStats } from './jobs/daily-inta
 import { getPool } from './db';
 import { executeScanPrompt } from './services/grok';
 import { withRetry } from './services/processor';
+import { runScanExecution } from './jobs/scan-execution';
+import { getPromptEffectivenessStats } from './services/scan-stats';
+import { registerTelegramWebhook, handleTelegramUpdate } from './services/telegram';
+import { handleInboundEmail, verifyResendSignature, ResendInboundPayload } from './services/email-inbound';
+import { escapeHtml } from './utils/html';
 
 const app = express();
 
-app.use(express.json());
+app.use(express.json({
+  verify: (req, _res, buf) => {
+    // Capture raw body for webhook signature verification
+    (req as any).rawBody = buf;
+  },
+}));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
-
-// HTML escaping to prevent XSS
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
-}
 
 // Auth middleware - checks session from HttpOnly cookie (with POST body fallback)
 function requireAuth(req: Request, res: Response, next: Function): void {
@@ -74,6 +74,65 @@ function rateLimit(key: string, maxRequests: number, windowMs: number): boolean 
 // Health check
 app.get('/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// ============================================================
+// Webhook Routes (unauthenticated, verified by secrets)
+// ============================================================
+
+// Telegram Bot Webhook
+app.post('/webhook/telegram', (req: Request, res: Response) => {
+  // Verify webhook secret
+  if (config.telegram.webhookSecret) {
+    const secretHeader = req.headers['x-telegram-bot-api-secret-token'] as string;
+    if (secretHeader !== config.telegram.webhookSecret) {
+      res.status(403).json({ error: 'Invalid secret' });
+      return;
+    }
+  }
+
+  // Rate limit: 10 messages per minute per chat
+  const chatId = req.body?.message?.chat?.id;
+  if (chatId && !rateLimit(`tg:${chatId}`, 10, 60 * 1000)) {
+    res.status(429).json({ error: 'Rate limited' });
+    return;
+  }
+
+  // Return 200 immediately, process async
+  res.json({ ok: true });
+
+  handleTelegramUpdate(req.body).catch(err => {
+    console.error('[Webhook/Telegram] Processing error:', err);
+  });
+});
+
+// Resend Inbound Email Webhook
+app.post('/webhook/email', (req: Request, res: Response) => {
+  // Verify Resend signature if secret is configured
+  if (config.inboundEmail.webhookSigningSecret) {
+    const signature = req.headers['resend-signature'] as string || '';
+    const rawBody = (req as any).rawBody?.toString() || JSON.stringify(req.body);
+    if (!verifyResendSignature(rawBody, signature)) {
+      res.status(403).json({ error: 'Invalid signature' });
+      return;
+    }
+  }
+
+  const payload: ResendInboundPayload = req.body;
+
+  // Rate limit: 5 emails per 15 min per sender
+  const sender = (payload.data?.from || 'unknown').toLowerCase();
+  if (!rateLimit(`email:${sender}`, 5, 15 * 60 * 1000)) {
+    res.status(429).json({ error: 'Rate limited' });
+    return;
+  }
+
+  // Return 200 immediately, process async
+  res.json({ ok: true });
+
+  handleInboundEmail(payload).catch(err => {
+    console.error('[Webhook/Email] Processing error:', err);
+  });
 });
 
 // Landing page - login form
@@ -572,7 +631,10 @@ app.get('/api/schedule', requireAuth, (req: Request, res: Response) => {
 
 // Validate schedule numeric parameters
 function validateScheduleParams(body: Record<string, any>): string | null {
-  const { dayOfWeek, hour, minute, lookbackDays } = body;
+  const { dayOfWeek, hour, minute, lookbackDays, scheduleType } = body;
+  if (scheduleType && !['weekly-summary', 'scan-execution'].includes(scheduleType)) {
+    return 'scheduleType must be "weekly-summary" or "scan-execution"';
+  }
   if (typeof dayOfWeek === 'number' && (dayOfWeek < 0 || dayOfWeek > 6)) {
     return 'dayOfWeek must be between 0 (Sunday) and 6 (Saturday)';
   }
@@ -596,11 +658,12 @@ app.post('/api/schedules', requireAuth, async (req: Request, res: Response) => {
     return;
   }
 
-  const { name, enabled, dayOfWeek, hour, minute, lookbackDays, grokModel, anthropicModel, timezone, wire } = req.body;
+  const { name, enabled, dayOfWeek, hour, minute, lookbackDays, grokModel, anthropicModel, timezone, wire, scheduleType } = req.body;
 
   const scheduleData: Partial<Omit<ScheduleConfig, 'id'>> = {};
 
   if (name) scheduleData.name = name;
+  if (scheduleType) scheduleData.scheduleType = scheduleType;
   if (typeof enabled === 'boolean') scheduleData.enabled = enabled;
   if (typeof dayOfWeek === 'number') scheduleData.dayOfWeek = dayOfWeek;
   if (typeof hour === 'number') scheduleData.hour = hour;
@@ -637,11 +700,12 @@ app.put('/api/schedules/:id', requireAuth, async (req: Request, res: Response) =
     return;
   }
 
-  const { name, enabled, dayOfWeek, hour, minute, lookbackDays, grokModel, anthropicModel, timezone, wire } = req.body;
+  const { name, enabled, dayOfWeek, hour, minute, lookbackDays, grokModel, anthropicModel, timezone, wire, scheduleType } = req.body;
 
   const updates: Partial<Omit<ScheduleConfig, 'id'>> = {};
 
   if (name !== undefined) updates.name = name;
+  if (scheduleType !== undefined) updates.scheduleType = scheduleType;
   if (typeof enabled === 'boolean') updates.enabled = enabled;
   if (typeof dayOfWeek === 'number') updates.dayOfWeek = dayOfWeek;
   if (typeof hour === 'number') updates.hour = hour;
@@ -694,11 +758,12 @@ app.delete('/api/schedules/:id', requireAuth, async (req: Request, res: Response
 app.post('/api/schedule', requireAuth, async (req: Request, res: Response) => {
   const id = req.body.id;
 
-  const { name, enabled, dayOfWeek, hour, minute, lookbackDays, grokModel, anthropicModel, timezone, wire } = req.body;
+  const { name, enabled, dayOfWeek, hour, minute, lookbackDays, grokModel, anthropicModel, timezone, wire, scheduleType } = req.body;
 
   const updates: Partial<Omit<ScheduleConfig, 'id'>> = {};
 
   if (name !== undefined) updates.name = name;
+  if (scheduleType !== undefined) updates.scheduleType = scheduleType;
   if (typeof enabled === 'boolean') updates.enabled = enabled;
   if (typeof dayOfWeek === 'number') updates.dayOfWeek = dayOfWeek;
   if (typeof hour === 'number') updates.hour = hour;
@@ -1080,6 +1145,104 @@ app.post('/api/scan/prompts/:id/test', requireAuth, async (req: Request, res: Re
   } catch (error) {
     console.error('Scan prompt test failed:', error);
     res.status(500).json({ error: error instanceof Error ? error.message : 'Test run failed' });
+  }
+});
+
+// ============================================================
+// Phase 2: Automated Scan Execution + Queue Actions + Stats
+// ============================================================
+
+// API: Trigger automated scan execution (async with SSE progress)
+app.post('/api/scan/run', requireAuth, async (req: Request, res: Response) => {
+  if (!rateLimit('scan-run', 1, 15 * 60 * 1000)) {
+    res.status(429).json({ error: 'Scan already running or recently completed. Please wait 15 minutes between scans.' });
+    return;
+  }
+
+  const { wire } = req.body;
+  const pool = getPool();
+
+  const jobId = jobQueue.createJob();
+  res.json({ jobId });
+
+  (async () => {
+    jobQueue.updateJob(jobId, { status: 'running' });
+
+    try {
+      const result = await runScanExecution(pool, {
+        wire: wire || undefined,
+        onProgress: (message, pct) => {
+          jobQueue.updateProgress(jobId, {
+            current: pct,
+            total: 100,
+            step: message,
+          });
+        },
+      });
+
+      jobQueue.completeJob(jobId, result);
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      jobQueue.failJob(jobId, errorMsg);
+    } finally {
+      jobQueue.cleanup();
+    }
+  })().catch(error => {
+    console.error('Unexpected error in scan runner:', error);
+  });
+});
+
+// API: Queue action on single entry (promote/archive/skip)
+app.post('/api/scan/entries/:id/action', requireAuth, async (req: Request, res: Response) => {
+  const entryId = parseInt(req.params.id, 10);
+  if (isNaN(entryId)) {
+    res.status(400).json({ error: 'Invalid entry ID' });
+    return;
+  }
+
+  const { action } = req.body;
+  const actionMap: Record<string, string> = {
+    promote: 'queued',
+    archive: 'archived',
+    skip: 'skipped',
+  };
+
+  const newStatus = actionMap[action];
+  if (!newStatus) {
+    res.status(400).json({ error: 'Invalid action. Must be promote, archive, or skip.' });
+    return;
+  }
+
+  try {
+    const pool = getPool();
+    const result = await pool.query(
+      `UPDATE scan_entries SET status = $1 WHERE id = $2 RETURNING id, status`,
+      [newStatus, entryId]
+    );
+
+    if (result.rows.length === 0) {
+      res.status(404).json({ error: 'Entry not found' });
+      return;
+    }
+
+    res.json({ success: true, newStatus });
+  } catch (error) {
+    console.error('Failed to update entry status:', error);
+    res.status(500).json({ error: 'Failed to update entry' });
+  }
+});
+
+// API: Prompt effectiveness stats
+app.get('/api/scan/prompt-stats', requireAuth, async (req: Request, res: Response) => {
+  const days = Math.min(Math.max(parseInt(req.query.days as string, 10) || 7, 1), 365);
+
+  try {
+    const pool = getPool();
+    const stats = await getPromptEffectivenessStats(pool, days);
+    res.json(stats);
+  } catch (error) {
+    console.error('Failed to fetch prompt stats:', error);
+    res.status(500).json({ error: 'Failed to fetch prompt stats' });
   }
 });
 
@@ -1573,13 +1736,20 @@ function renderDashboard(files: StoredFile[], message?: string): string {
             <input type="text" id="scheduleName" value="New Schedule" style="background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 10px 12px; color: #fff; width: 150px;">
           </div>
           <div class="form-group">
+            <label for="scheduleType">Type</label>
+            <select id="scheduleType">
+              <option value="weekly-summary">Weekly Summary</option>
+              <option value="scan-execution">Scan Execution (Daily)</option>
+            </select>
+          </div>
+          <div class="form-group">
             <label for="scheduleEnabled">Status</label>
             <select id="scheduleEnabled">
               <option value="false">Disabled</option>
               <option value="true">Enabled</option>
             </select>
           </div>
-          <div class="form-group">
+          <div class="form-group" id="scheduleDayOfWeekGroup">
             <label for="scheduleDayOfWeek">Day of Week</label>
             <select id="scheduleDayOfWeek">
               <option value="0">Sunday</option>
@@ -1695,6 +1865,30 @@ function renderDashboard(files: StoredFile[], message?: string): string {
     </div>
 
     <div class="card">
+      <h2>Run Scan</h2>
+      <p class="form-description" style="margin-bottom: 16px;">Execute all active prompts against Grok and feed results through the intake pipeline.</p>
+      <div class="run-form">
+        <div class="form-row" style="align-items: flex-end;">
+          <div class="form-group">
+            <label for="scanRunWire">Wire Filter</label>
+            <select id="scanRunWire">
+              <option value="">All Wires</option>
+            </select>
+          </div>
+          <button type="button" id="run-scan-btn" class="button">Run Scan Now</button>
+        </div>
+        <div id="scan-run-progress" style="display: none; margin-top: 16px;">
+          <div style="background: #2a2a2a; border-radius: 4px; overflow: hidden; height: 20px;">
+            <div id="scan-run-bar" style="background: #f5a623; height: 100%; width: 0%; transition: width 0.3s;"></div>
+          </div>
+          <p id="scan-run-step" style="color: #999; font-size: 13px; margin: 8px 0 0;">Initializing...</p>
+        </div>
+        <div id="scan-run-result" style="display: none; margin-top: 16px; padding: 12px 16px; background: #0d0d0d; border-radius: 8px; border: 1px solid #2a2a2a;">
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
       <h2>Scan Intake</h2>
       <p class="form-description" style="margin-bottom: 16px;">Paste structured Grok scan output to ingest, deduplicate, and score entries.</p>
       <div class="run-form">
@@ -1739,8 +1933,8 @@ function renderDashboard(files: StoredFile[], message?: string): string {
     </div>
 
     <div class="card">
-      <h2>Daily Queue</h2>
-      <p class="form-description" style="margin-bottom: 16px;">View today's high-quality scan entries ready for review.</p>
+      <h2>Daily Queue <span id="queue-count-badge" style="display: none; background: #f5a623; color: #000; font-size: 13px; padding: 2px 10px; border-radius: 12px; margin-left: 8px; font-weight: 600;"></span></h2>
+      <p class="form-description" style="margin-bottom: 16px;">Review prioritized scan entries. Promote to keep, skip to defer, archive to dismiss.</p>
       <div class="form-row" style="margin-bottom: 16px;">
         <div class="form-group">
           <label for="queueWire">Feed Filter</label>
@@ -1807,6 +2001,21 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       </div>
       <div id="prompt-test-result" style="display: none; margin-top: 16px; padding: 12px 16px; background: #0d0d0d; border-radius: 8px; border: 1px solid #2a2a2a;">
         <p style="margin: 0; color: #999;">Test results will appear here</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Prompt Effectiveness</h2>
+      <p class="form-description" style="margin-bottom: 16px;">How well each prompt performs: unique results, duplicate rate, quality scores.</p>
+      <div class="form-row" style="margin-bottom: 16px; align-items: flex-end;">
+        <div class="form-group">
+          <label for="statsDays">Lookback Days</label>
+          <input type="number" id="statsDays" min="1" max="90" value="7" style="width: 80px;">
+        </div>
+        <button type="button" id="load-prompt-stats" class="button secondary">Refresh</button>
+      </div>
+      <div id="prompt-stats-results">
+        <p style="color: #666;">Loading stats...</p>
       </div>
     </div>
   </div>
@@ -2010,8 +2219,10 @@ function renderDashboard(files: StoredFile[], message?: string): string {
     const scheduleForm = document.getElementById('schedule-form');
     const scheduleId = document.getElementById('scheduleId');
     const scheduleName = document.getElementById('scheduleName');
+    const scheduleTypeSelect = document.getElementById('scheduleType');
     const scheduleEnabled = document.getElementById('scheduleEnabled');
     const scheduleDayOfWeek = document.getElementById('scheduleDayOfWeek');
+    const scheduleDayOfWeekGroup = document.getElementById('scheduleDayOfWeekGroup');
     const scheduleTime = document.getElementById('scheduleTime');
     const scheduleLookback = document.getElementById('scheduleLookback');
     const scheduleGrokModel = document.getElementById('scheduleGrokModel');
@@ -2021,6 +2232,11 @@ function renderDashboard(files: StoredFile[], message?: string): string {
     const saveScheduleBtn = document.getElementById('save-schedule');
     const cancelScheduleBtn = document.getElementById('cancel-schedule');
     const addScheduleBtn = document.getElementById('add-schedule');
+
+    // Show/hide dayOfWeek based on schedule type
+    scheduleTypeSelect.addEventListener('change', function() {
+      scheduleDayOfWeekGroup.style.display = scheduleTypeSelect.value === 'scan-execution' ? 'none' : '';
+    });
     
     let cachedWires = [];
     let cachedModels = { grok: [], anthropic: [] };
@@ -2055,8 +2271,8 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       
       const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
       
-      let html = '<table><thead><tr><th>Name</th><th>Schedule</th><th>Feed</th><th>Status</th><th>Next Run</th><th>Actions</th></tr></thead><tbody>';
-      
+      let html = '<table><thead><tr><th>Name</th><th>Type</th><th>Schedule</th><th>Feed</th><th>Status</th><th>Next Run</th><th>Actions</th></tr></thead><tbody>';
+
       schedules.forEach(s => {
         const day = dayNames[s.dayOfWeek];
         const hour12 = s.hour % 12 || 12;
@@ -2067,6 +2283,8 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         const status = s.enabled ? '<span style="color: #4caf50;">Enabled</span>' : '<span style="color: #666;">Disabled</span>';
         const tz = s.timezone || 'America/Los_Angeles';
         const tzShort = tz.split('/').pop().replace('_', ' ');
+        const isScan = s.scheduleType === 'scan-execution';
+        const typeLabel = isScan ? '<span style="color: #9c27b0;">Scan</span>' : 'Summary';
         let nextRun = '-';
         if (s.nextRun) {
           try {
@@ -2078,7 +2296,8 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         
         html += '<tr>';
         html += '<td>' + escapeHtml(s.name || 'Untitled') + '</td>';
-        html += '<td>' + day + ' @ ' + time + ' <span style="color: #666; font-size: 11px;">(' + escapeHtml(tzShort) + ')</span></td>';
+        html += '<td>' + typeLabel + '</td>';
+        html += '<td>' + (isScan ? 'Daily' : day) + ' @ ' + time + ' <span style="color: #666; font-size: 11px;">(' + escapeHtml(tzShort) + ')</span></td>';
         html += '<td>' + escapeHtml(feed) + '</td>';
         html += '<td>' + status + '</td>';
         html += '<td style="font-size: 12px;">' + escapeHtml(nextRun) + (s.nextRun ? ' <span style="color: #666; font-size: 10px;">(' + escapeHtml(tz === 'UTC' ? 'UTC' : tzShort) + ')</span>' : '') + '</td>';
@@ -2123,10 +2342,11 @@ function renderDashboard(files: StoredFile[], message?: string): string {
     function showScheduleForm(schedule) {
       scheduleForm.style.display = 'block';
       populateFormDropdowns(schedule);
-      
+
       if (schedule) {
         scheduleId.value = schedule.id;
         scheduleName.value = schedule.name || '';
+        scheduleTypeSelect.value = schedule.scheduleType || 'weekly-summary';
         scheduleEnabled.value = schedule.enabled.toString();
         scheduleDayOfWeek.value = schedule.dayOfWeek.toString();
         scheduleTime.value = schedule.hour.toString().padStart(2, '0') + ':' + schedule.minute.toString().padStart(2, '0');
@@ -2135,12 +2355,15 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       } else {
         scheduleId.value = '';
         scheduleName.value = 'New Schedule';
+        scheduleTypeSelect.value = 'weekly-summary';
         scheduleEnabled.value = 'false';
         scheduleDayOfWeek.value = '3';
         scheduleTime.value = '09:00';
         scheduleLookback.value = '7';
         scheduleTimezone.value = 'America/Los_Angeles';
       }
+      // Toggle dayOfWeek visibility based on type
+      scheduleDayOfWeekGroup.style.display = scheduleTypeSelect.value === 'scan-execution' ? 'none' : '';
     }
     
     function hideScheduleForm() {
@@ -2336,6 +2559,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       try {
         const body = {
           name: scheduleName.value,
+          scheduleType: scheduleTypeSelect.value,
           enabled: scheduleEnabled.value === 'true',
           dayOfWeek: parseInt(scheduleDayOfWeek.value, 10),
           hour,
@@ -2595,6 +2819,41 @@ function renderDashboard(files: StoredFile[], message?: string): string {
     // Daily queue
     const loadQueueBtn = document.getElementById('load-queue');
     const queueResultsEl = document.getElementById('queue-results');
+    const queueCountBadge = document.getElementById('queue-count-badge');
+
+    function scoreColor(score) {
+      if (score == null) return '#666';
+      if (score >= 60) return '#4caf50';
+      if (score >= 40) return '#f5a623';
+      return '#ef5350';
+    }
+
+    function sourceBadge(scanSource) {
+      var badges = {
+        'x-scan': { label: 'X', bg: '#1a3a5c', color: '#5b9bd5' },
+        'web-search': { label: 'Web', bg: '#1a3c1a', color: '#4caf50' },
+        'telegram': { label: 'TG', bg: '#1a3c3c', color: '#26c6da' },
+        'email': { label: 'Email', bg: '#3c2a1a', color: '#ff9800' }
+      };
+      var b = badges[scanSource] || { label: scanSource || '?', bg: '#2a2a2a', color: '#999' };
+      return '<span style="background:' + b.bg + '; color:' + b.color + '; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:600;">' + b.label + '</span>';
+    }
+
+    async function entryAction(id, action, btnEl) {
+      if (btnEl) btnEl.disabled = true;
+      try {
+        const resp = await fetch('/api/scan/entries/' + id + '/action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: action })
+        });
+        if (!resp.ok) throw new Error('Failed');
+        loadQueue();
+      } catch (e) {
+        console.error('Action failed:', e);
+        if (btnEl) btnEl.disabled = false;
+      }
+    }
 
     async function loadQueue() {
       const wire = queueWireSelect.value;
@@ -2611,27 +2870,42 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         if (!response.ok) throw new Error('Failed to load queue');
         const data = await response.json();
 
+        // Update badge
+        if (data.count > 0) {
+          queueCountBadge.textContent = data.count + ' new';
+          queueCountBadge.style.display = 'inline';
+        } else {
+          queueCountBadge.style.display = 'none';
+        }
+
         if (data.entries.length === 0) {
           queueResultsEl.innerHTML = '<p style="color: #666;">No entries found for these filters.</p>';
           return;
         }
 
-        let html = '<table><thead><tr><th>Name</th><th>Amount</th><th>Deadline</th><th>Score</th><th>Wire</th><th>Source</th><th>Status</th></tr></thead><tbody>';
+        let html = '<table><thead><tr><th>Name</th><th>Amount</th><th>Deadline</th><th>Score</th><th>Wire</th><th>Source</th><th>Actions</th></tr></thead><tbody>';
         data.entries.forEach(function(e) {
-          html += '<tr>';
-          html += '<td>' + escapeHtml(e.name || '') + '</td>';
+          const sc = scoreColor(e.quality_score);
+          const desc = (e.description || '').length > 80 ? e.description.substring(0, 80) + '...' : (e.description || '');
+          html += '<tr id="queue-row-' + e.id + '">';
+          html += '<td><div>' + escapeHtml(e.name || '') + '</div>';
+          if (desc) html += '<div style="font-size: 11px; color: #888; margin-top: 2px;">' + escapeHtml(desc) + '</div>';
+          html += '</td>';
           html += '<td>' + escapeHtml(e.amount || '-') + '</td>';
           html += '<td>' + escapeHtml(e.deadline || '-') + '</td>';
-          html += '<td>' + (e.quality_score != null ? e.quality_score : '-') + '</td>';
+          html += '<td><span style="color: ' + sc + '; font-weight: 600;">' + (e.quality_score != null ? e.quality_score : '-') + '</span></td>';
           html += '<td><code style="background: #0d0d0d; padding: 2px 6px; border-radius: 4px;">' + escapeHtml(e.wire || '') + '</code></td>';
-          html += '<td>';
+          html += '<td style="white-space: nowrap;">';
+          html += sourceBadge(e.scan_source);
           if (e.source_url) {
-            html += '<a href="' + escapeHtml(e.source_url) + '" target="_blank" class="download-link" style="font-size: 12px;">Link</a>';
-          } else {
-            html += '-';
+            html += ' <a href="' + escapeHtml(e.source_url) + '" target="_blank" class="download-link" style="font-size: 12px;">Link</a>';
           }
           html += '</td>';
-          html += '<td><span style="color: ' + (e.status === 'queued' ? '#4caf50' : '#f5a623') + ';">' + escapeHtml(e.status || '') + '</span></td>';
+          html += '<td style="white-space: nowrap;">';
+          html += '<button onclick="entryAction(' + e.id + ',\'promote\',this)" style="background: #1b5e20; border: none; color: #4caf50; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;" title="Promote">Promote</button>';
+          html += '<button onclick="entryAction(' + e.id + ',\'skip\',this)" style="background: #2a2a2a; border: none; color: #999; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;" title="Skip">Skip</button>';
+          html += '<button onclick="entryAction(' + e.id + ',\'archive\',this)" style="background: #4a1515; border: none; color: #ef5350; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;" title="Archive">Archive</button>';
+          html += '</td>';
           html += '</tr>';
         });
         html += '</tbody></table>';
@@ -2642,6 +2916,9 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         queueResultsEl.innerHTML = '<p style="color: #ef5350;">Failed to load queue: ' + escapeHtml(error.message) + '</p>';
       }
     }
+
+    // Make entryAction available globally for onclick handlers
+    window.entryAction = entryAction;
 
     loadQueueBtn.addEventListener('click', loadQueue);
 
@@ -2933,6 +3210,180 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         runCrmSyncBtn.textContent = 'Run CRM Sync';
       }
     });
+
+    // ---- Run Scan ----
+    const runScanBtn = document.getElementById('run-scan-btn');
+    const scanRunWireSelect = document.getElementById('scanRunWire');
+    const scanRunProgress = document.getElementById('scan-run-progress');
+    const scanRunBar = document.getElementById('scan-run-bar');
+    const scanRunStep = document.getElementById('scan-run-step');
+    const scanRunResult = document.getElementById('scan-run-result');
+
+    // Populate scan run wire select
+    (async function() {
+      try {
+        const resp = await fetch('/api/feeds');
+        if (!resp.ok) return;
+        const feeds = await resp.json();
+        let opts = '<option value="">All Wires</option>';
+        feeds.forEach(function(f) {
+          opts += '<option value="' + escapeHtml(f.key) + '">' + escapeHtml(f.displayName) + '</option>';
+        });
+        scanRunWireSelect.innerHTML = opts;
+      } catch (e) { console.error('Failed to load feeds for scan run:', e); }
+    })();
+
+    runScanBtn.addEventListener('click', async function() {
+      runScanBtn.disabled = true;
+      runScanBtn.textContent = 'Starting...';
+      scanRunProgress.style.display = 'block';
+      scanRunResult.style.display = 'none';
+      scanRunBar.style.width = '0%';
+      scanRunStep.textContent = 'Initializing...';
+
+      try {
+        const body = {};
+        if (scanRunWireSelect.value) body.wire = scanRunWireSelect.value;
+
+        const resp = await fetch('/api/scan/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+
+        if (!resp.ok) {
+          const data = await resp.json();
+          throw new Error(data.error || 'Failed to start scan');
+        }
+
+        const { jobId } = await resp.json();
+        runScanBtn.textContent = 'Running...';
+
+        // Connect to SSE for progress
+        const evtSource = new EventSource('/api/job/' + jobId + '/progress');
+        evtSource.onmessage = function(event) {
+          try {
+            const status = JSON.parse(event.data);
+            if (status.progress) {
+              const pct = status.progress.total > 0
+                ? Math.round((status.progress.current / status.progress.total) * 100)
+                : 0;
+              scanRunBar.style.width = pct + '%';
+              scanRunStep.textContent = status.progress.step || '';
+            }
+            if (status.status === 'completed') {
+              evtSource.close();
+              scanRunProgress.style.display = 'none';
+              runScanBtn.disabled = false;
+              runScanBtn.textContent = 'Run Scan Now';
+
+              const r = status.result;
+              if (r) {
+                let html = '<p style="color: #4caf50; margin: 0 0 8px; font-weight: 600;">Scan complete!</p>';
+                html += '<p style="color: #ccc; margin: 0 0 4px; font-size: 13px;">Prompts: ' + r.promptsExecuted + ' executed';
+                if (r.promptsFailed > 0) html += ', <span style="color: #ef5350;">' + r.promptsFailed + ' failed</span>';
+                html += ' | Total results: ' + r.totalResults;
+                html += ' | Duration: ' + Math.round(r.totalDurationMs / 1000) + 's</p>';
+                if (r.intakeSummary) {
+                  html += '<p style="color: #999; margin: 4px 0 0; font-size: 13px;">Unique: ' + r.intakeSummary.newUnique + ' | Duplicates: ' + r.intakeSummary.duplicatesFound + ' | High quality: ' + r.intakeSummary.highQualityCount + '</p>';
+                }
+                if (r.perPrompt && r.perPrompt.length > 0) {
+                  html += '<details style="margin-top: 8px;"><summary style="color: #888; cursor: pointer; font-size: 12px;">Per-prompt breakdown</summary><table style="margin-top: 8px;"><thead><tr><th>Wire</th><th>Label</th><th>Results</th><th>Time</th><th>Status</th></tr></thead><tbody>';
+                  r.perPrompt.forEach(function(pp) {
+                    html += '<tr>';
+                    html += '<td><code style="background: #0d0d0d; padding: 2px 6px; border-radius: 4px;">' + escapeHtml(pp.wire) + '</code></td>';
+                    html += '<td>' + escapeHtml(pp.label) + '</td>';
+                    html += '<td>' + pp.resultCount + '</td>';
+                    html += '<td>' + Math.round(pp.durationMs / 1000) + 's</td>';
+                    html += '<td style="color: ' + (pp.error ? '#ef5350' : '#4caf50') + ';">' + (pp.error ? escapeHtml(pp.error.substring(0, 60)) : 'OK') + '</td>';
+                    html += '</tr>';
+                  });
+                  html += '</tbody></table></details>';
+                }
+                scanRunResult.innerHTML = html;
+              } else {
+                scanRunResult.innerHTML = '<p style="color: #4caf50; margin: 0;">Scan complete!</p>';
+              }
+              scanRunResult.style.display = 'block';
+              // Auto-refresh queue
+              loadQueue();
+            } else if (status.status === 'failed') {
+              evtSource.close();
+              scanRunProgress.style.display = 'none';
+              runScanBtn.disabled = false;
+              runScanBtn.textContent = 'Run Scan Now';
+              scanRunResult.innerHTML = '<p style="color: #ef5350; margin: 0;">Scan failed: ' + escapeHtml(status.error || 'Unknown error') + '</p>';
+              scanRunResult.style.display = 'block';
+            }
+          } catch (e) { console.error('SSE parse error:', e); }
+        };
+        evtSource.onerror = function() {
+          evtSource.close();
+          runScanBtn.disabled = false;
+          runScanBtn.textContent = 'Run Scan Now';
+        };
+      } catch (error) {
+        scanRunProgress.style.display = 'none';
+        runScanBtn.disabled = false;
+        runScanBtn.textContent = 'Run Scan Now';
+        scanRunResult.innerHTML = '<p style="color: #ef5350; margin: 0;">Error: ' + escapeHtml(error.message) + '</p>';
+        scanRunResult.style.display = 'block';
+      }
+    });
+
+    // ---- Prompt Effectiveness Stats ----
+    const loadStatsBtn = document.getElementById('load-prompt-stats');
+    const statsResultsEl = document.getElementById('prompt-stats-results');
+    const statsDaysInput = document.getElementById('statsDays');
+
+    function dupRateColor(rate) {
+      if (rate < 0.3) return '#4caf50';
+      if (rate < 0.5) return '#f5a623';
+      return '#ef5350';
+    }
+
+    async function loadPromptStats() {
+      const days = statsDaysInput.value || '7';
+      try {
+        const resp = await fetch('/api/scan/prompt-stats?days=' + days);
+        if (!resp.ok) throw new Error('Failed to load stats');
+        const data = await resp.json();
+
+        if (!data.prompts || data.prompts.length === 0) {
+          statsResultsEl.innerHTML = '<p style="color: #666;">No prompt data found for this period.</p>';
+          return;
+        }
+
+        let html = '<table><thead><tr><th>Wire</th><th>Label</th><th>Variant</th><th>Total</th><th>Unique</th><th>Dup Rate</th><th>Avg Score</th><th>High Quality</th></tr></thead><tbody>';
+        data.prompts.forEach(function(p) {
+          const drc = dupRateColor(p.duplicateRate);
+          html += '<tr>';
+          html += '<td><code style="background: #0d0d0d; padding: 2px 6px; border-radius: 4px;">' + escapeHtml(p.wire) + '</code></td>';
+          html += '<td>' + escapeHtml(p.label) + '</td>';
+          html += '<td>' + escapeHtml(p.variant || '-') + '</td>';
+          html += '<td>' + p.totalResults + '</td>';
+          html += '<td>' + p.uniqueResults + '</td>';
+          html += '<td style="color: ' + drc + '; font-weight: 600;">' + (p.duplicateRate * 100).toFixed(0) + '%</td>';
+          html += '<td style="color: ' + scoreColor(p.avgQualityScore) + ';">' + p.avgQualityScore.toFixed(1) + '</td>';
+          html += '<td>' + p.highQualityCount + '</td>';
+          html += '</tr>';
+        });
+        html += '</tbody></table>';
+
+        if (data.overlapStats) {
+          const os = data.overlapStats;
+          html += '<p style="color: #999; font-size: 13px; margin-top: 12px;">Cross-prompt overlap: <span style="color: ' + dupRateColor(os.overlapRate) + '; font-weight: 600;">' + (os.overlapRate * 100).toFixed(0) + '%</span> (' + os.entriesFoundByMultiple + ' of ' + os.totalUniqueEntries + ' entries found by 2+ prompts)</p>';
+        }
+
+        statsResultsEl.innerHTML = html;
+      } catch (error) {
+        statsResultsEl.innerHTML = '<p style="color: #ef5350;">Failed to load stats: ' + escapeHtml(error.message) + '</p>';
+      }
+    }
+
+    loadStatsBtn.addEventListener('click', loadPromptStats);
+    // Auto-load stats on page load
+    loadPromptStats();
   </script>
 </body>
 </html>
@@ -3181,6 +3632,17 @@ export async function startServer(): Promise<void> {
     console.log('Scheduler initialized');
   } catch (error) {
     console.error('Scheduler initialization failed (non-fatal):', error);
+  }
+
+  // Register Telegram webhook if configured
+  if (config.telegram.botToken) {
+    try {
+      await registerTelegramWebhook();
+    } catch (error) {
+      console.error('Telegram webhook registration failed (non-fatal):', error);
+    }
+  } else {
+    console.log('[Telegram] Bot token not set, webhook registration skipped');
   }
 
   const server = app.listen(config.app.port, () => {

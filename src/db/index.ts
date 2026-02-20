@@ -9,8 +9,16 @@ export function getPool(): Pool {
     pool = new Pool({
       connectionString: config.database.url,
       ssl: config.database.url.includes('localhost') ? false : {
-        rejectUnauthorized: false,
+        rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED !== 'false',
       },
+      max: 10,
+      idleTimeoutMillis: 30_000,
+      connectionTimeoutMillis: 10_000,
+    });
+
+    // Prevent unhandled error crashes from idle client disconnects
+    pool.on('error', (err) => {
+      console.error('[DB] Unexpected pool error on idle client:', err.message);
     });
   }
   return pool;
@@ -174,6 +182,7 @@ export interface StoredScheduleConfig {
   anthropicModel?: string;
   timezone: string;
   wire?: string;
+  scheduleType?: 'weekly-summary' | 'scan-execution';
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -239,7 +248,7 @@ export async function ensureScheduleTable(): Promise<void> {
 export async function getAllSchedules(): Promise<StoredScheduleConfig[]> {
   const pool = getPool();
   const result = await pool.query(`
-    SELECT id, name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, created_at, updated_at
+    SELECT id, name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, schedule_type, created_at, updated_at
     FROM schedules
     ORDER BY created_at ASC
   `);
@@ -256,6 +265,7 @@ export async function getAllSchedules(): Promise<StoredScheduleConfig[]> {
     anthropicModel: row.anthropic_model || undefined,
     timezone: row.timezone,
     wire: row.wire || undefined,
+    scheduleType: row.schedule_type || 'weekly-summary',
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }));
@@ -264,7 +274,7 @@ export async function getAllSchedules(): Promise<StoredScheduleConfig[]> {
 export async function getScheduleById(id: string): Promise<StoredScheduleConfig | null> {
   const pool = getPool();
   const result = await pool.query(`
-    SELECT id, name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, created_at, updated_at
+    SELECT id, name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, schedule_type, created_at, updated_at
     FROM schedules
     WHERE id = $1
   `, [id]);
@@ -286,6 +296,7 @@ export async function getScheduleById(id: string): Promise<StoredScheduleConfig 
     anthropicModel: row.anthropic_model || undefined,
     timezone: row.timezone,
     wire: row.wire || undefined,
+    scheduleType: row.schedule_type || 'weekly-summary',
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -294,9 +305,9 @@ export async function getScheduleById(id: string): Promise<StoredScheduleConfig 
 export async function createSchedule(config: Omit<StoredScheduleConfig, 'id' | 'createdAt' | 'updatedAt'>): Promise<StoredScheduleConfig> {
   const pool = getPool();
   const result = await pool.query(`
-    INSERT INTO schedules (name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-    RETURNING id, name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, created_at, updated_at
+    INSERT INTO schedules (name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, schedule_type)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    RETURNING id, name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, schedule_type, created_at, updated_at
   `, [
     config.name,
     config.enabled,
@@ -308,6 +319,7 @@ export async function createSchedule(config: Omit<StoredScheduleConfig, 'id' | '
     config.anthropicModel || null,
     config.timezone,
     config.wire || null,
+    config.scheduleType || 'weekly-summary',
   ]);
 
   const row = result.rows[0];
@@ -323,6 +335,7 @@ export async function createSchedule(config: Omit<StoredScheduleConfig, 'id' | '
     anthropicModel: row.anthropic_model || undefined,
     timezone: row.timezone,
     wire: row.wire || undefined,
+    scheduleType: row.schedule_type || 'weekly-summary',
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -346,6 +359,7 @@ export async function updateSchedule(id: string, config: Partial<Omit<StoredSche
   if (config.anthropicModel !== undefined) { updates.push(`anthropic_model = $${paramIndex++}`); values.push(config.anthropicModel || null); }
   if (config.timezone !== undefined) { updates.push(`timezone = $${paramIndex++}`); values.push(config.timezone); }
   if (config.wire !== undefined) { updates.push(`wire = $${paramIndex++}`); values.push(config.wire || null); }
+  if (config.scheduleType !== undefined) { updates.push(`schedule_type = $${paramIndex++}`); values.push(config.scheduleType); }
 
   if (updates.length === 0) {
     return getScheduleById(id);
@@ -357,7 +371,7 @@ export async function updateSchedule(id: string, config: Partial<Omit<StoredSche
   const result = await pool.query(`
     UPDATE schedules SET ${updates.join(', ')}
     WHERE id = $${paramIndex}
-    RETURNING id, name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, created_at, updated_at
+    RETURNING id, name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, schedule_type, created_at, updated_at
   `, values);
 
   if (result.rows.length === 0) {
@@ -377,6 +391,7 @@ export async function updateSchedule(id: string, config: Partial<Omit<StoredSche
     anthropicModel: row.anthropic_model || undefined,
     timezone: row.timezone,
     wire: row.wire || undefined,
+    scheduleType: row.schedule_type || 'weekly-summary',
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -458,6 +473,7 @@ export interface ScanPromptRecord {
   label: string;
   promptText: string;
   responseFormat: string | null;
+  variant: string | null;
   isActive: boolean;
   sortOrder: number;
   createdAt: Date;
@@ -471,6 +487,7 @@ function parseScanPromptRow(row: any): ScanPromptRecord {
     label: row.label,
     promptText: row.prompt_text,
     responseFormat: row.response_format || null,
+    variant: row.variant || null,
     isActive: row.is_active ?? true,
     sortOrder: row.sort_order ?? 0,
     createdAt: row.created_at,
@@ -626,8 +643,8 @@ export async function ensureScanTables(): Promise<void> {
     deadline TEXT,
     deadline_parsed DATE,
     wire TEXT NOT NULL,
-    prompt_variant TEXT NOT NULL CHECK (prompt_variant IN ('A', 'B', 'C')),
-    scan_source TEXT NOT NULL DEFAULT 'x-scan' CHECK (scan_source IN ('x-scan', 'web-search')),
+    prompt_variant TEXT NOT NULL CHECK (prompt_variant IN ('A', 'B', 'C', 'N')),
+    scan_source TEXT NOT NULL DEFAULT 'x-scan' CHECK (scan_source IN ('x-scan', 'web-search', 'telegram', 'email')),
     scan_date DATE NOT NULL,
     status TEXT NOT NULL DEFAULT 'raw'
       CHECK (status IN ('raw', 'deduped', 'duplicate', 'scored', 'queued', 'enriched', 'published', 'archived')),
@@ -713,6 +730,25 @@ export async function ensureScanTables(): Promise<void> {
       EXECUTE FUNCTION update_scan_entries_updated_at()
   `);
 
+  // Phase 3 migrations: expand constraints for telegram/email ingestion
+  await pool.query(`
+    ALTER TABLE scan_entries DROP CONSTRAINT IF EXISTS scan_entries_scan_source_check
+  `);
+  await pool.query(`
+    ALTER TABLE scan_entries ADD CONSTRAINT scan_entries_scan_source_check
+      CHECK (scan_source IN ('x-scan', 'web-search', 'telegram', 'email'))
+  `);
+  await pool.query(`
+    ALTER TABLE scan_entries DROP CONSTRAINT IF EXISTS scan_entries_prompt_variant_check
+  `);
+  await pool.query(`
+    ALTER TABLE scan_entries ADD CONSTRAINT scan_entries_prompt_variant_check
+      CHECK (prompt_variant IN ('A', 'B', 'C', 'N'))
+  `);
+  await pool.query(`
+    ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS submitted_by TEXT
+  `);
+
   console.log('[DB] Scan pipeline tables ready');
 }
 
@@ -766,7 +802,29 @@ export async function ensureScanPromptsTable(): Promise<void> {
     END $$
   `);
 
-  console.log('[DB] Scan prompts table ready');
+  // Index on prompt_id FK for efficient stats JOINs
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_prompt_id ON scan_entries(prompt_id)`);
+
+  // Phase 2 migrations: variant column on scan_prompts
+  await pool.query(`
+    ALTER TABLE scan_prompts ADD COLUMN IF NOT EXISTS variant TEXT CHECK (variant IN ('A', 'B', 'C'))
+  `);
+
+  // Phase 2: Allow 'skipped' status for queue actions
+  await pool.query(`
+    ALTER TABLE scan_entries DROP CONSTRAINT IF EXISTS scan_entries_status_check
+  `);
+  await pool.query(`
+    ALTER TABLE scan_entries ADD CONSTRAINT scan_entries_status_check
+      CHECK (status IN ('raw','deduped','duplicate','scored','queued','enriched','published','archived','skipped'))
+  `);
+
+  // Phase 2: schedule_type for distinguishing weekly-summary vs scan-execution
+  await pool.query(`
+    ALTER TABLE schedules ADD COLUMN IF NOT EXISTS schedule_type TEXT DEFAULT 'weekly-summary'
+  `);
+
+  console.log('[DB] Scan prompts table ready (Phase 2 migrations applied)');
 }
 
 export async function getAllScanPrompts(wire?: string, activeOnly?: boolean): Promise<ScanPromptRecord[]> {
@@ -825,7 +883,7 @@ export async function createScanPrompt(params: {
 
 export async function updateScanPrompt(
   id: string,
-  updates: Partial<{ wire: string; label: string; promptText: string; responseFormat: string | null; isActive: boolean; sortOrder: number }>
+  updates: Partial<{ wire: string; label: string; promptText: string; responseFormat: string | null; isActive: boolean; sortOrder: number; variant: string | null }>
 ): Promise<ScanPromptRecord | null> {
   const pool = getPool();
   const setClauses: string[] = [];
@@ -838,6 +896,7 @@ export async function updateScanPrompt(
   if (updates.responseFormat !== undefined) { setClauses.push(`response_format = $${paramIndex++}`); values.push(updates.responseFormat); }
   if (updates.isActive !== undefined) { setClauses.push(`is_active = $${paramIndex++}`); values.push(updates.isActive); }
   if (updates.sortOrder !== undefined) { setClauses.push(`sort_order = $${paramIndex++}`); values.push(updates.sortOrder); }
+  if (updates.variant !== undefined) { setClauses.push(`variant = $${paramIndex++}`); values.push(updates.variant); }
 
   if (setClauses.length === 0) return getScanPromptById(id);
 
