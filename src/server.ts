@@ -51,13 +51,20 @@ app.use((req: Request, res: Response, next: Function): void => {
   }
 
   // Skip for webhook endpoints (authenticated via signatures, not cookies)
-  if (req.path.startsWith('/api/telegram/webhook') || req.path.startsWith('/api/email/inbound')) {
+  if (req.path.startsWith('/webhook/')) {
+    return next();
+  }
+
+  // Skip if APP_URL is not configured (can't validate origin without it)
+  let appHost: string;
+  try {
+    appHost = new URL(config.app.url).host;
+  } catch {
     return next();
   }
 
   const origin = req.headers.origin;
   const referer = req.headers.referer;
-  const appHost = new URL(config.app.url).host;
 
   // Accept if Origin header matches our app
   if (origin) {
