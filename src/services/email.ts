@@ -603,7 +603,7 @@ export async function sendScanDigestEmail(
     ? `<p style="margin: 8px 0 0; color: #ef5350; font-size: 14px;">${promptsFailed} prompt(s) failed</p>`
     : '';
 
-  const reviewUrl = `${dashboardUrl.replace(/\/$/, '')}/dashboard`;
+  const reviewUrl = `${dashboardUrl.replace(/\/$/, '')}/queue`;
 
   const htmlContent = `
 <!DOCTYPE html>

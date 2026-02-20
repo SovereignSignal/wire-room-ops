@@ -5,9 +5,12 @@ Automated weekly newsletter preparation for Crypto Grant Wire. Pulls pre-categor
 ## Features
 
 - **Multi-AI Processing**: Routes X.com/Twitter URLs to Grok API (with live tweet access) and other URLs to Claude (with Firecrawl web scraping)
+- **Scan Pipeline**: Automated grant discovery via X.com scanning with intake, dedup, and quality scoring
+- **Telegram Bot**: Send URLs to a Telegram bot for instant scraping, extraction, and intake processing
+- **Email Ingestion**: Forward emails with URLs to a Resend inbound address for automated intake
 - **Web Dashboard**: Modern dark-themed UI with magic link authentication
-- **Multi-Feed Support**: Filter by wire/feed (crypto, ai, oss) for targeted summaries
-- **Scheduled Jobs**: Multiple configurable schedules with cron-based scheduling, persisted to database
+- **Multi-Feed Support**: Dynamic wire/feed management (crypto, ai, oss, and custom feeds)
+- **Scheduled Jobs**: Multiple configurable schedules — weekly newsletter and daily scan execution
 - **CRM Integration**: Notion-based org tracking with staging database workflow for new organizations
 - **Health Monitoring**: Real-time scheduler status, job history, and failure notifications
 - **Model Selection**: Dynamic model loading from Grok and Anthropic APIs with UI selection
@@ -16,11 +19,18 @@ Automated weekly newsletter preparation for Crypto Grant Wire. Pulls pre-categor
 ## Architecture
 
 ```
+                    ┌─────────────────────────────────────────────────────┐
+                    │              Ingestion Channels                     │
+                    │  [Automated Scan]  [Telegram Bot]  [Email Inbound] │
+                    └──────────┬──────────────┬──────────────┬───────────┘
+                               └──────────────┼──────────────┘
+                                              ▼
 [Postgres DB] --> [Web Dashboard / Scheduler] --> [AI Processing] --> [Markdown File]
-                         |                              |
-                         v                              v
+                         │                              │
+                         ▼                              ▼
                   [Magic Link Auth]            [Grok for X.com]
                   [Email via Resend]           [Claude + Firecrawl for other URLs]
+                                              [Scan Pipeline: Dedup → Score → Queue]
 ```
 
 ## Quick Start
@@ -151,8 +161,8 @@ CREATE TABLE scan_entries (
   deadline TEXT,
   deadline_parsed DATE,
   wire TEXT NOT NULL,
-  prompt_variant TEXT NOT NULL CHECK (prompt_variant IN ('A', 'B', 'C')),
-  scan_source TEXT NOT NULL DEFAULT 'x-scan',
+  prompt_variant TEXT NOT NULL CHECK (prompt_variant IN ('A', 'B', 'C', 'N')),
+  scan_source TEXT NOT NULL DEFAULT 'x-scan' CHECK (scan_source IN ('x-scan', 'web-search', 'telegram', 'email')),
   scan_date DATE NOT NULL,
   status TEXT NOT NULL DEFAULT 'raw',
   quality_score INTEGER,
@@ -160,6 +170,7 @@ CREATE TABLE scan_entries (
   duplicate_of_id INTEGER REFERENCES scan_entries(id),
   duplicate_reason TEXT,
   prompt_id UUID REFERENCES scan_prompts(id),
+  submitted_by TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -241,6 +252,7 @@ src/
 │   ├── crm-sync.ts        # Notion CRM sync - org matching and auto-creation
 │   ├── dedup.ts           # URL exact-match and fuzzy name deduplication
 │   ├── email.ts           # Resend email service (login, notifications, alerts)
+│   ├── email-inbound.ts   # Resend Inbound webhook handler (URL extraction → intake)
 │   ├── grok.ts            # Grok Chat + Responses API for X.com content and scans
 │   ├── intake.ts          # Scan result parser, URL/name normalization
 │   ├── job-queue.ts       # In-memory job queue with SSE support
@@ -253,7 +265,13 @@ src/
 │   ├── scan-stats.ts      # Prompt effectiveness and overlap metrics
 │   ├── scheduler.ts       # Cron-based job scheduling with health tracking
 │   ├── scraper.ts         # Firecrawl web scraping, URL resolution
-│   └── storage.ts         # Postgres-backed file storage with in-memory cache
+│   ├── storage.ts         # Postgres-backed file storage with in-memory cache
+│   ├── telegram.ts        # Telegram Bot webhook handler (URL → scrape → intake)
+│   └── url-processor.ts   # Shared URL scrape + AI extraction → RawScanResult
+├── utils/
+│   ├── async.ts           # Shared sleep() utility
+│   ├── html.ts            # Shared escapeHtml() utility
+│   └── url.ts             # Shared normalizeUrl() for URL deduplication
 ├── types/
 │   ├── index.ts           # Core TypeScript interfaces
 │   └── intake.ts          # Scan pipeline types (ScanEntry, DedupResult, QualityBreakdown)
@@ -274,6 +292,9 @@ src/
 | `/download` | GET | Legacy download landing (from email links) |
 | `/download/:token` | GET | Legacy file download |
 | `/resend-link` | POST | Resend file download link via email |
+| **Webhooks** | | |
+| `/webhook/telegram` | POST | Telegram bot webhook (secret token verified) |
+| `/webhook/email` | POST | Resend inbound email webhook (HMAC-SHA256 verified) |
 
 ### Authenticated Endpoints (require HttpOnly session cookie)
 
@@ -381,7 +402,14 @@ The app integrates with Notion for organization tracking:
 
 ## Scan Pipeline
 
-The scan pipeline discovers new grant opportunities via automated X.com scanning and surfaces high-quality entries for review.
+The scan pipeline discovers new grant opportunities and surfaces high-quality entries for review.
+
+### Ingestion Channels
+
+- **Automated scan** (`x-scan`): Grok Responses API with `x_search` tool, runs on schedule via `scan-execution` cron
+- **Manual paste** (`x-scan`/`web-search`): Dashboard paste-in flow via `/api/scan/submit`
+- **Telegram bot** (`telegram`): Send a URL to the bot → scrapes + extracts → runs through intake pipeline
+- **Email inbound** (`email`): Forward emails with URLs to a Resend inbound address → webhook extracts URLs → scrape + extract → intake
 
 ### Pipeline Flow
 
@@ -478,8 +506,17 @@ Default schedule: Wednesday at 9:00 AM Pacific, looking back 7 days.
 | `NOTION_STAGING_ORGS_DB_ID` | Staging database for new orgs | No* |
 | `NOTION_OPPS_DB_ID` | Opportunities database ID | No* |
 | `NOTION_CRM_PAGE_ID` | CRM page ID for Notion | No* |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token from @BotFather | No** |
+| `TELEGRAM_WEBHOOK_SECRET` | Secret for Telegram webhook verification | No** |
+| `TELEGRAM_ALLOWED_USER_IDS` | Comma-separated allowlist of Telegram user IDs | No** |
+| `TELEGRAM_DEFAULT_WIRE` | Default wire for Telegram submissions (default: `crypto`) | No** |
+| `INBOUND_EMAIL_ADDRESS` | Resend inbound email address | No*** |
+| `INBOUND_EMAIL_ALLOWED_SENDERS` | Comma-separated allowlist of sender emails | No*** |
+| `RESEND_WEBHOOK_SECRET` | Resend webhook signing secret (HMAC-SHA256) | No*** |
 
 *Required for CRM integration features
+**Required for Telegram bot integration
+***Required for email ingestion
 
 ## Authentication
 
@@ -508,8 +545,8 @@ Sessions and tokens are stored in-memory (reset on server restart). Generated fi
 
 ## Error Handling
 
-- **Retry Logic**: 3 attempts with 1s, 2s, 4s delays for newsletter processing; 2 attempts for scan execution (expensive Grok calls)
-- **Rate Limiting**: 500ms delay between processing entries
+- **Retry Logic**: 3 attempts with jittered exponential backoff (1s, 2s, 4s base delays) for newsletter processing; 2 attempts for scan execution and URL processing
+- **Batch Concurrency**: Entries processed 3 at a time via `Promise.all` chunks with 500ms delay between batches
 - **Scrape Fallback**: Uses cached summary if web scraping fails
 - **Failure Notifications**: Email sent on scheduled job failures
 - **URL Deduplication**: Removes duplicate URLs within date range
@@ -518,11 +555,13 @@ Sessions and tokens are stored in-memory (reset on server restart). Generated fi
 
 | Endpoint | Limit | Window |
 |----------|-------|--------|
-| `/login` | 5 requests per IP | 15 minutes |
-| `/resend-link` | 3 requests per IP | 15 minutes |
-| `/api/run-job` | 3 requests | 5 minutes |
-| `/api/scan/prompts/:id/test` | 5 requests | 5 minutes |
-| `/api/scan/run` | 1 request | 15 minutes |
+| `/login` | 5 per IP | 15 minutes |
+| `/resend-link` | 2 per IP | 30 minutes |
+| `/api/run-job` | 3 global | 5 minutes |
+| `/api/scan/prompts/:id/test` | 5 global | 5 minutes |
+| `/api/scan/run` | 1 global | 15 minutes |
+| `/webhook/telegram` | 10 per chat | 1 minute |
+| `/webhook/email` | 5 per sender | 15 minutes |
 
 ## License
 

@@ -266,6 +266,15 @@ app.get('/dashboard', async (req: Request, res: Response) => {
   res.send(renderDashboard(files, message));
 });
 
+app.get('/queue', async (req: Request, res: Response) => {
+  const session = req.cookies?.session as string;
+  if (!session || !validateSession(session)) {
+    res.redirect('/');
+    return;
+  }
+  res.send(renderQueuePage());
+});
+
 // API: Get available models
 app.get('/api/models', requireAuth, async (req: Request, res: Response) => {
   try {
@@ -3529,6 +3538,281 @@ function renderDashboard(files: StoredFile[], message?: string): string {
     loadStatsBtn.addEventListener('click', loadPromptStats);
     // Auto-load stats on page load
     loadPromptStats();
+  </script>
+</body>
+</html>
+  `.trim();
+}
+
+function renderQueuePage(): string {
+  const today = new Date().toISOString().split('T')[0];
+
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Daily Queue - Grant Wire Summarizer</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0d0d0d;
+      margin: 0;
+      padding: 0;
+      min-height: 100vh;
+      color: #ffffff;
+    }
+    .header {
+      background: #1a1a1a;
+      border-bottom: 1px solid #2a2a2a;
+      padding: 24px 32px;
+    }
+    .header-content {
+      max-width: 900px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .logo { margin: 0; font-size: 24px; font-weight: 700; }
+    .logo-crypto { color: #ffffff; }
+    .logo-grant { color: #f5a623; }
+    .logo-wire { color: #ffffff; }
+    .header-right { display: flex; align-items: center; gap: 16px; }
+    .header-right a { color: #999; text-decoration: none; font-size: 14px; }
+    .header-right a:hover { color: #f5a623; }
+    .main { padding: 32px; max-width: 900px; margin: 0 auto; }
+    .card {
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 24px;
+    }
+    .card h2 { margin: 0 0 16px; font-size: 18px; color: #ffffff; }
+    .button {
+      display: inline-block;
+      background: #f5a623;
+      color: #0d0d0d;
+      padding: 12px 24px;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      transition: background 0.2s;
+    }
+    .button:hover { background: #e6951a; }
+    .button:disabled { background: #666666; cursor: not-allowed; }
+    .button.secondary { background: #2a2a2a; color: #ffffff; }
+    .button.secondary:hover { background: #3a3a3a; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 12px; text-align: left; border-bottom: 1px solid #2a2a2a; }
+    th { font-weight: 600; color: #999999; font-size: 12px; text-transform: uppercase; }
+    td { color: #ffffff; }
+    .download-link { color: #f5a623; text-decoration: none; font-weight: 500; }
+    .download-link:hover { text-decoration: underline; }
+    .form-row { display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap; }
+    .form-group { display: flex; flex-direction: column; gap: 6px; }
+    .form-group label { font-size: 12px; color: #999999; text-transform: uppercase; font-weight: 600; }
+    .form-group input[type="date"],
+    .form-group input[type="number"],
+    .form-group select {
+      padding: 10px 12px;
+      border: 1px solid #2a2a2a;
+      border-radius: 6px;
+      font-size: 14px;
+      background: #0d0d0d;
+      color: #ffffff;
+      min-width: 120px;
+    }
+    .form-group input:focus,
+    .form-group select:focus { outline: none; border-color: #f5a623; }
+    .form-group select option { background: #1a1a1a; color: #ffffff; }
+    .form-description { color: #666666; font-size: 14px; margin: 0; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-content">
+      <h1 class="logo">
+        <span class="logo-crypto">Crypto</span><span class="logo-grant">Grant</span><span class="logo-wire">Wire</span>
+      </h1>
+      <div class="header-right">
+        <span style="color: #f5a623; font-size: 14px; font-weight: 600;">Daily Queue</span>
+        <a href="/dashboard">Dashboard</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="card">
+      <h2>Queue <span id="queue-count-badge" style="display: none; background: #f5a623; color: #000; font-size: 13px; padding: 2px 10px; border-radius: 12px; margin-left: 8px; font-weight: 600;"></span></h2>
+      <p class="form-description" style="margin-bottom: 16px;">Review prioritized scan entries. Promote to keep, skip to defer, archive to dismiss.</p>
+      <div class="form-row" style="margin-bottom: 16px;">
+        <div class="form-group">
+          <label for="queueWire">Feed Filter</label>
+          <select id="queueWire">
+            <option value="">All Feeds</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="queueMinScore">Min Score</label>
+          <input type="number" id="queueMinScore" min="0" max="100" value="40" style="width: 80px;">
+        </div>
+        <div class="form-group">
+          <label for="queueDate">Date</label>
+          <input type="date" id="queueDate" value="${today}">
+        </div>
+        <button type="button" id="load-queue" class="button secondary">Load Queue</button>
+      </div>
+      <div id="queue-results">
+        <p style="color: #666;">Loading...</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function escapeHtml(str) {
+      var div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    var queueWireSelect = document.getElementById('queueWire');
+    var queueResultsEl = document.getElementById('queue-results');
+    var queueCountBadge = document.getElementById('queue-count-badge');
+    var loadQueueBtn = document.getElementById('load-queue');
+
+    function scoreColor(score) {
+      if (score == null) return '#666';
+      if (score >= 60) return '#4caf50';
+      if (score >= 40) return '#f5a623';
+      return '#ef5350';
+    }
+
+    function sourceBadge(scanSource) {
+      var badges = {
+        'x-scan': { label: 'X', bg: '#1a3a5c', color: '#5b9bd5' },
+        'web-search': { label: 'Web', bg: '#1a3c1a', color: '#4caf50' },
+        'telegram': { label: 'TG', bg: '#1a3c3c', color: '#26c6da' },
+        'email': { label: 'Email', bg: '#3c2a1a', color: '#ff9800' }
+      };
+      var b = badges[scanSource] || { label: scanSource || '?', bg: '#2a2a2a', color: '#999' };
+      return '<span style="background:' + b.bg + '; color:' + b.color + '; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:600;">' + b.label + '</span>';
+    }
+
+    async function entryAction(id, action, btnEl) {
+      if (btnEl) btnEl.disabled = true;
+      try {
+        var resp = await fetch('/api/scan/entries/' + id + '/action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: action })
+        });
+        if (!resp.ok) throw new Error('Failed');
+        loadQueue();
+      } catch (e) {
+        console.error('Action failed:', e);
+        if (btnEl) btnEl.disabled = false;
+      }
+    }
+
+    document.addEventListener('click', function(e) {
+      var btn = e.target.closest('.queue-action-btn');
+      if (btn) {
+        var entryId = parseInt(btn.dataset.entryId, 10);
+        var action = btn.dataset.action;
+        if (entryId && action) {
+          entryAction(entryId, action, btn);
+        }
+      }
+    });
+
+    async function loadQueue() {
+      var wire = queueWireSelect.value;
+      var minScore = document.getElementById('queueMinScore').value || '40';
+      var date = document.getElementById('queueDate').value;
+
+      var params = new URLSearchParams();
+      if (wire) params.set('wire', wire);
+      params.set('minScore', minScore);
+      if (date) params.set('date', date);
+
+      try {
+        var response = await fetch('/api/scan/queue?' + params.toString());
+        if (!response.ok) throw new Error('Failed to load queue');
+        var data = await response.json();
+
+        if (data.count > 0) {
+          queueCountBadge.textContent = data.count + ' new';
+          queueCountBadge.style.display = 'inline';
+        } else {
+          queueCountBadge.style.display = 'none';
+        }
+
+        if (data.entries.length === 0) {
+          queueResultsEl.innerHTML = '<p style="color: #666;">No entries found for these filters.</p>';
+          return;
+        }
+
+        var html = '<table><thead><tr><th>Name</th><th>Amount</th><th>Deadline</th><th>Score</th><th>Wire</th><th>Source</th><th>Actions</th></tr></thead><tbody>';
+        data.entries.forEach(function(e) {
+          var sc = scoreColor(e.quality_score);
+          var desc = (e.description || '').length > 80 ? e.description.substring(0, 80) + '...' : (e.description || '');
+          html += '<tr id="queue-row-' + e.id + '">';
+          html += '<td><div>' + escapeHtml(e.name || '') + '</div>';
+          if (desc) html += '<div style="font-size: 11px; color: #888; margin-top: 2px;">' + escapeHtml(desc) + '</div>';
+          html += '</td>';
+          html += '<td>' + escapeHtml(e.amount || '-') + '</td>';
+          html += '<td>' + escapeHtml(e.deadline || '-') + '</td>';
+          html += '<td><span style="color: ' + sc + '; font-weight: 600;">' + (e.quality_score != null ? e.quality_score : '-') + '</span></td>';
+          html += '<td><code style="background: #0d0d0d; padding: 2px 6px; border-radius: 4px;">' + escapeHtml(e.wire || '') + '</code></td>';
+          html += '<td style="white-space: nowrap;">';
+          html += sourceBadge(e.scan_source);
+          if (e.source_url) {
+            html += ' <a href="' + escapeHtml(e.source_url) + '" target="_blank" class="download-link" style="font-size: 12px;">Link</a>';
+          }
+          html += '</td>';
+          html += '<td style="white-space: nowrap;">';
+          html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="promote" class="queue-action-btn" style="background: #1b5e20; border: none; color: #4caf50; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;" title="Promote">Promote</button>';
+          html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="skip" class="queue-action-btn" style="background: #2a2a2a; border: none; color: #999; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;" title="Skip">Skip</button>';
+          html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="archive" class="queue-action-btn" style="background: #4a1515; border: none; color: #ef5350; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;" title="Archive">Archive</button>';
+          html += '</td>';
+          html += '</tr>';
+        });
+        html += '</tbody></table>';
+        html += '<p style="color: #666; font-size: 12px; margin-top: 8px;">' + data.count + ' entries</p>';
+
+        queueResultsEl.innerHTML = html;
+      } catch (error) {
+        queueResultsEl.innerHTML = '<p style="color: #ef5350;">Failed to load queue: ' + escapeHtml(error.message) + '</p>';
+      }
+    }
+
+    async function loadFeeds() {
+      try {
+        var response = await fetch('/api/feeds');
+        if (!response.ok) throw new Error('Failed to fetch feeds');
+        var feeds = await response.json();
+
+        var options = '<option value="">All Feeds</option>';
+        feeds.forEach(function(f) {
+          options += '<option value="' + escapeHtml(f.key) + '">' + escapeHtml(f.displayName) + '</option>';
+        });
+        queueWireSelect.innerHTML = options;
+      } catch (error) {
+        console.error('Failed to load feeds:', error);
+      }
+    }
+
+    loadQueueBtn.addEventListener('click', loadQueue);
+
+    // Auto-load feeds and queue on page open
+    loadFeeds().then(function() { loadQueue(); });
   </script>
 </body>
 </html>
