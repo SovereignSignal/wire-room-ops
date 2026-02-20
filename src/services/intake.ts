@@ -28,37 +28,49 @@ import type {
  * Link: [URL]
  */
 export function parseStructuredOutput(text: string): RawScanResult[] {
+  // Strategy 1: Try structured text format (numbered list with bold names)
+  const structured = parseStructuredText(text);
+  if (structured.length > 0) return structured;
+
+  // Strategy 2: Try JSON parsing (array of objects or wrapped array)
+  const jsonResults = parseJsonOutput(text);
+  if (jsonResults.length > 0) return jsonResults;
+
+  // Strategy 3: Try lenient numbered list (no bold required, flexible URL detection)
+  const lenient = parseLenientNumberedList(text);
+  if (lenient.length > 0) return lenient;
+
+  return [];
+}
+
+/**
+ * Strategy 1: Original structured text format:
+ * 1. **Name** — Description
+ * Deadline: date
+ * Link: URL
+ */
+function parseStructuredText(text: string): RawScanResult[] {
   const results: RawScanResult[] = [];
-
-  // Split on numbered entries (1. **..., 2. **..., etc.)
-  const entryPattern = /\d+\.\s+\*\*(.+?)\*\*\s*[â\-â]\s*(.+?)(?:\n|$)/g;
   const lines = text.split('\n');
-
   let currentEntry: Partial<RawScanResult> | null = null;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
 
-    // Match entry header: "1. **Program Name** â Description"
+    // Match entry header: "1. **Program Name** — Description"
     const headerMatch = line.match(
-      /^\d+\.\s+\*\*(.+?)\*\*\s*[â\-â]\s*(.+)/
+      /^\d+\.\s+\*\*(.+?)\*\*\s*[—\-–:]\s*(.+)/
     );
     if (headerMatch) {
-      // Save previous entry if exists
       if (currentEntry && currentEntry.name && currentEntry.sourceUrl) {
         results.push(currentEntry as RawScanResult);
       }
-
       const name = headerMatch[1].trim();
       const description = headerMatch[2].trim();
-
-      // Extract amount from description if present
-      const amount = extractAmount(description);
-
       currentEntry = {
         name,
         description,
-        amount,
+        amount: extractAmount(description),
         deadline: null,
         sourceUrl: '',
       };
@@ -66,23 +78,28 @@ export function parseStructuredOutput(text: string): RawScanResult[] {
     }
 
     // Match deadline line
-    const deadlineMatch = line.match(/^Deadline:\s*(.+)/i);
+    const deadlineMatch = line.match(/^(?:Deadline|Due|Closes|Date):\s*(.+)/i);
     if (deadlineMatch && currentEntry) {
-      const raw = deadlineMatch[1].trim();
-      currentEntry.deadline = normalizeDeadline(raw);
+      currentEntry.deadline = normalizeDeadline(deadlineMatch[1].trim());
       continue;
     }
 
-    // Match link line
-    const linkMatch = line.match(/^Link:\s*(https?:\/\/\S+)/i);
+    // Match link/URL line
+    const linkMatch = line.match(/^(?:Link|URL|Source|Website):\s*(https?:\/\/\S+)/i);
     if (linkMatch && currentEntry) {
       currentEntry.sourceUrl = linkMatch[1].trim();
       continue;
     }
 
+    // Also catch bare URLs on their own line
+    const bareUrlMatch = line.match(/^(https?:\/\/\S+)$/);
+    if (bareUrlMatch && currentEntry && !currentEntry.sourceUrl) {
+      currentEntry.sourceUrl = bareUrlMatch[1].trim();
+      continue;
+    }
+
     // Match "Total: X results" line (end of output)
     if (line.match(/^Total:\s*\d+\s*results/i)) {
-      // Save last entry
       if (currentEntry && currentEntry.name && currentEntry.sourceUrl) {
         results.push(currentEntry as RawScanResult);
       }
@@ -90,12 +107,166 @@ export function parseStructuredOutput(text: string): RawScanResult[] {
     }
   }
 
-  // Catch trailing entry if no Total line
   if (currentEntry && currentEntry.name && currentEntry.sourceUrl) {
     results.push(currentEntry as RawScanResult);
   }
 
   return results;
+}
+
+/**
+ * Strategy 2: Parse JSON output (array of objects or wrapped in an object).
+ */
+function parseJsonOutput(text: string): RawScanResult[] {
+  let cleaned = text.trim();
+  if (cleaned.startsWith('\`\`\`')) {
+    cleaned = cleaned.replace(/^\`\`\`(?:json)?\s*/, '').replace(/\s*\`\`\`$/, '');
+  }
+
+  const jsonStart = cleaned.indexOf('[');
+  const objStart = cleaned.indexOf('{');
+
+  let data: unknown;
+  try {
+    if (jsonStart !== -1 && (objStart === -1 || jsonStart < objStart)) {
+      data = JSON.parse(cleaned.substring(jsonStart));
+    } else if (objStart !== -1) {
+      const parsed = JSON.parse(cleaned.substring(objStart));
+      if (Array.isArray(parsed)) {
+        data = parsed;
+      } else if (parsed.results && Array.isArray(parsed.results)) {
+        data = parsed.results;
+      } else if (parsed.entries && Array.isArray(parsed.entries)) {
+        data = parsed.entries;
+      } else if (parsed.grants && Array.isArray(parsed.grants)) {
+        data = parsed.grants;
+      } else if (parsed.opportunities && Array.isArray(parsed.opportunities)) {
+        data = parsed.opportunities;
+      } else if (parsed.name || parsed.title) {
+        data = [parsed];
+      }
+    } else {
+      data = JSON.parse(cleaned);
+    }
+  } catch {
+    return [];
+  }
+
+  if (!Array.isArray(data)) return [];
+
+  const results: RawScanResult[] = [];
+  for (const item of data) {
+    if (!item || typeof item !== 'object') continue;
+    const obj = item as Record<string, unknown>;
+
+    const name = obj.name || obj.title || obj.program || obj.program_name || '';
+    const description = obj.description || obj.desc || obj.summary || obj.details || '';
+    const sourceUrl = obj.sourceUrl || obj.source_url || obj.url || obj.link || '';
+
+    if (!name && !description) continue;
+
+    results.push({
+      name: String(name).trim() || 'Unknown',
+      description: String(description).trim() || 'Found via X scan',
+      amount: obj.amount ? String(obj.amount) : extractAmount(String(description)),
+      deadline: obj.deadline ? normalizeDeadline(String(obj.deadline)) : null,
+      sourceUrl: String(sourceUrl).trim(),
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Strategy 3: Lenient numbered list parser.
+ * Handles formats without markdown bold, different separators, inline URLs.
+ */
+function parseLenientNumberedList(text: string): RawScanResult[] {
+  const results: RawScanResult[] = [];
+  const lines = text.split('\n');
+  let currentEntry: Partial<RawScanResult> | null = null;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+
+    // Match numbered entry: "1. Name - Description" or "1) Name: Description"
+    const headerMatch = line.match(
+      /^\d+[.)]\s+\*{0,2}([^*\n]+?)\*{0,2}\s*[—\-–:]\s*(.+)/
+    );
+    if (headerMatch) {
+      if (currentEntry && currentEntry.name) {
+        results.push(finalizeLenientEntry(currentEntry));
+      }
+      const name = headerMatch[1].trim();
+      const description = headerMatch[2].trim();
+      const inlineUrl = description.match(/(https?:\/\/\S+)/);
+
+      currentEntry = {
+        name,
+        description: description.replace(/https?:\/\/\S+/g, '').trim() || description,
+        amount: extractAmount(description),
+        deadline: null,
+        sourceUrl: inlineUrl ? inlineUrl[1] : '',
+      };
+      continue;
+    }
+
+    if (currentEntry) {
+      // Deadline patterns
+      const deadlineMatch = line.match(/(?:Deadline|Due|Closes|Date|Expires|Apply by):\s*(.+)/i);
+      if (deadlineMatch) {
+        currentEntry.deadline = normalizeDeadline(deadlineMatch[1].trim());
+        continue;
+      }
+
+      // Amount on its own line
+      const amountMatch = line.match(/(?:Amount|Funding|Grant|Prize|Award|Value):\s*(.+)/i);
+      if (amountMatch && !currentEntry.amount) {
+        currentEntry.amount = extractAmount(amountMatch[1]) || amountMatch[1].trim();
+        continue;
+      }
+
+      // URL patterns
+      const urlMatch = line.match(/(?:Link|URL|Source|Website|More info|Apply|Details):\s*(https?:\/\/\S+)/i);
+      if (urlMatch) {
+        currentEntry.sourceUrl = urlMatch[1].trim();
+        continue;
+      }
+
+      // Bare URL
+      const bareUrl = line.match(/^(https?:\/\/\S+)$/);
+      if (bareUrl && !currentEntry.sourceUrl) {
+        currentEntry.sourceUrl = bareUrl[1].trim();
+        continue;
+      }
+
+      // URL embedded in text
+      if (!currentEntry.sourceUrl) {
+        const embeddedUrl = line.match(/(https?:\/\/\S+)/);
+        if (embeddedUrl) {
+          currentEntry.sourceUrl = embeddedUrl[1].trim();
+          continue;
+        }
+      }
+    }
+  }
+
+  if (currentEntry && currentEntry.name) {
+    results.push(finalizeLenientEntry(currentEntry));
+  }
+
+  return results;
+}
+
+function finalizeLenientEntry(entry: Partial<RawScanResult>): RawScanResult {
+  return {
+    name: entry.name || 'Unknown',
+    description: entry.description || '',
+    amount: entry.amount || null,
+    deadline: entry.deadline || null,
+    sourceUrl: entry.sourceUrl || '',
+  };
 }
 
 /**
