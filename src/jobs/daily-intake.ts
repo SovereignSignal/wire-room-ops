@@ -34,6 +34,7 @@ import {
 } from '../services/intake';
 import { checkDuplicate, registerSeen } from '../services/dedup';
 import { scoreEntry } from '../services/quality-scorer';
+import { seedSeenUrlsFromMessages } from '../db';
 
 // ============================================================
 // Default Configuration
@@ -73,6 +74,16 @@ export async function runDailyIntake(
 
   const runDate = submissions[0]?.scanDate || new Date().toISOString().split('T')[0];
   const wire = submissions.length === 1 ? submissions[0].wire : 'all';
+
+  // Seed seen_urls with URLs already in the wire (non-fatal)
+  try {
+    const seeded = await seedSeenUrlsFromMessages();
+    if (seeded > 0) {
+      console.log(`[Intake] Seeded ${seeded} URLs from existing wire content`);
+    }
+  } catch (err) {
+    console.error('[Intake] Failed to seed seen_urls from messages (non-fatal):', err);
+  }
 
   progress('Starting intake pipeline...', 0);
 

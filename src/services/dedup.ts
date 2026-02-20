@@ -74,22 +74,29 @@ async function checkUrlMatch(
   const normalized = normalizeUrl(sourceUrl);
 
   const result = await pool.query(
-    `SELECT su.first_seen_entry_id, se.name
+    `SELECT su.first_seen_entry_id, se.name, su.url
      FROM seen_urls su
-     JOIN scan_entries se ON se.id = su.first_seen_entry_id
+     LEFT JOIN scan_entries se ON se.id = su.first_seen_entry_id
      WHERE su.normalized_url = $1 AND su.wire = $2
      LIMIT 1`,
     [normalized, wire]
   );
 
   if (result.rows.length > 0) {
+    const row = result.rows[0];
+    const entryId = row.first_seen_entry_id; // null for seeded wire URLs
+    const displayName = row.name || row.url;  // fall back to URL if no scan_entry
+    const reason = entryId
+      ? `Exact URL match with entry #${entryId}: "${displayName}"`
+      : `Exact URL match with existing wire content: "${displayName}"`;
+
     return {
       isDuplicate: true,
       matchType: 'url_exact',
-      matchedEntryId: result.rows[0].first_seen_entry_id,
-      matchedEntryName: result.rows[0].name,
+      matchedEntryId: entryId,
+      matchedEntryName: displayName,
       confidence: 1.0,
-      reason: `Exact URL match with entry #${result.rows[0].first_seen_entry_id}: "${result.rows[0].name}"`,
+      reason,
     };
   }
 

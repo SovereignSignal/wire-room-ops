@@ -738,6 +738,12 @@ export async function ensureScanTables(): Promise<void> {
     ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS submitted_by TEXT
   `);
 
+  // Phase 4 migration: make seen_urls.first_seen_entry_id nullable
+  // so we can seed URLs from tele-sum messages (no corresponding scan_entries row)
+  await client.query(`
+    ALTER TABLE seen_urls ALTER COLUMN first_seen_entry_id DROP NOT NULL
+  `);
+
     await client.query('COMMIT');
     console.log('[DB] Scan pipeline tables ready');
   } catch (error) {
@@ -821,6 +827,72 @@ export async function ensureScanPromptsTable(): Promise<void> {
   `);
 
   console.log('[DB] Scan prompts table ready (Phase 2 migrations applied)');
+}
+
+/**
+ * Seed seen_urls with URLs already in the wire (from tele-sum's messages table).
+ * This prevents the scan pipeline from surfacing entries that already exist.
+ * Idempotent: uses ON CONFLICT DO NOTHING, so repeated calls are cheap.
+ *
+ * @returns Number of newly seeded URLs (0 on subsequent runs)
+ */
+export async function seedSeenUrlsFromMessages(): Promise<number> {
+  const pool = getPool();
+
+  // Check if the messages table exists (it's tele-sum's table, not ours)
+  const tableCheck = await pool.query(`
+    SELECT EXISTS (
+      SELECT FROM information_schema.tables
+      WHERE table_name = 'messages'
+    )
+  `);
+  if (!tableCheck.rows[0].exists) {
+    return 0;
+  }
+
+  // Extract all URLs from successfully processed messages
+  const urlRows = await pool.query(`
+    SELECT DISTINCT u.url, s.wire, s.created_at::date AS first_seen
+    FROM summaries s
+    JOIN messages m ON s.message_id = m.id
+    CROSS JOIN LATERAL jsonb_array_elements_text(m.extracted_urls) AS u(url)
+    WHERE s.processing_status = 'SUCCESS'
+      AND s.wire IS NOT NULL
+      AND m.extracted_urls IS NOT NULL
+      AND jsonb_array_length(m.extracted_urls) > 0
+  `);
+
+  if (urlRows.rows.length === 0) {
+    return 0;
+  }
+
+  // Batch insert into seen_urls (200 rows per batch, 4 params each = 800)
+  const BATCH_SIZE = 200;
+  let seeded = 0;
+
+  for (let i = 0; i < urlRows.rows.length; i += BATCH_SIZE) {
+    const batch = urlRows.rows.slice(i, i + BATCH_SIZE);
+    const values: (string | null)[] = [];
+    const valueClauses: string[] = [];
+
+    for (let j = 0; j < batch.length; j++) {
+      const row = batch[j];
+      const normalized = normalizeUrl(row.url);
+      const offset = j * 4;
+      valueClauses.push(`($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4})`);
+      values.push(row.url, normalized, row.first_seen, row.wire);
+    }
+
+    const res = await pool.query(
+      `INSERT INTO seen_urls (url, normalized_url, first_seen_date, wire)
+       VALUES ${valueClauses.join(', ')}
+       ON CONFLICT (normalized_url, wire) DO NOTHING`,
+      values
+    );
+    seeded += res.rowCount ?? 0;
+  }
+
+  return seeded;
 }
 
 export async function getAllScanPrompts(wire?: string, activeOnly?: boolean): Promise<ScanPromptRecord[]> {
