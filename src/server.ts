@@ -1,7 +1,7 @@
 import express, { Request, Response } from 'express';
 import cookieParser from 'cookie-parser';
 import { config } from './config';
-import { validateMagicLink, createDownloadToken, createSessionToken, validateSession, createLoginMagicLink } from './services/auth';
+import { validateMagicLink, createMagicLink, createDownloadToken, createSessionToken, validateSession, createLoginMagicLink } from './services/auth';
 import { getFile, listFiles } from './services/storage';
 import { getAvailableWires, closePool, getAllFeeds, getFeedByKey, createFeed, updateFeed, archiveFeed, getEntryCountsByWire, getAllScanPrompts, getScanPromptById, createScanPrompt, updateScanPrompt, deleteScanPrompt } from './db';
 import { sendLoginEmail } from './services/email';
@@ -34,9 +34,9 @@ app.use(express.json({
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-// Auth middleware - checks session from HttpOnly cookie (with POST body fallback)
+// Auth middleware - checks session from HttpOnly cookie only
 function requireAuth(req: Request, res: Response, next: Function): void {
-  const session = (req.cookies?.session || req.body?.session) as string;
+  const session = req.cookies?.session as string;
   if (!session || !validateSession(session)) {
     res.status(401).json({ error: 'Unauthorized' });
     return;
@@ -69,6 +69,12 @@ function rateLimit(key: string, maxRequests: number, windowMs: number): boolean 
   recent.push(now);
   rateLimitStore.set(key, recent);
   return true;
+}
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isValidUuid(id: string): boolean {
+  return UUID_REGEX.test(id);
 }
 
 // Health check
@@ -372,11 +378,25 @@ app.delete('/api/feeds/:key', requireAuth, async (req: Request, res: Response) =
   }
 });
 
+// Running job trackers to prevent concurrent execution
+let runningWeeklyJobId: string | null = null;
+let runningScanJobId: string | null = null;
+
 // Trigger job manually (async with job queue)
 app.post('/api/run-job', requireAuth, async (req: Request, res: Response) => {
   if (!rateLimit('run-job', 3, 5 * 60 * 1000)) {
     res.status(429).json({ error: 'Too many job requests. Please wait before trying again.' });
     return;
+  }
+
+  // Prevent concurrent weekly summary jobs
+  if (runningWeeklyJobId) {
+    const existingJob = jobQueue.getJob(runningWeeklyJobId);
+    if (existingJob && existingJob.status === 'running') {
+      res.status(409).json({ error: 'A weekly summary job is already running', jobId: runningWeeklyJobId });
+      return;
+    }
+    runningWeeklyJobId = null;
   }
 
   // Parse date range from request
@@ -417,6 +437,7 @@ app.post('/api/run-job', requireAuth, async (req: Request, res: Response) => {
 
   // Create job and return immediately
   const jobId = jobQueue.createJob();
+  runningWeeklyJobId = jobId;
   res.json({ jobId });
 
   // Run job asynchronously
@@ -439,10 +460,12 @@ app.post('/api/run-job', requireAuth, async (req: Request, res: Response) => {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       jobQueue.failJob(jobId, errorMsg);
     } finally {
+      runningWeeklyJobId = null;
       jobQueue.cleanup();
     }
   })().catch(error => {
     console.error('Unexpected error in job runner:', error);
+    runningWeeklyJobId = null;
   });
 });
 
@@ -462,12 +485,22 @@ app.get('/api/job/:jobId/progress', requireAuth, (req: Request, res: Response) =
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders();
 
+  // Send keepalive comment every 30s to prevent proxy timeouts
+  const keepalive = setInterval(() => {
+    try {
+      res.write(': keepalive\n\n');
+    } catch {
+      clearInterval(keepalive);
+    }
+  }, 30_000);
+
   // Subscribe to job updates
   const unsubscribe = jobQueue.subscribe(jobId, (status) => {
     res.write(`data: ${JSON.stringify(status)}\n\n`);
 
     // Close connection when job is complete or failed
     if (status.status === 'completed' || status.status === 'failed') {
+      clearInterval(keepalive);
       setTimeout(() => {
         res.end();
       }, 100);
@@ -476,6 +509,7 @@ app.get('/api/job/:jobId/progress', requireAuth, (req: Request, res: Response) =
 
   // Clean up on client disconnect
   req.on('close', () => {
+    clearInterval(keepalive);
     unsubscribe();
   });
 });
@@ -503,31 +537,33 @@ app.get('/file/:fileId', async (req: Request, res: Response) => {
 });
 
 // Resend download link for the most recent file
-// Rate-limited since it triggers email sends and is accessible without auth
-// (called from expired download link pages)
+// Resend download link - requires auth or strict rate limiting
 app.post('/resend-link', async (req: Request, res: Response) => {
-  const clientIp = req.ip || 'unknown';
-  if (!rateLimit(`resend:${clientIp}`, 3, 15 * 60 * 1000)) {
-    res.status(429).send(renderErrorPage('Too many requests. Please try again later.'));
-    return;
+  // Check auth first; fall back to IP rate limiting for expired-session users
+  const session = req.cookies?.session as string;
+  const isAuthed = session && validateSession(session);
+
+  if (!isAuthed) {
+    const clientIp = req.ip || 'unknown';
+    if (!rateLimit(`resend:${clientIp}`, 2, 30 * 60 * 1000)) {
+      res.status(429).send(renderErrorPage('Too many requests. Please try again later.'));
+      return;
+    }
   }
 
   try {
     const files = await listFiles();
-    
+
     if (files.length === 0) {
       res.send(renderErrorPage('No files available. Please run the job first.'));
       return;
     }
-    
+
     // Get the most recent file
     const latestFile = files[0];
-    
-    // Create a new magic link and send email
-    const { createMagicLink } = require('./services/auth');
-    const { sendResendLinkEmail } = require('./services/email');
-    
+
     const downloadUrl = createMagicLink(config.email.notificationEmail, latestFile.id);
+    const { sendResendLinkEmail } = require('./services/email');
     await sendResendLinkEmail(config.email.notificationEmail, downloadUrl, latestFile.filename);
     
     res.send(renderResendSuccessPage());
@@ -612,6 +648,10 @@ app.get('/api/schedules', requireAuth, (req: Request, res: Response) => {
 // API: Get single schedule (legacy compatibility)
 app.get('/api/schedule', requireAuth, (req: Request, res: Response) => {
   const id = req.query.id as string;
+  if (!id || !isValidUuid(id)) {
+    res.status(400).json({ error: 'Invalid schedule ID' });
+    return;
+  }
 
   const schedule = getSchedule(id);
   if (!schedule) {
@@ -693,6 +733,10 @@ app.post('/api/schedules', requireAuth, async (req: Request, res: Response) => {
 // API: Update schedule
 app.put('/api/schedules/:id', requireAuth, async (req: Request, res: Response) => {
   const id = req.params.id;
+  if (!isValidUuid(id)) {
+    res.status(400).json({ error: 'Invalid schedule ID' });
+    return;
+  }
 
   const validationError = validateScheduleParams(req.body);
   if (validationError) {
@@ -740,6 +784,10 @@ app.put('/api/schedules/:id', requireAuth, async (req: Request, res: Response) =
 // API: Delete schedule
 app.delete('/api/schedules/:id', requireAuth, async (req: Request, res: Response) => {
   const id = req.params.id;
+  if (!isValidUuid(id)) {
+    res.status(400).json({ error: 'Invalid schedule ID' });
+    return;
+  }
 
   try {
     const deleted = await removeSchedule(id);
@@ -895,7 +943,7 @@ app.post('/api/scan/submit', requireAuth, async (req: Request, res: Response) =>
       res.status(400).json({ error: 'promptVariant must be A, B, or C' });
       return;
     }
-    if (!scanDate || isNaN(Date.parse(scanDate))) {
+    if (!scanDate || !/^\d{4}-\d{2}-\d{2}$/.test(scanDate) || isNaN(Date.parse(scanDate))) {
       res.status(400).json({ error: 'scanDate must be a valid date string (YYYY-MM-DD)' });
       return;
     }
@@ -933,7 +981,7 @@ app.post('/api/scan/submit-batch', requireAuth, async (req: Request, res: Respon
       res.status(400).json({ error: `Invalid wire "${wire}". Valid: ${validKeys.join(', ')}` });
       return;
     }
-    if (!scanDate || isNaN(Date.parse(scanDate))) {
+    if (!scanDate || !/^\d{4}-\d{2}-\d{2}$/.test(scanDate) || isNaN(Date.parse(scanDate))) {
       res.status(400).json({ error: 'scanDate must be a valid date string (YYYY-MM-DD)' });
       return;
     }
@@ -967,8 +1015,15 @@ app.post('/api/scan/submit-batch', requireAuth, async (req: Request, res: Respon
 // API: Get daily scan queue
 app.get('/api/scan/queue', requireAuth, async (req: Request, res: Response) => {
   const wire = (req.query.wire as string) || null;
-  const minScore = parseInt(req.query.minScore as string) || 40;
+  const rawScore = parseInt(req.query.minScore as string);
+  const minScore = isNaN(rawScore) ? 40 : Math.max(0, Math.min(100, rawScore));
   const date = (req.query.date as string) || null;
+
+  // Validate date format if provided
+  if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD.' });
+    return;
+  }
 
   try {
     const pool = getPool();
@@ -1159,10 +1214,21 @@ app.post('/api/scan/run', requireAuth, async (req: Request, res: Response) => {
     return;
   }
 
+  // Prevent concurrent scan jobs
+  if (runningScanJobId) {
+    const existingJob = jobQueue.getJob(runningScanJobId);
+    if (existingJob && existingJob.status === 'running') {
+      res.status(409).json({ error: 'A scan job is already running', jobId: runningScanJobId });
+      return;
+    }
+    runningScanJobId = null;
+  }
+
   const { wire } = req.body;
   const pool = getPool();
 
   const jobId = jobQueue.createJob();
+  runningScanJobId = jobId;
   res.json({ jobId });
 
   (async () => {
@@ -1185,10 +1251,12 @@ app.post('/api/scan/run', requireAuth, async (req: Request, res: Response) => {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       jobQueue.failJob(jobId, errorMsg);
     } finally {
+      runningScanJobId = null;
       jobQueue.cleanup();
     }
   })().catch(error => {
     console.error('Unexpected error in scan runner:', error);
+    runningScanJobId = null;
   });
 });
 
@@ -2063,14 +2131,25 @@ function renderDashboard(files: StoredFile[], message?: string): string {
 
     loadModels();
 
+    // Shared feeds fetch to avoid duplicate /api/feeds calls
+    let cachedFeedsPromise = null;
+    async function fetchFeedsOnce() {
+      if (!cachedFeedsPromise) {
+        cachedFeedsPromise = fetch('/api/feeds').then(function(r) {
+          if (!r.ok) throw new Error('Failed to fetch feeds');
+          return r.json();
+        });
+      }
+      return cachedFeedsPromise;
+    }
+    function invalidateFeedsCache() { cachedFeedsPromise = null; }
+
     // Fetch and populate wires/feeds on page load
     const wireFilterSelect = document.getElementById('wireFilter');
 
     async function loadWires() {
       try {
-        const response = await fetch('/api/feeds');
-        if (!response.ok) throw new Error('Failed to fetch feeds');
-        const feeds = await response.json();
+        const feeds = await fetchFeedsOnce();
 
         // Build options: "All Feeds" first, then each feed
         let options = '<option value="">All Feeds</option>';
@@ -2099,9 +2178,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
 
     async function loadFeeds() {
       try {
-        const response = await fetch('/api/feeds');
-        if (!response.ok) throw new Error('Failed to fetch feeds');
-        const feeds = await response.json();
+        const feeds = await fetchFeedsOnce();
         renderFeedsList(feeds);
       } catch (error) {
         console.error('Failed to load feeds:', error);
@@ -2147,7 +2224,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         btn.addEventListener('click', function() {
           if (!confirm('Archive feed "' + btn.dataset.display + '"? It will be hidden from dropdowns.')) return;
           fetch('/api/feeds/' + encodeURIComponent(btn.dataset.key), { method: 'DELETE' })
-            .then(function(r) { if (!r.ok) throw new Error('Failed'); loadFeeds(); loadWires(); loadSchedules(); })
+            .then(function(r) { if (!r.ok) throw new Error('Failed'); invalidateFeedsCache(); loadFeeds(); loadWires(); loadSchedules(); })
             .catch(function(e) { console.error(e); alert('Failed to archive feed'); });
         });
       });
@@ -2200,6 +2277,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         }
 
         feedForm.style.display = 'none';
+        invalidateFeedsCache();
         loadFeeds();
         loadWires();
         loadSchedules();
@@ -2855,6 +2933,18 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       }
     }
 
+    // Event delegation for queue action buttons (avoids inline onclick)
+    document.addEventListener('click', function(e) {
+      var btn = e.target.closest('.queue-action-btn');
+      if (btn) {
+        var entryId = parseInt(btn.dataset.entryId, 10);
+        var action = btn.dataset.action;
+        if (entryId && action) {
+          entryAction(entryId, action, btn);
+        }
+      }
+    });
+
     async function loadQueue() {
       const wire = queueWireSelect.value;
       const minScore = document.getElementById('queueMinScore').value || '40';
@@ -2902,9 +2992,9 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           }
           html += '</td>';
           html += '<td style="white-space: nowrap;">';
-          html += '<button onclick="entryAction(' + e.id + ',\'promote\',this)" style="background: #1b5e20; border: none; color: #4caf50; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;" title="Promote">Promote</button>';
-          html += '<button onclick="entryAction(' + e.id + ',\'skip\',this)" style="background: #2a2a2a; border: none; color: #999; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;" title="Skip">Skip</button>';
-          html += '<button onclick="entryAction(' + e.id + ',\'archive\',this)" style="background: #4a1515; border: none; color: #ef5350; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;" title="Archive">Archive</button>';
+          html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="promote" class="queue-action-btn" style="background: #1b5e20; border: none; color: #4caf50; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;" title="Promote">Promote</button>';
+          html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="skip" class="queue-action-btn" style="background: #2a2a2a; border: none; color: #999; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;" title="Skip">Skip</button>';
+          html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="archive" class="queue-action-btn" style="background: #4a1515; border: none; color: #ef5350; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;" title="Archive">Archive</button>';
           html += '</td>';
           html += '</tr>';
         });

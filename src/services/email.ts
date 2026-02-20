@@ -1,15 +1,7 @@
 import { Resend } from 'resend';
 import { config } from '../config';
 import { ProcessingStats } from '../types';
-
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
-}
+import { escapeHtml } from '../utils/html';
 
 let resend: Resend | null = null;
 

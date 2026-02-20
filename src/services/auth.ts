@@ -128,10 +128,10 @@ export function validateSession(token: string): boolean {
 export function createDownloadToken(fileId: string): string {
   const token = uuidv4();
   const hashedToken = hashToken(token);
-  
+
   const expiresAt = new Date();
   expiresAt.setMinutes(expiresAt.getMinutes() + 5);
-  
+
   const tokenData: MagicLinkToken = {
     token: hashedToken,
     email: config.email.notificationEmail,
@@ -139,9 +139,10 @@ export function createDownloadToken(fileId: string): string {
     expiresAt,
     used: false,
   };
-  
+
   tokens.set(hashedToken, tokenData);
-  
+  cleanupExpiredTokens();
+
   return token;
 }
 
@@ -162,3 +163,25 @@ function cleanupExpiredSessions(): void {
     }
   }
 }
+
+// Periodic cleanup timer for tokens and sessions
+let authCleanupTimer: NodeJS.Timeout | null = null;
+
+export function startAuthCleanup(): void {
+  if (authCleanupTimer) return;
+  authCleanupTimer = setInterval(() => {
+    cleanupExpiredTokens();
+    cleanupExpiredSessions();
+  }, 15 * 60 * 1000); // every 15 minutes
+  authCleanupTimer.unref();
+}
+
+export function stopAuthCleanup(): void {
+  if (authCleanupTimer) {
+    clearInterval(authCleanupTimer);
+    authCleanupTimer = null;
+  }
+}
+
+// Start cleanup on module load
+startAuthCleanup();

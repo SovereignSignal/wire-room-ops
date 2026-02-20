@@ -103,21 +103,29 @@ export async function runDailyIntake(
 
   progress(`Parsed ${allResults.length} total results from ${submissions.length} scans`, 5);
 
-  // ---- Phase 1: Insert raw entries ----
+  // ---- Phase 1: Insert raw entries (batched) ----
   progress('Inserting raw entries...', 10);
   const insertedIds: number[] = [];
 
-  for (const item of allResults) {
-    const parsed = parseAmount(item.result.amount);
-    const deadlineParsed = parseDeadline(item.result.deadline);
+  // Build batched multi-row INSERT (chunks of 50 to stay within param limits)
+  const BATCH_SIZE = 50;
+  const COLS_PER_ROW = 14;
 
-    const res = await pool.query(
-      `INSERT INTO scan_entries
-       (name, description, source_url, amount, amount_numeric, amount_currency,
-        deadline, deadline_parsed, wire, prompt_variant, scan_source, scan_date, status, prompt_id, submitted_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'raw', $13, $14)
-       RETURNING id`,
-      [
+  for (let batchStart = 0; batchStart < allResults.length; batchStart += BATCH_SIZE) {
+    const batch = allResults.slice(batchStart, batchStart + BATCH_SIZE);
+    const values: (string | number | null)[] = [];
+    const valueClauses: string[] = [];
+
+    for (let i = 0; i < batch.length; i++) {
+      const item = batch[i];
+      const parsed = parseAmount(item.result.amount);
+      const deadlineParsed = parseDeadline(item.result.deadline);
+      const offset = i * COLS_PER_ROW;
+
+      valueClauses.push(
+        `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8}, $${offset + 9}, $${offset + 10}, $${offset + 11}, $${offset + 12}, 'raw', $${offset + 13}, $${offset + 14})`
+      );
+      values.push(
         item.result.name,
         item.result.description,
         item.result.sourceUrl,
@@ -132,10 +140,21 @@ export async function runDailyIntake(
         item.scanDate,
         item.promptId || null,
         item.submittedBy || null,
-      ]
+      );
+    }
+
+    const res = await pool.query(
+      `INSERT INTO scan_entries
+       (name, description, source_url, amount, amount_numeric, amount_currency,
+        deadline, deadline_parsed, wire, prompt_variant, scan_source, scan_date, status, prompt_id, submitted_by)
+       VALUES ${valueClauses.join(', ')}
+       RETURNING id`,
+      values
     );
 
-    insertedIds.push(res.rows[0].id);
+    for (const row of res.rows) {
+      insertedIds.push(row.id);
+    }
   }
 
   progress(`Inserted ${insertedIds.length} raw entries`, 25);

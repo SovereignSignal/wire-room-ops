@@ -1,5 +1,3 @@
-import { JobResult } from '../jobs/weekly-summary';
-
 export interface JobProgress {
   current: number;
   total: number;
@@ -10,7 +8,7 @@ export interface JobStatus {
   id: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
   progress: JobProgress;
-  result?: JobResult;
+  result?: any;
   error?: string;
   startedAt: Date;
   completedAt?: Date;
@@ -22,6 +20,24 @@ class JobQueue {
   private jobs: Map<string, JobStatus> = new Map();
   private listeners: Map<string, Set<JobStatusListener>> = new Map();
   private jobCounter = 0;
+  private cleanupTimer: NodeJS.Timeout | null = null;
+
+  constructor() {
+    this.startPeriodicCleanup();
+  }
+
+  private startPeriodicCleanup(intervalMs: number = 15 * 60 * 1000): void {
+    if (this.cleanupTimer) return;
+    this.cleanupTimer = setInterval(() => this.cleanup(), intervalMs);
+    this.cleanupTimer.unref();
+  }
+
+  stopPeriodicCleanup(): void {
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = null;
+    }
+  }
 
   createJob(): string {
     const id = `job_${Date.now()}_${++this.jobCounter}`;
@@ -55,7 +71,7 @@ class JobQueue {
     this.notifyListeners(id, job);
   }
 
-  completeJob(id: string, result: JobResult): void {
+  completeJob(id: string, result: any): void {
     this.updateJob(id, {
       status: 'completed',
       result,
@@ -96,18 +112,40 @@ class JobQueue {
     }
   }
 
-  // Clean up old jobs (keep last 10)
+  // Clean up old jobs by age and cap
   cleanup(): void {
-    const jobs = Array.from(this.jobs.entries());
-    if (jobs.length > 10) {
-      const toRemove = jobs
-        .filter(([, job]) => job.status === 'completed' || job.status === 'failed')
-        .slice(0, jobs.length - 10);
+    const now = Date.now();
+    const MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
+    const MAX_JOBS = 10;
 
-      toRemove.forEach(([id]) => {
+    // Remove terminal jobs older than MAX_AGE
+    for (const [id, job] of this.jobs.entries()) {
+      const isTerminal = job.status === 'completed' || job.status === 'failed';
+      const age = now - job.startedAt.getTime();
+      if (isTerminal && age > MAX_AGE_MS) {
         this.jobs.delete(id);
         this.listeners.delete(id);
-      });
+      }
+    }
+
+    // Enforce hard cap on remaining jobs
+    if (this.jobs.size > MAX_JOBS) {
+      const toRemove = Array.from(this.jobs.entries())
+        .filter(([, job]) => job.status === 'completed' || job.status === 'failed')
+        .sort(([, a], [, b]) => a.startedAt.getTime() - b.startedAt.getTime())
+        .slice(0, this.jobs.size - MAX_JOBS);
+
+      for (const [id] of toRemove) {
+        this.jobs.delete(id);
+        this.listeners.delete(id);
+      }
+    }
+
+    // Clean up empty listener sets
+    for (const [id, listeners] of this.listeners.entries()) {
+      if (listeners.size === 0) {
+        this.listeners.delete(id);
+      }
     }
   }
 }

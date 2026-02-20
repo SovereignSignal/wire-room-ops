@@ -1,9 +1,10 @@
 import cron, { ScheduledTask } from 'node-cron';
 import { runWeeklySummaryJob } from '../jobs/weekly-summary';
+import { runScanExecution } from '../jobs/scan-execution';
 import { config } from '../config';
 import { sendNotificationEmail, sendTestAlertEmail, sendScheduledJobFailureEmail } from './email';
 import { createMagicLink } from './auth';
-import { ensureScheduleTable, getAllSchedules, getScheduleById, createSchedule, updateSchedule, deleteSchedule as dbDeleteSchedule, StoredScheduleConfig, ensureFeedsTable, ensureScanTables, ensureScanPromptsTable } from '../db';
+import { ensureScheduleTable, getAllSchedules, getScheduleById, createSchedule, updateSchedule, deleteSchedule as dbDeleteSchedule, StoredScheduleConfig, ensureFeedsTable, ensureScanTables, ensureScanPromptsTable, getPool } from '../db';
 
 export interface ScheduleConfig {
   id: string;
@@ -17,6 +18,7 @@ export interface ScheduleConfig {
   anthropicModel?: string;
   timezone: string;
   wire?: string; // Optional wire/feed filter
+  scheduleType?: 'weekly-summary' | 'scan-execution';
 }
 
 // Default schedule template for new schedules
@@ -40,6 +42,7 @@ interface JobStatus {
   lastRun: Date | null;
   status: 'success' | 'failed' | null;
   error: string | null;
+  retried?: boolean;
 }
 let jobStatuses: Map<string, JobStatus> = new Map();
 let schedulerStartTime: Date | null = null;
@@ -105,25 +108,33 @@ export function formatScheduleDescription(schedule: ScheduleConfig): string {
     return 'Disabled';
   }
 
-  const day = DAY_NAMES[schedule.dayOfWeek];
   const hour = schedule.hour.toString().padStart(2, '0');
   const minute = schedule.minute.toString().padStart(2, '0');
   const ampm = schedule.hour >= 12 ? 'PM' : 'AM';
   const hour12 = schedule.hour % 12 || 12;
 
+  if (schedule.scheduleType === 'scan-execution') {
+    return `Daily at ${hour12}:${minute} ${ampm} (${schedule.timezone}) — Scan Execution`;
+  }
+
+  const day = DAY_NAMES[schedule.dayOfWeek];
   return `Every ${day} at ${hour12}:${minute} ${ampm} (${schedule.timezone}), looking back ${schedule.lookbackDays} days`;
 }
 
 function buildCronExpression(schedule: ScheduleConfig): string {
   // Cron format: minute hour dayOfMonth month dayOfWeek
+  if (schedule.scheduleType === 'scan-execution') {
+    // Scan execution runs daily
+    return `${schedule.minute} ${schedule.hour} * * *`;
+  }
   return `${schedule.minute} ${schedule.hour} * * ${schedule.dayOfWeek}`;
 }
 
 function createJobExecutor(schedule: ScheduleConfig) {
-  return async function executeScheduledJob(): Promise<void> {
+  const executor = async function executeScheduledJob(): Promise<void> {
     const jobStartTime = new Date();
     console.log(`[Scheduler] Starting job for "${schedule.name}" at ${jobStartTime.toISOString()}`);
-    
+
     // Get fresh schedule data in case it was updated
     const currentScheduleData = schedules.get(schedule.id);
     if (!currentScheduleData) {
@@ -135,37 +146,54 @@ function createJobExecutor(schedule: ScheduleConfig) {
     jobStatuses.set(schedule.id, status);
 
     try {
-      // Calculate date range based on lookback days
-      const endDate = new Date();
-      const startDate = new Date();
-      startDate.setDate(startDate.getDate() - currentScheduleData.lookbackDays);
+      if (currentScheduleData.scheduleType === 'scan-execution') {
+        // ---- Scan Execution Job ----
+        const pool = getPool();
+        const wireLabel = currentScheduleData.wire || 'all wires';
+        console.log(`[Scheduler] Running scan execution for: ${wireLabel}`);
 
-      // Set to start/end of day
-      startDate.setHours(0, 0, 0, 0);
-      endDate.setHours(23, 59, 59, 999);
+        const scanResult = await runScanExecution(pool, {
+          wire: currentScheduleData.wire || undefined,
+        });
 
-      console.log(`[Scheduler] Date range: ${startDate.toISOString()} to ${endDate.toISOString()}`);
+        status.status = 'success';
+        status.error = null;
+        console.log(`[Scheduler] Scan "${currentScheduleData.name}" completed: ${scanResult.promptsExecuted} prompts, ${scanResult.totalResults} results, ${scanResult.intakeSummary.newUnique} unique`);
+      } else {
+        // ---- Weekly Summary Job ----
+        // Calculate date range based on lookback days
+        const endDate = new Date();
+        const startDate = new Date();
+        startDate.setDate(startDate.getDate() - currentScheduleData.lookbackDays);
 
-      const wireLabel = currentScheduleData.wire || 'all feeds';
-      console.log(`[Scheduler] Running for: ${wireLabel}`);
+        // Set to start/end of day
+        startDate.setHours(0, 0, 0, 0);
+        endDate.setHours(23, 59, 59, 999);
 
-      const result = await runWeeklySummaryJob({
-        sendEmail: false,
-        dateRange: { start: startDate, end: endDate },
-        models: {
-          grokModel: currentScheduleData.grokModel,
-          anthropicModel: currentScheduleData.anthropicModel,
-        },
-        wire: currentScheduleData.wire || undefined,
-      });
+        console.log(`[Scheduler] Date range: ${startDate.toISOString()} to ${endDate.toISOString()}`);
 
-      // Send notification email with download link
-      const downloadUrl = createMagicLink(config.email.notificationEmail, result.file.id);
-      await sendNotificationEmail(downloadUrl, result.stats, result.dateRange);
+        const wireLabel = currentScheduleData.wire || 'all feeds';
+        console.log(`[Scheduler] Running for: ${wireLabel}`);
+
+        const result = await runWeeklySummaryJob({
+          sendEmail: false,
+          dateRange: { start: startDate, end: endDate },
+          models: {
+            grokModel: currentScheduleData.grokModel,
+            anthropicModel: currentScheduleData.anthropicModel,
+          },
+          wire: currentScheduleData.wire || undefined,
+        });
+
+        // Send notification email with download link
+        const downloadUrl = createMagicLink(config.email.notificationEmail, result.file.id);
+        await sendNotificationEmail(downloadUrl, result.stats, result.dateRange);
+
+        console.log(`[Scheduler] Job "${schedule.name}" completed successfully. Email sent.`);
+      }
 
       status.status = 'success';
       status.error = null;
-      console.log(`[Scheduler] Job "${schedule.name}" completed successfully. Email sent.`);
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       status.status = 'failed';
@@ -179,8 +207,19 @@ function createJobExecutor(schedule: ScheduleConfig) {
       } catch (emailError) {
         console.error(`[Scheduler] Failed to send failure notification:`, emailError);
       }
+
+      // Retry once after 5 minutes for transient failures
+      if (!status.retried) {
+        status.retried = true;
+        console.log(`[Scheduler] Will retry "${schedule.name}" in 5 minutes...`);
+        setTimeout(() => {
+          console.log(`[Scheduler] Retrying "${schedule.name}"...`);
+          executor();
+        }, 5 * 60 * 1000);
+      }
     }
   };
+  return executor;
 }
 
 function startScheduleTask(schedule: ScheduleConfig): void {
@@ -243,20 +282,29 @@ export function getNextRunTime(scheduleId?: string): Date | null {
 
   // Calculate next run in timezone-local time
   const next = new Date(tzNow);
-  const currentDay = tzNow.getDay();
-  const targetDay = schedule.dayOfWeek;
 
-  let daysUntilTarget = targetDay - currentDay;
-  if (daysUntilTarget < 0) {
-    daysUntilTarget += 7;
-  }
+  if (schedule.scheduleType === 'scan-execution') {
+    // Daily schedule — next run is today or tomorrow at the scheduled time
+    next.setHours(schedule.hour, schedule.minute, 0, 0);
+    if (next <= tzNow) {
+      next.setDate(next.getDate() + 1);
+    }
+  } else {
+    // Weekly schedule
+    const currentDay = tzNow.getDay();
+    const targetDay = schedule.dayOfWeek;
 
-  next.setDate(tzNow.getDate() + daysUntilTarget);
-  next.setHours(schedule.hour, schedule.minute, 0, 0);
+    let daysUntilTarget = targetDay - currentDay;
+    if (daysUntilTarget < 0) {
+      daysUntilTarget += 7;
+    }
 
-  // If the time has already passed today and it's the target day, add 7 days
-  if (next <= tzNow) {
-    next.setDate(next.getDate() + 7);
+    next.setDate(tzNow.getDate() + daysUntilTarget);
+    next.setHours(schedule.hour, schedule.minute, 0, 0);
+
+    if (next <= tzNow) {
+      next.setDate(next.getDate() + 7);
+    }
   }
 
   // Convert back from timezone-local to real time
@@ -379,6 +427,6 @@ export async function initScheduler(): Promise<void> {
     isInitialized = true;
   } catch (error) {
     console.error('[Scheduler] Failed to initialize scheduler:', error);
-    isInitialized = true;
+    throw error;
   }
 }

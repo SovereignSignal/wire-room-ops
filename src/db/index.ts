@@ -1,6 +1,7 @@
 import { Pool } from 'pg';
 import { config } from '../config';
 import { DatabaseEntry } from '../types';
+import { normalizeUrl } from '../utils/url';
 
 let pool: Pool | null = null;
 
@@ -130,23 +131,7 @@ function deduplicateByUrl(entries: DatabaseEntry[]): DatabaseEntry[] {
   });
 }
 
-// Normalize URL for deduplication comparison
-function normalizeUrl(url: string): string {
-  if (!url) return '';
-  try {
-    const parsed = new URL(url);
-    // Remove trailing slashes, lowercase hostname
-    let normalized = `${parsed.hostname.toLowerCase()}${parsed.pathname.replace(/\/+$/, '')}`;
-    // Include query params if present (some URLs differ only by params)
-    if (parsed.search) {
-      normalized += parsed.search;
-    }
-    return normalized;
-  } catch {
-    // If URL parsing fails, use as-is lowercase
-    return url.toLowerCase().replace(/\/+$/, '');
-  }
-}
+// normalizeUrl imported from ../utils/url
 
 export function getDefaultDateRange(): { start: Date; end: Date } {
   const now = new Date();
@@ -629,10 +614,14 @@ export async function archiveFeed(key: string): Promise<boolean> {
 
 export async function ensureScanTables(): Promise<void> {
   const pool = getPool();
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
 
   // scan_entries — core table for all scan results
   // No wire CHECK constraint: wire values are dynamic (validated against feeds table at API level)
-  await pool.query(`CREATE TABLE IF NOT EXISTS scan_entries (
+  await client.query(`CREATE TABLE IF NOT EXISTS scan_entries (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,
     description TEXT,
@@ -659,7 +648,7 @@ export async function ensureScanTables(): Promise<void> {
   )`);
 
   // seen_urls — fast URL dedup lookup
-  await pool.query(`CREATE TABLE IF NOT EXISTS seen_urls (
+  await client.query(`CREATE TABLE IF NOT EXISTS seen_urls (
     id SERIAL PRIMARY KEY,
     url TEXT NOT NULL,
     normalized_url TEXT NOT NULL,
@@ -671,7 +660,7 @@ export async function ensureScanTables(): Promise<void> {
   )`);
 
   // seen_names — fuzzy name matching
-  await pool.query(`CREATE TABLE IF NOT EXISTS seen_names (
+  await client.query(`CREATE TABLE IF NOT EXISTS seen_names (
     id SERIAL PRIMARY KEY,
     name_original TEXT NOT NULL,
     name_normalized TEXT NOT NULL,
@@ -683,7 +672,7 @@ export async function ensureScanTables(): Promise<void> {
   )`);
 
   // intake_runs — log of each processing run
-  await pool.query(`CREATE TABLE IF NOT EXISTS intake_runs (
+  await client.query(`CREATE TABLE IF NOT EXISTS intake_runs (
     id SERIAL PRIMARY KEY,
     run_date DATE NOT NULL,
     wire TEXT,
@@ -697,23 +686,23 @@ export async function ensureScanTables(): Promise<void> {
   )`);
 
   // Indexes
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_seen_urls_normalized ON seen_urls(normalized_url)`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_seen_urls_wire ON seen_urls(wire)`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_seen_names_normalized ON seen_names(name_normalized)`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_seen_names_wire ON seen_names(wire)`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_seen_names_tokens ON seen_names USING GIN(name_tokens)`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_wire ON scan_entries(wire)`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_status ON scan_entries(status)`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_scan_date ON scan_entries(scan_date)`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_quality ON scan_entries(quality_score DESC NULLS LAST)`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_source_url ON scan_entries(source_url)`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_wire_date ON scan_entries(wire, scan_date)`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_wire_status ON scan_entries(wire, status)`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_queue ON scan_entries(wire, status, quality_score DESC NULLS LAST) WHERE status IN ('scored', 'queued')`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_intake_runs_date ON intake_runs(run_date)`);
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_seen_urls_normalized ON seen_urls(normalized_url)`);
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_seen_urls_wire ON seen_urls(wire)`);
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_seen_names_normalized ON seen_names(name_normalized)`);
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_seen_names_wire ON seen_names(wire)`);
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_seen_names_tokens ON seen_names USING GIN(name_tokens)`);
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_wire ON scan_entries(wire)`);
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_status ON scan_entries(status)`);
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_scan_date ON scan_entries(scan_date)`);
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_quality ON scan_entries(quality_score DESC NULLS LAST)`);
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_source_url ON scan_entries(source_url)`);
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_wire_date ON scan_entries(wire, scan_date)`);
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_wire_status ON scan_entries(wire, status)`);
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_queue ON scan_entries(wire, status, quality_score DESC NULLS LAST) WHERE status IN ('scored', 'queued')`);
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_intake_runs_date ON intake_runs(run_date)`);
 
   // Updated_at trigger (idempotent)
-  await pool.query(`
+  await client.query(`
     CREATE OR REPLACE FUNCTION update_scan_entries_updated_at()
     RETURNS TRIGGER AS $$
     BEGIN
@@ -722,8 +711,8 @@ export async function ensureScanTables(): Promise<void> {
     END;
     $$ LANGUAGE plpgsql
   `);
-  await pool.query(`DROP TRIGGER IF EXISTS scan_entries_updated_at ON scan_entries`);
-  await pool.query(`
+  await client.query(`DROP TRIGGER IF EXISTS scan_entries_updated_at ON scan_entries`);
+  await client.query(`
     CREATE TRIGGER scan_entries_updated_at
       BEFORE UPDATE ON scan_entries
       FOR EACH ROW
@@ -731,25 +720,32 @@ export async function ensureScanTables(): Promise<void> {
   `);
 
   // Phase 3 migrations: expand constraints for telegram/email ingestion
-  await pool.query(`
+  await client.query(`
     ALTER TABLE scan_entries DROP CONSTRAINT IF EXISTS scan_entries_scan_source_check
   `);
-  await pool.query(`
+  await client.query(`
     ALTER TABLE scan_entries ADD CONSTRAINT scan_entries_scan_source_check
       CHECK (scan_source IN ('x-scan', 'web-search', 'telegram', 'email'))
   `);
-  await pool.query(`
+  await client.query(`
     ALTER TABLE scan_entries DROP CONSTRAINT IF EXISTS scan_entries_prompt_variant_check
   `);
-  await pool.query(`
+  await client.query(`
     ALTER TABLE scan_entries ADD CONSTRAINT scan_entries_prompt_variant_check
       CHECK (prompt_variant IN ('A', 'B', 'C', 'N'))
   `);
-  await pool.query(`
+  await client.query(`
     ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS submitted_by TEXT
   `);
 
-  console.log('[DB] Scan pipeline tables ready');
+    await client.query('COMMIT');
+    console.log('[DB] Scan pipeline tables ready');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function ensureScanPromptsTable(): Promise<void> {

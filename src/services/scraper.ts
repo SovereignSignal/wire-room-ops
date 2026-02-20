@@ -1,4 +1,5 @@
 import { config } from '../config';
+import { sleep } from '../utils/async';
 
 export interface ScrapeResult {
   success: boolean;
@@ -37,10 +38,6 @@ const URL_SHORTENERS = [
   'short.link',
   'rb.gy',
 ];
-
-async function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
 
 // Check if URL is a shortened URL that needs resolution
 export function isShortUrl(url: string): boolean {

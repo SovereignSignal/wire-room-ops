@@ -1,0 +1,226 @@
+/**
+ * Scan Execution Job
+ *
+ * Orchestrates automated scan execution:
+ * 1. Fetch active prompts from DB (optionally filtered by wire)
+ * 2. Execute each prompt against Grok Responses API sequentially
+ * 3. Parse structured output into RawScanResult[]
+ * 4. Feed all results into the daily intake pipeline
+ *
+ * Each Grok call takes 60-90s, so a full run of 9 prompts takes ~9-14 min.
+ */
+
+import type { Pool } from 'pg';
+import type {
+  PromptVariant,
+  ScanSubmission,
+  IntakeRunSummary,
+  IntakeJobConfig,
+} from '../types/intake';
+import { getAllScanPrompts, ScanPromptRecord } from '../db';
+import { executeScanPrompt } from '../services/grok';
+import { parseStructuredOutput } from '../services/intake';
+import { withRetry } from '../services/processor';
+import { runDailyIntake } from './daily-intake';
+
+// ============================================================
+// Types
+// ============================================================
+
+export interface ScanExecutionOptions {
+  wire?: string;
+  onProgress?: (message: string, pct: number) => void;
+  config?: Partial<IntakeJobConfig>;
+}
+
+export interface PerPromptResult {
+  promptId: string;
+  wire: string;
+  label: string;
+  variant: string;
+  resultCount: number;
+  error?: string;
+  durationMs: number;
+}
+
+export interface ScanExecutionResult {
+  promptsExecuted: number;
+  promptsFailed: number;
+  totalResults: number;
+  intakeSummary: IntakeRunSummary;
+  perPrompt: PerPromptResult[];
+  totalDurationMs: number;
+}
+
+// ============================================================
+// Variant inference
+// ============================================================
+
+const VARIANT_MAP: PromptVariant[] = ['A', 'B', 'C'];
+
+function resolveVariant(prompt: ScanPromptRecord): PromptVariant {
+  if (prompt.variant && VARIANT_MAP.includes(prompt.variant as PromptVariant)) {
+    return prompt.variant as PromptVariant;
+  }
+  // Infer from sortOrder: 0→A, 1→B, 2→C, wrap around
+  return VARIANT_MAP[prompt.sortOrder % 3];
+}
+
+// ============================================================
+// Main execution
+// ============================================================
+
+export async function runScanExecution(
+  pool: Pool,
+  options: ScanExecutionOptions = {}
+): Promise<ScanExecutionResult> {
+  const progress = options.onProgress || (() => {});
+  const startTime = Date.now();
+  const today = new Date().toISOString().split('T')[0];
+
+  // 1. Fetch active prompts
+  progress('Fetching active prompts...', 0);
+  const prompts = await getAllScanPrompts(options.wire, true);
+
+  if (prompts.length === 0) {
+    throw new Error(
+      options.wire
+        ? `No active prompts found for wire "${options.wire}"`
+        : 'No active prompts found'
+    );
+  }
+
+  progress(`Found ${prompts.length} active prompts`, 2);
+
+  // 2. Execute each prompt sequentially
+  const submissions: ScanSubmission[] = [];
+  const perPrompt: PerPromptResult[] = [];
+  let totalResults = 0;
+  let promptsFailed = 0;
+
+  // Progress range: 2% -> 70% for prompt execution
+  const progressPerPrompt = 68 / prompts.length;
+
+  for (let i = 0; i < prompts.length; i++) {
+    const prompt = prompts[i];
+    const variant = resolveVariant(prompt);
+    const promptStart = Date.now();
+    const pctBase = 2 + i * progressPerPrompt;
+
+    progress(
+      `Executing "${prompt.label}" (${prompt.wire}, variant ${variant})... ${i + 1}/${prompts.length}`,
+      Math.round(pctBase)
+    );
+
+    try {
+      const grokResult = await withRetry(
+        () => executeScanPrompt(prompt.promptText, { responseFormat: prompt.responseFormat }),
+        2 // 2 total attempts (1 retry) — these are expensive calls
+      );
+
+      const parsed = parseStructuredOutput(grokResult.content);
+      const durationMs = Date.now() - promptStart;
+
+      if (parsed.length === 0) {
+        console.warn(`[ScanExecution] Prompt "${prompt.label}" returned 0 parseable results`);
+      }
+
+      // Build submission
+      submissions.push({
+        wire: prompt.wire,
+        promptVariant: variant,
+        scanDate: today,
+        source: 'x-scan',
+        results: parsed,
+        promptId: prompt.id,
+      });
+
+      totalResults += parsed.length;
+
+      perPrompt.push({
+        promptId: prompt.id,
+        wire: prompt.wire,
+        label: prompt.label,
+        variant,
+        resultCount: parsed.length,
+        durationMs,
+      });
+
+      progress(
+        `"${prompt.label}": ${parsed.length} results (${Math.round(durationMs / 1000)}s)`,
+        Math.round(pctBase + progressPerPrompt * 0.9)
+      );
+    } catch (error) {
+      const durationMs = Date.now() - promptStart;
+      const errMsg = error instanceof Error ? error.message : String(error);
+      console.error(`[ScanExecution] Prompt "${prompt.label}" failed: ${errMsg}`);
+
+      promptsFailed++;
+      perPrompt.push({
+        promptId: prompt.id,
+        wire: prompt.wire,
+        label: prompt.label,
+        variant,
+        resultCount: 0,
+        error: errMsg,
+        durationMs,
+      });
+
+      progress(
+        `"${prompt.label}" FAILED: ${errMsg.substring(0, 80)}`,
+        Math.round(pctBase + progressPerPrompt * 0.9)
+      );
+      // Continue to next prompt — don't abort entire scan
+    }
+  }
+
+  // 3. Run intake pipeline on all collected submissions
+  if (submissions.length === 0 || totalResults === 0) {
+    const totalDurationMs = Date.now() - startTime;
+    // Return empty result with a minimal summary
+    return {
+      promptsExecuted: prompts.length - promptsFailed,
+      promptsFailed,
+      totalResults: 0,
+      intakeSummary: {
+        runDate: today,
+        wire: options.wire || 'all',
+        totalIngested: 0,
+        duplicatesFound: 0,
+        newUnique: 0,
+        averageQualityScore: 0,
+        highQualityCount: 0,
+        byPrompt: {},
+        topFinds: [],
+      },
+      perPrompt,
+      totalDurationMs,
+    };
+  }
+
+  progress(`Running intake pipeline on ${totalResults} results...`, 70);
+
+  const intakeSummary = await runDailyIntake(pool, submissions, {
+    config: options.config,
+    onProgress: (msg, pct) => {
+      // Map intake progress (0-100) to our range (70-100)
+      progress(msg, 70 + Math.round(pct * 0.3));
+    },
+  });
+
+  const totalDurationMs = Date.now() - startTime;
+
+  progress(
+    `Scan complete: ${totalResults} results, ${intakeSummary.newUnique} unique, ${intakeSummary.highQualityCount} high quality`,
+    100
+  );
+
+  return {
+    promptsExecuted: prompts.length - promptsFailed,
+    promptsFailed,
+    totalResults,
+    intakeSummary,
+    perPrompt,
+    totalDurationMs,
+  };
+}

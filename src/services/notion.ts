@@ -1,6 +1,7 @@
 import { Client, isFullPage } from '@notionhq/client';
 import type { QueryDatabaseResponse, SearchResponse, PageObjectResponse } from '@notionhq/client/build/src/api-endpoints';
 import { config } from '../config';
+import { sleep } from '../utils/async';
 
 let notionClient: Client | null = null;
 
@@ -73,10 +74,6 @@ async function rateLimitedRequest<T>(fn: () => Promise<T>): Promise<T> {
   // Chain onto queue so next request waits for this one
   requestQueue = result.then(() => {}, () => {});
   return result;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 export async function queryOrgsDatabase(nameFilter?: string): Promise<NotionOrg[]> {

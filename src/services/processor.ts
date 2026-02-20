@@ -1,6 +1,7 @@
 import { DatabaseEntry, ProcessedEntry, ProcessingStats } from '../types';
 import { summarizeWithGrok, isXcomUrl } from './grok';
 import { summarizeWithOpus } from './anthropic';
+import { sleep } from '../utils/async';
 
 export interface ModelOptions {
   grokModel?: string;
@@ -8,10 +9,6 @@ export interface ModelOptions {
 }
 
 const RETRY_DELAYS = [1000, 2000, 4000];
-
-async function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
 
 export async function withRetry<T>(
   fn: () => Promise<T>,
@@ -25,7 +22,9 @@ export async function withRetry<T>(
     } catch (error) {
       lastError = error as Error;
       if (i < retries - 1) {
-        await sleep(RETRY_DELAYS[i] || 4000);
+        const baseDelay = RETRY_DELAYS[i] || 4000;
+        const jitter = Math.random() * baseDelay * 0.3;
+        await sleep(baseDelay + jitter);
       }
     }
   }
@@ -87,34 +86,40 @@ export async function processAllEntries(
 
   let xcomCount = 0;
   let otherCount = 0;
-  const wireCount: Record<string, number> = {};
+  const wireCounts: Record<string, number> = {};
 
-  for (let i = 0; i < entries.length; i++) {
-    const entry = entries[i];
+  const CONCURRENCY = 3;
+  let completedCount = 0;
 
-    if (onProgress) {
-      onProgress(i + 1, entries.length);
+  for (let i = 0; i < entries.length; i += CONCURRENCY) {
+    const batch = entries.slice(i, i + CONCURRENCY);
+    const batchResults = await Promise.all(
+      batch.map(async (entry) => {
+        const result = await processEntry(entry, models);
+        completedCount++;
+        if (onProgress) {
+          onProgress(completedCount, entries.length);
+        }
+        return result;
+      })
+    );
+
+    for (const result of batchResults) {
+      processed.push(result);
+      if (result.processingMethod === 'grok') xcomCount++;
+      else otherCount++;
+
+      if (result.wire) {
+        wireCounts[result.wire] = (wireCounts[result.wire] || 0) + 1;
+      }
+
+      if (result.processingError) {
+        errors.push(`${result.url || 'unknown'}: ${result.processingError}`);
+      }
     }
 
-    const result = await processEntry(entry, models);
-    processed.push(result);
-
-    if (result.processingMethod === 'grok') {
-      xcomCount++;
-    } else {
-      otherCount++;
-    }
-
-    if (entry.wire) {
-      wireCount[entry.wire] = (wireCount[entry.wire] || 0) + 1;
-    }
-    
-    if (result.processingError) {
-      errors.push(`${entry.url}: ${result.processingError}`);
-    }
-    
-    // Rate limiting: small delay between requests
-    if (i < entries.length - 1) {
+    // Rate limiting between batches
+    if (i + CONCURRENCY < entries.length) {
       await sleep(500);
     }
   }
@@ -128,7 +133,7 @@ export async function processAllEntries(
     successfulProcessing: processed.filter(p => !p.processingError).length,
     failedProcessing: processed.filter(p => p.processingError).length,
     categories,
-    entriesByWire: wireCount,
+    entriesByWire: wireCounts,
   };
 
   return { processed, stats };
