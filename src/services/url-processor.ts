@@ -92,35 +92,56 @@ export async function processUrl(url: string): Promise<ProcessUrlResult> {
 }
 
 /**
- * Process an X.com URL using Grok chat completions.
+ * Process an X.com URL using Grok Responses API with x_search tool.
+ * The Responses API gives Grok native access to X.com post content,
+ * unlike chat completions which can't read tweets.
  */
 async function processXcomUrl(url: string): Promise<ProcessUrlResult> {
   const prompt = GROK_EXTRACTION_PROMPT.replace('{url}', url);
 
-  const responseData = await withRetry(async () => {
-    const response = await fetch(`${config.apis.grok.baseUrl}/chat/completions`, {
+  const content = await withRetry(async () => {
+    const baseUrl = config.apis.grok.baseUrl.replace(/\/v1$/, '');
+    const response = await fetch(`${baseUrl}/v1/responses`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${config.apis.grok.apiKey}`,
       },
       body: JSON.stringify({
-        model: 'grok-3-mini-fast',
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: 500,
-        temperature: 0.1,
+        model: 'grok-4-1-fast',
+        input: [{ role: 'user', content: prompt }],
+        tools: [{ type: 'x_search' }],
       }),
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Grok API error: ${response.status} - ${errorText}`);
+      throw new Error(`Grok Responses API error: ${response.status} - ${errorText}`);
     }
 
-    return response.json() as Promise<{ choices: Array<{ message: { content: string } }> }>;
+    const data = await response.json() as {
+      output: Array<{ type: string; content?: Array<{ type: string; text?: string }> }>;
+    };
+
+    // Extract text from the Responses API output
+    let textContent = '';
+    for (const item of data.output || []) {
+      if (item.type === 'message' && item.content) {
+        for (const block of item.content) {
+          if (block.type === 'output_text' && block.text) {
+            textContent += block.text;
+          }
+        }
+      }
+    }
+
+    if (!textContent) {
+      throw new Error('Grok Responses API returned empty text content');
+    }
+
+    return textContent.trim();
   }, 2);
 
-  const content = responseData.choices?.[0]?.message?.content || '';
   return parseExtractionResult(content, url);
 }
 
@@ -183,6 +204,7 @@ async function processWebUrl(url: string): Promise<ProcessUrlResult> {
  * Parse the JSON extraction result from either AI provider.
  */
 function parseExtractionResult(raw: string, url: string): ProcessUrlResult {
+  console.log(`[URLProcessor] AI response for ${url}: ${raw.substring(0, 300)}`);
   try {
     // Strip markdown fences if present
     let cleaned = raw.trim();
