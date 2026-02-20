@@ -123,6 +123,9 @@ export async function runScanExecution(
 
       if (parsed.length === 0) {
         console.warn(`[ScanExecution] Prompt "${prompt.label}" returned 0 parseable results`);
+        console.warn(`[ScanExecution] Raw Grok output (first 500 chars): ${grokResult.content.substring(0, 500)}`);
+      } else {
+        console.log(`[ScanExecution] Prompt "${prompt.label}" parsed ${parsed.length} results`);
       }
 
       // Build submission
