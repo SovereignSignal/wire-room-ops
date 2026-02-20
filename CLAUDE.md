@@ -55,6 +55,10 @@ src/
 │   ├── storage.ts        # Postgres-backed file storage with in-memory cache (keeps last 10)
 │   ├── telegram.ts       # Telegram Bot webhook handler (URL → scrape → intake)
 │   └── url-processor.ts  # Shared URL scrape + AI extraction → RawScanResult
+├── utils/
+│   ├── async.ts          # Shared sleep() utility
+│   ├── html.ts           # Shared escapeHtml() utility
+│   └── url.ts            # Shared normalizeUrl() for URL deduplication
 └── types/
     ├── index.ts          # Core TypeScript interfaces
     └── intake.ts         # Scan pipeline types (ScanEntry, DedupResult, QualityBreakdown)
@@ -121,14 +125,33 @@ The `feeds` table manages dynamic wire/feed types, seeded from `SEED_FEEDS` and 
 
 ### Retry Logic
 `src/services/processor.ts` uses `withRetry()`:
-- Newsletter processing: 3 attempts with 1s, 2s, 4s delays (applies to both Grok and Claude calls)
+- Newsletter processing: 3 attempts with jittered exponential backoff (applies to both Grok and Claude calls)
 - Scan execution: 2 attempts (1 retry) — these are expensive Grok Responses API calls
+- Batch concurrency: entries processed 3 at a time via `Promise.all` chunks
 
 ### Scrape Fallback
 If Firecrawl fails, Claude uses only the cached summary from the database. Output includes note: `*[Summary based on cached data...]*`
 
 ### Job Failure Notifications
-Scheduled jobs that fail send email via `sendScheduledJobFailureEmail()` with error details.
+Scheduled jobs that fail send email via `sendScheduledJobFailureEmail()` with error details, then retry once after 5 minutes.
+
+### Concurrent Job Guard
+`src/server.ts` prevents duplicate job execution — if a weekly summary or scan execution is already running, subsequent requests return 409 with the existing job ID.
+
+### Database Reliability
+- Pool has `on('error')` handler to prevent crash on idle connection drops
+- `ensureScanTables()` DDL wrapped in a transaction for atomicity
+- Scheduler `initScheduler()` properly resets on failure so it can retry
+
+### Security Layers
+- CSRF origin checking on all state-changing requests (POST/PUT/DELETE)
+- Session auth via HttpOnly cookies only (no body fallback)
+- XSS prevention via shared `escapeHtml()` utility and event delegation (no inline handlers)
+- SSE keepalive (30s) prevents proxy timeouts on long-running jobs
+
+### Memory Management
+- Job queue, auth tokens, and sessions all have periodic cleanup timers (15-minute intervals)
+- Timers use `.unref()` to not prevent process exit
 
 ## Testing Locally
 

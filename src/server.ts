@@ -44,6 +44,44 @@ function requireAuth(req: Request, res: Response, next: Function): void {
   next();
 }
 
+// CSRF origin check for state-changing requests
+app.use((req: Request, res: Response, next: Function): void => {
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') {
+    return next();
+  }
+
+  // Skip for webhook endpoints (authenticated via signatures, not cookies)
+  if (req.path.startsWith('/api/telegram/webhook') || req.path.startsWith('/api/email/inbound')) {
+    return next();
+  }
+
+  const origin = req.headers.origin;
+  const referer = req.headers.referer;
+  const appHost = new URL(config.app.url).host;
+
+  // Accept if Origin header matches our app
+  if (origin) {
+    try {
+      if (new URL(origin).host === appHost) return next();
+    } catch {}
+    res.status(403).json({ error: 'Forbidden: origin mismatch' });
+    return;
+  }
+
+  // Fall back to Referer if no Origin header
+  if (referer) {
+    try {
+      if (new URL(referer).host === appHost) return next();
+    } catch {}
+    res.status(403).json({ error: 'Forbidden: referer mismatch' });
+    return;
+  }
+
+  // No Origin or Referer: allow for same-origin API clients (curl, etc.)
+  // This is safe because browsers always send Origin on cross-origin POSTs
+  next();
+});
+
 // Simple in-memory rate limiter
 const rateLimitStore = new Map<string, number[]>();
 

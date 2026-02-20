@@ -113,7 +113,7 @@ export async function runDailyIntake(
 
   for (let batchStart = 0; batchStart < allResults.length; batchStart += BATCH_SIZE) {
     const batch = allResults.slice(batchStart, batchStart + BATCH_SIZE);
-    const values: (string | number | null)[] = [];
+    const values: (string | number | Date | null)[] = [];
     const valueClauses: string[] = [];
 
     for (let i = 0; i < batch.length; i++) {
