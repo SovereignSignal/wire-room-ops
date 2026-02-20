@@ -4,7 +4,7 @@ import { config } from './config';
 import { validateMagicLink, createMagicLink, createDownloadToken, createSessionToken, validateSession, createLoginMagicLink } from './services/auth';
 import { getFile, listFiles } from './services/storage';
 import { getAvailableWires, closePool, getAllFeeds, getFeedByKey, createFeed, updateFeed, archiveFeed, getEntryCountsByWire, getAllScanPrompts, getScanPromptById, createScanPrompt, updateScanPrompt, deleteScanPrompt } from './db';
-import { sendLoginEmail } from './services/email';
+import { sendLoginEmail, sendScanDigestEmail } from './services/email';
 import { runWeeklySummaryJob } from './jobs/weekly-summary';
 import { StoredFile } from './types';
 import { jobQueue } from './services/job-queue';
@@ -1292,6 +1292,16 @@ app.post('/api/scan/run', requireAuth, async (req: Request, res: Response) => {
       });
 
       jobQueue.completeJob(jobId, result);
+
+      // Send digest email for manual scans too
+      if (result.totalResults > 0) {
+        try {
+          await sendScanDigestEmail(result, config.app.url);
+          console.log(`[ScanRun] Digest email sent`);
+        } catch (emailErr) {
+          console.error(`[ScanRun] Failed to send digest email:`, emailErr);
+        }
+      }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       jobQueue.failJob(jobId, errorMsg);

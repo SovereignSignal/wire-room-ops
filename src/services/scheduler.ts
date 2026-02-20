@@ -2,7 +2,7 @@ import cron, { ScheduledTask } from 'node-cron';
 import { runWeeklySummaryJob } from '../jobs/weekly-summary';
 import { runScanExecution } from '../jobs/scan-execution';
 import { config } from '../config';
-import { sendNotificationEmail, sendTestAlertEmail, sendScheduledJobFailureEmail } from './email';
+import { sendNotificationEmail, sendTestAlertEmail, sendScheduledJobFailureEmail, sendScanDigestEmail } from './email';
 import { createMagicLink } from './auth';
 import { ensureScheduleTable, getAllSchedules, getScheduleById, createSchedule, updateSchedule, deleteSchedule as dbDeleteSchedule, StoredScheduleConfig, ensureFeedsTable, ensureScanTables, ensureScanPromptsTable, getPool } from '../db';
 
@@ -159,6 +159,18 @@ function createJobExecutor(schedule: ScheduleConfig) {
         status.status = 'success';
         status.error = null;
         console.log(`[Scheduler] Scan "${currentScheduleData.name}" completed: ${scanResult.promptsExecuted} prompts, ${scanResult.totalResults} results, ${scanResult.intakeSummary.newUnique} unique`);
+
+        // Send daily digest email
+        if (scanResult.totalResults > 0) {
+          try {
+            const dashboardUrl = config.app.url;
+            await sendScanDigestEmail(scanResult, dashboardUrl);
+            console.log(`[Scheduler] Scan digest email sent`);
+          } catch (emailErr) {
+            console.error(`[Scheduler] Failed to send digest email:`, emailErr);
+            // Don't fail the job - email is non-critical
+          }
+        }
       } else {
         // ---- Weekly Summary Job ----
         // Calculate date range based on lookback days
