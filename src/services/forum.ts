@@ -43,15 +43,17 @@ interface DiscussWatchResult {
   title?: string;
   blurb?: string;
   url?: string;
-  forum?: string;
+  forum?: { name?: string; url?: string; token?: string };
   category?: string;
-  created_at?: string;
-  reply_count?: number;
+  createdAt?: string;
+  replies?: number;
+  views?: number;
+  likes?: number;
 }
 
 interface DiscussWatchSearchResponse {
-  results?: DiscussWatchResult[];
-  total?: number;
+  data?: DiscussWatchResult[];
+  meta?: { total?: number; query?: string; forums?: number };
   error?: string;
 }
 
@@ -130,7 +132,7 @@ export async function searchForumDiscussions(
         continue;
       }
 
-      const results = data.results || [];
+      const results = data.data || [];
       for (const item of results) {
         if (allResults.length >= maxResults) break;
         if (!item.url || !item.title) continue;

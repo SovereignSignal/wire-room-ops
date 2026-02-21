@@ -63,7 +63,7 @@ export const config = {
   },
 
   forum: {
-    discussWatchBaseUrl: process.env.DISCUSS_WATCH_API_URL || 'https://discuss.watch/api/v1',
+    discussWatchBaseUrl: process.env.DISCUSS_WATCH_API_URL || 'https://discuss-dot-watch-production.up.railway.app/api/v1',
     enabled: process.env.FORUM_SCAN_ENABLED === 'true',
   },
 };
