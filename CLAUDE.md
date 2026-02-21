@@ -23,7 +23,7 @@ When an operator clicks "Approve" on a queued scan entry (via the dashboard), th
 
 The Wire Room reads these columns from `scan_entries`: `id`, `name`, `description`, `source_url`, `amount`, `deadline`, `wire`, `quality_score`, `scan_source`, `created_at`.
 
-A partial index `idx_scan_entries_approved` on `(status, created_at DESC) WHERE status = 'approved'` optimizes the Wire Room's query.
+The Wire Room queries with `WHERE status = 'approved'` (optionally `AND wire = $1` for beat filtering), ordered by `created_at DESC` with `LIMIT/OFFSET` pagination. A partial index `idx_scan_entries_approved` on `(wire, created_at DESC) WHERE status = 'approved'` optimizes both filtered and unfiltered query paths.
 
 ## Key Architecture Decisions
 
