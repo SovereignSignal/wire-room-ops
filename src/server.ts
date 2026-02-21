@@ -2484,7 +2484,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         <button type="button" id="load-prompt-stats" class="button secondary">Refresh</button>
       </div>
       <div id="prompt-stats-results">
-        <p style="color: #666;">Loading stats...</p>
+        <p style="color: #666;">Loading stats\u2026</p>
       </div>
     </div>
   </div>
@@ -4380,7 +4380,7 @@ function renderQueuePage(): string {
       <details id="seeded-urls-details" style="margin-top: 24px;">
         <summary id="seeded-urls-summary">Seeded URLs (loading\u2026)</summary>
         <div id="seeded-urls-content" style="margin-top: 12px;">
-          <p style="color: #666;">Click to load...</p>
+          <p style="color: #666;">Click to load\u2026</p>
         </div>
       </details>
     </div>
