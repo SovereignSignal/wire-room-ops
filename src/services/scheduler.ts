@@ -1,6 +1,7 @@
 import cron, { ScheduledTask } from 'node-cron';
 import { runWeeklySummaryJob } from '../jobs/weekly-summary';
 import { runScanExecution } from '../jobs/scan-execution';
+import { runForumScan } from '../jobs/forum-scan';
 import { runCrmSyncJob } from './crm-sync';
 import { config } from '../config';
 import { sendNotificationEmail, sendTestAlertEmail, sendScheduledJobFailureEmail, sendScanDigestEmail } from './email';
@@ -19,7 +20,7 @@ export interface ScheduleConfig {
   anthropicModel?: string;
   timezone: string;
   wire?: string; // Optional wire/feed filter
-  scheduleType?: 'weekly-summary' | 'scan-execution';
+  scheduleType?: 'weekly-summary' | 'scan-execution' | 'forum-scan';
   frequencyHours?: number; // Sub-daily interval (1-23) for scan-execution
   notifyEmails?: string; // Comma-separated email recipients
 }
@@ -123,18 +124,25 @@ export function formatScheduleDescription(schedule: ScheduleConfig): string {
     return `Daily at ${hour12}:${minute} ${ampm} (${schedule.timezone}) \u2014 Scan Execution`;
   }
 
+  if (schedule.scheduleType === 'forum-scan') {
+    if (schedule.frequencyHours && schedule.frequencyHours < 24) {
+      return `Every ${schedule.frequencyHours}h at :${minute} (${schedule.timezone}) \u2014 Forum Scan`;
+    }
+    return `Daily at ${hour12}:${minute} ${ampm} (${schedule.timezone}) \u2014 Forum Scan`;
+  }
+
   const day = DAY_NAMES[schedule.dayOfWeek];
   return `Every ${day} at ${hour12}:${minute} ${ampm} (${schedule.timezone}), looking back ${schedule.lookbackDays} days`;
 }
 
 function buildCronExpression(schedule: ScheduleConfig): string {
   // Cron format: minute hour dayOfMonth month dayOfWeek
-  if (schedule.scheduleType === 'scan-execution') {
+  if (schedule.scheduleType === 'scan-execution' || schedule.scheduleType === 'forum-scan') {
     if (schedule.frequencyHours && schedule.frequencyHours < 24) {
       // Sub-daily: run every N hours at the configured minute
       return `${schedule.minute} */${schedule.frequencyHours} * * *`;
     }
-    // Scan execution runs daily
+    // Daily schedule
     return `${schedule.minute} ${schedule.hour} * * *`;
   }
   return `${schedule.minute} ${schedule.hour} * * ${schedule.dayOfWeek}`;
@@ -197,6 +205,26 @@ function createJobExecutor(schedule: ScheduleConfig) {
           console.error(`[Scheduler] Auto CRM sync failed:`, crmErr);
           // Don't fail the job - CRM sync is non-critical
         }
+      } else if (currentScheduleData.scheduleType === 'forum-scan') {
+        // ---- Forum Scan Job ----
+        const pool = getPool();
+        const wireLabel = currentScheduleData.wire || 'all wires';
+        console.log(`[Scheduler] Running forum scan for: ${wireLabel}`);
+
+        if (!config.forum.enabled) {
+          console.warn(`[Scheduler] Forum scan skipped: FORUM_SCAN_ENABLED is not true`);
+          status.status = 'success';
+          status.error = null;
+          return;
+        }
+
+        const forumResult = await runForumScan(pool, {
+          wire: currentScheduleData.wire || undefined,
+        });
+
+        status.status = 'success';
+        status.error = null;
+        console.log(`[Scheduler] Forum scan "${currentScheduleData.name}" completed: ${forumResult.totalResults} results, ${forumResult.intakeSummary.newUnique} unique`);
       } else {
         // ---- Weekly Summary Job ----
         // Calculate date range based on lookback days
@@ -324,7 +352,7 @@ export function getNextRunTime(scheduleId?: string): Date | null {
   // Calculate next run in timezone-local time
   const next = new Date(tzNow);
 
-  if (schedule.scheduleType === 'scan-execution') {
+  if (schedule.scheduleType === 'scan-execution' || schedule.scheduleType === 'forum-scan') {
     if (schedule.frequencyHours && schedule.frequencyHours < 24) {
       // Sub-daily: find next hour that matches */N pattern
       const freq = schedule.frequencyHours;

@@ -1,5 +1,6 @@
 import { config } from '../config';
 import { DatabaseEntry } from '../types';
+import type { ToolType } from '../types/intake';
 
 const GROK_PROMPT = `You have access to X.com posts. Access and summarize this X.com/Twitter post for the Crypto Grant Wire newsletter.
 
@@ -95,7 +96,7 @@ interface ResponsesAPIResponse {
 
 export async function executeScanPrompt(
   promptText: string,
-  options?: { model?: string; responseFormat?: string | null }
+  options?: { model?: string; responseFormat?: string | null; toolType?: ToolType }
 ): Promise<{ content: string; model: string; tokensUsed?: number }> {
   const model = options?.model || DEFAULT_SCAN_MODEL;
 
@@ -115,7 +116,7 @@ export async function executeScanPrompt(
     body: JSON.stringify({
       model,
       input: [{ role: 'user', content: fullPrompt }],
-      tools: [{ type: 'x_search' }],
+      tools: [{ type: options?.toolType || 'x_search' }],
     }),
   });
 

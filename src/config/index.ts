@@ -61,6 +61,11 @@ export const config = {
     inboundAddress: process.env.INBOUND_EMAIL_ADDRESS || '',
     webhookSigningSecret: process.env.RESEND_WEBHOOK_SECRET || '',
   },
+
+  forum: {
+    discussWatchBaseUrl: process.env.DISCUSS_WATCH_API_URL || 'https://discuss.watch/api/v1',
+    enabled: process.env.FORUM_SCAN_ENABLED === 'true',
+  },
 };
 
 export function validateConfig(): void {

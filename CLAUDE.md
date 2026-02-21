@@ -51,7 +51,8 @@ src/
 ├── jobs/
 │   ├── weekly-summary.ts   # Weekly newsletter job orchestration
 │   ├── daily-intake.ts     # Scan intake pipeline orchestrator (parse → dedup → score → queue)
-│   └── scan-execution.ts   # Automated scan execution (prompt fetch → Grok → intake)
+│   ├── scan-execution.ts   # Automated scan execution (prompt fetch → Grok → intake)
+│   └── forum-scan.ts       # Forum scan orchestrator (discuss.watch → intake)
 ├── services/
 │   ├── anthropic.ts      # Claude API calls with scraping integration
 │   ├── auth.ts           # Magic links, sessions, tokens
@@ -59,6 +60,7 @@ src/
 │   ├── dedup.ts          # URL exact-match and fuzzy name deduplication
 │   ├── email.ts          # Resend email templates (5 types)
 │   ├── email-inbound.ts  # Resend Inbound webhook handler (URL extraction → intake)
+│   ├── forum.ts          # discuss.watch API client for forum scanning
 │   ├── grok.ts           # Grok Chat + Responses API for X.com content and scans
 │   ├── intake.ts         # Scan result parser, URL/name normalization
 │   ├── job-queue.ts      # SSE-based job progress tracking
@@ -124,8 +126,9 @@ The `feeds` table manages dynamic wire/feed types, seeded from `SEED_FEEDS` and 
 
 ### Grok API (X.ai)
 - **Chat Completions** (`/v1/chat/completions`): Used for newsletter summaries. Default model: `grok-4-1-fast-reasoning`
-- **Responses API** (`/v1/responses`): Used for scan execution with `x_search` tool for real-time X.com scanning. Default model: `grok-4-1-fast`
-- Has native X.com/Twitter access
+- **Responses API** (`/v1/responses`): Used for scan execution with `x_search` or `web_search` tools. Default model: `grok-4-1-fast`
+- Each scan prompt has a `tool_type` column (`x_search` or `web_search`) controlling which tool is used
+- Has native X.com/Twitter access via `x_search`; open web results via `web_search`
 
 ### Claude API (Anthropic)
 - Uses official SDK `@anthropic-ai/sdk`
@@ -235,6 +238,10 @@ The CRM sync identifies organizations mentioned in entries and tracks them in No
 - `INBOUND_EMAIL_ALLOWED_SENDERS` - Comma-separated allowlist of email addresses
 - `RESEND_WEBHOOK_SECRET` - Resend webhook signing secret for HMAC verification
 
+### Environment Variables for Forum Scanning (optional)
+- `FORUM_SCAN_ENABLED` - Set to `true` to enable forum scanning (default: disabled)
+- `DISCUSS_WATCH_API_URL` - Base URL for discuss.watch API (default: `https://discuss.watch/api/v1`)
+
 ## Feeds System
 
 Dynamic wire/feed management via the `feeds` table.
@@ -249,16 +256,18 @@ Dynamic wire/feed management via the `feeds` table.
 ## Scan Pipeline System
 
 ### Overview
-Automated discovery of grant opportunities via X.com scanning, Telegram bot, and email ingestion. Intake processing eliminates duplicates and surfaces high-quality entries.
+Automated discovery of grant opportunities via X.com scanning, web search, forum scanning, Telegram bot, and email ingestion. Intake processing eliminates duplicates and surfaces high-quality entries.
 
 ### Ingestion Channels
-- **Automated scan** (`x-scan`): Grok Responses API with `x_search` tool, runs on schedule
+- **X.com scan** (`x-scan`): Grok Responses API with `x_search` tool, runs on schedule
+- **Web search** (`web-search`): Grok Responses API with `web_search` tool, same prompt system as X scan
+- **Forum scan** (`forum`): discuss.watch API searches across 150+ Discourse forums for grant keywords
 - **Manual paste** (`x-scan`/`web-search`): Dashboard paste-in flow
 - **Telegram bot** (`telegram`): Send a URL → bot scrapes + extracts → intake pipeline
 - **Email inbound** (`email`): Send email with URLs → Resend webhook → scrape + extract → intake
 
 ### Data Flow
-1. **Execute**: `scan-execution.ts` fetches active prompts from `scan_prompts`, calls Grok Responses API with `x_search` tool
+1. **Execute**: `scan-execution.ts` fetches active prompts from `scan_prompts`, calls Grok Responses API with `x_search` or `web_search` tool (per prompt's `tool_type`)
 2. **Parse**: `intake.ts` extracts structured results (name, description, deadline, link, amount) from Grok output
 3. **Insert**: Raw results written to `scan_entries` with `status: raw`
 4. **Dedup**: `dedup.ts` checks against `seen_urls` (exact URL match) and `seen_names` (fuzzy token overlap)
@@ -275,13 +284,16 @@ Automated discovery of grant opportunities via X.com scanning, Telegram bot, and
 - `src/services/url-processor.ts` - Shared URL scrape + AI extraction (used by Telegram & email)
 - `src/services/telegram.ts` - Telegram Bot API webhook handler
 - `src/services/email-inbound.ts` - Resend Inbound webhook handler
+- `src/services/forum.ts` - discuss.watch API client for forum scanning
+- `src/jobs/forum-scan.ts` - Forum scan orchestrator (search → intake pipeline)
 
 ### Schedule Types
 - **`weekly-summary`**: Weekly cron, runs `runWeeklySummaryJob()` for newsletter generation
 - **`scan-execution`**: Daily cron, runs `runScanExecution()` which executes all active prompts for a wire
+- **`forum-scan`**: Daily cron, runs `runForumScan()` which searches discuss.watch forums
 
 ### Prompt Management
-- Prompts stored in `scan_prompts` table with `wire`, `label`, `prompt_text`, `response_format`, `variant`
+- Prompts stored in `scan_prompts` table with `wire`, `label`, `prompt_text`, `response_format`, `variant`, `tool_type`
 - CRUD API: `/api/scan/prompts` (GET/POST), `/api/scan/prompts/:id` (PUT/DELETE)
 - Test endpoint: `/api/scan/prompts/:id/test` — executes a prompt and returns parsed results without intake processing
 - Effectiveness stats: `/api/scan/prompt-stats` — per-prompt metrics and cross-prompt overlap rate
@@ -303,6 +315,9 @@ Automated discovery of grant opportunities via X.com scanning, Telegram bot, and
 - **Adding a new feed/wire type**: Via `/api/feeds` POST or add to `SEED_FEEDS` in `src/db/index.ts`
 - **Testing a scan prompt**: `POST /api/scan/prompts/:id/test` — executes against Grok and returns parsed results
 - **Viewing prompt effectiveness**: `GET /api/scan/prompt-stats?days=7`
+- **Creating a web search prompt**: Set `toolType: 'web_search'` in POST `/api/scan/prompts` (or select "Web Search" in dashboard)
+- **Running a forum scan**: `POST /api/forum/run` with optional `{ "wire": "crypto" }` (requires `FORUM_SCAN_ENABLED=true`)
+- **Adding forum search keywords**: Edit `GRANT_KEYWORDS` array in `src/services/forum.ts`
 
 ## Rate Limiting
 
@@ -314,6 +329,7 @@ In-memory rate limiter in `src/server.ts`:
 | `/api/run-job` | 3 global | 5 min |
 | `/api/scan/prompts/:id/test` | 5 global | 5 min |
 | `/api/scan/run` | 1 global | 15 min |
+| `/api/forum/run` | 1 global | 15 min |
 | `/webhook/telegram` | 10 per chat | 1 min |
 | `/webhook/email` | 5 per sender | 15 min |
 

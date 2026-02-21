@@ -11,8 +11,11 @@ export type PromptVariant = 'A' | 'B' | 'C' | 'N';
 // Prompt strategy labels (for human readability)
 export type PromptStrategy = 'Action' | 'Landscape' | 'Open Sweep';
 
+// Which Grok tool to use for scan execution
+export type ToolType = 'x_search' | 'web_search';
+
 // Where the result came from
-export type ScanSource = 'x-scan' | 'web-search' | 'telegram' | 'email';
+export type ScanSource = 'x-scan' | 'web-search' | 'telegram' | 'email' | 'forum';
 
 // Processing state for scan results as they move through the pipeline
 export type ScanStatus =

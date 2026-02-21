@@ -1,6 +1,7 @@
 import { Pool } from 'pg';
 import { config } from '../config';
 import { DatabaseEntry } from '../types';
+import type { ToolType } from '../types/intake';
 import { normalizeUrl } from '../utils/url';
 
 let pool: Pool | null = null;
@@ -167,7 +168,7 @@ export interface StoredScheduleConfig {
   anthropicModel?: string;
   timezone: string;
   wire?: string;
-  scheduleType?: 'weekly-summary' | 'scan-execution';
+  scheduleType?: 'weekly-summary' | 'scan-execution' | 'forum-scan';
   frequencyHours?: number;
   notifyEmails?: string;
   createdAt?: Date;
@@ -473,6 +474,7 @@ export interface ScanPromptRecord {
   promptText: string;
   responseFormat: string | null;
   variant: string | null;
+  toolType: ToolType;
   isActive: boolean;
   sortOrder: number;
   createdAt: Date;
@@ -487,6 +489,7 @@ function parseScanPromptRow(row: any): ScanPromptRecord {
     promptText: row.prompt_text,
     responseFormat: row.response_format || null,
     variant: row.variant || null,
+    toolType: row.tool_type || 'x_search',
     isActive: row.is_active ?? true,
     sortOrder: row.sort_order ?? 0,
     createdAt: row.created_at,
@@ -647,7 +650,7 @@ export async function ensureScanTables(): Promise<void> {
     deadline_parsed DATE,
     wire TEXT NOT NULL,
     prompt_variant TEXT NOT NULL CHECK (prompt_variant IN ('A', 'B', 'C', 'N')),
-    scan_source TEXT NOT NULL DEFAULT 'x-scan' CHECK (scan_source IN ('x-scan', 'web-search', 'telegram', 'email')),
+    scan_source TEXT NOT NULL DEFAULT 'x-scan',
     scan_date DATE NOT NULL,
     status TEXT NOT NULL DEFAULT 'raw'
       CHECK (status IN ('raw','deduped','duplicate','scored','queued','enriched','published','archived','skipped','approved','declined')),
@@ -737,13 +740,13 @@ export async function ensureScanTables(): Promise<void> {
       EXECUTE FUNCTION update_scan_entries_updated_at()
   `);
 
-  // Phase 3 migrations: expand constraints for telegram/email ingestion
+  // Phase 3 migrations: expand constraints for telegram/email/forum ingestion
   await client.query(`
     ALTER TABLE scan_entries DROP CONSTRAINT IF EXISTS scan_entries_scan_source_check
   `);
   await client.query(`
     ALTER TABLE scan_entries ADD CONSTRAINT scan_entries_scan_source_check
-      CHECK (scan_source IN ('x-scan', 'web-search', 'telegram', 'email'))
+      CHECK (scan_source IN ('x-scan', 'web-search', 'telegram', 'email', 'forum'))
   `);
   await client.query(`
     ALTER TABLE scan_entries DROP CONSTRAINT IF EXISTS scan_entries_prompt_variant_check
@@ -848,7 +851,13 @@ export async function ensureScanPromptsTable(): Promise<void> {
   await pool.query(`ALTER TABLE schedules ADD COLUMN IF NOT EXISTS frequency_hours INTEGER`);
   await pool.query(`ALTER TABLE schedules ADD COLUMN IF NOT EXISTS notify_emails TEXT`);
 
-  console.log('[DB] Scan prompts table ready (Phase 2 migrations applied)');
+  // Phase 3 migration: tool_type column for x_search vs web_search
+  await pool.query(`
+    ALTER TABLE scan_prompts ADD COLUMN IF NOT EXISTS tool_type TEXT DEFAULT 'x_search'
+      CHECK (tool_type IN ('x_search', 'web_search'))
+  `);
+
+  console.log('[DB] Scan prompts table ready (Phase 2+3 migrations applied)');
 }
 
 /**
@@ -953,11 +962,12 @@ export async function createScanPrompt(params: {
   responseFormat?: string;
   isActive?: boolean;
   sortOrder?: number;
+  toolType?: ToolType;
 }): Promise<ScanPromptRecord> {
   const pool = getPool();
   const result = await pool.query(`
-    INSERT INTO scan_prompts (wire, label, prompt_text, response_format, is_active, sort_order)
-    VALUES ($1, $2, $3, $4, $5, $6)
+    INSERT INTO scan_prompts (wire, label, prompt_text, response_format, is_active, sort_order, tool_type)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
     RETURNING *
   `, [
     params.wire,
@@ -966,6 +976,7 @@ export async function createScanPrompt(params: {
     params.responseFormat || null,
     params.isActive ?? true,
     params.sortOrder ?? 0,
+    params.toolType || 'x_search',
   ]);
 
   return parseScanPromptRow(result.rows[0]);
@@ -973,7 +984,7 @@ export async function createScanPrompt(params: {
 
 export async function updateScanPrompt(
   id: string,
-  updates: Partial<{ wire: string; label: string; promptText: string; responseFormat: string | null; isActive: boolean; sortOrder: number; variant: string | null }>
+  updates: Partial<{ wire: string; label: string; promptText: string; responseFormat: string | null; isActive: boolean; sortOrder: number; variant: string | null; toolType: ToolType }>
 ): Promise<ScanPromptRecord | null> {
   const pool = getPool();
   const setClauses: string[] = [];
@@ -987,6 +998,7 @@ export async function updateScanPrompt(
   if (updates.isActive !== undefined) { setClauses.push(`is_active = $${paramIndex++}`); values.push(updates.isActive); }
   if (updates.sortOrder !== undefined) { setClauses.push(`sort_order = $${paramIndex++}`); values.push(updates.sortOrder); }
   if (updates.variant !== undefined) { setClauses.push(`variant = $${paramIndex++}`); values.push(updates.variant); }
+  if (updates.toolType !== undefined) { setClauses.push(`tool_type = $${paramIndex++}`); values.push(updates.toolType); }
 
   if (setClauses.length === 0) return getScanPromptById(id);
 

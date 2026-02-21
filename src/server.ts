@@ -19,6 +19,7 @@ import { getPool } from './db';
 import { executeScanPrompt } from './services/grok';
 import { withRetry } from './services/processor';
 import { runScanExecution } from './jobs/scan-execution';
+import { runForumScan } from './jobs/forum-scan';
 import { getPromptEffectivenessStats } from './services/scan-stats';
 import { registerTelegramWebhook, handleTelegramUpdate } from './services/telegram';
 import { handleInboundEmail, verifyResendSignature, ResendInboundPayload } from './services/email-inbound';
@@ -436,6 +437,7 @@ app.delete('/api/feeds/:key', requireAuth, async (req: Request, res: Response) =
 // Running job trackers to prevent concurrent execution
 let runningWeeklyJobId: string | null = null;
 let runningScanJobId: string | null = null;
+let runningForumJobId: string | null = null;
 
 // Trigger job manually (async with job queue)
 app.post('/api/run-job', requireAuth, async (req: Request, res: Response) => {
@@ -727,8 +729,8 @@ app.get('/api/schedule', requireAuth, (req: Request, res: Response) => {
 // Validate schedule numeric parameters
 function validateScheduleParams(body: Record<string, any>): string | null {
   const { dayOfWeek, hour, minute, lookbackDays, scheduleType, frequencyHours, notifyEmails } = body;
-  if (scheduleType && !['weekly-summary', 'scan-execution'].includes(scheduleType)) {
-    return 'scheduleType must be "weekly-summary" or "scan-execution"';
+  if (scheduleType && !['weekly-summary', 'scan-execution', 'forum-scan'].includes(scheduleType)) {
+    return 'scheduleType must be "weekly-summary", "scan-execution", or "forum-scan"';
   }
   if (typeof dayOfWeek === 'number' && (dayOfWeek < 0 || dayOfWeek > 6)) {
     return 'dayOfWeek must be between 0 (Sunday) and 6 (Saturday)';
@@ -1193,7 +1195,7 @@ app.get('/api/scan/prompts', requireAuth, async (req: Request, res: Response) =>
 
 // API: Create scan prompt
 app.post('/api/scan/prompts', requireAuth, async (req: Request, res: Response) => {
-  const { wire, label, promptText, responseFormat, isActive, sortOrder } = req.body;
+  const { wire, label, promptText, responseFormat, isActive, sortOrder, toolType } = req.body;
 
   if (!wire || typeof wire !== 'string') {
     res.status(400).json({ error: 'wire is required' });
@@ -1205,6 +1207,10 @@ app.post('/api/scan/prompts', requireAuth, async (req: Request, res: Response) =
   }
   if (!promptText || typeof promptText !== 'string' || promptText.trim().length === 0) {
     res.status(400).json({ error: 'promptText is required and must be non-empty' });
+    return;
+  }
+  if (toolType && !['x_search', 'web_search'].includes(toolType)) {
+    res.status(400).json({ error: 'toolType must be "x_search" or "web_search"' });
     return;
   }
 
@@ -1224,6 +1230,7 @@ app.post('/api/scan/prompts', requireAuth, async (req: Request, res: Response) =
       responseFormat: responseFormat || undefined,
       isActive: isActive ?? true,
       sortOrder: typeof sortOrder === 'number' ? sortOrder : undefined,
+      toolType: toolType || 'x_search',
     });
 
     res.json(prompt);
@@ -1241,7 +1248,7 @@ app.put('/api/scan/prompts/:id', requireAuth, async (req: Request, res: Response
     return;
   }
 
-  const { wire, label, promptText, responseFormat, isActive, sortOrder } = req.body;
+  const { wire, label, promptText, responseFormat, isActive, sortOrder, toolType } = req.body;
   const updates: Record<string, any> = {};
 
   if (wire !== undefined) {
@@ -1259,6 +1266,13 @@ app.put('/api/scan/prompts/:id', requireAuth, async (req: Request, res: Response
   if (responseFormat !== undefined) updates.responseFormat = responseFormat || null;
   if (isActive !== undefined) updates.isActive = isActive;
   if (sortOrder !== undefined) updates.sortOrder = sortOrder;
+  if (toolType !== undefined) {
+    if (!['x_search', 'web_search'].includes(toolType)) {
+      res.status(400).json({ error: 'toolType must be "x_search" or "web_search"' });
+      return;
+    }
+    updates.toolType = toolType;
+  }
 
   try {
     const updated = await updateScanPrompt(id, updates);
@@ -1316,6 +1330,7 @@ app.post('/api/scan/prompts/:id/test', requireAuth, async (req: Request, res: Re
 
     const result = await withRetry(() => executeScanPrompt(prompt.promptText, {
       responseFormat: prompt.responseFormat,
+      toolType: prompt.toolType,
     }));
 
     res.json({
@@ -1394,6 +1409,64 @@ app.post('/api/scan/run', requireAuth, async (req: Request, res: Response) => {
   })().catch(error => {
     console.error('Unexpected error in scan runner:', error);
     runningScanJobId = null;
+  });
+});
+
+// API: Trigger forum scan via discuss.watch (async with SSE progress)
+app.post('/api/forum/run', requireAuth, async (req: Request, res: Response) => {
+  if (!config.forum.enabled) {
+    res.status(400).json({ error: 'Forum scanning is not enabled. Set FORUM_SCAN_ENABLED=true to enable.' });
+    return;
+  }
+
+  // Check concurrent first (does not consume rate limit token)
+  if (runningForumJobId) {
+    const existingJob = jobQueue.getJob(runningForumJobId);
+    if (existingJob && existingJob.status === 'running') {
+      res.status(409).json({ error: 'A forum scan job is already running', jobId: runningForumJobId });
+      return;
+    }
+    runningForumJobId = null;
+  }
+
+  if (!rateLimit('forum-run', 1, 15 * 60 * 1000)) {
+    res.status(429).json({ error: 'Forum scan recently completed. Please wait 15 minutes.' });
+    return;
+  }
+
+  const { wire } = req.body;
+  const pool = getPool();
+
+  const jobId = jobQueue.createJob();
+  runningForumJobId = jobId;
+  res.json({ jobId });
+
+  (async () => {
+    jobQueue.updateJob(jobId, { status: 'running' });
+
+    try {
+      const result = await runForumScan(pool, {
+        wire: wire || undefined,
+        onProgress: (message, pct) => {
+          jobQueue.updateProgress(jobId, {
+            current: pct,
+            total: 100,
+            step: message,
+          });
+        },
+      });
+
+      jobQueue.completeJob(jobId, result);
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      jobQueue.failJob(jobId, errorMsg);
+    } finally {
+      runningForumJobId = null;
+      jobQueue.cleanup();
+    }
+  })().catch(error => {
+    console.error('Unexpected error in forum scan runner:', error);
+    runningForumJobId = null;
   });
 });
 
@@ -2005,6 +2078,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
             <select id="scheduleType">
               <option value="weekly-summary">Weekly Summary</option>
               <option value="scan-execution">Scan Execution</option>
+              <option value="forum-scan">Forum Scan</option>
             </select>
           </div>
           <div class="form-group" id="scheduleFrequencyGroup" style="display: none;">
@@ -2181,6 +2255,30 @@ function renderDashboard(files: StoredFile[], message?: string): string {
     </div>
 
     <div class="card">
+      <h2>Forum Scan</h2>
+      <p class="form-description" style="margin-bottom: 16px;">Search discuss.watch forums for grant-related discussions across 150+ Discourse communities.</p>
+      <div class="run-form">
+        <div class="form-row" style="align-items: flex-end;">
+          <div class="form-group">
+            <label for="forumRunWire">Wire Filter</label>
+            <select id="forumRunWire">
+              <option value="">All Wires</option>
+            </select>
+          </div>
+          <button type="button" id="run-forum-btn" class="button" style="background: #1a2c3c; border-color: #64b5f6;">Run Forum Scan</button>
+        </div>
+        <div id="forum-run-progress" style="display: none; margin-top: 16px;">
+          <div style="background: #2a2a2a; border-radius: 4px; overflow: hidden; height: 20px;">
+            <div id="forum-run-bar" style="background: #64b5f6; height: 100%; width: 0%; transition: width 0.3s;"></div>
+          </div>
+          <p id="forum-run-step" style="color: #999; font-size: 13px; margin: 8px 0 0;">Initializing...</p>
+        </div>
+        <div id="forum-run-result" style="display: none; margin-top: 16px; padding: 12px 16px; background: #0d0d0d; border-radius: 8px; border: 1px solid #2a2a2a;">
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
       <h2>Scan Intake</h2>
       <p class="form-description" style="margin-bottom: 16px;">Paste structured Grok scan output to ingest, deduplicate, and score entries.</p>
       <div class="run-form">
@@ -2271,6 +2369,13 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           <div class="form-group">
             <label for="promptSortOrder">Order</label>
             <input type="number" id="promptSortOrder" value="0" min="0" style="width: 70px;">
+          </div>
+          <div class="form-group">
+            <label for="promptToolType">Search Tool</label>
+            <select id="promptToolType">
+              <option value="x_search">X.com Search</option>
+              <option value="web_search">Web Search</option>
+            </select>
           </div>
           <div class="form-group">
             <label for="promptIsActive">Status</label>
@@ -2544,7 +2649,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
 
     // Show/hide fields based on schedule type
     function toggleScheduleTypeFields() {
-      const isScan = scheduleTypeSelect.value === 'scan-execution';
+      const isScan = scheduleTypeSelect.value === 'scan-execution' || scheduleTypeSelect.value === 'forum-scan';
       scheduleDayOfWeekGroup.style.display = isScan ? 'none' : '';
       scheduleFrequencyGroup.style.display = isScan ? '' : 'none';
       scheduleNotifyRow.style.display = isScan ? '' : 'none';
@@ -2596,8 +2701,8 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         const status = s.enabled ? '<span style="color: #4caf50;">Enabled</span>' : '<span style="color: #666;">Disabled</span>';
         const tz = s.timezone || 'America/Los_Angeles';
         const tzShort = tz.split('/').pop().replace('_', ' ');
-        const isScan = s.scheduleType === 'scan-execution';
-        const typeLabel = isScan ? '<span style="color: #9c27b0;">Scan</span>' : 'Summary';
+        const isScan = s.scheduleType === 'scan-execution' || s.scheduleType === 'forum-scan';
+        const typeLabel = s.scheduleType === 'forum-scan' ? '<span style="color: #64b5f6;">Forum</span>' : isScan ? '<span style="color: #9c27b0;">Scan</span>' : 'Summary';
         let nextRun = '-';
         if (s.nextRun) {
           try {
@@ -2888,7 +2993,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           grokModel: scheduleGrokModel.value,
           anthropicModel: scheduleAnthropicModel.value,
           wire: scheduleWire.value || undefined,
-          frequencyHours: scheduleTypeSelect.value === 'scan-execution' && scheduleFrequencySelect.value ? parseInt(scheduleFrequencySelect.value, 10) : undefined,
+          frequencyHours: (scheduleTypeSelect.value === 'scan-execution' || scheduleTypeSelect.value === 'forum-scan') && scheduleFrequencySelect.value ? parseInt(scheduleFrequencySelect.value, 10) : undefined,
           notifyEmails: scheduleNotifyEmails.value || undefined,
         };
         
@@ -3261,9 +3366,10 @@ function renderDashboard(files: StoredFile[], message?: string): string {
     function sourceBadge(scanSource) {
       var badges = {
         'x-scan': { label: 'X', bg: '#1a3a5c', color: '#5b9bd5' },
-        'web-search': { label: 'Web', bg: '#1a3c1a', color: '#4caf50' },
+        'web-search': { label: 'Web', bg: '#1a3c2c', color: '#81c784' },
         'telegram': { label: 'TG', bg: '#1a3c3c', color: '#26c6da' },
-        'email': { label: 'Email', bg: '#3c2a1a', color: '#ff9800' }
+        'email': { label: 'Email', bg: '#3c2a1a', color: '#ff9800' },
+        'forum': { label: 'Forum', bg: '#1a2c3c', color: '#64b5f6' }
       };
       var b = badges[scanSource] || { label: scanSource || '?', bg: '#2a2a2a', color: '#999' };
       return '<span style="background:' + b.bg + '; color:' + b.color + '; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:600;">' + escapeHtml(b.label) + '</span>';
@@ -3406,6 +3512,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
     const promptWireSelect = document.getElementById('promptWire');
     const promptLabelInput = document.getElementById('promptLabel');
     const promptSortOrderInput = document.getElementById('promptSortOrder');
+    const promptToolTypeSelect = document.getElementById('promptToolType');
     const promptIsActiveSelect = document.getElementById('promptIsActive');
     const promptTextInput = document.getElementById('promptText');
     const promptResponseFormatInput = document.getElementById('promptResponseFormat');
@@ -3452,7 +3559,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         return;
       }
 
-      let html = '<table><thead><tr><th>Wire</th><th>Label</th><th>Status</th><th>Order</th><th>Prompt</th><th>Actions</th></tr></thead><tbody>';
+      let html = '<table><thead><tr><th>Wire</th><th>Label</th><th>Tool</th><th>Status</th><th>Order</th><th>Prompt</th><th>Actions</th></tr></thead><tbody>';
 
       prompts.forEach(function(p) {
         const truncated = (p.promptText || '').length > 80 ? p.promptText.substring(0, 80) + '...' : p.promptText;
@@ -3460,8 +3567,11 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         const statusText = p.isActive ? 'Active' : 'Inactive';
 
         html += '<tr id="prompt-row-' + p.id + '">';
+        const toolLabel = p.toolType === 'web_search' ? 'Web' : 'X';
+        const toolColor = p.toolType === 'web_search' ? '#4caf50' : '#5b9bd5';
         html += '<td><code style="background: #0d0d0d; padding: 2px 6px; border-radius: 4px;">' + escapeHtml(p.wire) + '</code></td>';
         html += '<td>' + escapeHtml(p.label) + '</td>';
+        html += '<td><span style="color: ' + toolColor + '; font-size: 12px; font-weight: 600;">' + toolLabel + '</span></td>';
         html += '<td><span style="color: ' + statusColor + ';">' + statusText + '</span></td>';
         html += '<td>' + p.sortOrder + '</td>';
         html += '<td style="font-size: 12px; color: #999; max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">' + escapeHtml(truncated) + '</td>';
@@ -3472,7 +3582,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         html += '<button class="delete-prompt" data-id="' + p.id + '" data-label="' + escapeHtml(p.label) + '" style="background: #2a2a2a; border: none; color: #ef5350; padding: 6px 10px; border-radius: 4px; cursor: pointer; font-size: 12px;">Delete</button>';
         html += '</td>';
         html += '</tr>';
-        html += '<tr id="prompt-test-row-' + p.id + '" style="display: none;"><td colspan="6" style="padding: 12px; background: #0d0d0d;"><div class="prompt-test-output" style="font-family: monospace; font-size: 12px; white-space: pre-wrap; color: #ccc; max-height: 300px; overflow-y: auto;"></div></td></tr>';
+        html += '<tr id="prompt-test-row-' + p.id + '" style="display: none;"><td colspan="7" style="padding: 12px; background: #0d0d0d;"><div class="prompt-test-output" style="font-family: monospace; font-size: 12px; white-space: pre-wrap; color: #ccc; max-height: 300px; overflow-y: auto;"></div></td></tr>';
       });
 
       html += '</tbody></table>';
@@ -3555,6 +3665,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           promptWireSelect.value = p.wire;
           promptLabelInput.value = p.label;
           promptSortOrderInput.value = p.sortOrder;
+          promptToolTypeSelect.value = p.toolType || 'x_search';
           promptIsActiveSelect.value = String(p.isActive);
           promptTextInput.value = p.promptText;
           promptResponseFormatInput.value = p.responseFormat || '';
@@ -3589,6 +3700,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       promptWireSelect.selectedIndex = 0;
       promptLabelInput.value = '';
       promptSortOrderInput.value = '0';
+      promptToolTypeSelect.value = 'x_search';
       promptIsActiveSelect.value = 'true';
       promptTextInput.value = '';
       promptResponseFormatInput.value = '';
@@ -3604,6 +3716,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       const wire = promptWireSelect.value;
       const label = promptLabelInput.value.trim();
       const sortOrder = parseInt(promptSortOrderInput.value) || 0;
+      const toolType = promptToolTypeSelect.value;
       const isActive = promptIsActiveSelect.value === 'true';
       const promptTextVal = promptTextInput.value.trim();
       const responseFormat = promptResponseFormatInput.value.trim();
@@ -3616,7 +3729,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       savePromptBtn.textContent = 'Saving...';
 
       try {
-        const body = { wire, label, sortOrder, isActive, promptText: promptTextVal, responseFormat: responseFormat || null };
+        const body = { wire, label, sortOrder, toolType, isActive, promptText: promptTextVal, responseFormat: responseFormat || null };
         const url = editId ? '/api/scan/prompts/' + editId : '/api/scan/prompts';
         const method = editId ? 'PUT' : 'POST';
 
@@ -3806,6 +3919,110 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         runScanBtn.textContent = 'Run Scan Now';
         scanRunResult.innerHTML = '<p style="color: #ef5350; margin: 0;">Error: ' + escapeHtml(error.message) + '</p>';
         scanRunResult.style.display = 'block';
+      }
+    });
+
+    // ---- Forum Scan ----
+    const runForumBtn = document.getElementById('run-forum-btn');
+    const forumRunWireSelect = document.getElementById('forumRunWire');
+    const forumRunProgress = document.getElementById('forum-run-progress');
+    const forumRunBar = document.getElementById('forum-run-bar');
+    const forumRunStep = document.getElementById('forum-run-step');
+    const forumRunResult = document.getElementById('forum-run-result');
+
+    // Populate forum wire selector
+    (async function() {
+      try {
+        const resp = await fetch('/api/feeds');
+        if (resp.ok) {
+          const feeds = await resp.json();
+          feeds.forEach(function(f) {
+            var opt = document.createElement('option');
+            opt.value = f.key;
+            opt.textContent = f.displayName;
+            forumRunWireSelect.appendChild(opt);
+          });
+        }
+      } catch(e) { console.error('Failed to load forum wire options:', e); }
+    })();
+
+    if (runForumBtn) runForumBtn.addEventListener('click', async function() {
+      runForumBtn.disabled = true;
+      runForumBtn.textContent = 'Starting...';
+      forumRunProgress.style.display = 'block';
+      forumRunResult.style.display = 'none';
+      forumRunBar.style.width = '0%';
+      forumRunStep.textContent = 'Initializing...';
+
+      try {
+        const body = {};
+        if (forumRunWireSelect.value) body.wire = forumRunWireSelect.value;
+
+        const resp = await fetch('/api/forum/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+
+        if (!resp.ok) {
+          const data = await resp.json();
+          throw new Error(data.error || 'Failed to start forum scan');
+        }
+
+        const { jobId } = await resp.json();
+        runForumBtn.textContent = 'Running...';
+
+        const evtSource = new EventSource('/api/job/' + jobId + '/progress');
+        evtSource.onmessage = function(event) {
+          try {
+            const status = JSON.parse(event.data);
+            if (status.progress) {
+              const pct = status.progress.total > 0
+                ? Math.round((status.progress.current / status.progress.total) * 100)
+                : 0;
+              forumRunBar.style.width = pct + '%';
+              forumRunStep.textContent = status.progress.step || ('Progress: ' + pct + '%');
+            }
+            if (status.status === 'completed') {
+              evtSource.close();
+              runForumBtn.disabled = false;
+              runForumBtn.textContent = 'Run Forum Scan';
+
+              const r = status.result || {};
+              const intake = r.intakeSummary || {};
+              let html = '<p style="color: #64b5f6; margin: 0 0 8px; font-weight: 600;">Forum scan complete</p>';
+              html += '<p style="color: #ccc; margin: 0; font-size: 13px;">';
+              html += 'Results: ' + (r.totalResults || 0);
+              html += ' | Duration: ' + Math.round((r.durationMs || 0) / 1000) + 's';
+              html += '</p>';
+              html += '<p style="color: #999; margin: 4px 0 0; font-size: 13px;">';
+              html += 'Unique: ' + (intake.newUnique || 0);
+              html += ' | Duplicates: ' + (intake.duplicatesFound || 0);
+              html += ' | High quality: ' + (intake.highQualityCount || 0);
+              html += '</p>';
+              forumRunResult.innerHTML = html;
+              forumRunResult.style.display = 'block';
+            }
+            if (status.status === 'failed') {
+              evtSource.close();
+              runForumBtn.disabled = false;
+              runForumBtn.textContent = 'Run Forum Scan';
+              forumRunResult.innerHTML = '<p style="color: #ef5350; margin: 0;">Failed: ' + escapeHtml(status.error || 'Unknown error') + '</p>';
+              forumRunResult.style.display = 'block';
+            }
+          } catch (e) { console.error('SSE parse error:', e); }
+        };
+        evtSource.onerror = function() {
+          evtSource.close();
+          runForumBtn.disabled = false;
+          runForumBtn.textContent = 'Run Forum Scan';
+        };
+      } catch (error) {
+        forumRunProgress.style.display = 'none';
+        runForumBtn.disabled = false;
+        runForumBtn.textContent = 'Run Forum Scan';
+        forumRunResult.innerHTML = '<p style="color: #ef5350; margin: 0;">Error: ' + escapeHtml(error.message) + '</p>';
+        forumRunResult.style.display = 'block';
       }
     });
 
@@ -4082,9 +4299,10 @@ function renderQueuePage(): string {
     function sourceBadge(scanSource) {
       var badges = {
         'x-scan': { label: 'X', bg: '#1a3a5c', color: '#5b9bd5' },
-        'web-search': { label: 'Web', bg: '#1a3c1a', color: '#4caf50' },
+        'web-search': { label: 'Web', bg: '#1a3c2c', color: '#81c784' },
         'telegram': { label: 'TG', bg: '#1a3c3c', color: '#26c6da' },
-        'email': { label: 'Email', bg: '#3c2a1a', color: '#ff9800' }
+        'email': { label: 'Email', bg: '#3c2a1a', color: '#ff9800' },
+        'forum': { label: 'Forum', bg: '#1a2c3c', color: '#64b5f6' }
       };
       var b = badges[scanSource] || { label: scanSource || '?', bg: '#2a2a2a', color: '#999' };
       return '<span style="background:' + b.bg + '; color:' + b.color + '; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:600;">' + escapeHtml(b.label) + '</span>';

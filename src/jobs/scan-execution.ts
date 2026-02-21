@@ -13,6 +13,7 @@
 import type { Pool } from 'pg';
 import type {
   PromptVariant,
+  ScanSource,
   ScanSubmission,
   IntakeRunSummary,
   IntakeJobConfig,
@@ -114,7 +115,10 @@ export async function runScanExecution(
 
     try {
       const grokResult = await withRetry(
-        () => executeScanPrompt(prompt.promptText, { responseFormat: prompt.responseFormat }),
+        () => executeScanPrompt(prompt.promptText, {
+          responseFormat: prompt.responseFormat,
+          toolType: prompt.toolType,
+        }),
         2 // 2 total attempts (1 retry) — these are expensive calls
       );
 
@@ -129,11 +133,12 @@ export async function runScanExecution(
       }
 
       // Build submission
+      const source: ScanSource = prompt.toolType === 'web_search' ? 'web-search' : 'x-scan';
       submissions.push({
         wire: prompt.wire,
         promptVariant: variant,
         scanDate: today,
-        source: 'x-scan',
+        source,
         results: parsed,
         promptId: prompt.id,
       });
