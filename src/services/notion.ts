@@ -212,9 +212,6 @@ export async function createOrg(params: CreateOrgParams): Promise<NotionOrg | nu
     properties['Website'] = { url: params.website };
   }
 
-  properties['Auto-created'] = { checkbox: true };
-  properties['Last Seen'] = { date: { start: new Date().toISOString().split('T')[0] } };
-
   try {
     const response = await rateLimitedRequest(() =>
       client.pages.create({
@@ -237,19 +234,22 @@ export async function updateOrgLastSeen(
   const client = getNotionClient();
   if (!client) return false;
 
-  const properties: any = {
-    'Last Seen': { date: { start: new Date().toISOString().split('T')[0] } },
-  };
-
   try {
+    // Try to update Last Seen — property may not exist in all DB schemas
     await rateLimitedRequest(() =>
       client.pages.update({
         page_id: orgId,
-        properties,
+        properties: {
+          'Last Seen': { date: { start: new Date().toISOString().split('T')[0] } },
+        },
       })
     );
     return true;
-  } catch (error) {
+  } catch (error: any) {
+    // Silently succeed if the property doesn't exist in this database
+    if (error?.code === 'validation_error' && error?.message?.includes('not a property')) {
+      return true;
+    }
     console.error('Error updating org last seen:', error);
     return false;
   }
