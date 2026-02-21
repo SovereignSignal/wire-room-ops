@@ -1587,11 +1587,13 @@ app.get('/api/scan/prompt-stats', requireAuth, async (req: Request, res: Respons
 function renderLoginPage(error?: string): string {
   return `
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <title>Sign In - Grant Wire Summarizer</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0d0d0d">
   <style>
     * { box-sizing: border-box; }
     body {
@@ -1603,6 +1605,7 @@ function renderLoginPage(error?: string): string {
       display: flex;
       align-items: center;
       justify-content: center;
+      color-scheme: dark;
     }
     .container {
       max-width: 400px;
@@ -1631,9 +1634,14 @@ function renderLoginPage(error?: string): string {
       transition: border-color 0.2s;
     }
     input[type="email"]::placeholder { color: #666666; }
-    input[type="email"]:focus {
-      outline: none;
+    input[type="email"]:focus-visible {
+      outline: 2px solid #f5a623;
+      outline-offset: 2px;
       border-color: #f5a623;
+    }
+    .button:focus-visible {
+      outline: 2px solid #f5a623;
+      outline-offset: 2px;
     }
     .button {
       width: 100%;
@@ -1657,6 +1665,12 @@ function renderLoginPage(error?: string): string {
       font-size: 14px;
       border: 1px solid rgba(239, 83, 80, 0.3);
     }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
   </style>
 </head>
 <body>
@@ -1667,7 +1681,7 @@ function renderLoginPage(error?: string): string {
     <form method="POST" action="/login">
       <div class="form-group">
         <label for="email">Email address</label>
-        <input type="email" id="email" name="email" placeholder="you@example.com" required>
+        <input type="email" id="email" name="email" placeholder="you@example.com" required autocomplete="email">
       </div>
       <button type="submit" class="button">Send Magic Link</button>
     </form>
@@ -1680,11 +1694,13 @@ function renderLoginPage(error?: string): string {
 function renderLoginSentPage(email: string): string {
   return `
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <title>Check Your Email - Grant Wire Summarizer</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0d0d0d">
   <style>
     * { box-sizing: border-box; }
     body {
@@ -1696,6 +1712,7 @@ function renderLoginSentPage(email: string): string {
       display: flex;
       align-items: center;
       justify-content: center;
+      color-scheme: dark;
     }
     .container {
       max-width: 400px;
@@ -1752,11 +1769,13 @@ function renderDashboard(files: StoredFile[], message?: string): string {
 
   return `
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <title>Dashboard - Grant Wire Summarizer</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0d0d0d">
   <style>
     * { box-sizing: border-box; }
     body {
@@ -1766,6 +1785,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       padding: 0;
       min-height: 100vh;
       color: #ffffff;
+      color-scheme: dark;
     }
     .header {
       background: #1a1a1a;
@@ -1817,6 +1837,10 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       transition: background 0.2s;
     }
     .button:hover { background: #e6951a; }
+    .button:focus-visible {
+      outline: 2px solid #f5a623;
+      outline-offset: 2px;
+    }
     .button:disabled {
       background: #666666;
       cursor: not-allowed;
@@ -1829,7 +1853,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
     table { width: 100%; border-collapse: collapse; }
     th, td { padding: 12px; text-align: left; border-bottom: 1px solid #2a2a2a; }
     th { font-weight: 600; color: #999999; font-size: 12px; text-transform: uppercase; }
-    td { color: #ffffff; }
+    td { color: #ffffff; font-variant-numeric: tabular-nums; }
     .download-link { color: #f5a623; text-decoration: none; font-weight: 500; }
     .download-link:hover { text-decoration: underline; }
     .empty { color: #666666; text-align: center; padding: 32px; }
@@ -1846,10 +1870,12 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       background: #0d0d0d;
       color: #ffffff;
       min-width: 180px;
+      color-scheme: dark;
     }
-    .form-group input[type="date"]:focus,
-    .form-group select:focus {
-      outline: none;
+    .form-group input[type="date"]:focus-visible,
+    .form-group select:focus-visible {
+      outline: 2px solid #f5a623;
+      outline-offset: 2px;
       border-color: #f5a623;
     }
     .form-group select option {
@@ -1879,10 +1905,12 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       font-size: 14px;
       background: #0d0d0d;
       color: #ffffff;
+      color-scheme: dark;
     }
-    .form-group input[type="time"]:focus,
-    .form-group input[type="number"]:focus {
-      outline: none;
+    .form-group input[type="time"]:focus-visible,
+    .form-group input[type="number"]:focus-visible {
+      outline: 2px solid #f5a623;
+      outline-offset: 2px;
       border-color: #f5a623;
     }
     .save-success {
@@ -1964,16 +1992,49 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       margin-left: 12px;
     }
     .refresh-btn:hover { border-color: #f5a623; color: #f5a623; }
+    .refresh-btn:focus-visible {
+      outline: 2px solid #f5a623;
+      outline-offset: 2px;
+    }
+    #run-forum-btn:hover:not(:disabled) { background: #234a63; }
+    .skip-link {
+      position: absolute;
+      left: -9999px;
+      top: auto;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+    }
+    .skip-link:focus {
+      position: fixed;
+      top: 8px;
+      left: 8px;
+      width: auto;
+      height: auto;
+      padding: 8px 16px;
+      background: #f5a623;
+      color: #0d0d0d;
+      border-radius: 4px;
+      z-index: 9999;
+      font-weight: 600;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
   </style>
 </head>
 <body>
+  <a href="#main-content" class="skip-link">Skip to content</a>
   <div class="header">
     <div class="header-content">
       <h1 class="logo">📡 <span class="logo-grant">Grant</span><span class="logo-wire">Wire</span></h1>
       <p>Newsletter Automation Dashboard</p>
     </div>
   </div>
-  <div class="main">
+  <div class="main" id="main-content">
     ${message ? `<div class="message ${message.startsWith('Error') ? 'error' : 'success'}">${escapeHtml(decodeURIComponent(message))}</div>` : ''}
 
     <div class="card">
@@ -1991,7 +2052,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           <div class="form-group">
             <label for="wireFilter">Feed</label>
             <select id="wireFilter" name="wire">
-              <option value="">Loading feeds...</option>
+              <option value="">Loading feeds\u2026</option>
             </select>
           </div>
         </div>
@@ -1999,22 +2060,22 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           <div class="form-group">
             <label for="grokModel">Grok Model (X.com)</label>
             <select id="grokModel" name="grokModel">
-              <option value="">Loading models...</option>
+              <option value="">Loading models\u2026</option>
             </select>
           </div>
           <div class="form-group">
             <label for="anthropicModel">Claude Model (Other)</label>
             <select id="anthropicModel" name="anthropicModel">
-              <option value="">Loading models...</option>
+              <option value="">Loading models\u2026</option>
             </select>
           </div>
           <button type="submit" id="run-button" class="button">Run Job Now</button>
         </div>
         <p class="form-description">Fetches entries from the selected date range, processes with selected AI models, generates markdown.</p>
       </form>
-      <div id="progress-container" class="progress-container">
-        <p class="progress-text">Processing...</p>
-        <div class="progress-bar-outer">
+      <div id="progress-container" class="progress-container" aria-live="polite">
+        <p class="progress-text">Processing\u2026</p>
+        <div class="progress-bar-outer" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
           <div id="progress-bar" class="progress-bar-inner"></div>
         </div>
         <p id="progress-step" class="progress-step"></p>
@@ -2039,7 +2100,10 @@ function renderDashboard(files: StoredFile[], message?: string): string {
     </div>
 
     <div class="card">
-      <h2>Feed Management <button type="button" id="add-feed" class="button" style="float: right; padding: 8px 16px; font-size: 13px;">+ Add Feed</button></h2>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h2 style="margin: 0;">Feed Management</h2>
+        <button type="button" id="add-feed" class="button" style="padding: 8px 16px; font-size: 13px;">+ Add Feed</button>
+      </div>
       <div id="feeds-list"></div>
       <div id="feed-form" class="run-form" style="display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid #2a2a2a;">
         <input type="hidden" id="feedEditKey" value="">
@@ -2063,7 +2127,10 @@ function renderDashboard(files: StoredFile[], message?: string): string {
     </div>
 
     <div class="card">
-      <h2>Scheduled Runs <button type="button" id="add-schedule" class="button" style="float: right; padding: 8px 16px; font-size: 13px;">+ Add Schedule</button></h2>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h2 style="margin: 0;">Scheduled Runs</h2>
+        <button type="button" id="add-schedule" class="button" style="padding: 8px 16px; font-size: 13px;">+ Add Schedule</button>
+      </div>
       <div id="schedules-list"></div>
       
       <div id="schedule-form" class="run-form" style="display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid #2a2a2a;">
@@ -2139,19 +2206,19 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           <div class="form-group">
             <label for="scheduleWire">Feed</label>
             <select id="scheduleWire">
-              <option value="">Loading feeds...</option>
+              <option value="">Loading feeds\u2026</option>
             </select>
           </div>
           <div class="form-group">
             <label for="scheduleGrokModel">Grok Model</label>
             <select id="scheduleGrokModel">
-              <option value="">Loading...</option>
+              <option value="">Loading\u2026</option>
             </select>
           </div>
           <div class="form-group">
             <label for="scheduleAnthropicModel">Claude Model</label>
             <select id="scheduleAnthropicModel">
-              <option value="">Loading...</option>
+              <option value="">Loading\u2026</option>
             </select>
           </div>
           <button type="button" id="save-schedule" class="button">Save</button>
@@ -2174,19 +2241,19 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           <div class="status-grid">
             <div class="status-item">
               <div class="label">Scheduler Status</div>
-              <div id="scheduler-running" class="value muted">Loading...</div>
+              <div id="scheduler-running" class="value muted">Loading\u2026</div>
             </div>
             <div class="status-item">
               <div class="label">Server Started</div>
-              <div id="scheduler-started" class="value muted">Loading...</div>
+              <div id="scheduler-started" class="value muted">Loading\u2026</div>
             </div>
             <div class="status-item">
               <div class="label">Last Job Run</div>
-              <div id="last-job-run" class="value muted">Loading...</div>
+              <div id="last-job-run" class="value muted">Loading\u2026</div>
             </div>
             <div class="status-item">
               <div class="label">Last Job Result</div>
-              <div id="last-job-status" class="value muted">Loading...</div>
+              <div id="last-job-status" class="value muted">Loading\u2026</div>
               <div id="last-job-error" class="error-msg" style="display: none;"></div>
             </div>
           </div>
@@ -2201,11 +2268,11 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         <div class="status-grid">
           <div class="status-item">
             <div class="label">Staging DB</div>
-            <div id="crm-staging-configured" class="value muted">Loading...</div>
+            <div id="crm-staging-configured" class="value muted">Loading\u2026</div>
           </div>
           <div class="status-item">
             <div class="label">Pending Orgs</div>
-            <div id="crm-pending-count" class="value muted">Loading...</div>
+            <div id="crm-pending-count" class="value muted">Loading\u2026</div>
           </div>
         </div>
       </div>
@@ -2243,11 +2310,11 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           </div>
           <button type="button" id="run-scan-btn" class="button">Run Scan Now</button>
         </div>
-        <div id="scan-run-progress" style="display: none; margin-top: 16px;">
-          <div style="background: #2a2a2a; border-radius: 4px; overflow: hidden; height: 20px;">
+        <div id="scan-run-progress" style="display: none; margin-top: 16px;" aria-live="polite">
+          <div style="background: #2a2a2a; border-radius: 4px; overflow: hidden; height: 20px;" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
             <div id="scan-run-bar" style="background: #f5a623; height: 100%; width: 0%; transition: width 0.3s;"></div>
           </div>
-          <p id="scan-run-step" style="color: #999; font-size: 13px; margin: 8px 0 0;">Initializing...</p>
+          <p id="scan-run-step" style="color: #999; font-size: 13px; margin: 8px 0 0;">Initializing\u2026</p>
         </div>
         <div id="scan-run-result" style="display: none; margin-top: 16px; padding: 12px 16px; background: #0d0d0d; border-radius: 8px; border: 1px solid #2a2a2a;">
         </div>
@@ -2267,11 +2334,11 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           </div>
           <button type="button" id="run-forum-btn" class="button" style="background: #1a2c3c; border-color: #64b5f6;">Run Forum Scan</button>
         </div>
-        <div id="forum-run-progress" style="display: none; margin-top: 16px;">
-          <div style="background: #2a2a2a; border-radius: 4px; overflow: hidden; height: 20px;">
+        <div id="forum-run-progress" style="display: none; margin-top: 16px;" aria-live="polite">
+          <div style="background: #2a2a2a; border-radius: 4px; overflow: hidden; height: 20px;" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
             <div id="forum-run-bar" style="background: #64b5f6; height: 100%; width: 0%; transition: width 0.3s;"></div>
           </div>
-          <p id="forum-run-step" style="color: #999; font-size: 13px; margin: 8px 0 0;">Initializing...</p>
+          <p id="forum-run-step" style="color: #999; font-size: 13px; margin: 8px 0 0;">Initializing\u2026</p>
         </div>
         <div id="forum-run-result" style="display: none; margin-top: 16px; padding: 12px 16px; background: #0d0d0d; border-radius: 8px; border: 1px solid #2a2a2a;">
         </div>
@@ -2286,7 +2353,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           <div class="form-group">
             <label for="scanWire">Feed</label>
             <select id="scanWire">
-              <option value="">Loading feeds...</option>
+              <option value="">Loading feeds\u2026</option>
             </select>
           </div>
           <div class="form-group">
@@ -2350,7 +2417,10 @@ function renderDashboard(files: StoredFile[], message?: string): string {
     </div>
 
     <div class="card">
-      <h2>Prompt Management <button type="button" id="add-prompt" class="button" style="float: right; padding: 8px 16px; font-size: 13px;">+ Add Prompt</button></h2>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h2 style="margin: 0;">Prompt Management</h2>
+        <button type="button" id="add-prompt" class="button" style="padding: 8px 16px; font-size: 13px;">+ Add Prompt</button>
+      </div>
       <p class="form-description" style="margin-bottom: 16px;">Manage scan prompts for automated Grok queries. Test prompts to preview output before scheduling.</p>
       <div id="prompts-list"></div>
       <div id="prompt-form" class="run-form" style="display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid #2a2a2a;">
@@ -2359,7 +2429,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           <div class="form-group">
             <label for="promptWire">Wire</label>
             <select id="promptWire">
-              <option value="">Loading feeds...</option>
+              <option value="">Loading feeds\u2026</option>
             </select>
           </div>
           <div class="form-group">
@@ -2583,7 +2653,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       if (!displayName) { alert('Display name is required'); return; }
 
       saveFeedBtn.disabled = true;
-      saveFeedBtn.textContent = 'Saving...';
+      saveFeedBtn.textContent = 'Saving\u2026';
 
       try {
         let response;
@@ -2921,7 +2991,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
     loadSchedulerStatus();
 
     refreshStatusBtn.addEventListener('click', () => {
-      refreshStatusBtn.textContent = 'Refreshing...';
+      refreshStatusBtn.textContent = 'Refreshing\u2026';
       loadSchedulerStatus().then(() => {
         refreshStatusBtn.textContent = 'Refresh';
       });
@@ -2931,7 +3001,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
 
     testAlertBtn.addEventListener('click', async () => {
       testAlertBtn.disabled = true;
-      testAlertBtn.textContent = 'Sending...';
+      testAlertBtn.textContent = 'Sending\u2026';
 
       try {
         const response = await fetch('/api/test-alert', {
@@ -2978,7 +3048,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       const id = scheduleId.value;
 
       saveScheduleBtn.disabled = true;
-      saveScheduleBtn.textContent = 'Saving...';
+      saveScheduleBtn.textContent = 'Saving\u2026';
 
       try {
         const body = {
@@ -3045,10 +3115,10 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       const wireFilter = document.getElementById('wireFilter').value;
 
       runButton.disabled = true;
-      runButton.textContent = 'Starting...';
+      runButton.textContent = 'Starting\u2026';
       progressContainer.classList.add('active');
       progressBar.style.width = '0%';
-      progressStep.textContent = 'Initializing job...';
+      progressStep.textContent = 'Initializing job\u2026';
 
       startTime = Date.now();
       elapsedTimer = setInterval(updateElapsedTime, 1000);
@@ -3082,6 +3152,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         if (data.status === 'running' && data.progress) {
           const percent = (data.progress.current / data.progress.total) * 100;
           progressBar.style.width = percent + '%';
+          progressBar.parentElement.setAttribute('aria-valuenow', Math.round(percent));
           progressStep.textContent = data.progress.step;
         } else if (data.status === 'completed') {
           clearInterval(elapsedTimer);
@@ -3146,7 +3217,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
     const pendingBadge = document.getElementById('crm-pending-badge');
 
     async function loadPendingOrgs() {
-      pendingOrgsTable.innerHTML = '<p style="color: #f5a623;">Loading...</p>';
+      pendingOrgsTable.innerHTML = '<p style="color: #f5a623;">Loading\u2026</p>';
       try {
         const resp = await fetch('/api/crm-sync/staging-orgs?status=Pending');
         if (!resp.ok) throw new Error('Failed');
@@ -3296,9 +3367,9 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       if (!rawText.trim()) { alert('Please paste scan output'); return; }
 
       processScanBtn.disabled = true;
-      processScanBtn.textContent = 'Processing...';
+      processScanBtn.textContent = 'Processing\u2026';
       scanResultEl.style.display = 'block';
-      scanResultEl.innerHTML = '<p style="margin: 0; color: #f5a623;">Processing scan...</p>';
+      scanResultEl.innerHTML = '<p style="margin: 0; color: #f5a623;">Processing scan\u2026</p>';
 
       try {
         const endpoint = mode === 'batch' ? '/api/scan/submit-batch' : '/api/scan/submit';
@@ -3624,10 +3695,10 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           }
 
           testRow.style.display = 'table-row';
-          outputEl.textContent = 'Running test...';
+          outputEl.textContent = 'Running test\u2026';
           outputEl.style.color = '#f5a623';
           btn.disabled = true;
-          btn.textContent = 'Running...';
+          btn.textContent = 'Running\u2026';
 
           try {
             const resp = await fetch('/api/scan/prompts/' + id + '/test', {
@@ -3726,7 +3797,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       if (!promptTextVal) { alert('Prompt text is required'); return; }
 
       savePromptBtn.disabled = true;
-      savePromptBtn.textContent = 'Saving...';
+      savePromptBtn.textContent = 'Saving\u2026';
 
       try {
         const body = { wire, label, sortOrder, toolType, isActive, promptText: promptTextVal, responseFormat: responseFormat || null };
@@ -3758,9 +3829,9 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       const lookbackDays = crmLookbackInput.value || 1;
       
       runCrmSyncBtn.disabled = true;
-      runCrmSyncBtn.textContent = 'Running...';
+      runCrmSyncBtn.textContent = 'Running\u2026';
       crmResultEl.style.display = 'block';
-      crmResultEl.innerHTML = '<p style="margin: 0; color: #f5a623;">Syncing organizations...</p>';
+      crmResultEl.innerHTML = '<p style="margin: 0; color: #f5a623;">Syncing organizations\u2026</p>';
 
       try {
         const response = await fetch('/api/crm-sync', {
@@ -3825,11 +3896,11 @@ function renderDashboard(files: StoredFile[], message?: string): string {
 
     runScanBtn.addEventListener('click', async function() {
       runScanBtn.disabled = true;
-      runScanBtn.textContent = 'Starting...';
+      runScanBtn.textContent = 'Starting\u2026';
       scanRunProgress.style.display = 'block';
       scanRunResult.style.display = 'none';
       scanRunBar.style.width = '0%';
-      scanRunStep.textContent = 'Initializing...';
+      scanRunStep.textContent = 'Initializing\u2026';
 
       try {
         const body = {};
@@ -3847,7 +3918,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         }
 
         const { jobId } = await resp.json();
-        runScanBtn.textContent = 'Running...';
+        runScanBtn.textContent = 'Running\u2026';
 
         // Connect to SSE for progress
         const evtSource = new EventSource('/api/job/' + jobId + '/progress');
@@ -3859,6 +3930,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
                 ? Math.round((status.progress.current / status.progress.total) * 100)
                 : 0;
               scanRunBar.style.width = pct + '%';
+              scanRunBar.parentElement.setAttribute('aria-valuenow', pct);
               scanRunStep.textContent = status.progress.step || '';
             }
             if (status.status === 'completed') {
@@ -3948,11 +4020,11 @@ function renderDashboard(files: StoredFile[], message?: string): string {
 
     if (runForumBtn) runForumBtn.addEventListener('click', async function() {
       runForumBtn.disabled = true;
-      runForumBtn.textContent = 'Starting...';
+      runForumBtn.textContent = 'Starting\u2026';
       forumRunProgress.style.display = 'block';
       forumRunResult.style.display = 'none';
       forumRunBar.style.width = '0%';
-      forumRunStep.textContent = 'Initializing...';
+      forumRunStep.textContent = 'Initializing\u2026';
 
       try {
         const body = {};
@@ -3970,7 +4042,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         }
 
         const { jobId } = await resp.json();
-        runForumBtn.textContent = 'Running...';
+        runForumBtn.textContent = 'Running\u2026';
 
         const evtSource = new EventSource('/api/job/' + jobId + '/progress');
         evtSource.onmessage = function(event) {
@@ -3981,6 +4053,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
                 ? Math.round((status.progress.current / status.progress.total) * 100)
                 : 0;
               forumRunBar.style.width = pct + '%';
+              forumRunBar.parentElement.setAttribute('aria-valuenow', pct);
               forumRunStep.textContent = status.progress.step || ('Progress: ' + pct + '%');
             }
             if (status.status === 'completed') {
@@ -4089,11 +4162,13 @@ function renderDashboard(files: StoredFile[], message?: string): string {
 function renderQueuePage(): string {
   return `
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <title>Daily Queue - Grant Wire Summarizer</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0d0d0d">
   <style>
     * { box-sizing: border-box; }
     body {
@@ -4103,6 +4178,7 @@ function renderQueuePage(): string {
       padding: 0;
       min-height: 100vh;
       color: #ffffff;
+      color-scheme: dark;
     }
     .header {
       background: #1a1a1a;
@@ -4146,13 +4222,17 @@ function renderQueuePage(): string {
       transition: background 0.2s;
     }
     .button:hover { background: #e6951a; }
+    .button:focus-visible {
+      outline: 2px solid #f5a623;
+      outline-offset: 2px;
+    }
     .button:disabled { background: #666666; cursor: not-allowed; }
     .button.secondary { background: #2a2a2a; color: #ffffff; }
     .button.secondary:hover { background: #3a3a3a; }
     table { width: 100%; border-collapse: collapse; }
     th, td { padding: 10px 8px; text-align: left; border-bottom: 1px solid #2a2a2a; }
     th { font-weight: 600; color: #999999; font-size: 12px; text-transform: uppercase; }
-    td { color: #ffffff; font-size: 14px; }
+    td { color: #ffffff; font-size: 14px; font-variant-numeric: tabular-nums; }
     .download-link { color: #f5a623; text-decoration: none; font-weight: 500; }
     .download-link:hover { text-decoration: underline; }
     .form-row { display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap; }
@@ -4167,9 +4247,14 @@ function renderQueuePage(): string {
       background: #0d0d0d;
       color: #ffffff;
       min-width: 120px;
+      color-scheme: dark;
     }
-    .form-group input:focus,
-    .form-group select:focus { outline: none; border-color: #f5a623; }
+    .form-group input:focus-visible,
+    .form-group select:focus-visible {
+      outline: 2px solid #f5a623;
+      outline-offset: 2px;
+      border-color: #f5a623;
+    }
     .form-group select option { background: #1a1a1a; color: #ffffff; }
     .form-description { color: #666666; font-size: 14px; margin: 0; }
     .status-grid {
@@ -4186,7 +4271,7 @@ function renderQueuePage(): string {
       text-align: center;
     }
     .status-item .label { font-size: 11px; color: #999; text-transform: uppercase; font-weight: 600; margin-bottom: 4px; }
-    .status-item .value { font-size: 20px; font-weight: 700; color: #fff; }
+    .status-item .value { font-size: 20px; font-weight: 700; color: #fff; font-variant-numeric: tabular-nums; }
     .tab-bar {
       display: flex;
       gap: 0;
@@ -4206,13 +4291,45 @@ function renderQueuePage(): string {
       transition: color 0.2s, border-color 0.2s;
     }
     .tab-bar button:hover { color: #ccc; }
+    .tab-bar button:focus-visible {
+      outline: 2px solid #f5a623;
+      outline-offset: 2px;
+    }
     .tab-bar button.active { color: #f5a623; border-bottom-color: #f5a623; }
     details summary { cursor: pointer; color: #999; font-size: 14px; }
     details summary:hover { color: #f5a623; }
     details[open] summary { color: #f5a623; }
+    .skip-link {
+      position: absolute;
+      left: -9999px;
+      top: auto;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+    }
+    .skip-link:focus {
+      position: fixed;
+      top: 8px;
+      left: 8px;
+      width: auto;
+      height: auto;
+      padding: 8px 16px;
+      background: #f5a623;
+      color: #0d0d0d;
+      border-radius: 4px;
+      z-index: 9999;
+      font-weight: 600;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
   </style>
 </head>
 <body>
+  <a href="#main-content" class="skip-link">Skip to content</a>
   <div class="header">
     <div class="header-content">
       <h1 class="logo">
@@ -4225,7 +4342,7 @@ function renderQueuePage(): string {
     </div>
   </div>
 
-  <div class="main">
+  <div class="main" id="main-content">
     <div class="card">
       <h2>Scan Queue</h2>
       <p class="form-description" style="margin-bottom: 16px;"><strong>Approve</strong> = queue for newsletter. <strong>Review Later</strong> = come back to this. <strong>Decline</strong> = not relevant.</p>
@@ -4257,11 +4374,11 @@ function renderQueuePage(): string {
       </div>
 
       <div id="queue-results">
-        <p style="color: #666;">Loading...</p>
+        <p style="color: #666;">Loading\u2026</p>
       </div>
 
       <details id="seeded-urls-details" style="margin-top: 24px;">
-        <summary id="seeded-urls-summary">Seeded URLs (loading...)</summary>
+        <summary id="seeded-urls-summary">Seeded URLs (loading\u2026)</summary>
         <div id="seeded-urls-content" style="margin-top: 12px;">
           <p style="color: #666;">Click to load...</p>
         </div>
@@ -4550,11 +4667,13 @@ function renderLegacyDownloadPage(filename: string, downloadToken: string): stri
 function renderDownloadPage(filename: string, downloadToken: string): string {
   return `
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <title>Download - Grant Wire Summarizer</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0d0d0d">
   <style>
     * { box-sizing: border-box; }
     body {
@@ -4566,6 +4685,7 @@ function renderDownloadPage(filename: string, downloadToken: string): string {
       display: flex;
       align-items: center;
       justify-content: center;
+      color-scheme: dark;
     }
     .container {
       max-width: 500px;
@@ -4608,11 +4728,13 @@ function renderDownloadPage(filename: string, downloadToken: string): string {
 function renderExpiredLinkPage(message: string): string {
   return `
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <title>Link Expired - Grant Wire Summarizer</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0d0d0d">
   <style>
     * { box-sizing: border-box; }
     body {
@@ -4624,6 +4746,7 @@ function renderExpiredLinkPage(message: string): string {
       display: flex;
       align-items: center;
       justify-content: center;
+      color-scheme: dark;
     }
     .container {
       max-width: 500px;
@@ -4676,11 +4799,13 @@ function renderExpiredLinkPage(message: string): string {
 function renderResendSuccessPage(): string {
   return `
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <title>Link Sent - Grant Wire Summarizer</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0d0d0d">
   <style>
     * { box-sizing: border-box; }
     body {
@@ -4692,6 +4817,7 @@ function renderResendSuccessPage(): string {
       display: flex;
       align-items: center;
       justify-content: center;
+      color-scheme: dark;
     }
     .container {
       max-width: 500px;
@@ -4729,11 +4855,13 @@ function renderResendSuccessPage(): string {
 function renderErrorPage(message: string): string {
   return `
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <title>Error - Grant Wire Summarizer</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0d0d0d">
   <style>
     * { box-sizing: border-box; }
     body {
@@ -4745,6 +4873,7 @@ function renderErrorPage(message: string): string {
       display: flex;
       align-items: center;
       justify-content: center;
+      color-scheme: dark;
     }
     .container {
       max-width: 500px;
