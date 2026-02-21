@@ -197,7 +197,7 @@ export async function createOrg(params: CreateOrgParams): Promise<NotionOrg | nu
 
   if (params.wire) {
     const wireValue = params.wire.toUpperCase();
-    properties['Wire'] = { select: { name: wireValue } };
+    properties['Wire'] = { multi_select: [{ name: wireValue }] };
   }
 
   if (params.sourceType) {
@@ -213,6 +213,7 @@ export async function createOrg(params: CreateOrgParams): Promise<NotionOrg | nu
   }
 
   properties['Auto-created'] = { checkbox: true };
+  properties['Last Seen'] = { date: { start: new Date().toISOString().split('T')[0] } };
 
   try {
     const response = await rateLimitedRequest(() =>
@@ -269,6 +270,14 @@ function parseOrgPage(page: PageObjectResponse): NotionOrg {
     return props[key]?.select?.name;
   };
 
+  const getMultiSelect = (key: string): string | undefined => {
+    const items = props[key]?.multi_select;
+    if (Array.isArray(items) && items.length > 0) {
+      return items.map((i: any) => i.name).join(', ');
+    }
+    return undefined;
+  };
+
   const getUrl = (key: string): string | undefined => {
     return props[key]?.url;
   };
@@ -285,7 +294,7 @@ function parseOrgPage(page: PageObjectResponse): NotionOrg {
     id: page.id,
     name: getName(),
     type: getSelect('Type'),
-    wire: getSelect('Wire'),
+    wire: getMultiSelect('Wire'),
     tier: getSelect('Tier'),
     sourceType: getSelect('Source Type'),
     twitter: getUrl('Twitter'),
@@ -356,7 +365,7 @@ export async function createStagingOrg(params: CreateStagingOrgParams): Promise<
 
   if (params.wire) {
     const wireValue = params.wire.toUpperCase();
-    properties['Wire'] = { select: { name: wireValue } };
+    properties['Wire'] = { multi_select: [{ name: wireValue }] };
   }
 
   if (params.sourceType) {
@@ -459,5 +468,85 @@ export async function checkStagingOrgExists(name: string): Promise<boolean> {
   } catch (error) {
     console.error('Error checking staging org exists:', error);
     return false;
+  }
+}
+
+export async function updateStagingOrgStatus(
+  orgId: string,
+  status: 'Approved' | 'Rejected'
+): Promise<boolean> {
+  const client = getNotionClient();
+  if (!client) return false;
+
+  try {
+    await rateLimitedRequest(() =>
+      client.pages.update({
+        page_id: orgId,
+        properties: {
+          Status: { select: { name: status } },
+        },
+      })
+    );
+    return true;
+  } catch (error) {
+    console.error(`Error updating staging org status to ${status}:`, error);
+    return false;
+  }
+}
+
+const SOURCE_TYPE_MAP: Record<string, string> = {
+  Social: 'X Account',
+  Forum: 'Forum',
+  Blog: 'Blog',
+  Newsletter: 'Newsletter',
+  Governance: 'Official',
+  Code: 'Website',
+  News: 'Website',
+};
+
+export interface PromoteResult {
+  success: boolean;
+  alreadyExisted: boolean;
+  mainOrg?: NotionOrg;
+  error?: string;
+}
+
+export async function promoteOrgToMain(stagingOrg: StagingOrg): Promise<PromoteResult> {
+  try {
+    // Search main DB for existing org
+    const existing = await searchOrgs(stagingOrg.name);
+    const exactMatch = existing.find(
+      o => o.name.toLowerCase().trim() === stagingOrg.name.toLowerCase().trim()
+    );
+
+    if (exactMatch) {
+      // Already exists — update lastSeen and mark staging as Approved
+      await updateOrgLastSeen(exactMatch.id);
+      await updateStagingOrgStatus(stagingOrg.id, 'Approved');
+      return { success: true, alreadyExisted: true, mainOrg: exactMatch };
+    }
+
+    // Create new org in main DB
+    const mappedSourceType = stagingOrg.sourceType
+      ? SOURCE_TYPE_MAP[stagingOrg.sourceType] || stagingOrg.sourceType
+      : undefined;
+
+    const newOrg = await createOrg({
+      name: stagingOrg.name,
+      wire: stagingOrg.wire,
+      sourceType: mappedSourceType,
+    });
+
+    if (!newOrg) {
+      return { success: false, alreadyExisted: false, error: 'Failed to create org in main DB' };
+    }
+
+    // Mark staging as Approved
+    await updateStagingOrgStatus(stagingOrg.id, 'Approved');
+    return { success: true, alreadyExisted: false, mainOrg: newOrg };
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('Error promoting org to main:', msg);
+    return { success: false, alreadyExisted: false, error: msg };
   }
 }

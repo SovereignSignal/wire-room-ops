@@ -11,7 +11,8 @@ import { jobQueue } from './services/job-queue';
 import { getAllModels } from './services/models';
 import { getSchedule, getSchedules, setSchedule, addSchedule, removeSchedule, formatScheduleDescription, getNextRunTime, initScheduler, stopScheduler, ScheduleConfig, sendTestAlert, getSchedulerStatus } from './services/scheduler';
 import { runCrmSyncJob, getStagingOrgs, CrmSyncJobResult } from './services/crm-sync';
-import { isStagingConfigured } from './services/notion';
+import { isStagingConfigured, promoteOrgToMain, updateStagingOrgStatus } from './services/notion';
+import { addToCache } from './services/org-cache';
 import { buildSubmission, buildBatchSubmission } from './services/intake';
 import { runDailyIntake, getDailyQueue, getIntakeStats } from './jobs/daily-intake';
 import { getPool } from './db';
@@ -991,6 +992,68 @@ app.get('/api/crm-sync/staging-orgs', requireAuth, async (req: Request, res: Res
   }
 });
 
+// API: Approve staging org — promote to main CRM DB
+app.post('/api/crm-sync/staging-orgs/:id/approve', requireAuth, async (req: Request, res: Response) => {
+  const orgId = req.params.id;
+  if (!orgId) {
+    res.status(400).json({ error: 'Missing org ID' });
+    return;
+  }
+
+  try {
+    // Fetch the staging org first
+    const stagingOrgs = await getStagingOrgs('Pending');
+    const stagingOrg = stagingOrgs.find(o => o.id === orgId);
+    if (!stagingOrg) {
+      res.status(404).json({ error: 'Staging org not found or not in Pending status' });
+      return;
+    }
+
+    const result = await promoteOrgToMain(stagingOrg);
+    if (!result.success) {
+      res.status(500).json({ error: result.error || 'Failed to promote org' });
+      return;
+    }
+
+    // Add to local cache for future matching
+    if (result.mainOrg) {
+      addToCache(result.mainOrg);
+    }
+
+    res.json({
+      success: true,
+      alreadyExisted: result.alreadyExisted,
+      orgName: stagingOrg.name,
+      mainOrgId: result.mainOrg?.id,
+    });
+  } catch (error) {
+    console.error('Failed to approve staging org:', error);
+    res.status(500).json({ error: 'Failed to approve staging org' });
+  }
+});
+
+// API: Reject staging org — mark as Rejected in staging DB
+app.post('/api/crm-sync/staging-orgs/:id/reject', requireAuth, async (req: Request, res: Response) => {
+  const orgId = req.params.id;
+  if (!orgId) {
+    res.status(400).json({ error: 'Missing org ID' });
+    return;
+  }
+
+  try {
+    const updated = await updateStagingOrgStatus(orgId, 'Rejected');
+    if (!updated) {
+      res.status(500).json({ error: 'Failed to update staging org status' });
+      return;
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Failed to reject staging org:', error);
+    res.status(500).json({ error: 'Failed to reject staging org' });
+  }
+});
+
 // API: Submit a single scan prompt result
 app.post('/api/scan/submit', requireAuth, async (req: Request, res: Response) => {
   const { wire, promptVariant, scanDate, rawText, source } = req.body;
@@ -1334,7 +1397,7 @@ app.post('/api/scan/run', requireAuth, async (req: Request, res: Response) => {
   });
 });
 
-// API: Queue action on single entry (promote/archive/skip)
+// API: Queue action on single entry (approve/decline/reviewlater/restore)
 app.post('/api/scan/entries/:id/action', requireAuth, async (req: Request, res: Response) => {
   const entryId = parseInt(req.params.id, 10);
   if (isNaN(entryId)) {
@@ -1344,15 +1407,15 @@ app.post('/api/scan/entries/:id/action', requireAuth, async (req: Request, res: 
 
   const { action } = req.body;
   const actionMap: Record<string, string> = {
-    promote: 'queued',
-    archive: 'archived',
-    skip: 'skipped',
+    approve: 'approved',
+    decline: 'declined',
+    reviewlater: 'skipped',
     restore: 'queued',
   };
 
   const newStatus = actionMap[action];
   if (!newStatus) {
-    res.status(400).json({ error: 'Invalid action. Must be promote, archive, skip, or restore.' });
+    res.status(400).json({ error: 'Invalid action. Must be approve, decline, reviewlater, or restore.' });
     return;
   }
 
@@ -2082,6 +2145,15 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       <div id="crm-sync-result" style="display: none; margin-top: 16px; padding: 12px 16px; background: #0d0d0d; border-radius: 8px; border: 1px solid #2a2a2a;">
         <p style="margin: 0; color: #999;">Sync results will appear here</p>
       </div>
+
+      <div style="margin-top: 24px; padding-top: 20px; border-top: 1px solid #2a2a2a;">
+        <h3 style="margin: 0 0 12px; font-size: 16px; color: #fff;">Pending Review <span id="crm-pending-badge" style="display: none; background: #f5a623; color: #000; font-size: 12px; padding: 2px 8px; border-radius: 10px; margin-left: 8px; font-weight: 600;"></span></h3>
+        <p class="form-description" style="margin-bottom: 12px;">Review discovered organizations. <strong>Approve</strong> = add to CRM. <strong>Reject</strong> = dismiss.</p>
+        <button type="button" id="load-pending-orgs" class="button secondary" style="margin-bottom: 12px;">Load Pending</button>
+        <div id="pending-orgs-table">
+          <p style="color: #666;">Click "Load Pending" to view organizations.</p>
+        </div>
+      </div>
     </div>
 
     <div class="card">
@@ -2155,7 +2227,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
     <div class="card">
       <h2>Daily Queue <span id="queue-count-badge" style="display: none; background: #f5a623; color: #000; font-size: 13px; padding: 2px 10px; border-radius: 12px; margin-left: 8px; font-weight: 600;"></span></h2>
       <div id="dedup-stats" class="status-grid" style="margin-bottom: 16px;"></div>
-      <p class="form-description" style="margin-bottom: 16px;">Review prioritized scan entries. Promote to keep, skip to defer, archive to dismiss.</p>
+      <p class="form-description" style="margin-bottom: 16px;">Review prioritized scan entries. <strong>Approve</strong> = queue for newsletter. <strong>Review Later</strong> = come back to this. <strong>Decline</strong> = not relevant.</p>
       <div class="form-row" style="margin-bottom: 16px;">
         <div class="form-group">
           <label for="queueWire">Feed Filter</label>
@@ -2963,6 +3035,115 @@ function renderDashboard(files: StoredFile[], message?: string): string {
 
     loadCrmStatus();
 
+    // Pending Orgs Review
+    const pendingOrgsTable = document.getElementById('pending-orgs-table');
+    const loadPendingOrgsBtn = document.getElementById('load-pending-orgs');
+    const pendingBadge = document.getElementById('crm-pending-badge');
+
+    async function loadPendingOrgs() {
+      pendingOrgsTable.innerHTML = '<p style="color: #f5a623;">Loading...</p>';
+      try {
+        const resp = await fetch('/api/crm-sync/staging-orgs?status=Pending');
+        if (!resp.ok) throw new Error('Failed');
+        const data = await resp.json();
+        const orgs = data.orgs || [];
+
+        if (orgs.length > 0) {
+          pendingBadge.textContent = orgs.length;
+          pendingBadge.style.display = 'inline';
+        } else {
+          pendingBadge.style.display = 'none';
+        }
+
+        if (orgs.length === 0) {
+          pendingOrgsTable.innerHTML = '<p style="color: #666;">No pending organizations.</p>';
+          return;
+        }
+
+        let html = '<table><thead><tr><th>Name</th><th>Wire</th><th>Source Type</th><th>Context</th><th>First Seen</th><th>Actions</th></tr></thead><tbody>';
+        orgs.forEach(function(o) {
+          html += '<tr id="staging-row-' + escapeHtml(o.id) + '">';
+          html += '<td>' + escapeHtml(o.name || '') + '</td>';
+          html += '<td><code style="background: #0d0d0d; padding: 2px 6px; border-radius: 4px;">' + escapeHtml(o.wire || '-') + '</code></td>';
+          html += '<td>' + escapeHtml(o.sourceType || '-') + '</td>';
+          html += '<td>';
+          if (o.entryUrl) {
+            html += '<a href="' + escapeHtml(o.entryUrl) + '" target="_blank" class="download-link" style="font-size: 12px;">' + escapeHtml(o.entryTitle || 'Link') + '</a>';
+          } else {
+            html += escapeHtml(o.entryTitle || '-');
+          }
+          html += '</td>';
+          html += '<td style="font-size: 12px;">' + escapeHtml(o.firstSeen || '-') + '</td>';
+          html += '<td style="white-space: nowrap;">';
+          html += '<button data-org-id="' + escapeHtml(o.id) + '" data-staging-action="approve" class="staging-action-btn" style="background: #1b5e20; border: none; color: #4caf50; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;">Approve</button>';
+          html += '<button data-org-id="' + escapeHtml(o.id) + '" data-staging-action="reject" class="staging-action-btn" style="background: #4a1515; border: none; color: #ef5350; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;">Reject</button>';
+          html += '</td>';
+          html += '</tr>';
+        });
+        html += '</tbody></table>';
+        pendingOrgsTable.innerHTML = html;
+      } catch (err) {
+        pendingOrgsTable.innerHTML = '<p style="color: #ef5350;">Failed to load pending orgs</p>';
+      }
+    }
+
+    loadPendingOrgsBtn.addEventListener('click', loadPendingOrgs);
+
+    // Event delegation for staging org action buttons
+    document.addEventListener('click', function(e) {
+      const btn = e.target.closest('.staging-action-btn');
+      if (!btn) return;
+      const orgId = btn.dataset.orgId;
+      const action = btn.dataset.stagingAction;
+      if (!orgId || !action) return;
+
+      btn.disabled = true;
+      const url = '/api/crm-sync/staging-orgs/' + encodeURIComponent(orgId) + '/' + action;
+      fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      }).then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Failed'); });
+        return r.json();
+      }).then(function(data) {
+        // Fade out the row
+        const row = document.getElementById('staging-row-' + orgId);
+        if (row) {
+          row.style.transition = 'opacity 0.3s';
+          row.style.opacity = '0';
+          setTimeout(function() { row.remove(); }, 300);
+        }
+        // Refresh counts
+        loadCrmStatus();
+        // Update badge
+        const remaining = pendingOrgsTable.querySelectorAll('tbody tr');
+        if (remaining.length <= 1) {
+          setTimeout(function() {
+            pendingBadge.style.display = 'none';
+            pendingOrgsTable.innerHTML = '<p style="color: #666;">No pending organizations.</p>';
+          }, 350);
+        } else {
+          pendingBadge.textContent = remaining.length - 1;
+        }
+      }).catch(function(err) {
+        console.error('Staging action failed:', err);
+        btn.disabled = false;
+      });
+    });
+
+    // Auto-load pending orgs if count > 0
+    async function maybeAutoLoadPendingOrgs() {
+      try {
+        const resp = await fetch('/api/crm-sync/status');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data.pendingOrgs > 0) {
+          loadPendingOrgs();
+        }
+      } catch (e) {}
+    }
+    maybeAutoLoadPendingOrgs();
+
     // Populate scan intake feed dropdown
     const scanWireSelect = document.getElementById('scanWire');
     const queueWireSelect = document.getElementById('queueWire');
@@ -3198,9 +3379,9 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           }
           html += '</td>';
           html += '<td style="white-space: nowrap;">';
-          html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="promote" class="queue-action-btn" style="background: #1b5e20; border: none; color: #4caf50; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;" title="Promote">Promote</button>';
-          html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="skip" class="queue-action-btn" style="background: #2a2a2a; border: none; color: #999; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;" title="Skip">Skip</button>';
-          html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="archive" class="queue-action-btn" style="background: #4a1515; border: none; color: #ef5350; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;" title="Archive">Archive</button>';
+          html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="approve" class="queue-action-btn" style="background: #1b5e20; border: none; color: #4caf50; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;" title="Approve">Approve</button>';
+          html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="reviewlater" class="queue-action-btn" style="background: #2a2a2a; border: none; color: #999; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;" title="Review Later">Review Later</button>';
+          html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="decline" class="queue-action-btn" style="background: #4a1515; border: none; color: #ef5350; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;" title="Decline">Decline</button>';
           html += '</td>';
           html += '</tr>';
         });
@@ -3830,7 +4011,7 @@ function renderQueuePage(): string {
   <div class="main">
     <div class="card">
       <h2>Scan Queue</h2>
-      <p class="form-description" style="margin-bottom: 16px;"><strong>Promote</strong> = confirm for newsletter. <strong>Skip</strong> = defer (restore later). <strong>Archive</strong> = dismiss (restore later).</p>
+      <p class="form-description" style="margin-bottom: 16px;"><strong>Approve</strong> = queue for newsletter. <strong>Review Later</strong> = come back to this. <strong>Decline</strong> = not relevant.</p>
 
       <div id="stat-tiles" class="status-grid"></div>
 
@@ -3851,10 +4032,11 @@ function renderQueuePage(): string {
       </div>
 
       <div class="tab-bar" id="tab-bar">
-        <button class="active" data-tab="queued">Queued <span id="tab-count-queued"></span></button>
+        <button class="active" data-tab="queued">Pending Review <span id="tab-count-queued"></span></button>
+        <button data-tab="approved">Approved <span id="tab-count-approved"></span></button>
+        <button data-tab="declined">Declined <span id="tab-count-declined"></span></button>
         <button data-tab="duplicate">Duplicates <span id="tab-count-duplicate"></span></button>
-        <button data-tab="skipped">Skipped <span id="tab-count-skipped"></span></button>
-        <button data-tab="archived">Archived <span id="tab-count-archived"></span></button>
+        <button data-tab="skipped">Review Later <span id="tab-count-skipped"></span></button>
       </div>
 
       <div id="queue-results">
@@ -3918,7 +4100,7 @@ function renderQueuePage(): string {
       loadEntries();
     });
 
-    // Entry action (promote/skip/archive/restore)
+    // Entry action (approve/reviewlater/decline/restore)
     document.addEventListener('click', function(e) {
       var btn = e.target.closest('.queue-action-btn');
       if (!btn) return;
@@ -3942,9 +4124,10 @@ function renderQueuePage(): string {
 
     function statusesForTab(tab) {
       if (tab === 'queued') return 'queued,scored';
+      if (tab === 'approved') return 'approved';
+      if (tab === 'declined') return 'declined,archived';
       if (tab === 'duplicate') return 'duplicate';
       if (tab === 'skipped') return 'skipped';
-      if (tab === 'archived') return 'archived';
       return tab;
     }
 
@@ -3959,21 +4142,24 @@ function renderQueuePage(): string {
         var data = await resp.json();
         var c = data.counts || {};
         var queued = (c.queued || 0) + (c.scored || 0);
+        var approved = c.approved || 0;
+        var declined = (c.declined || 0) + (c.archived || 0);
         var dup = c.duplicate || 0;
         var skipped = c.skipped || 0;
-        var archived = c.archived || 0;
 
         document.getElementById('tab-count-queued').textContent = '(' + queued + ')';
+        document.getElementById('tab-count-approved').textContent = '(' + approved + ')';
+        document.getElementById('tab-count-declined').textContent = '(' + declined + ')';
         document.getElementById('tab-count-duplicate').textContent = '(' + dup + ')';
         document.getElementById('tab-count-skipped').textContent = '(' + skipped + ')';
-        document.getElementById('tab-count-archived').textContent = '(' + archived + ')';
 
         // Stat tiles
         var tilesHtml = '';
-        tilesHtml += '<div class="status-item"><div class="label">Queued</div><div class="value" style="color: #f5a623;">' + queued + '</div></div>';
+        tilesHtml += '<div class="status-item"><div class="label">Pending</div><div class="value" style="color: #f5a623;">' + queued + '</div></div>';
+        tilesHtml += '<div class="status-item"><div class="label">Approved</div><div class="value" style="color: #4caf50;">' + approved + '</div></div>';
+        tilesHtml += '<div class="status-item"><div class="label">Declined</div><div class="value" style="color: #ef5350;">' + declined + '</div></div>';
         tilesHtml += '<div class="status-item"><div class="label">Duplicates</div><div class="value" style="color: #999;">' + dup + '</div></div>';
-        tilesHtml += '<div class="status-item"><div class="label">Skipped</div><div class="value" style="color: #999;">' + skipped + '</div></div>';
-        tilesHtml += '<div class="status-item"><div class="label">Archived</div><div class="value" style="color: #666;">' + archived + '</div></div>';
+        tilesHtml += '<div class="status-item"><div class="label">Review Later</div><div class="value" style="color: #999;">' + skipped + '</div></div>';
         tilesHtml += '<div class="status-item"><div class="label">Seeded URLs</div><div class="value" style="color: #666;">' + (data.seededUrls || 0) + '</div></div>';
         document.getElementById('stat-tiles').innerHTML = tilesHtml;
 
@@ -4001,7 +4187,7 @@ function renderQueuePage(): string {
         }
 
         var isDup = activeTab === 'duplicate';
-        var showRestore = activeTab === 'skipped' || activeTab === 'archived';
+        var showRestore = activeTab === 'skipped' || activeTab === 'declined';
         var showActions = activeTab === 'queued';
 
         var cols = '<th>Name</th><th>Amount</th><th>Deadline</th>';
@@ -4036,9 +4222,9 @@ function renderQueuePage(): string {
           }
           if (showActions) {
             html += '<td style="white-space: nowrap;">';
-            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="promote" class="queue-action-btn" style="background: #1b5e20; border: none; color: #4caf50; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;">Promote</button>';
-            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="skip" class="queue-action-btn" style="background: #2a2a2a; border: none; color: #999; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;">Skip</button>';
-            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="archive" class="queue-action-btn" style="background: #4a1515; border: none; color: #ef5350; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;">Archive</button>';
+            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="approve" class="queue-action-btn" style="background: #1b5e20; border: none; color: #4caf50; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;">Approve</button>';
+            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="reviewlater" class="queue-action-btn" style="background: #2a2a2a; border: none; color: #999; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;">Review Later</button>';
+            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="decline" class="queue-action-btn" style="background: #4a1515; border: none; color: #ef5350; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;">Decline</button>';
             html += '</td>';
           }
           if (showRestore) {

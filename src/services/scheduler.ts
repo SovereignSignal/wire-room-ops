@@ -1,6 +1,7 @@
 import cron, { ScheduledTask } from 'node-cron';
 import { runWeeklySummaryJob } from '../jobs/weekly-summary';
 import { runScanExecution } from '../jobs/scan-execution';
+import { runCrmSyncJob } from './crm-sync';
 import { config } from '../config';
 import { sendNotificationEmail, sendTestAlertEmail, sendScheduledJobFailureEmail, sendScanDigestEmail } from './email';
 import { createMagicLink } from './auth';
@@ -182,6 +183,19 @@ function createJobExecutor(schedule: ScheduleConfig) {
             console.error(`[Scheduler] Failed to send digest email:`, emailErr);
             // Don't fail the job - email is non-critical
           }
+        }
+
+        // Auto CRM sync after scan
+        try {
+          const crmResult = await runCrmSyncJob({ lookbackDays: 1, wire: currentScheduleData.wire || undefined });
+          if (crmResult.success) {
+            console.log(`[Scheduler] Auto CRM sync completed: ${crmResult.orgsCreated} created, ${crmResult.orgsMatched} matched`);
+          } else {
+            console.warn(`[Scheduler] Auto CRM sync skipped: ${crmResult.error || 'unknown reason'}`);
+          }
+        } catch (crmErr) {
+          console.error(`[Scheduler] Auto CRM sync failed:`, crmErr);
+          // Don't fail the job - CRM sync is non-critical
         }
       } else {
         // ---- Weekly Summary Job ----
