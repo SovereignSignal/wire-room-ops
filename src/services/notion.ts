@@ -512,6 +512,10 @@ export interface PromoteResult {
 }
 
 export async function promoteOrgToMain(stagingOrg: StagingOrg): Promise<PromoteResult> {
+  if (!config.apis.notion.orgsDbId) {
+    return { success: false, alreadyExisted: false, error: 'NOTION_ORGS_DB_ID not configured' };
+  }
+
   try {
     // Search main DB for existing org
     const existing = await searchOrgs(stagingOrg.name);
