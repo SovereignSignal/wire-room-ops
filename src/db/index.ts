@@ -168,6 +168,8 @@ export interface StoredScheduleConfig {
   timezone: string;
   wire?: string;
   scheduleType?: 'weekly-summary' | 'scan-execution';
+  frequencyHours?: number;
+  notifyEmails?: string;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -233,7 +235,7 @@ export async function ensureScheduleTable(): Promise<void> {
 export async function getAllSchedules(): Promise<StoredScheduleConfig[]> {
   const pool = getPool();
   const result = await pool.query(`
-    SELECT id, name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, schedule_type, created_at, updated_at
+    SELECT id, name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, schedule_type, frequency_hours, notify_emails, created_at, updated_at
     FROM schedules
     ORDER BY created_at ASC
   `);
@@ -251,6 +253,8 @@ export async function getAllSchedules(): Promise<StoredScheduleConfig[]> {
     timezone: row.timezone,
     wire: row.wire || undefined,
     scheduleType: row.schedule_type || 'weekly-summary',
+    frequencyHours: row.frequency_hours || undefined,
+    notifyEmails: row.notify_emails || undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }));
@@ -259,7 +263,7 @@ export async function getAllSchedules(): Promise<StoredScheduleConfig[]> {
 export async function getScheduleById(id: string): Promise<StoredScheduleConfig | null> {
   const pool = getPool();
   const result = await pool.query(`
-    SELECT id, name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, schedule_type, created_at, updated_at
+    SELECT id, name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, schedule_type, frequency_hours, notify_emails, created_at, updated_at
     FROM schedules
     WHERE id = $1
   `, [id]);
@@ -282,6 +286,8 @@ export async function getScheduleById(id: string): Promise<StoredScheduleConfig 
     timezone: row.timezone,
     wire: row.wire || undefined,
     scheduleType: row.schedule_type || 'weekly-summary',
+    frequencyHours: row.frequency_hours || undefined,
+    notifyEmails: row.notify_emails || undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -290,9 +296,9 @@ export async function getScheduleById(id: string): Promise<StoredScheduleConfig 
 export async function createSchedule(config: Omit<StoredScheduleConfig, 'id' | 'createdAt' | 'updatedAt'>): Promise<StoredScheduleConfig> {
   const pool = getPool();
   const result = await pool.query(`
-    INSERT INTO schedules (name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, schedule_type)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-    RETURNING id, name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, schedule_type, created_at, updated_at
+    INSERT INTO schedules (name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, schedule_type, frequency_hours, notify_emails)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+    RETURNING id, name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, schedule_type, frequency_hours, notify_emails, created_at, updated_at
   `, [
     config.name,
     config.enabled,
@@ -305,6 +311,8 @@ export async function createSchedule(config: Omit<StoredScheduleConfig, 'id' | '
     config.timezone,
     config.wire || null,
     config.scheduleType || 'weekly-summary',
+    config.frequencyHours || null,
+    config.notifyEmails || null,
   ]);
 
   const row = result.rows[0];
@@ -321,6 +329,8 @@ export async function createSchedule(config: Omit<StoredScheduleConfig, 'id' | '
     timezone: row.timezone,
     wire: row.wire || undefined,
     scheduleType: row.schedule_type || 'weekly-summary',
+    frequencyHours: row.frequency_hours || undefined,
+    notifyEmails: row.notify_emails || undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -345,6 +355,8 @@ export async function updateSchedule(id: string, config: Partial<Omit<StoredSche
   if (config.timezone !== undefined) { updates.push(`timezone = $${paramIndex++}`); values.push(config.timezone); }
   if (config.wire !== undefined) { updates.push(`wire = $${paramIndex++}`); values.push(config.wire || null); }
   if (config.scheduleType !== undefined) { updates.push(`schedule_type = $${paramIndex++}`); values.push(config.scheduleType); }
+  if (config.frequencyHours !== undefined) { updates.push(`frequency_hours = $${paramIndex++}`); values.push(config.frequencyHours || null); }
+  if (config.notifyEmails !== undefined) { updates.push(`notify_emails = $${paramIndex++}`); values.push(config.notifyEmails || null); }
 
   if (updates.length === 0) {
     return getScheduleById(id);
@@ -356,7 +368,7 @@ export async function updateSchedule(id: string, config: Partial<Omit<StoredSche
   const result = await pool.query(`
     UPDATE schedules SET ${updates.join(', ')}
     WHERE id = $${paramIndex}
-    RETURNING id, name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, schedule_type, created_at, updated_at
+    RETURNING id, name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, schedule_type, frequency_hours, notify_emails, created_at, updated_at
   `, values);
 
   if (result.rows.length === 0) {
@@ -377,6 +389,8 @@ export async function updateSchedule(id: string, config: Partial<Omit<StoredSche
     timezone: row.timezone,
     wire: row.wire || undefined,
     scheduleType: row.schedule_type || 'weekly-summary',
+    frequencyHours: row.frequency_hours || undefined,
+    notifyEmails: row.notify_emails || undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -826,6 +840,10 @@ export async function ensureScanPromptsTable(): Promise<void> {
     ALTER TABLE schedules ADD COLUMN IF NOT EXISTS schedule_type TEXT DEFAULT 'weekly-summary'
   `);
 
+  // Schedule frequency + notify emails columns
+  await pool.query(`ALTER TABLE schedules ADD COLUMN IF NOT EXISTS frequency_hours INTEGER`);
+  await pool.query(`ALTER TABLE schedules ADD COLUMN IF NOT EXISTS notify_emails TEXT`);
+
   console.log('[DB] Scan prompts table ready (Phase 2 migrations applied)');
 }
 
@@ -982,4 +1000,128 @@ export async function deleteScanPrompt(id: string): Promise<boolean> {
   const pool = getPool();
   const result = await pool.query(`DELETE FROM scan_prompts WHERE id = $1`, [id]);
   return (result.rowCount ?? 0) > 0;
+}
+
+// --- Scan pipeline query helpers ---
+
+export async function getStatusCounts(wire?: string, date?: string): Promise<Record<string, number>> {
+  const pool = getPool();
+  const conditions: string[] = [];
+  const values: any[] = [];
+  let paramIndex = 1;
+
+  if (wire) {
+    conditions.push(`wire = $${paramIndex++}`);
+    values.push(wire);
+  }
+  if (date) {
+    conditions.push(`scan_date = $${paramIndex++}`);
+    values.push(date);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const result = await pool.query(
+    `SELECT status, COUNT(*)::int AS count FROM scan_entries ${whereClause} GROUP BY status`,
+    values
+  );
+
+  const counts: Record<string, number> = {};
+  for (const row of result.rows) {
+    counts[row.status] = row.count;
+  }
+  return counts;
+}
+
+export async function getEntriesByStatus(
+  statuses: string[],
+  opts?: { wire?: string; date?: string; limit?: number; offset?: number }
+): Promise<{ entries: any[]; total: number }> {
+  const pool = getPool();
+  const conditions: string[] = [`status = ANY($1)`];
+  const values: any[] = [statuses];
+  let paramIndex = 2;
+
+  if (opts?.wire) {
+    conditions.push(`wire = $${paramIndex++}`);
+    values.push(opts.wire);
+  }
+  if (opts?.date) {
+    conditions.push(`scan_date = $${paramIndex++}`);
+    values.push(opts.date);
+  }
+
+  const whereClause = `WHERE ${conditions.join(' AND ')}`;
+  const limit = opts?.limit || 100;
+  const offset = opts?.offset || 0;
+
+  const [dataRes, countRes] = await Promise.all([
+    pool.query(
+      `SELECT * FROM scan_entries ${whereClause} ORDER BY quality_score DESC NULLS LAST, created_at DESC LIMIT $${paramIndex++} OFFSET $${paramIndex++}`,
+      [...values, limit, offset]
+    ),
+    pool.query(
+      `SELECT COUNT(*)::int AS total FROM scan_entries ${whereClause}`,
+      values
+    ),
+  ]);
+
+  return { entries: dataRes.rows, total: countRes.rows[0].total };
+}
+
+export async function getSeenUrlStats(wire?: string): Promise<{ seededCount: number; totalCount: number }> {
+  const pool = getPool();
+  const conditions: string[] = [];
+  const values: any[] = [];
+  let paramIndex = 1;
+
+  if (wire) {
+    conditions.push(`wire = $${paramIndex++}`);
+    values.push(wire);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  const result = await pool.query(
+    `SELECT
+       COUNT(*)::int AS total,
+       COUNT(*) FILTER (WHERE first_seen_entry_id IS NULL)::int AS seeded
+     FROM seen_urls ${whereClause}`,
+    values
+  );
+
+  return {
+    seededCount: result.rows[0].seeded,
+    totalCount: result.rows[0].total,
+  };
+}
+
+export async function getSeenUrlsList(
+  opts?: { wire?: string; limit?: number; offset?: number }
+): Promise<{ urls: any[]; total: number }> {
+  const pool = getPool();
+  const conditions: string[] = [`first_seen_entry_id IS NULL`];
+  const values: any[] = [];
+  let paramIndex = 1;
+
+  if (opts?.wire) {
+    conditions.push(`wire = $${paramIndex++}`);
+    values.push(opts.wire);
+  }
+
+  const whereClause = `WHERE ${conditions.join(' AND ')}`;
+  const limit = opts?.limit || 50;
+  const offset = opts?.offset || 0;
+
+  const [dataRes, countRes] = await Promise.all([
+    pool.query(
+      `SELECT url, wire, first_seen_date FROM seen_urls ${whereClause} ORDER BY first_seen_date DESC LIMIT $${paramIndex++} OFFSET $${paramIndex++}`,
+      [...values, limit, offset]
+    ),
+    pool.query(
+      `SELECT COUNT(*)::int AS total FROM seen_urls ${whereClause}`,
+      values
+    ),
+  ]);
+
+  return { urls: dataRes.rows, total: countRes.rows[0].total };
 }

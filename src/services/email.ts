@@ -344,7 +344,7 @@ CryptoGrantWire Newsletter Automation
   console.log(`[Email] Test alert sent successfully`);
 }
 
-export async function sendScheduledJobFailureEmail(errorMessage: string, jobStartTime: Date): Promise<void> {
+export async function sendScheduledJobFailureEmail(errorMessage: string, jobStartTime: Date, recipients?: string[]): Promise<void> {
   const client = getResend();
   const timestamp = jobStartTime.toLocaleString('en-US', {
     weekday: 'long',
@@ -438,12 +438,13 @@ Please check the dashboard or server logs for more details.
 CryptoGrantWire Newsletter Automation
   `.trim();
 
-  console.log(`[Email] Sending scheduled job failure notification to: ${config.email.notificationEmail}`);
+  const to = recipients && recipients.length > 0 ? recipients : config.email.notificationEmail;
+  console.log(`[Email] Sending scheduled job failure notification to: ${Array.isArray(to) ? to.join(', ') : to}`);
 
   await client.emails.send({
     from: config.email.fromEmail,
-    to: config.email.notificationEmail,
-    subject: '⚠️ CryptoGrantWire Scheduled Job Failed',
+    to,
+    subject: 'CryptoGrantWire Scheduled Job Failed',
     html: htmlContent,
     text: textContent,
   });
@@ -524,7 +525,8 @@ This link expires in 24 hours.
 
 export async function sendScanDigestEmail(
   scanResult: ScanExecutionResult,
-  dashboardUrl: string
+  dashboardUrl: string,
+  recipients?: string[]
 ): Promise<void> {
   const client = getResend();
   const now = new Date();
@@ -742,11 +744,12 @@ You're receiving this because scan-execution completed. Manage schedules on your
 CryptoGrantWire Newsletter Automation
   `.trim();
 
-  console.log(`[Email] Sending scan digest to: ${config.email.notificationEmail}`);
+  const to = recipients && recipients.length > 0 ? recipients : config.email.notificationEmail;
+  console.log(`[Email] Sending scan digest to: ${Array.isArray(to) ? to.join(', ') : to}`);
 
   await client.emails.send({
     from: config.email.fromEmail,
-    to: config.email.notificationEmail,
+    to,
     subject: `Daily Scan Digest - ${dateStr} | ${intakeSummary.newUnique} new finds`,
     html: htmlContent,
     text: textContent,

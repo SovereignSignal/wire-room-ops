@@ -3,7 +3,7 @@ import cookieParser from 'cookie-parser';
 import { config } from './config';
 import { validateMagicLink, createMagicLink, createDownloadToken, createSessionToken, validateSession, createLoginMagicLink } from './services/auth';
 import { getFile, listFiles } from './services/storage';
-import { getAvailableWires, closePool, getAllFeeds, getFeedByKey, createFeed, updateFeed, archiveFeed, getEntryCountsByWire, getAllScanPrompts, getScanPromptById, createScanPrompt, updateScanPrompt, deleteScanPrompt } from './db';
+import { getAvailableWires, closePool, getAllFeeds, getFeedByKey, createFeed, updateFeed, archiveFeed, getEntryCountsByWire, getAllScanPrompts, getScanPromptById, createScanPrompt, updateScanPrompt, deleteScanPrompt, getStatusCounts, getEntriesByStatus, getSeenUrlStats, getSeenUrlsList } from './db';
 import { sendLoginEmail, sendScanDigestEmail } from './services/email';
 import { runWeeklySummaryJob } from './jobs/weekly-summary';
 import { StoredFile } from './types';
@@ -725,7 +725,7 @@ app.get('/api/schedule', requireAuth, (req: Request, res: Response) => {
 
 // Validate schedule numeric parameters
 function validateScheduleParams(body: Record<string, any>): string | null {
-  const { dayOfWeek, hour, minute, lookbackDays, scheduleType } = body;
+  const { dayOfWeek, hour, minute, lookbackDays, scheduleType, frequencyHours, notifyEmails } = body;
   if (scheduleType && !['weekly-summary', 'scan-execution'].includes(scheduleType)) {
     return 'scheduleType must be "weekly-summary" or "scan-execution"';
   }
@@ -741,6 +741,12 @@ function validateScheduleParams(body: Record<string, any>): string | null {
   if (typeof lookbackDays === 'number' && (lookbackDays < 1 || lookbackDays > 365)) {
     return 'lookbackDays must be between 1 and 365';
   }
+  if (typeof frequencyHours === 'number' && (frequencyHours < 1 || frequencyHours > 23)) {
+    return 'frequencyHours must be between 1 and 23';
+  }
+  if (notifyEmails !== undefined && typeof notifyEmails !== 'string') {
+    return 'notifyEmails must be a comma-separated string of email addresses';
+  }
   return null;
 }
 
@@ -752,7 +758,7 @@ app.post('/api/schedules', requireAuth, async (req: Request, res: Response) => {
     return;
   }
 
-  const { name, enabled, dayOfWeek, hour, minute, lookbackDays, grokModel, anthropicModel, timezone, wire, scheduleType } = req.body;
+  const { name, enabled, dayOfWeek, hour, minute, lookbackDays, grokModel, anthropicModel, timezone, wire, scheduleType, frequencyHours, notifyEmails } = req.body;
 
   const scheduleData: Partial<Omit<ScheduleConfig, 'id'>> = {};
 
@@ -767,6 +773,8 @@ app.post('/api/schedules', requireAuth, async (req: Request, res: Response) => {
   if (anthropicModel) scheduleData.anthropicModel = anthropicModel;
   if (timezone) scheduleData.timezone = timezone;
   if (wire !== undefined) scheduleData.wire = wire || undefined;
+  if (typeof frequencyHours === 'number') scheduleData.frequencyHours = frequencyHours;
+  if (notifyEmails !== undefined) scheduleData.notifyEmails = notifyEmails || undefined;
 
   try {
     const newSchedule = await addSchedule(scheduleData);
@@ -798,7 +806,7 @@ app.put('/api/schedules/:id', requireAuth, async (req: Request, res: Response) =
     return;
   }
 
-  const { name, enabled, dayOfWeek, hour, minute, lookbackDays, grokModel, anthropicModel, timezone, wire, scheduleType } = req.body;
+  const { name, enabled, dayOfWeek, hour, minute, lookbackDays, grokModel, anthropicModel, timezone, wire, scheduleType, frequencyHours, notifyEmails } = req.body;
 
   const updates: Partial<Omit<ScheduleConfig, 'id'>> = {};
 
@@ -813,6 +821,8 @@ app.put('/api/schedules/:id', requireAuth, async (req: Request, res: Response) =
   if (anthropicModel !== undefined) updates.anthropicModel = anthropicModel || undefined;
   if (timezone) updates.timezone = timezone;
   if (wire !== undefined) updates.wire = wire || undefined;
+  if (frequencyHours !== undefined) updates.frequencyHours = typeof frequencyHours === 'number' ? frequencyHours : undefined;
+  if (notifyEmails !== undefined) updates.notifyEmails = notifyEmails || undefined;
 
   try {
     const updatedSchedule = await setSchedule(id, updates);
@@ -1337,11 +1347,12 @@ app.post('/api/scan/entries/:id/action', requireAuth, async (req: Request, res: 
     promote: 'queued',
     archive: 'archived',
     skip: 'skipped',
+    restore: 'queued',
   };
 
   const newStatus = actionMap[action];
   if (!newStatus) {
-    res.status(400).json({ error: 'Invalid action. Must be promote, archive, or skip.' });
+    res.status(400).json({ error: 'Invalid action. Must be promote, archive, skip, or restore.' });
     return;
   }
 
@@ -1361,6 +1372,57 @@ app.post('/api/scan/entries/:id/action', requireAuth, async (req: Request, res: 
   } catch (error) {
     console.error('Failed to update entry status:', error);
     res.status(500).json({ error: 'Failed to update entry' });
+  }
+});
+
+// API: Scan entries by status (for queue tabs)
+app.get('/api/scan/entries', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const statusParam = (req.query.status as string) || 'queued';
+    const statuses = statusParam.split(',').map(s => s.trim()).filter(Boolean);
+    const wire = req.query.wire as string | undefined;
+    const date = req.query.date as string | undefined;
+    const limit = Math.min(Math.max(parseInt(req.query.limit as string, 10) || 100, 1), 500);
+    const offset = Math.max(parseInt(req.query.offset as string, 10) || 0, 0);
+
+    const { entries, total } = await getEntriesByStatus(statuses, { wire, date, limit, offset });
+    res.json({ entries, total, count: entries.length });
+  } catch (error) {
+    console.error('Failed to fetch scan entries:', error);
+    res.status(500).json({ error: 'Failed to fetch scan entries' });
+  }
+});
+
+// API: Seen URLs (seeded from existing wire content)
+app.get('/api/scan/seen-urls', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const wire = req.query.wire as string | undefined;
+    const limit = Math.min(Math.max(parseInt(req.query.limit as string, 10) || 50, 1), 500);
+    const offset = Math.max(parseInt(req.query.offset as string, 10) || 0, 0);
+
+    const { urls, total } = await getSeenUrlsList({ wire, limit, offset });
+    res.json({ urls, total, seededTotal: total });
+  } catch (error) {
+    console.error('Failed to fetch seen URLs:', error);
+    res.status(500).json({ error: 'Failed to fetch seen URLs' });
+  }
+});
+
+// API: Status counts for stat tiles
+app.get('/api/scan/status-counts', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const wire = req.query.wire as string | undefined;
+    const date = req.query.date as string | undefined;
+
+    const [counts, urlStats] = await Promise.all([
+      getStatusCounts(wire, date),
+      getSeenUrlStats(wire),
+    ]);
+
+    res.json({ counts, seededUrls: urlStats.seededCount, totalUrls: urlStats.totalCount });
+  } catch (error) {
+    console.error('Failed to fetch status counts:', error);
+    res.status(500).json({ error: 'Failed to fetch status counts' });
   }
 });
 
@@ -1871,7 +1933,19 @@ function renderDashboard(files: StoredFile[], message?: string): string {
             <label for="scheduleType">Type</label>
             <select id="scheduleType">
               <option value="weekly-summary">Weekly Summary</option>
-              <option value="scan-execution">Scan Execution (Daily)</option>
+              <option value="scan-execution">Scan Execution</option>
+            </select>
+          </div>
+          <div class="form-group" id="scheduleFrequencyGroup" style="display: none;">
+            <label for="scheduleFrequency">Frequency</label>
+            <select id="scheduleFrequency">
+              <option value="">Once daily</option>
+              <option value="2">Every 2h</option>
+              <option value="3">Every 3h</option>
+              <option value="4">Every 4h</option>
+              <option value="6">Every 6h</option>
+              <option value="8">Every 8h</option>
+              <option value="12">Every 12h</option>
             </select>
           </div>
           <div class="form-group">
@@ -1937,6 +2011,12 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           </div>
           <button type="button" id="save-schedule" class="button">Save</button>
           <button type="button" id="cancel-schedule" class="button secondary">Cancel</button>
+        </div>
+        <div class="form-row" id="scheduleNotifyRow" style="display: none; margin-top: 12px;">
+          <div class="form-group" style="flex: 1;">
+            <label for="scheduleNotifyEmails">Notify Emails (comma-separated, empty = default)</label>
+            <input type="text" id="scheduleNotifyEmails" placeholder="user@example.com, other@..." style="background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 10px 12px; color: #fff; width: 100%;">
+          </div>
         </div>
       </div>
       
@@ -2066,6 +2146,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
 
     <div class="card">
       <h2>Daily Queue <span id="queue-count-badge" style="display: none; background: #f5a623; color: #000; font-size: 13px; padding: 2px 10px; border-radius: 12px; margin-left: 8px; font-weight: 600;"></span></h2>
+      <div id="dedup-stats" class="status-grid" style="margin-bottom: 16px;"></div>
       <p class="form-description" style="margin-bottom: 16px;">Review prioritized scan entries. Promote to keep, skip to defer, archive to dismiss.</p>
       <div class="form-row" style="margin-bottom: 16px;">
         <div class="form-group">
@@ -2087,6 +2168,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       <div id="queue-results">
         <p style="color: #666;">Click "Load Queue" to view entries.</p>
       </div>
+      <p style="margin-top: 12px;"><a href="/queue" style="color: #f5a623; text-decoration: none; font-size: 14px; font-weight: 500;">View Full Queue with Duplicates &rarr;</a></p>
     </div>
 
     <div class="card">
@@ -2375,10 +2457,19 @@ function renderDashboard(files: StoredFile[], message?: string): string {
     const cancelScheduleBtn = document.getElementById('cancel-schedule');
     const addScheduleBtn = document.getElementById('add-schedule');
 
-    // Show/hide dayOfWeek based on schedule type
-    scheduleTypeSelect.addEventListener('change', function() {
-      scheduleDayOfWeekGroup.style.display = scheduleTypeSelect.value === 'scan-execution' ? 'none' : '';
-    });
+    const scheduleFrequencyGroup = document.getElementById('scheduleFrequencyGroup');
+    const scheduleFrequencySelect = document.getElementById('scheduleFrequency');
+    const scheduleNotifyRow = document.getElementById('scheduleNotifyRow');
+    const scheduleNotifyEmails = document.getElementById('scheduleNotifyEmails');
+
+    // Show/hide fields based on schedule type
+    function toggleScheduleTypeFields() {
+      const isScan = scheduleTypeSelect.value === 'scan-execution';
+      scheduleDayOfWeekGroup.style.display = isScan ? 'none' : '';
+      scheduleFrequencyGroup.style.display = isScan ? '' : 'none';
+      scheduleNotifyRow.style.display = isScan ? '' : 'none';
+    }
+    scheduleTypeSelect.addEventListener('change', toggleScheduleTypeFields);
     
     let cachedWires = [];
     let cachedModels = { grok: [], anthropic: [] };
@@ -2439,7 +2530,10 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         html += '<tr>';
         html += '<td>' + escapeHtml(s.name || 'Untitled') + '</td>';
         html += '<td>' + typeLabel + '</td>';
-        html += '<td>' + (isScan ? 'Daily' : day) + ' @ ' + time + ' <span style="color: #666; font-size: 11px;">(' + escapeHtml(tzShort) + ')</span></td>';
+        const freqLabel = isScan && s.frequencyHours ? 'Every ' + s.frequencyHours + 'h' : (isScan ? 'Daily' : day);
+        html += '<td>' + freqLabel + ' @ ' + (isScan && s.frequencyHours ? ':' + s.minute.toString().padStart(2, '0') : time) + ' <span style="color: #666; font-size: 11px;">(' + escapeHtml(tzShort) + ')</span>';
+        if (s.notifyEmails) html += '<div style="font-size: 11px; color: #888; margin-top: 2px;">Notify: ' + escapeHtml(s.notifyEmails) + '</div>';
+        html += '</td>';
         html += '<td>' + escapeHtml(feed) + '</td>';
         html += '<td>' + status + '</td>';
         html += '<td style="font-size: 12px;">' + escapeHtml(nextRun) + (s.nextRun ? ' <span style="color: #666; font-size: 10px;">(' + escapeHtml(tz === 'UTC' ? 'UTC' : tzShort) + ')</span>' : '') + '</td>';
@@ -2494,6 +2588,8 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         scheduleTime.value = schedule.hour.toString().padStart(2, '0') + ':' + schedule.minute.toString().padStart(2, '0');
         scheduleLookback.value = schedule.lookbackDays;
         scheduleTimezone.value = schedule.timezone || 'America/Los_Angeles';
+        scheduleFrequencySelect.value = schedule.frequencyHours ? schedule.frequencyHours.toString() : '';
+        scheduleNotifyEmails.value = schedule.notifyEmails || '';
       } else {
         scheduleId.value = '';
         scheduleName.value = 'New Schedule';
@@ -2503,9 +2599,10 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         scheduleTime.value = '09:00';
         scheduleLookback.value = '7';
         scheduleTimezone.value = 'America/Los_Angeles';
+        scheduleFrequencySelect.value = '';
+        scheduleNotifyEmails.value = '';
       }
-      // Toggle dayOfWeek visibility based on type
-      scheduleDayOfWeekGroup.style.display = scheduleTypeSelect.value === 'scan-execution' ? 'none' : '';
+      toggleScheduleTypeFields();
     }
     
     function hideScheduleForm() {
@@ -2711,6 +2808,8 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           grokModel: scheduleGrokModel.value,
           anthropicModel: scheduleAnthropicModel.value,
           wire: scheduleWire.value || undefined,
+          frequencyHours: scheduleFrequencySelect.value ? parseInt(scheduleFrequencySelect.value, 10) : undefined,
+          notifyEmails: scheduleNotifyEmails.value || undefined,
         };
         
         let response;
@@ -3008,6 +3107,41 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         }
       }
     });
+
+    async function loadDedupStats() {
+      try {
+        const params = new URLSearchParams();
+        const date = document.getElementById('queueDate').value;
+        if (date) params.set('date', date);
+        const resp = await fetch('/api/scan/status-counts?' + params.toString());
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const c = data.counts || {};
+        const queued = (c.queued || 0) + (c.scored || 0);
+        const dup = c.duplicate || 0;
+        const total = Object.values(c).reduce(function(a, b) { return a + b; }, 0);
+        const unique = total - dup;
+        const dupRate = total > 0 ? Math.round((dup / total) * 100) : 0;
+
+        const el = document.getElementById('dedup-stats');
+        if (el) {
+          el.innerHTML =
+            '<div class="status-item"><div class="label">Total Entries</div><div class="value">' + total + '</div></div>' +
+            '<div class="status-item"><div class="label">Unique</div><div class="value" style="color: #4caf50;">' + unique + '</div></div>' +
+            '<div class="status-item"><div class="label">Duplicates</div><div class="value" style="color: #999;">' + dup + '</div></div>' +
+            '<div class="status-item"><div class="label">Dup Rate</div><div class="value" style="color: ' + (dupRate > 50 ? '#ef5350' : '#999') + ';">' + dupRate + '%</div></div>' +
+            '<div class="status-item"><div class="label">Seeded URLs</div><div class="value" style="color: #666;">' + (data.seededUrls || 0) + '</div></div>';
+        }
+        if (queued > 0) {
+          queueCountBadge.textContent = queued + ' new';
+          queueCountBadge.style.display = 'inline';
+        } else {
+          queueCountBadge.style.display = 'none';
+        }
+      } catch (e) {
+        console.error('Failed to load dedup stats:', e);
+      }
+    }
 
     async function loadQueue() {
       const wire = queueWireSelect.value;
@@ -3459,7 +3593,8 @@ function renderDashboard(files: StoredFile[], message?: string): string {
                 scanRunResult.innerHTML = '<p style="color: #4caf50; margin: 0;">Scan complete!</p>';
               }
               scanRunResult.style.display = 'block';
-              // Auto-refresh queue
+              // Auto-refresh queue and dedup stats
+              loadDedupStats();
               loadQueue();
             } else if (status.status === 'failed') {
               evtSource.close();
@@ -3536,8 +3671,9 @@ function renderDashboard(files: StoredFile[], message?: string): string {
     }
 
     loadStatsBtn.addEventListener('click', loadPromptStats);
-    // Auto-load stats on page load
+    // Auto-load stats and dedup stats on page load
     loadPromptStats();
+    loadDedupStats();
   </script>
 </body>
 </html>
@@ -3570,7 +3706,7 @@ function renderQueuePage(): string {
       padding: 24px 32px;
     }
     .header-content {
-      max-width: 900px;
+      max-width: 960px;
       margin: 0 auto;
       display: flex;
       align-items: center;
@@ -3583,7 +3719,7 @@ function renderQueuePage(): string {
     .header-right { display: flex; align-items: center; gap: 16px; }
     .header-right a { color: #999; text-decoration: none; font-size: 14px; }
     .header-right a:hover { color: #f5a623; }
-    .main { padding: 32px; max-width: 900px; margin: 0 auto; }
+    .main { padding: 32px; max-width: 960px; margin: 0 auto; }
     .card {
       background: #1a1a1a;
       border: 1px solid #2a2a2a;
@@ -3610,16 +3746,15 @@ function renderQueuePage(): string {
     .button.secondary { background: #2a2a2a; color: #ffffff; }
     .button.secondary:hover { background: #3a3a3a; }
     table { width: 100%; border-collapse: collapse; }
-    th, td { padding: 12px; text-align: left; border-bottom: 1px solid #2a2a2a; }
+    th, td { padding: 10px 8px; text-align: left; border-bottom: 1px solid #2a2a2a; }
     th { font-weight: 600; color: #999999; font-size: 12px; text-transform: uppercase; }
-    td { color: #ffffff; }
+    td { color: #ffffff; font-size: 14px; }
     .download-link { color: #f5a623; text-decoration: none; font-weight: 500; }
     .download-link:hover { text-decoration: underline; }
     .form-row { display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap; }
     .form-group { display: flex; flex-direction: column; gap: 6px; }
     .form-group label { font-size: 12px; color: #999999; text-transform: uppercase; font-weight: 600; }
     .form-group input[type="date"],
-    .form-group input[type="number"],
     .form-group select {
       padding: 10px 12px;
       border: 1px solid #2a2a2a;
@@ -3633,6 +3768,44 @@ function renderQueuePage(): string {
     .form-group select:focus { outline: none; border-color: #f5a623; }
     .form-group select option { background: #1a1a1a; color: #ffffff; }
     .form-description { color: #666666; font-size: 14px; margin: 0; }
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .status-item {
+      background: #0d0d0d;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      padding: 12px;
+      text-align: center;
+    }
+    .status-item .label { font-size: 11px; color: #999; text-transform: uppercase; font-weight: 600; margin-bottom: 4px; }
+    .status-item .value { font-size: 20px; font-weight: 700; color: #fff; }
+    .tab-bar {
+      display: flex;
+      gap: 0;
+      border-bottom: 2px solid #2a2a2a;
+      margin-bottom: 16px;
+    }
+    .tab-bar button {
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -2px;
+      padding: 10px 16px;
+      color: #999;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: color 0.2s, border-color 0.2s;
+    }
+    .tab-bar button:hover { color: #ccc; }
+    .tab-bar button.active { color: #f5a623; border-bottom-color: #f5a623; }
+    details summary { cursor: pointer; color: #999; font-size: 14px; }
+    details summary:hover { color: #f5a623; }
+    details[open] summary { color: #f5a623; }
   </style>
 </head>
 <body>
@@ -3650,8 +3823,11 @@ function renderQueuePage(): string {
 
   <div class="main">
     <div class="card">
-      <h2>Queue <span id="queue-count-badge" style="display: none; background: #f5a623; color: #000; font-size: 13px; padding: 2px 10px; border-radius: 12px; margin-left: 8px; font-weight: 600;"></span></h2>
-      <p class="form-description" style="margin-bottom: 16px;">Review prioritized scan entries. Promote to keep, skip to defer, archive to dismiss.</p>
+      <h2>Scan Queue</h2>
+      <p class="form-description" style="margin-bottom: 16px;"><strong>Promote</strong> = confirm for newsletter. <strong>Skip</strong> = defer (restore later). <strong>Archive</strong> = dismiss (restore later).</p>
+
+      <div id="stat-tiles" class="status-grid"></div>
+
       <div class="form-row" style="margin-bottom: 16px;">
         <div class="form-group">
           <label for="queueWire">Feed Filter</label>
@@ -3660,18 +3836,32 @@ function renderQueuePage(): string {
           </select>
         </div>
         <div class="form-group">
-          <label for="queueMinScore">Min Score</label>
-          <input type="number" id="queueMinScore" min="0" max="100" value="40" style="width: 80px;">
-        </div>
-        <div class="form-group">
           <label for="queueDate">Date</label>
-          <input type="date" id="queueDate" value="${today}">
+          <select id="queueDate">
+            <option value="">All Time</option>
+            <option value="${today}" selected>Today</option>
+          </select>
         </div>
-        <button type="button" id="load-queue" class="button secondary">Load Queue</button>
+        <button type="button" id="load-queue" class="button secondary">Refresh</button>
       </div>
+
+      <div class="tab-bar" id="tab-bar">
+        <button class="active" data-tab="queued">Queued <span id="tab-count-queued"></span></button>
+        <button data-tab="duplicate">Duplicates <span id="tab-count-duplicate"></span></button>
+        <button data-tab="skipped">Skipped <span id="tab-count-skipped"></span></button>
+        <button data-tab="archived">Archived <span id="tab-count-archived"></span></button>
+      </div>
+
       <div id="queue-results">
         <p style="color: #666;">Loading...</p>
       </div>
+
+      <details id="seeded-urls-details" style="margin-top: 24px;">
+        <summary id="seeded-urls-summary">Seeded URLs (loading...)</summary>
+        <div id="seeded-urls-content" style="margin-top: 12px;">
+          <p style="color: #666;">Click to load...</p>
+        </div>
+      </details>
     </div>
   </div>
 
@@ -3683,9 +3873,10 @@ function renderQueuePage(): string {
     }
 
     var queueWireSelect = document.getElementById('queueWire');
+    var queueDateSelect = document.getElementById('queueDate');
     var queueResultsEl = document.getElementById('queue-results');
-    var queueCountBadge = document.getElementById('queue-count-badge');
     var loadQueueBtn = document.getElementById('load-queue');
+    var activeTab = 'queued';
 
     function scoreColor(score) {
       if (score == null) return '#666';
@@ -3705,71 +3896,122 @@ function renderQueuePage(): string {
       return '<span style="background:' + b.bg + '; color:' + b.color + '; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:600;">' + b.label + '</span>';
     }
 
-    async function entryAction(id, action, btnEl) {
-      if (btnEl) btnEl.disabled = true;
+    // Tab bar click
+    document.getElementById('tab-bar').addEventListener('click', function(e) {
+      var btn = e.target.closest('button[data-tab]');
+      if (!btn) return;
+      activeTab = btn.dataset.tab;
+      document.querySelectorAll('#tab-bar button').forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      loadEntries();
+    });
+
+    // Entry action (promote/skip/archive/restore)
+    document.addEventListener('click', function(e) {
+      var btn = e.target.closest('.queue-action-btn');
+      if (!btn) return;
+      var entryId = parseInt(btn.dataset.entryId, 10);
+      var action = btn.dataset.action;
+      if (!entryId || !action) return;
+      btn.disabled = true;
+      fetch('/api/scan/entries/' + entryId + '/action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: action })
+      }).then(function(r) {
+        if (!r.ok) throw new Error('Failed');
+        loadStatusCounts();
+        loadEntries();
+      }).catch(function(err) {
+        console.error('Action failed:', err);
+        btn.disabled = false;
+      });
+    });
+
+    function statusesForTab(tab) {
+      if (tab === 'queued') return 'queued,scored';
+      if (tab === 'duplicate') return 'duplicate';
+      if (tab === 'skipped') return 'skipped';
+      if (tab === 'archived') return 'archived';
+      return tab;
+    }
+
+    async function loadStatusCounts() {
       try {
-        var resp = await fetch('/api/scan/entries/' + id + '/action', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: action })
-        });
-        if (!resp.ok) throw new Error('Failed');
-        loadQueue();
-      } catch (e) {
-        console.error('Action failed:', e);
-        if (btnEl) btnEl.disabled = false;
+        var params = new URLSearchParams();
+        if (queueWireSelect.value) params.set('wire', queueWireSelect.value);
+        if (queueDateSelect.value) params.set('date', queueDateSelect.value);
+
+        var resp = await fetch('/api/scan/status-counts?' + params.toString());
+        if (!resp.ok) return;
+        var data = await resp.json();
+        var c = data.counts || {};
+        var queued = (c.queued || 0) + (c.scored || 0);
+        var dup = c.duplicate || 0;
+        var skipped = c.skipped || 0;
+        var archived = c.archived || 0;
+
+        document.getElementById('tab-count-queued').textContent = '(' + queued + ')';
+        document.getElementById('tab-count-duplicate').textContent = '(' + dup + ')';
+        document.getElementById('tab-count-skipped').textContent = '(' + skipped + ')';
+        document.getElementById('tab-count-archived').textContent = '(' + archived + ')';
+
+        // Stat tiles
+        var tilesHtml = '';
+        tilesHtml += '<div class="status-item"><div class="label">Queued</div><div class="value" style="color: #f5a623;">' + queued + '</div></div>';
+        tilesHtml += '<div class="status-item"><div class="label">Duplicates</div><div class="value" style="color: #999;">' + dup + '</div></div>';
+        tilesHtml += '<div class="status-item"><div class="label">Skipped</div><div class="value" style="color: #999;">' + skipped + '</div></div>';
+        tilesHtml += '<div class="status-item"><div class="label">Archived</div><div class="value" style="color: #666;">' + archived + '</div></div>';
+        tilesHtml += '<div class="status-item"><div class="label">Seeded URLs</div><div class="value" style="color: #666;">' + (data.seededUrls || 0) + '</div></div>';
+        document.getElementById('stat-tiles').innerHTML = tilesHtml;
+
+        document.getElementById('seeded-urls-summary').textContent = 'Seeded URLs (' + (data.seededUrls || 0) + ' from existing wire content)';
+      } catch (err) {
+        console.error('Failed to load status counts:', err);
       }
     }
 
-    document.addEventListener('click', function(e) {
-      var btn = e.target.closest('.queue-action-btn');
-      if (btn) {
-        var entryId = parseInt(btn.dataset.entryId, 10);
-        var action = btn.dataset.action;
-        if (entryId && action) {
-          entryAction(entryId, action, btn);
-        }
-      }
-    });
-
-    async function loadQueue() {
-      var wire = queueWireSelect.value;
-      var minScore = document.getElementById('queueMinScore').value || '40';
-      var date = document.getElementById('queueDate').value;
-
+    async function loadEntries() {
       var params = new URLSearchParams();
-      if (wire) params.set('wire', wire);
-      params.set('minScore', minScore);
-      if (date) params.set('date', date);
+      params.set('status', statusesForTab(activeTab));
+      if (queueWireSelect.value) params.set('wire', queueWireSelect.value);
+      if (queueDateSelect.value) params.set('date', queueDateSelect.value);
+      params.set('limit', '100');
 
       try {
-        var response = await fetch('/api/scan/queue?' + params.toString());
-        if (!response.ok) throw new Error('Failed to load queue');
-        var data = await response.json();
-
-        if (data.count > 0) {
-          queueCountBadge.textContent = data.count + ' new';
-          queueCountBadge.style.display = 'inline';
-        } else {
-          queueCountBadge.style.display = 'none';
-        }
+        var resp = await fetch('/api/scan/entries?' + params.toString());
+        if (!resp.ok) throw new Error('Failed to load entries');
+        var data = await resp.json();
 
         if (data.entries.length === 0) {
-          queueResultsEl.innerHTML = '<p style="color: #666;">No entries found for these filters.</p>';
+          queueResultsEl.innerHTML = '<p style="color: #666;">No entries in this tab.</p>';
           return;
         }
 
-        var html = '<table><thead><tr><th>Name</th><th>Amount</th><th>Deadline</th><th>Score</th><th>Wire</th><th>Source</th><th>Actions</th></tr></thead><tbody>';
+        var isDup = activeTab === 'duplicate';
+        var showRestore = activeTab === 'skipped' || activeTab === 'archived';
+        var showActions = activeTab === 'queued';
+
+        var cols = '<th>Name</th><th>Amount</th><th>Deadline</th>';
+        if (!isDup) cols += '<th>Score</th>';
+        cols += '<th>Wire</th><th>Source</th>';
+        if (isDup) cols += '<th>Dup Reason</th>';
+        if (showActions) cols += '<th>Actions</th>';
+        if (showRestore) cols += '<th>Actions</th>';
+
+        var html = '<table><thead><tr>' + cols + '</tr></thead><tbody>';
         data.entries.forEach(function(e) {
           var sc = scoreColor(e.quality_score);
           var desc = (e.description || '').length > 80 ? e.description.substring(0, 80) + '...' : (e.description || '');
-          html += '<tr id="queue-row-' + e.id + '">';
+          html += '<tr>';
           html += '<td><div>' + escapeHtml(e.name || '') + '</div>';
           if (desc) html += '<div style="font-size: 11px; color: #888; margin-top: 2px;">' + escapeHtml(desc) + '</div>';
           html += '</td>';
           html += '<td>' + escapeHtml(e.amount || '-') + '</td>';
           html += '<td>' + escapeHtml(e.deadline || '-') + '</td>';
-          html += '<td><span style="color: ' + sc + '; font-weight: 600;">' + (e.quality_score != null ? e.quality_score : '-') + '</span></td>';
+          if (!isDup) {
+            html += '<td><span style="color: ' + sc + '; font-weight: 600;">' + (e.quality_score != null ? e.quality_score : '-') + '</span></td>';
+          }
           html += '<td><code style="background: #0d0d0d; padding: 2px 6px; border-radius: 4px;">' + escapeHtml(e.wire || '') + '</code></td>';
           html += '<td style="white-space: nowrap;">';
           html += sourceBadge(e.scan_source);
@@ -3777,19 +4019,66 @@ function renderQueuePage(): string {
             html += ' <a href="' + escapeHtml(e.source_url) + '" target="_blank" class="download-link" style="font-size: 12px;">Link</a>';
           }
           html += '</td>';
-          html += '<td style="white-space: nowrap;">';
-          html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="promote" class="queue-action-btn" style="background: #1b5e20; border: none; color: #4caf50; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;" title="Promote">Promote</button>';
-          html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="skip" class="queue-action-btn" style="background: #2a2a2a; border: none; color: #999; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;" title="Skip">Skip</button>';
-          html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="archive" class="queue-action-btn" style="background: #4a1515; border: none; color: #ef5350; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;" title="Archive">Archive</button>';
-          html += '</td>';
+          if (isDup) {
+            html += '<td style="font-size: 12px; color: #999;">' + escapeHtml(e.duplicate_reason || '-') + '</td>';
+          }
+          if (showActions) {
+            html += '<td style="white-space: nowrap;">';
+            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="promote" class="queue-action-btn" style="background: #1b5e20; border: none; color: #4caf50; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;">Promote</button>';
+            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="skip" class="queue-action-btn" style="background: #2a2a2a; border: none; color: #999; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;">Skip</button>';
+            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="archive" class="queue-action-btn" style="background: #4a1515; border: none; color: #ef5350; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;">Archive</button>';
+            html += '</td>';
+          }
+          if (showRestore) {
+            html += '<td><button data-entry-id="' + parseInt(e.id) + '" data-action="restore" class="queue-action-btn" style="background: #1a3a5c; border: none; color: #5b9bd5; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;">Restore</button></td>';
+          }
           html += '</tr>';
         });
         html += '</tbody></table>';
-        html += '<p style="color: #666; font-size: 12px; margin-top: 8px;">' + data.count + ' entries</p>';
-
+        html += '<p style="color: #666; font-size: 12px; margin-top: 8px;">' + data.total + ' total entries</p>';
         queueResultsEl.innerHTML = html;
-      } catch (error) {
-        queueResultsEl.innerHTML = '<p style="color: #ef5350;">Failed to load queue: ' + escapeHtml(error.message) + '</p>';
+      } catch (err) {
+        queueResultsEl.innerHTML = '<p style="color: #ef5350;">Failed to load: ' + escapeHtml(err.message) + '</p>';
+      }
+    }
+
+    // Seeded URLs lazy load
+    var seededLoaded = false;
+    document.getElementById('seeded-urls-details').addEventListener('toggle', function() {
+      if (this.open && !seededLoaded) {
+        seededLoaded = true;
+        loadSeededUrls();
+      }
+    });
+
+    async function loadSeededUrls() {
+      var el = document.getElementById('seeded-urls-content');
+      try {
+        var params = new URLSearchParams();
+        if (queueWireSelect.value) params.set('wire', queueWireSelect.value);
+        params.set('limit', '100');
+        var resp = await fetch('/api/scan/seen-urls?' + params.toString());
+        if (!resp.ok) throw new Error('Failed');
+        var data = await resp.json();
+        if (data.urls.length === 0) {
+          el.innerHTML = '<p style="color: #666;">No seeded URLs found.</p>';
+          return;
+        }
+        var html = '<table><thead><tr><th>URL</th><th>Wire</th><th>First Seen</th></tr></thead><tbody>';
+        data.urls.forEach(function(u) {
+          html += '<tr>';
+          html += '<td style="font-size: 12px; word-break: break-all;"><a href="' + escapeHtml(u.url) + '" target="_blank" class="download-link">' + escapeHtml(u.url.length > 60 ? u.url.substring(0, 60) + '...' : u.url) + '</a></td>';
+          html += '<td><code style="background: #0d0d0d; padding: 2px 6px; border-radius: 4px;">' + escapeHtml(u.wire || '') + '</code></td>';
+          html += '<td style="font-size: 12px;">' + escapeHtml(u.first_seen_date || '-') + '</td>';
+          html += '</tr>';
+        });
+        html += '</tbody></table>';
+        if (data.total > data.urls.length) {
+          html += '<p style="color: #666; font-size: 12px; margin-top: 8px;">Showing ' + data.urls.length + ' of ' + data.total + '</p>';
+        }
+        el.innerHTML = html;
+      } catch (err) {
+        el.innerHTML = '<p style="color: #ef5350;">Failed to load seeded URLs</p>';
       }
     }
 
@@ -3798,7 +4087,6 @@ function renderQueuePage(): string {
         var response = await fetch('/api/feeds');
         if (!response.ok) throw new Error('Failed to fetch feeds');
         var feeds = await response.json();
-
         var options = '<option value="">All Feeds</option>';
         feeds.forEach(function(f) {
           options += '<option value="' + escapeHtml(f.key) + '">' + escapeHtml(f.displayName) + '</option>';
@@ -3809,10 +4097,26 @@ function renderQueuePage(): string {
       }
     }
 
-    loadQueueBtn.addEventListener('click', loadQueue);
+    loadQueueBtn.addEventListener('click', function() {
+      seededLoaded = false;
+      loadStatusCounts();
+      loadEntries();
+    });
+    queueWireSelect.addEventListener('change', function() {
+      seededLoaded = false;
+      loadStatusCounts();
+      loadEntries();
+    });
+    queueDateSelect.addEventListener('change', function() {
+      loadStatusCounts();
+      loadEntries();
+    });
 
-    // Auto-load feeds and queue on page open
-    loadFeeds().then(function() { loadQueue(); });
+    // Auto-load on page open
+    loadFeeds().then(function() {
+      loadStatusCounts();
+      loadEntries();
+    });
   </script>
 </body>
 </html>

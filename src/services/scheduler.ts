@@ -19,6 +19,8 @@ export interface ScheduleConfig {
   timezone: string;
   wire?: string; // Optional wire/feed filter
   scheduleType?: 'weekly-summary' | 'scan-execution';
+  frequencyHours?: number; // Sub-daily interval (1-23) for scan-execution
+  notifyEmails?: string; // Comma-separated email recipients
 }
 
 // Default schedule template for new schedules
@@ -114,7 +116,10 @@ export function formatScheduleDescription(schedule: ScheduleConfig): string {
   const hour12 = schedule.hour % 12 || 12;
 
   if (schedule.scheduleType === 'scan-execution') {
-    return `Daily at ${hour12}:${minute} ${ampm} (${schedule.timezone}) — Scan Execution`;
+    if (schedule.frequencyHours && schedule.frequencyHours < 24) {
+      return `Every ${schedule.frequencyHours}h at :${minute} (${schedule.timezone}) \u2014 Scan Execution`;
+    }
+    return `Daily at ${hour12}:${minute} ${ampm} (${schedule.timezone}) \u2014 Scan Execution`;
   }
 
   const day = DAY_NAMES[schedule.dayOfWeek];
@@ -124,6 +129,10 @@ export function formatScheduleDescription(schedule: ScheduleConfig): string {
 function buildCronExpression(schedule: ScheduleConfig): string {
   // Cron format: minute hour dayOfMonth month dayOfWeek
   if (schedule.scheduleType === 'scan-execution') {
+    if (schedule.frequencyHours && schedule.frequencyHours < 24) {
+      // Sub-daily: run every N hours at the configured minute
+      return `${schedule.minute} */${schedule.frequencyHours} * * *`;
+    }
     // Scan execution runs daily
     return `${schedule.minute} ${schedule.hour} * * *`;
   }
@@ -164,7 +173,10 @@ function createJobExecutor(schedule: ScheduleConfig) {
         if (scanResult.totalResults > 0) {
           try {
             const dashboardUrl = config.app.url;
-            await sendScanDigestEmail(scanResult, dashboardUrl);
+            const recipients = currentScheduleData.notifyEmails
+              ? currentScheduleData.notifyEmails.split(',').map(e => e.trim()).filter(Boolean)
+              : undefined;
+            await sendScanDigestEmail(scanResult, dashboardUrl, recipients);
             console.log(`[Scheduler] Scan digest email sent`);
           } catch (emailErr) {
             console.error(`[Scheduler] Failed to send digest email:`, emailErr);
@@ -214,7 +226,10 @@ function createJobExecutor(schedule: ScheduleConfig) {
 
       // Send failure notification email
       try {
-        await sendScheduledJobFailureEmail(errorMsg, jobStartTime);
+        const recipients = currentScheduleData.notifyEmails
+          ? currentScheduleData.notifyEmails.split(',').map(e => e.trim()).filter(Boolean)
+          : undefined;
+        await sendScheduledJobFailureEmail(errorMsg, jobStartTime, recipients);
         console.log(`[Scheduler] Failure notification email sent.`);
       } catch (emailError) {
         console.error(`[Scheduler] Failed to send failure notification:`, emailError);
@@ -296,10 +311,30 @@ export function getNextRunTime(scheduleId?: string): Date | null {
   const next = new Date(tzNow);
 
   if (schedule.scheduleType === 'scan-execution') {
-    // Daily schedule — next run is today or tomorrow at the scheduled time
-    next.setHours(schedule.hour, schedule.minute, 0, 0);
-    if (next <= tzNow) {
-      next.setDate(next.getDate() + 1);
+    if (schedule.frequencyHours && schedule.frequencyHours < 24) {
+      // Sub-daily: find next hour that matches */N pattern
+      const freq = schedule.frequencyHours;
+      const currentHour = tzNow.getHours();
+      const currentMin = tzNow.getMinutes();
+
+      // Find next matching hour (hours that are divisible by freq)
+      let nextHour = currentHour;
+      if (currentMin >= schedule.minute) {
+        nextHour++;
+      }
+      // Round up to next multiple of freq
+      nextHour = Math.ceil(nextHour / freq) * freq;
+      if (nextHour >= 24) {
+        next.setDate(next.getDate() + 1);
+        nextHour = 0;
+      }
+      next.setHours(nextHour, schedule.minute, 0, 0);
+    } else {
+      // Daily schedule -- next run is today or tomorrow at the scheduled time
+      next.setHours(schedule.hour, schedule.minute, 0, 0);
+      if (next <= tzNow) {
+        next.setDate(next.getDate() + 1);
+      }
     }
   } else {
     // Weekly schedule
