@@ -826,13 +826,13 @@ export async function ensureScanPromptsTable(): Promise<void> {
     ALTER TABLE scan_prompts ADD COLUMN IF NOT EXISTS variant TEXT CHECK (variant IN ('A', 'B', 'C'))
   `);
 
-  // Phase 2: Allow 'skipped' status for queue actions
+  // Phase 2: Allow queue action statuses (skipped, approved, declined)
   await pool.query(`
     ALTER TABLE scan_entries DROP CONSTRAINT IF EXISTS scan_entries_status_check
   `);
   await pool.query(`
     ALTER TABLE scan_entries ADD CONSTRAINT scan_entries_status_check
-      CHECK (status IN ('raw','deduped','duplicate','scored','queued','enriched','published','archived','skipped'))
+      CHECK (status IN ('raw','deduped','duplicate','scored','queued','enriched','published','archived','skipped','approved','declined'))
   `);
 
   // Phase 2: schedule_type for distinguishing weekly-summary vs scan-execution
