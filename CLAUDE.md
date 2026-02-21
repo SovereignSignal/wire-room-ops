@@ -6,6 +6,25 @@ This file provides context for AI assistants working with this codebase.
 
 **CryptoGrantWire Summarizer** is a Node.js/TypeScript application that automates weekly newsletter preparation for a cryptocurrency grants-focused newsletter. It pulls categorized entries from a Postgres database, enriches them using AI (Grok for X.com content, Claude for other URLs), and generates formatted markdown files.
 
+## Multi-Repo Architecture
+
+This backend is one half of a two-repo system:
+
+| Repo | Role | Location |
+|------|------|----------|
+| `grant-wire-summarizer` (this repo) | Backend pipeline + admin dashboard | `~/GitHub/grant-wire-summarizer` |
+| `the-wire-room` | Public-facing Next.js website | `~/GitHub/the-wire-room` |
+
+Both repos share the **same PostgreSQL database**. This repo writes to it; the Wire Room reads from it.
+
+### Approve = Publish Flow
+
+When an operator clicks "Approve" on a queued scan entry (via the dashboard), the entry's status changes to `approved`. The Wire Room frontend queries `scan_entries WHERE status = 'approved'` to display entries on thewireroom.xyz. There is no separate publish step.
+
+The Wire Room reads these columns from `scan_entries`: `id`, `name`, `description`, `source_url`, `amount`, `deadline`, `wire`, `quality_score`, `scan_source`, `created_at`.
+
+A partial index `idx_scan_entries_approved` on `(status, created_at DESC) WHERE status = 'approved'` optimizes the Wire Room's query.
+
 ## Key Architecture Decisions
 
 ### Dual AI Processing

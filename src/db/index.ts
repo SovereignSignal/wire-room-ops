@@ -713,6 +713,7 @@ export async function ensureScanTables(): Promise<void> {
   await client.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_wire_date ON scan_entries(wire, scan_date)`);
   await client.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_wire_status ON scan_entries(wire, status)`);
   await client.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_queue ON scan_entries(wire, status, quality_score DESC NULLS LAST) WHERE status IN ('scored', 'queued')`);
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_approved ON scan_entries(status, created_at DESC) WHERE status = 'approved'`);
   await client.query(`CREATE INDEX IF NOT EXISTS idx_intake_runs_date ON intake_runs(run_date)`);
 
   // Updated_at trigger (idempotent)
