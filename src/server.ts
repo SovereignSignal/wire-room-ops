@@ -2182,6 +2182,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           <div class="form-group">
             <label for="scheduleTime">Time</label>
             <input type="time" id="scheduleTime" value="09:00">
+            <p id="time-hint" style="display: none; color: #f5a623; font-size: 11px; margin: 4px 0 0;">Only the minute is used when frequency is set</p>
           </div>
           <div class="form-group">
             <label for="scheduleLookback">Lookback Days</label>
@@ -2723,8 +2724,10 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       scheduleDayOfWeekGroup.style.display = isScan ? 'none' : '';
       scheduleFrequencyGroup.style.display = isScan ? '' : 'none';
       scheduleNotifyRow.style.display = isScan ? '' : 'none';
+      document.getElementById('time-hint').style.display = isScan && scheduleFrequencySelect.value ? '' : 'none';
     }
     scheduleTypeSelect.addEventListener('change', toggleScheduleTypeFields);
+    scheduleFrequencySelect.addEventListener('change', toggleScheduleTypeFields);
     
     let cachedWires = [];
     let cachedModels = { grok: [], anthropic: [] };
@@ -3468,7 +3471,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       if (btn) {
         var entryId = parseInt(btn.dataset.entryId, 10);
         var action = btn.dataset.action;
-        if (entryId && action) {
+        if (!isNaN(entryId) && action) {
           entryAction(entryId, action, btn);
         }
       }
