@@ -1359,7 +1359,7 @@ app.post('/api/scan/entries/:id/action', requireAuth, async (req: Request, res: 
   try {
     const pool = getPool();
     const result = await pool.query(
-      `UPDATE scan_entries SET status = $1 WHERE id = $2 RETURNING id, status`,
+      `UPDATE scan_entries SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING id, status`,
       [newStatus, entryId]
     );
 
@@ -1382,6 +1382,10 @@ app.get('/api/scan/entries', requireAuth, async (req: Request, res: Response) =>
     const statuses = statusParam.split(',').map(s => s.trim()).filter(Boolean);
     const wire = req.query.wire as string | undefined;
     const date = req.query.date as string | undefined;
+    if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD.' });
+      return;
+    }
     const limit = Math.min(Math.max(parseInt(req.query.limit as string, 10) || 100, 1), 500);
     const offset = Math.max(parseInt(req.query.offset as string, 10) || 0, 0);
 
@@ -1413,6 +1417,10 @@ app.get('/api/scan/status-counts', requireAuth, async (req: Request, res: Respon
   try {
     const wire = req.query.wire as string | undefined;
     const date = req.query.date as string | undefined;
+    if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD.' });
+      return;
+    }
 
     const [counts, urlStats] = await Promise.all([
       getStatusCounts(wire, date),
@@ -2808,7 +2816,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           grokModel: scheduleGrokModel.value,
           anthropicModel: scheduleAnthropicModel.value,
           wire: scheduleWire.value || undefined,
-          frequencyHours: scheduleFrequencySelect.value ? parseInt(scheduleFrequencySelect.value, 10) : undefined,
+          frequencyHours: scheduleTypeSelect.value === 'scan-execution' && scheduleFrequencySelect.value ? parseInt(scheduleFrequencySelect.value, 10) : undefined,
           notifyEmails: scheduleNotifyEmails.value || undefined,
         };
         
@@ -3077,7 +3085,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         'email': { label: 'Email', bg: '#3c2a1a', color: '#ff9800' }
       };
       var b = badges[scanSource] || { label: scanSource || '?', bg: '#2a2a2a', color: '#999' };
-      return '<span style="background:' + b.bg + '; color:' + b.color + '; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:600;">' + b.label + '</span>';
+      return '<span style="background:' + b.bg + '; color:' + b.color + '; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:600;">' + escapeHtml(b.label) + '</span>';
     }
 
     async function entryAction(id, action, btnEl) {
@@ -3681,8 +3689,6 @@ function renderDashboard(files: StoredFile[], message?: string): string {
 }
 
 function renderQueuePage(): string {
-  const today = new Date().toISOString().split('T')[0];
-
   return `
 <!DOCTYPE html>
 <html>
@@ -3839,7 +3845,6 @@ function renderQueuePage(): string {
           <label for="queueDate">Date</label>
           <select id="queueDate">
             <option value="">All Time</option>
-            <option value="${today}" selected>Today</option>
           </select>
         </div>
         <button type="button" id="load-queue" class="button secondary">Refresh</button>
@@ -3878,6 +3883,13 @@ function renderQueuePage(): string {
     var loadQueueBtn = document.getElementById('load-queue');
     var activeTab = 'queued';
 
+    // Add "Today" option client-side using local date
+    var todayStr = new Date().toLocaleDateString('sv-SE');
+    var todayOpt = document.createElement('option');
+    todayOpt.value = todayStr;
+    todayOpt.textContent = 'Today';
+    queueDateSelect.appendChild(todayOpt);
+
     function scoreColor(score) {
       if (score == null) return '#666';
       if (score >= 60) return '#4caf50';
@@ -3893,7 +3905,7 @@ function renderQueuePage(): string {
         'email': { label: 'Email', bg: '#3c2a1a', color: '#ff9800' }
       };
       var b = badges[scanSource] || { label: scanSource || '?', bg: '#2a2a2a', color: '#999' };
-      return '<span style="background:' + b.bg + '; color:' + b.color + '; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:600;">' + b.label + '</span>';
+      return '<span style="background:' + b.bg + '; color:' + b.color + '; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:600;">' + escapeHtml(b.label) + '</span>';
     }
 
     // Tab bar click
@@ -3912,7 +3924,7 @@ function renderQueuePage(): string {
       if (!btn) return;
       var entryId = parseInt(btn.dataset.entryId, 10);
       var action = btn.dataset.action;
-      if (!entryId || !action) return;
+      if (isNaN(entryId) || !action) return;
       btn.disabled = true;
       fetch('/api/scan/entries/' + entryId + '/action', {
         method: 'POST',
@@ -4106,6 +4118,10 @@ function renderQueuePage(): string {
       seededLoaded = false;
       loadStatusCounts();
       loadEntries();
+      if (document.getElementById('seeded-urls-details').open) {
+        seededLoaded = true;
+        loadSeededUrls();
+      }
     });
     queueDateSelect.addEventListener('change', function() {
       loadStatusCounts();
