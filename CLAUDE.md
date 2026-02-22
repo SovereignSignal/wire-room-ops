@@ -17,9 +17,12 @@ This backend is one half of a two-repo system:
 
 Both repos share the **same PostgreSQL database**. This repo writes to it; the Wire Room reads from it.
 
-### Approve = Publish Flow
+### Approve = Publish + Distribute Flow
 
-When an operator clicks "Approve" on a queued scan entry (via the dashboard), the entry's status changes to `approved`. The Wire Room frontend queries `scan_entries WHERE status = 'approved'` to display entries on thewireroom.xyz. There is no separate publish step.
+When an operator clicks "Approve" on a queued scan entry (via the dashboard), the entry's status changes to `approved`. Two things happen:
+
+1. **Website publish**: The Wire Room frontend queries `scan_entries WHERE status = 'approved'` to display entries on thewireroom.xyz. There is no separate publish step.
+2. **Multi-channel distribution**: If `DISTRIBUTION_ENABLED=true`, the approve handler fires a background `distributeEntry()` call that generates AI-crafted posts (via Claude) and publishes them to the wire's Telegram channel and X account in parallel. Failures never block the approval.
 
 The Wire Room reads these columns from `scan_entries`: `id`, `name`, `description`, `source_url`, `amount`, `deadline`, `wire`, `quality_score`, `scan_source`, `created_at`.
 
@@ -58,6 +61,7 @@ src/
 │   ├── auth.ts           # Magic links, sessions, tokens
 │   ├── crm-sync.ts       # Notion CRM sync - org matching and auto-creation
 │   ├── dedup.ts          # URL exact-match and fuzzy name deduplication
+│   ├── distribution.ts   # Distribution orchestrator (approve → Telegram + X)
 │   ├── email.ts          # Resend email templates (5 types)
 │   ├── email-inbound.ts  # Resend Inbound webhook handler (URL extraction → intake)
 │   ├── forum.ts          # discuss.watch API client for forum scanning
@@ -68,21 +72,23 @@ src/
 │   ├── models.ts         # Dynamic model fetching from both APIs
 │   ├── notion.ts         # Notion API client with rate limiting
 │   ├── org-cache.ts      # Local alias cache for org name matching
+│   ├── post-generator.ts # AI post generation for distribution (Claude-powered)
 │   ├── processor.ts      # Entry processing with retry logic
 │   ├── quality-scorer.ts # 0-100 quality scoring engine for scan entries
 │   ├── scan-stats.ts     # Prompt effectiveness and overlap metrics
 │   ├── scheduler.ts      # node-cron scheduling with health tracking
 │   ├── scraper.ts        # Firecrawl integration, URL resolution
 │   ├── storage.ts        # Postgres-backed file storage with in-memory cache (keeps last 10)
-│   ├── telegram.ts       # Telegram Bot webhook handler (URL → scrape → intake)
-│   └── url-processor.ts  # Shared URL scrape + AI extraction → RawScanResult
+│   ├── telegram.ts       # Telegram Bot webhook + channel posting for distribution
+│   ├── url-processor.ts  # Shared URL scrape + AI extraction → RawScanResult
+│   └── x-client.ts       # X (Twitter) API v2 posting client (OAuth 1.0a)
 ├── utils/
 │   ├── async.ts          # Shared sleep() utility
 │   ├── html.ts           # Shared escapeHtml() utility
 │   └── url.ts            # Shared normalizeUrl() for URL deduplication
 └── types/
     ├── index.ts          # Core TypeScript interfaces
-    └── intake.ts         # Scan pipeline types (ScanEntry, DedupResult, QualityBreakdown)
+    └── intake.ts         # Scan pipeline + distribution types (ScanEntry, DistributionLog, etc.)
 ```
 
 ## Common Tasks
@@ -118,9 +124,9 @@ The main query is in `src/db/index.ts` - `getEntriesForDateRange()`:
 - Orders by category then date descending
 - Extracts first URL from `extracted_urls` JSON array
 
-Schedule configuration uses a `schedules` table with UUID primary keys, supporting multiple named schedules with a `schedule_type` field (`weekly-summary` or `scan-execution`). Legacy `schedule_config` data is auto-migrated on startup.
+Schedule configuration uses a `schedules` table with UUID primary keys, supporting multiple named schedules with a `schedule_type` field (`weekly-summary`, `scan-execution`, or `forum-scan`). Legacy `schedule_config` data is auto-migrated on startup.
 
-The `feeds` table manages dynamic wire/feed types, seeded from `SEED_FEEDS` and auto-discovered from `channel_configs`. Scan pipeline uses 4 tables: `scan_entries`, `seen_urls`, `seen_names`, `intake_runs`. Scan prompts are stored in `scan_prompts` with CRUD support.
+The `feeds` table manages dynamic wire/feed types, seeded from `SEED_FEEDS` and auto-discovered from `channel_configs`. Scan pipeline uses 4 tables: `scan_entries`, `seen_urls`, `seen_names`, `intake_runs`. Scan prompts are stored in `scan_prompts` with CRUD support. Distribution tracking uses `distribution_logs` (auto-created on startup via `ensureDistributionTable()`).
 
 ## API Integration Details
 
@@ -138,6 +144,11 @@ The `feeds` table manages dynamic wire/feed types, seeded from `SEED_FEEDS` and 
 - Endpoint: `https://api.firecrawl.dev/v1/scrape`
 - Returns markdown content from web pages
 - Used only for non-X.com URLs
+
+### X (Twitter) API v2
+- Uses `twitter-api-v2` npm package with OAuth 1.0a (User Context)
+- One set of credentials per wire (crypto, ai, oss)
+- Used only by the distribution system for posting tweets on entry approval
 
 ### Resend API
 - Email service for all notifications
@@ -240,7 +251,74 @@ The CRM sync identifies organizations mentioned in entries and tracks them in No
 
 ### Environment Variables for Forum Scanning (optional)
 - `FORUM_SCAN_ENABLED` - Set to `true` to enable forum scanning (default: disabled)
-- `DISCUSS_WATCH_API_URL` - Base URL for discuss.watch API (default: `https://discuss.watch/api/v1`)
+- `DISCUSS_WATCH_API_URL` - Base URL for discuss.watch API (default: `https://discuss-dot-watch-production.up.railway.app/api/v1`)
+
+### Environment Variables for Distribution (optional)
+- `DISTRIBUTION_ENABLED` - Master toggle for multi-channel distribution (default: disabled)
+- `X_{WIRE}_API_KEY` - X (Twitter) API key per wire (e.g., `X_CRYPTO_API_KEY`)
+- `X_{WIRE}_API_SECRET` - X API secret per wire
+- `X_{WIRE}_ACCESS_TOKEN` - X OAuth 1.0a access token per wire
+- `X_{WIRE}_ACCESS_TOKEN_SECRET` - X access token secret per wire
+- `TELEGRAM_CHANNEL_{WIRE}` - Telegram channel ID per wire (e.g., `TELEGRAM_CHANNEL_CRYPTO`)
+
+Wire placeholders: `CRYPTO`, `AI`, `OSS` (uppercase in env var names).
+
+## Distribution System
+
+### Overview
+Multi-channel distribution automatically publishes AI-crafted posts to Telegram channels and X (Twitter) accounts when a scan entry is approved. The system is fire-and-forget: distribution failures never block the approval.
+
+### Distribution Flow (`src/services/distribution.ts`)
+1. Entry is approved via `/api/scan/entries/:id/action` with `{ action: 'approve' }`
+2. `distributeEntry()` is called in a fire-and-forget `catch` handler
+3. Checks `DISTRIBUTION_ENABLED` master toggle
+4. Looks up per-wire Telegram channel ID and X credentials from config
+5. Calls `generatePosts()` once (single Claude call) to create both a tweet and Telegram message
+6. Dispatches to both channels in parallel via `Promise.allSettled`
+7. Each attempt is logged in `distribution_logs` with status tracking
+
+### Post Generation (`src/services/post-generator.ts`)
+- Single Claude API call (model: `claude-sonnet-4-20250514`) generates both a tweet (<= 270 chars) and a Telegram HTML message
+- Prompt is wire-context-aware (crypto/ai/oss grants)
+- Falls back to template-based formatting if the AI response is malformed or the API call fails
+- Tweet text has the source URL appended by the distribution orchestrator (not by the generator)
+
+### X Client (`src/services/x-client.ts`)
+- Uses `twitter-api-v2` npm package with OAuth 1.0a (User Context)
+- Lazy client instantiation per wire, cached in memory
+- Returns `null` (skip) if credentials are missing for a wire
+- Handle map: `crypto` -> `@CryptoGrantWire`, `ai` -> `@AIGrantWire`, `oss` -> `@OSSGrantWire`
+
+### Telegram Channel Publishing
+- Reuses the existing `sendMessage()` from `src/services/telegram.ts` (now exported with `string | number` chatId)
+- Sends HTML-formatted messages to the channel ID configured for the wire
+
+### Idempotency & Retry
+- `distributeEntry()` checks `distribution_logs` for existing `success` rows before dispatching
+- A unique partial index `(entry_id, channel) WHERE status IN ('pending', 'success')` prevents double-posting at the DB level
+- `retryDistribution()` deletes `failed` logs then re-runs `distributeEntry()`
+
+### Database Table: `distribution_logs`
+- Auto-created on startup via `ensureDistributionTable()` (called in `initScheduler()`)
+- Columns: `id`, `entry_id` (FK to scan_entries), `channel` (telegram/x), `wire`, `status` (pending/success/failed/skipped), `post_text`, `external_id`, `external_url`, `error_message`, `created_at`, `updated_at`
+- Updated_at trigger auto-maintained
+
+### API Endpoints
+- `GET /api/scan/entries/:id/distribution` - Get distribution logs for an entry
+- `POST /api/scan/entries/:id/redistribute` - Retry failed distribution (rate-limited: 5 per 5 min)
+- Distribution logs are also attached to approved entries in the `GET /api/scan/queue` response as `distribution_logs`
+
+### Dashboard UI
+- Approved entries display distribution status pills (Telegram/X) showing success/failed/pending/skipped
+- Failed entries show a retry button that calls the `/redistribute` endpoint
+
+### Common Tasks for Distribution
+- **Enabling distribution**: Set `DISTRIBUTION_ENABLED=true` and configure at least one channel per wire
+- **Adding X credentials for a wire**: Set all 4 `X_{WIRE}_*` env vars (API key, secret, access token, access token secret)
+- **Adding a Telegram channel**: Set `TELEGRAM_CHANNEL_{WIRE}` to the channel ID (use `@channelname` or numeric ID)
+- **Changing the post generation model**: Edit `model` in `src/services/post-generator.ts` `generatePosts()`
+- **Customizing post style**: Edit `buildPrompt()` in `src/services/post-generator.ts`
+- **Adding a new distribution channel**: Add channel logic in `src/services/distribution.ts`, add types in `src/types/intake.ts`
 
 ## Feeds System
 
@@ -286,6 +364,9 @@ Automated discovery of grant opportunities via X.com scanning, web search, forum
 - `src/services/email-inbound.ts` - Resend Inbound webhook handler
 - `src/services/forum.ts` - discuss.watch API client for forum scanning
 - `src/jobs/forum-scan.ts` - Forum scan orchestrator (search → intake pipeline)
+- `src/services/distribution.ts` - Distribution orchestrator (approve → Telegram + X)
+- `src/services/post-generator.ts` - AI post generation (Claude-powered, tweet + Telegram)
+- `src/services/x-client.ts` - X (Twitter) API v2 posting client
 
 ### Schedule Types
 - **`weekly-summary`**: Weekly cron, runs `runWeeklySummaryJob()` for newsletter generation
@@ -325,11 +406,12 @@ In-memory rate limiter in `src/server.ts`:
 | Endpoint | Limit | Window |
 |----------|-------|--------|
 | `/login` | 5 per IP | 15 min |
-| `/resend-link` | 3 per IP | 15 min |
+| `/resend-link` | 2 per IP | 30 min |
 | `/api/run-job` | 3 global | 5 min |
 | `/api/scan/prompts/:id/test` | 5 global | 5 min |
 | `/api/scan/run` | 1 global | 15 min |
 | `/api/forum/run` | 1 global | 15 min |
+| `/api/scan/entries/:id/redistribute` | 5 global | 5 min |
 | `/webhook/telegram` | 10 per chat | 1 min |
 | `/webhook/email` | 5 per sender | 15 min |
 

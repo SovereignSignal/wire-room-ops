@@ -8,6 +8,8 @@ Automated weekly newsletter preparation for Crypto Grant Wire. Pulls pre-categor
 - **Scan Pipeline**: Automated grant discovery via X.com scanning with intake, dedup, and quality scoring
 - **Telegram Bot**: Send URLs to a Telegram bot for instant scraping, extraction, and intake processing
 - **Email Ingestion**: Forward emails with URLs to a Resend inbound address for automated intake
+- **Forum Scanning**: Automated discovery across 150+ Discourse forums via discuss.watch API
+- **Multi-Channel Distribution**: Auto-publish AI-crafted posts to Telegram channels and X (Twitter) on approval
 - **Web Dashboard**: Modern dark-themed UI with magic link authentication
 - **Multi-Feed Support**: Dynamic wire/feed management (crypto, ai, oss, and custom feeds)
 - **Scheduled Jobs**: Multiple configurable schedules — weekly newsletter and daily scan execution
@@ -19,18 +21,25 @@ Automated weekly newsletter preparation for Crypto Grant Wire. Pulls pre-categor
 ## Architecture
 
 ```
-                    ┌─────────────────────────────────────────────────────┐
-                    │              Ingestion Channels                     │
-                    │  [Automated Scan]  [Telegram Bot]  [Email Inbound] │
-                    └──────────┬──────────────┬──────────────┬───────────┘
-                               └──────────────┼──────────────┘
-                                              ▼
+                    ┌──────────────────────────────────────────────────────────────┐
+                    │                    Ingestion Channels                        │
+                    │  [X Scan]  [Web Search]  [Forum Scan]  [Telegram]  [Email]  │
+                    └──────────┬────────────┬────────────┬────────┬────────┬──────┘
+                               └────────────┴────────────┼────────┘        │
+                                                         ▼                 │
 [Postgres DB] --> [Web Dashboard / Scheduler] --> [AI Processing] --> [Markdown File]
                          │                              │
                          ▼                              ▼
                   [Magic Link Auth]            [Grok for X.com]
                   [Email via Resend]           [Claude + Firecrawl for other URLs]
                                               [Scan Pipeline: Dedup → Score → Queue]
+                                                         │
+                                                    [Approve]
+                                                         │
+                                              ┌──────────┴──────────┐
+                                              ▼                     ▼
+                                     [Telegram Channel]        [X / Twitter]
+                                     (AI-crafted posts via Multi-Channel Distribution)
 ```
 
 ## Quick Start
@@ -162,9 +171,10 @@ CREATE TABLE scan_entries (
   deadline_parsed DATE,
   wire TEXT NOT NULL,
   prompt_variant TEXT NOT NULL CHECK (prompt_variant IN ('A', 'B', 'C', 'N')),
-  scan_source TEXT NOT NULL DEFAULT 'x-scan' CHECK (scan_source IN ('x-scan', 'web-search', 'telegram', 'email')),
+  scan_source TEXT NOT NULL DEFAULT 'x-scan' CHECK (scan_source IN ('x-scan', 'web-search', 'telegram', 'email', 'forum')),
   scan_date DATE NOT NULL,
-  status TEXT NOT NULL DEFAULT 'raw',
+  status TEXT NOT NULL DEFAULT 'raw'
+    CHECK (status IN ('raw','deduped','duplicate','scored','queued','enriched','published','archived','skipped','approved','declined')),
   quality_score INTEGER,
   quality_breakdown JSONB,
   duplicate_of_id INTEGER REFERENCES scan_entries(id),
@@ -208,6 +218,21 @@ CREATE TABLE intake_runs (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Distribution tracking (auto-created by app)
+CREATE TABLE distribution_logs (
+  id SERIAL PRIMARY KEY,
+  entry_id INTEGER NOT NULL REFERENCES scan_entries(id),
+  channel TEXT NOT NULL CHECK (channel IN ('telegram', 'x')),
+  wire TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'success', 'failed', 'skipped')),
+  post_text TEXT,
+  external_id TEXT,
+  external_url TEXT,
+  error_message TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Managed scan prompts (auto-created by app)
 CREATE TABLE scan_prompts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -245,14 +270,17 @@ src/
 ├── jobs/
 │   ├── weekly-summary.ts  # Weekly newsletter job orchestration
 │   ├── daily-intake.ts    # Scan intake pipeline orchestrator (parse → dedup → score → queue)
-│   └── scan-execution.ts  # Automated scan execution (prompt fetch → Grok → intake)
+│   ├── scan-execution.ts  # Automated scan execution (prompt fetch → Grok → intake)
+│   └── forum-scan.ts      # Forum scan orchestrator (discuss.watch → intake)
 ├── services/
 │   ├── anthropic.ts       # Claude API integration with scraping
 │   ├── auth.ts            # Magic link and session management
 │   ├── crm-sync.ts        # Notion CRM sync - org matching and auto-creation
 │   ├── dedup.ts           # URL exact-match and fuzzy name deduplication
+│   ├── distribution.ts    # Distribution orchestrator (approve → Telegram + X)
 │   ├── email.ts           # Resend email service (login, notifications, alerts)
 │   ├── email-inbound.ts   # Resend Inbound webhook handler (URL extraction → intake)
+│   ├── forum.ts           # discuss.watch API client for forum scanning
 │   ├── grok.ts            # Grok Chat + Responses API for X.com content and scans
 │   ├── intake.ts          # Scan result parser, URL/name normalization
 │   ├── job-queue.ts       # In-memory job queue with SSE support
@@ -260,21 +288,23 @@ src/
 │   ├── models.ts          # Dynamic model fetching from AI providers
 │   ├── notion.ts          # Notion API client with rate limiting
 │   ├── org-cache.ts       # Local alias cache for org name matching
+│   ├── post-generator.ts  # AI post generation for distribution (Claude-powered)
 │   ├── processor.ts       # Entry processing with retry logic
 │   ├── quality-scorer.ts  # 0-100 quality scoring engine for scan entries
 │   ├── scan-stats.ts      # Prompt effectiveness and overlap metrics
 │   ├── scheduler.ts       # Cron-based job scheduling with health tracking
 │   ├── scraper.ts         # Firecrawl web scraping, URL resolution
 │   ├── storage.ts         # Postgres-backed file storage with in-memory cache
-│   ├── telegram.ts        # Telegram Bot webhook handler (URL → scrape → intake)
-│   └── url-processor.ts   # Shared URL scrape + AI extraction → RawScanResult
+│   ├── telegram.ts        # Telegram Bot webhook + channel posting for distribution
+│   ├── url-processor.ts   # Shared URL scrape + AI extraction → RawScanResult
+│   └── x-client.ts        # X (Twitter) API v2 posting client (OAuth 1.0a)
 ├── utils/
 │   ├── async.ts           # Shared sleep() utility
 │   ├── html.ts            # Shared escapeHtml() utility
 │   └── url.ts             # Shared normalizeUrl() for URL deduplication
 ├── types/
 │   ├── index.ts           # Core TypeScript interfaces
-│   └── intake.ts          # Scan pipeline types (ScanEntry, DedupResult, QualityBreakdown)
+│   └── intake.ts          # Scan pipeline + distribution types (ScanEntry, DistributionLog, etc.)
 ├── index.ts               # Application entry point
 └── server.ts              # Express server with all routes and dashboard UI
 ```
@@ -339,6 +369,9 @@ src/
 | `/api/scan/prompts/:id` | PUT | Update a scan prompt |
 | `/api/scan/prompts/:id` | DELETE | Delete a scan prompt |
 | `/api/scan/prompts/:id/test` | POST | Test-execute a prompt against Grok and return results |
+| **Distribution** | | |
+| `/api/scan/entries/:id/distribution` | GET | Get distribution logs for an approved entry |
+| `/api/scan/entries/:id/redistribute` | POST | Retry failed distribution for an approved entry |
 
 ## Dashboard Features
 
@@ -406,7 +439,9 @@ The scan pipeline discovers new grant opportunities and surfaces high-quality en
 
 ### Ingestion Channels
 
-- **Automated scan** (`x-scan`): Grok Responses API with `x_search` tool, runs on schedule via `scan-execution` cron
+- **X.com scan** (`x-scan`): Grok Responses API with `x_search` tool, runs on schedule via `scan-execution` cron
+- **Web search** (`web-search`): Grok Responses API with `web_search` tool, same prompt system
+- **Forum scan** (`forum`): discuss.watch API searches across 150+ Discourse forums for grant keywords
 - **Manual paste** (`x-scan`/`web-search`): Dashboard paste-in flow via `/api/scan/submit`
 - **Telegram bot** (`telegram`): Send a URL to the bot → scrapes + extracts → runs through intake pipeline
 - **Email inbound** (`email`): Forward emails with URLs to a Resend inbound address → webhook extracts URLs → scrape + extract → intake
@@ -459,10 +494,30 @@ Grok Responses API (/v1/responses with x_search tool)
 
 - **`weekly-summary`**: Traditional weekly cron job for newsletter generation
 - **`scan-execution`**: Daily cron job that executes all active scan prompts and feeds results through the intake pipeline
+- **`forum-scan`**: Daily cron job that searches discuss.watch forums for grant keywords
 
 ### Prompt Management
 
 Scan prompts are stored in the `scan_prompts` table and managed via the `/api/scan/prompts` CRUD API. Each prompt targets a specific wire, has a response format template, and can be tested individually before activation. Prompt effectiveness metrics (duplicate rate, avg quality score, overlap) are available via `/api/scan/prompt-stats`.
+
+## Multi-Channel Distribution
+
+When an entry is approved, AI-crafted posts are automatically published to configured Telegram channels and X (Twitter) accounts.
+
+### How It Works
+
+1. **Trigger**: Approving an entry in the dashboard fires a background distribution job
+2. **Generate**: A single Claude API call (`claude-sonnet-4-20250514`) creates both a tweet (<=270 chars) and a Telegram HTML message, tailored to the wire's grant focus
+3. **Publish**: Posts are dispatched to the wire's Telegram channel and X account in parallel
+4. **Track**: Each dispatch is logged in `distribution_logs` with status tracking and external URLs
+5. **Retry**: Failed distributions can be retried from the dashboard or via `POST /api/scan/entries/:id/redistribute`
+
+### Key Properties
+
+- **Fire-and-forget**: Distribution failures never block the approval
+- **Idempotent**: Won't double-post; checks for existing success logs before dispatching
+- **Per-wire**: Each wire (crypto, ai, oss) has its own X credentials and Telegram channel
+- **Graceful degradation**: If AI generation fails, a template-based fallback is used; if credentials are missing for a channel, it is skipped
 
 ## How It Works
 
@@ -513,10 +568,30 @@ Default schedule: Wednesday at 9:00 AM Pacific, looking back 7 days.
 | `INBOUND_EMAIL_ADDRESS` | Resend inbound email address | No*** |
 | `INBOUND_EMAIL_ALLOWED_SENDERS` | Comma-separated allowlist of sender emails | No*** |
 | `RESEND_WEBHOOK_SECRET` | Resend webhook signing secret (HMAC-SHA256) | No*** |
+| `FORUM_SCAN_ENABLED` | Set to `true` to enable forum scanning | No**** |
+| `DISCUSS_WATCH_API_URL` | discuss.watch API base URL | No**** |
+| `DISTRIBUTION_ENABLED` | Set to `true` to enable multi-channel distribution | No***** |
+| `X_CRYPTO_API_KEY` | X API key for crypto wire | No***** |
+| `X_CRYPTO_API_SECRET` | X API secret for crypto wire | No***** |
+| `X_CRYPTO_ACCESS_TOKEN` | X OAuth access token for crypto wire | No***** |
+| `X_CRYPTO_ACCESS_TOKEN_SECRET` | X access token secret for crypto wire | No***** |
+| `X_AI_API_KEY` | X API key for AI wire | No***** |
+| `X_AI_API_SECRET` | X API secret for AI wire | No***** |
+| `X_AI_ACCESS_TOKEN` | X OAuth access token for AI wire | No***** |
+| `X_AI_ACCESS_TOKEN_SECRET` | X access token secret for AI wire | No***** |
+| `X_OSS_API_KEY` | X API key for OSS wire | No***** |
+| `X_OSS_API_SECRET` | X API secret for OSS wire | No***** |
+| `X_OSS_ACCESS_TOKEN` | X OAuth access token for OSS wire | No***** |
+| `X_OSS_ACCESS_TOKEN_SECRET` | X access token secret for OSS wire | No***** |
+| `TELEGRAM_CHANNEL_CRYPTO` | Telegram channel ID for crypto wire | No***** |
+| `TELEGRAM_CHANNEL_AI` | Telegram channel ID for AI wire | No***** |
+| `TELEGRAM_CHANNEL_OSS` | Telegram channel ID for OSS wire | No***** |
 
 *Required for CRM integration features
 **Required for Telegram bot integration
 ***Required for email ingestion
+****Required for forum scanning
+*****Required for multi-channel distribution (at least one channel per wire)
 
 ## Authentication
 
@@ -560,6 +635,8 @@ Sessions and tokens are stored in-memory (reset on server restart). Generated fi
 | `/api/run-job` | 3 global | 5 minutes |
 | `/api/scan/prompts/:id/test` | 5 global | 5 minutes |
 | `/api/scan/run` | 1 global | 15 minutes |
+| `/api/forum/run` | 1 global | 15 minutes |
+| `/api/scan/entries/:id/redistribute` | 5 global | 5 minutes |
 | `/webhook/telegram` | 10 per chat | 1 minute |
 | `/webhook/email` | 5 per sender | 15 minutes |
 

@@ -27,7 +27,9 @@ export type ScanStatus =
   | 'enriched'      // AI summary generated
   | 'published'     // Included in a newsletter output
   | 'archived'      // Below quality threshold, kept for reference
-  | 'skipped';      // Manually skipped by user
+  | 'skipped'       // Manually skipped by user
+  | 'approved'      // Approved for publication + distribution
+  | 'declined';     // Rejected by reviewer
 
 /**
  * A single result as parsed from a structured scan output.
