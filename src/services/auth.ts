@@ -20,30 +20,9 @@ function generateToken(): string {
 
 function hashToken(token: string): string {
   return crypto
-    .createHmac('sha256', config.auth.magicLinkSecret)
+    .createHmac('sha256', config.privy.appSecret)
     .update(token)
     .digest('hex');
-}
-
-export function createLoginMagicLink(email: string): string {
-  const token = generateToken();
-  const hashedToken = hashToken(token);
-  
-  const expiresAt = new Date();
-  expiresAt.setMinutes(expiresAt.getMinutes() + 15);
-  
-  const tokenData: MagicLinkToken = {
-    token: hashedToken,
-    email,
-    fileId: 'login',
-    expiresAt,
-    used: false,
-  };
-  
-  tokens.set(hashedToken, tokenData);
-  cleanupExpiredTokens();
-  
-  return `${config.app.url}/auth?token=${token}`;
 }
 
 export function createMagicLink(email: string, fileId: string): string {

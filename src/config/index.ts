@@ -34,8 +34,12 @@ export const config = {
     fromEmail: process.env.FROM_EMAIL || 'noreply@cryptograntwire.com',
   },
   
+  privy: {
+    appId: process.env.PRIVY_APP_ID || '',
+    appSecret: process.env.PRIVY_APP_SECRET || '',
+  },
+
   auth: {
-    magicLinkSecret: process.env.MAGIC_LINK_SECRET || '',
     tokenExpiryHours: 24,
   },
   
@@ -105,7 +109,8 @@ export function validateConfig(): void {
     ['FIRECRAWL_API_KEY', config.apis.firecrawl.apiKey],
     ['RESEND_API_KEY', config.email.resendApiKey],
     ['NOTIFICATION_EMAIL', config.email.notificationEmail],
-    ['MAGIC_LINK_SECRET', config.auth.magicLinkSecret],
+    ['PRIVY_APP_ID', config.privy.appId],
+    ['PRIVY_APP_SECRET', config.privy.appSecret],
   ];
   
   const missing = required.filter(([, value]) => !value).map(([name]) => name);

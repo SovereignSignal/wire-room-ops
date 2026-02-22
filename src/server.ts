@@ -1,10 +1,12 @@
 import express, { Request, Response } from 'express';
 import cookieParser from 'cookie-parser';
 import { config } from './config';
-import { validateMagicLink, createMagicLink, createDownloadToken, createSessionToken, validateSession, createLoginMagicLink } from './services/auth';
+import { validateMagicLink, createMagicLink, createDownloadToken, createSessionToken, validateSession } from './services/auth';
+import { verifyAccessToken } from '@privy-io/node';
+import { createRemoteJWKSet } from 'jose';
 import { getFile, listFiles } from './services/storage';
 import { getAvailableWires, closePool, getAllFeeds, getFeedByKey, createFeed, updateFeed, archiveFeed, getEntryCountsByWire, getAllScanPrompts, getScanPromptById, createScanPrompt, updateScanPrompt, deleteScanPrompt, getStatusCounts, getEntriesByStatus, getSeenUrlStats, getSeenUrlsList, getDistributionLogs, getDistributionLogsByEntryIds } from './db';
-import { sendLoginEmail, sendScanDigestEmail } from './services/email';
+import { sendScanDigestEmail } from './services/email';
 import { runWeeklySummaryJob } from './jobs/weekly-summary';
 import { StoredFile } from './types';
 import { jobQueue } from './services/job-queue';
@@ -27,6 +29,7 @@ import { escapeHtml } from './utils/html';
 import { distributeEntry, getDistributionStatus, retryDistribution } from './services/distribution';
 
 const app = express();
+const privyJwks = createRemoteJWKSet(new URL(`https://auth.privy.io/api/v1/apps/${config.privy.appId}/.well-known/jwks.json`));
 
 app.use(express.json({
   verify: (req, _res, buf) => {
@@ -189,7 +192,7 @@ app.post('/webhook/email', (req: Request, res: Response) => {
   });
 });
 
-// Landing page - login form
+// Landing page - login
 app.get('/', (req: Request, res: Response) => {
   const session = req.cookies?.session as string;
   if (session && validateSession(session)) {
@@ -199,60 +202,32 @@ app.get('/', (req: Request, res: Response) => {
   res.send(renderLoginPage());
 });
 
-// Handle login request - send magic link
-app.post('/login', async (req: Request, res: Response) => {
-  const clientIp = req.ip || 'unknown';
-  if (!rateLimit(`login:${clientIp}`, 5, 15 * 60 * 1000)) {
-    res.status(429).send(renderLoginPage('Too many login attempts. Please try again later.'));
-    return;
-  }
-
-  const email = req.body.email?.toLowerCase().trim();
-
-  if (!email) {
-    res.send(renderLoginPage('Please enter your email address'));
-    return;
-  }
-
-  if (email !== config.email.notificationEmail.toLowerCase()) {
-    res.send(renderLoginPage('Email not authorized'));
+// Privy auth callback - verifies token and creates session
+app.post('/api/auth/callback', async (req: Request, res: Response) => {
+  const { token } = req.body;
+  if (!token) {
+    res.status(400).json({ error: 'Missing token' });
     return;
   }
 
   try {
-    const magicLink = createLoginMagicLink(email);
-    await sendLoginEmail(email, magicLink);
-    res.send(renderLoginSentPage(email));
+    const claims = await verifyAccessToken({
+      access_token: token,
+      app_id: config.privy.appId,
+      verification_key: privyJwks,
+    });
+    const sessionToken = createSessionToken(claims.user_id);
+    res.cookie('session', sessionToken, {
+      httpOnly: true,
+      secure: config.app.url.startsWith('https'),
+      sameSite: 'lax',
+      maxAge: 24 * 60 * 60 * 1000,
+    });
+    res.json({ ok: true });
   } catch (error) {
-    console.error('Failed to send login email:', error);
-    res.send(renderLoginPage('Failed to send email. Please try again.'));
+    console.error('Privy token verification failed:', error);
+    res.status(401).json({ error: 'Invalid token' });
   }
-});
-
-// Magic link auth - creates session cookie and redirects to dashboard
-app.get('/auth', (req: Request, res: Response) => {
-  const token = req.query.token as string;
-
-  if (!token) {
-    res.redirect('/?error=invalid');
-    return;
-  }
-
-  const validation = validateMagicLink(token);
-
-  if (!validation.valid) {
-    res.send(renderErrorPage(validation.error || 'Invalid or expired link'));
-    return;
-  }
-
-  const sessionToken = createSessionToken(validation.email || config.email.notificationEmail);
-  res.cookie('session', sessionToken, {
-    httpOnly: true,
-    secure: config.app.url.startsWith('https'),
-    sameSite: 'lax',
-    maxAge: 24 * 60 * 60 * 1000,
-  });
-  res.redirect('/dashboard');
 });
 
 // Dashboard - main interface
@@ -1651,167 +1626,194 @@ app.get('/api/scan/prompt-stats', requireAuth, async (req: Request, res: Respons
   }
 });
 
-function renderLoginPage(error?: string): string {
+
+// ── Shared CSS Helpers ──────────────────────────────────────────────────
+function sharedHead(title: string) {
   return `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <title>Sign In - Grant Wire Summarizer</title>
+  <title>${title} - Wire Ops</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#0d0d0d">
-  <style>
-    * { box-sizing: border-box; }
+  <meta name="theme-color" content="#080c14">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  `;
+}
+
+function sharedBaseStyles() {
+  return `
+    :root {
+      --bg: #080c14;
+      --bg-card: #0f1a2a;
+      --border: #1a2a3d;
+      --input: #0a1220;
+      --text: #e0e4e8;
+      --text-secondary: #7a8a9a;
+      --text-muted: #4a5a6a;
+      --accent: #d4a017;
+      --accent-hover: #e8b01e;
+      --accent-fg: #080c14;
+      --success: #4ade80;
+      --error: #ef4444;
+      --warning: #d4a017;
+      --radius-sm: 0px;
+      --radius-md: 2px;
+      --radius-lg: 4px;
+      --radius-xl: 6px;
+      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #0d0d0d;
+      font-family: var(--font-sans);
+      background: var(--bg);
+      color: var(--text);
       margin: 0;
-      padding: 20px;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
       color-scheme: dark;
     }
-    .container {
-      max-width: 400px;
-      width: 100%;
-      background: #1a1a1a;
-      border: 1px solid #2a2a2a;
-      padding: 48px 40px;
-      border-radius: 16px;
-      box-shadow: 0 4px 24px rgba(0,0,0,0.4);
-    }
-    .logo { margin: 0 0 8px; font-size: 28px; font-weight: 700; }
-    .logo-crypto { color: #ffffff; }
-    .logo-grant { color: #f5a623; }
-    .logo-wire { color: #ffffff; }
-    .subtitle { color: #999999; margin-bottom: 32px; }
-    .form-group { margin-bottom: 20px; }
-    label { display: block; margin-bottom: 8px; font-weight: 500; color: #ffffff; }
-    input[type="email"] {
-      width: 100%;
-      padding: 14px 16px;
-      border: 1px solid #2a2a2a;
-      border-radius: 8px;
-      font-size: 16px;
-      background: #0d0d0d;
-      color: #ffffff;
-      transition: border-color 0.2s;
-    }
-    input[type="email"]::placeholder { color: #666666; }
-    input[type="email"]:focus-visible {
-      outline: 2px solid #f5a623;
-      outline-offset: 2px;
-      border-color: #f5a623;
-    }
-    .button:focus-visible {
-      outline: 2px solid #f5a623;
-      outline-offset: 2px;
-    }
-    .button {
-      width: 100%;
-      background: #f5a623;
-      color: #0d0d0d;
-      padding: 14px 24px;
-      border: none;
-      border-radius: 8px;
-      font-size: 16px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: background 0.2s;
-    }
-    .button:hover { background: #e6951a; }
-    .error {
-      background: rgba(239, 83, 80, 0.15);
-      color: #ef5350;
-      padding: 12px 16px;
-      border-radius: 8px;
-      margin-bottom: 20px;
-      font-size: 14px;
-      border: 1px solid rgba(239, 83, 80, 0.3);
-    }
+    a { color: var(--accent); }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {
         animation-duration: 0.01ms !important;
         transition-duration: 0.01ms !important;
       }
     }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1 class="logo">📡 <span class="logo-grant">Grant</span><span class="logo-wire">Wire</span></h1>
-    <p class="subtitle">Sign in to access your dashboard</p>
-    ${error ? `<div class="error">${escapeHtml(error)}</div>` : ''}
-    <form method="POST" action="/login">
-      <div class="form-group">
-        <label for="email">Email address</label>
-        <input type="email" id="email" name="email" placeholder="you@example.com" required autocomplete="email">
-      </div>
-      <button type="submit" class="button">Send Magic Link</button>
-    </form>
-  </div>
-</body>
-</html>
-  `.trim();
+  `;
 }
 
-function renderLoginSentPage(email: string): string {
+function sharedCenteredPageStyles() {
   return `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <title>Check Your Email - Grant Wire Summarizer</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#0d0d0d">
-  <style>
-    * { box-sizing: border-box; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #0d0d0d;
-      margin: 0;
       padding: 20px;
       min-height: 100vh;
       display: flex;
       align-items: center;
       justify-content: center;
-      color-scheme: dark;
     }
     .container {
-      max-width: 400px;
+      max-width: 500px;
       width: 100%;
-      background: #1a1a1a;
-      border: 1px solid #2a2a2a;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
       padding: 48px 40px;
-      border-radius: 16px;
+      border-radius: var(--radius-xl);
       box-shadow: 0 4px 24px rgba(0,0,0,0.4);
       text-align: center;
     }
-    .icon { font-size: 48px; margin-bottom: 16px; }
-    h1 { color: #ffffff; margin: 0 0 16px; font-size: 24px; }
-    p { color: #999999; line-height: 1.6; }
-    .email { font-weight: 600; color: #f5a623; }
-    .back {
+    .button {
       display: inline-block;
-      margin-top: 24px;
-      color: #f5a623;
+      background: var(--accent);
+      color: var(--accent-fg);
+      padding: 14px 24px;
+      border: none;
+      border-radius: var(--radius-lg);
+      font-size: 16px;
+      font-family: var(--font-sans);
+      font-weight: 600;
+      cursor: pointer;
       text-decoration: none;
+      transition: background 0.2s;
     }
-    .back:hover { text-decoration: underline; }
+    .button:hover { background: var(--accent-hover); box-shadow: 0 0 4px rgba(212,160,23,0.3), 0 0 16px rgba(212,160,23,0.15); }
+    .button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  `;
+}
+
+function renderLoginPage(): string {
+  return `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  ${sharedHead('Sign In')}
+  <style>
+    ${sharedBaseStyles()}
+    ${sharedCenteredPageStyles()}
+    .container { max-width: 400px; text-align: center; }
+    .logo { margin: 0 0 8px; font-size: 28px; font-weight: 700; }
+    .logo-grant { color: var(--accent); }
+    .logo-wire { color: var(--text); }
+    .subtitle { color: var(--text-secondary); margin-bottom: 32px; }
+    .button { width: 100%; }
+    .error {
+      background: rgba(239, 68, 68, 0.15);
+      color: var(--error);
+      padding: 12px 16px;
+      border-radius: var(--radius-lg);
+      margin-bottom: 20px;
+      font-size: 14px;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
   </style>
 </head>
 <body>
-  <div class="container">
-    <div class="icon">✉️</div>
-    <h1>Check your email</h1>
-    <p>We sent a magic link to<br><span class="email">${escapeHtml(email)}</span></p>
-    <p>Click the link in the email to sign in.</p>
-    <a href="/" class="back">← Back to login</a>
-  </div>
+  <div id="privy-root"></div>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script type="module">
+    import { PrivyProvider, usePrivy } from 'https://esm.sh/@privy-io/react-auth@2';
+
+    function LoginApp() {
+      const { login, authenticated, getAccessToken } = usePrivy();
+      const [error, setError] = React.useState(null);
+      const [authenticating, setAuthenticating] = React.useState(false);
+
+      React.useEffect(() => {
+        if (authenticated && !authenticating) {
+          setAuthenticating(true);
+          getAccessToken().then(token => {
+            return fetch('/api/auth/callback', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ token }),
+            });
+          }).then(r => r.json()).then(data => {
+            if (data.ok) {
+              window.location.href = '/dashboard';
+            } else {
+              setError(data.error || 'Authentication failed');
+              setAuthenticating(false);
+            }
+          }).catch(() => {
+            setError('Authentication failed. Please try again.');
+            setAuthenticating(false);
+          });
+        }
+      }, [authenticated]);
+
+      return React.createElement('div', { className: 'container' },
+        React.createElement('h1', { className: 'logo' },
+          String.fromCodePoint(0x1F4E1), ' ',
+          React.createElement('span', { className: 'logo-wire' }, 'Wire'),
+          ' ',
+          React.createElement('span', { className: 'logo-grant' }, 'Ops')
+        ),
+        React.createElement('p', { className: 'subtitle' }, 'Monitoring the Situation'),
+        error ? React.createElement('div', { className: 'error' }, error) : null,
+        authenticating
+          ? React.createElement('p', { style: { color: 'var(--text-secondary)' } }, 'Signing in…')
+          : React.createElement('button', {
+              className: 'button',
+              onClick: login,
+              style: { width: '100%' }
+            }, 'Sign In')
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('privy-root'));
+    root.render(
+      React.createElement(PrivyProvider, {
+        appId: '${config.privy.appId}',
+        config: {
+          loginMethods: ['email', 'wallet', 'google'],
+          appearance: {
+            theme: 'dark',
+            accentColor: '#d4a017',
+          },
+        },
+      }, React.createElement(LoginApp))
+    );
+  </script>
 </body>
 </html>
   `.trim();
@@ -1838,182 +1840,199 @@ function renderDashboard(files: StoredFile[], message?: string): string {
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <title>Dashboard - Grant Wire Summarizer</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#0d0d0d">
+  ${sharedHead('Dashboard')}
   <style>
-    * { box-sizing: border-box; }
+    ${sharedBaseStyles()}
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #0d0d0d;
-      margin: 0;
       padding: 0;
       min-height: 100vh;
-      color: #ffffff;
-      color-scheme: dark;
+    }
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 0;
+      background: repeating-linear-gradient(
+        180deg, transparent 0px, transparent 48px,
+        rgba(17, 29, 48, 0.3) 48px, rgba(17, 29, 48, 0.3) 49px
+      );
+      mask-image: linear-gradient(180deg, transparent 0%, black 10%, black 90%, transparent 100%);
+      -webkit-mask-image: linear-gradient(180deg, transparent 0%, black 10%, black 90%, transparent 100%);
     }
     .header {
-      background: #1a1a1a;
-      border-bottom: 1px solid #2a2a2a;
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border);
       padding: 24px 32px;
+      position: relative;
+    }
+    .header::after {
+      content: '';
+      position: absolute;
+      bottom: -40px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 60%;
+      height: 80px;
+      background: radial-gradient(ellipse, rgba(212,160,23,0.06) 0%, transparent 70%);
+      pointer-events: none;
     }
     .header-content { max-width: 900px; margin: 0 auto; }
     .logo { margin: 0; font-size: 24px; font-weight: 700; }
-    .logo-crypto { color: #ffffff; }
-    .logo-grant { color: #f5a623; }
-    .logo-wire { color: #ffffff; }
-    .header p { margin: 8px 0 0; color: #999999; }
+    .logo-grant { color: var(--accent); }
+    .logo-wire { color: var(--text); }
+    .header p { margin: 8px 0 0; color: var(--text-secondary); }
     .main { padding: 32px; max-width: 900px; margin: 0 auto; }
     .card {
-      background: #1a1a1a;
-      border: 1px solid #2a2a2a;
-      border-radius: 12px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xl);
       padding: 24px;
       margin-bottom: 24px;
     }
-    .card h2 { margin: 0 0 16px; font-size: 18px; color: #ffffff; }
+    .card h2 { margin: 0 0 16px; font-size: 18px; color: var(--text); }
     .message {
       padding: 12px 16px;
-      border-radius: 8px;
+      border-radius: var(--radius-lg);
       margin-bottom: 24px;
       font-size: 14px;
     }
     .message.success {
-      background: rgba(76, 175, 80, 0.15);
-      color: #4caf50;
-      border: 1px solid rgba(76, 175, 80, 0.3);
+      background: rgba(74, 222, 128, 0.15);
+      color: var(--success);
+      border: 1px solid rgba(74, 222, 128, 0.3);
     }
     .message.error {
-      background: rgba(239, 83, 80, 0.15);
-      color: #ef5350;
-      border: 1px solid rgba(239, 83, 80, 0.3);
+      background: rgba(239, 68, 68, 0.15);
+      color: var(--error);
+      border: 1px solid rgba(239, 68, 68, 0.3);
     }
     .button {
       display: inline-block;
-      background: #f5a623;
-      color: #0d0d0d;
+      background: var(--accent);
+      color: var(--accent-fg);
       padding: 12px 24px;
       border: none;
-      border-radius: 8px;
+      border-radius: var(--radius-lg);
       font-size: 14px;
       font-weight: 600;
       cursor: pointer;
       text-decoration: none;
       transition: background 0.2s;
     }
-    .button:hover { background: #e6951a; }
+    .button:hover { background: var(--accent-hover); box-shadow: 0 0 4px rgba(212,160,23,0.3), 0 0 16px rgba(212,160,23,0.15); }
     .button:focus-visible {
-      outline: 2px solid #f5a623;
+      outline: 2px solid var(--accent);
       outline-offset: 2px;
     }
     .button:disabled {
-      background: #666666;
+      background: var(--text-muted);
       cursor: not-allowed;
     }
     .button.secondary {
-      background: #2a2a2a;
-      color: #ffffff;
+      background: var(--border);
+      color: var(--text);
     }
-    .button.secondary:hover { background: #3a3a3a; }
+    .button.secondary:hover { background: #1a2a3d; }
     table { width: 100%; border-collapse: collapse; }
-    th, td { padding: 12px; text-align: left; border-bottom: 1px solid #2a2a2a; }
-    th { font-weight: 600; color: #999999; font-size: 12px; text-transform: uppercase; }
-    td { color: #ffffff; font-variant-numeric: tabular-nums; }
-    .download-link { color: #f5a623; text-decoration: none; font-weight: 500; }
+    th, td { padding: 12px; text-align: left; border-bottom: 1px solid var(--border); }
+    th { font-weight: 500; color: var(--text-secondary); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; font-family: var(--font-mono); }
+    td { color: var(--text); font-variant-numeric: tabular-nums; font-feature-settings: 'tnum'; }
+    .download-link { color: var(--accent); text-decoration: none; font-weight: 500; }
     .download-link:hover { text-decoration: underline; }
-    .empty { color: #666666; text-align: center; padding: 32px; }
+    .empty { color: var(--text-muted); text-align: center; padding: 32px; }
     .run-form { display: flex; flex-direction: column; gap: 16px; }
     .form-row { display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap; }
     .form-group { display: flex; flex-direction: column; gap: 6px; }
-    .form-group label { font-size: 12px; color: #999999; text-transform: uppercase; font-weight: 600; }
+    .form-group label { font-size: 10px; color: var(--text-secondary); text-transform: uppercase; font-weight: 500; letter-spacing: 0.05em; font-family: var(--font-mono); }
     .form-group input[type="date"],
     .form-group select {
       padding: 10px 12px;
-      border: 1px solid #2a2a2a;
-      border-radius: 6px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
       font-size: 14px;
-      background: #0d0d0d;
-      color: #ffffff;
+      background: var(--bg);
+      color: var(--text);
       min-width: 180px;
       color-scheme: dark;
     }
     .form-group input[type="date"]:focus-visible,
     .form-group select:focus-visible {
-      outline: 2px solid #f5a623;
+      outline: 2px solid var(--accent);
       outline-offset: 2px;
-      border-color: #f5a623;
+      border-color: var(--accent);
     }
     .form-group select option {
-      background: #1a1a1a;
-      color: #ffffff;
+      background: var(--bg-card);
+      color: var(--text);
     }
     .model-row { margin-top: 8px; }
     .schedule-status {
       margin-top: 16px;
       padding: 12px 16px;
-      background: #0d0d0d;
-      border-radius: 8px;
-      border: 1px solid #2a2a2a;
+      background: var(--bg);
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--border);
     }
     .schedule-status p { margin: 0; }
     .schedule-status .next-run {
-      color: #f5a623;
+      color: var(--accent);
       font-size: 13px;
       margin-top: 8px;
     }
-    #schedule-description { color: #999999; font-size: 14px; }
+    #schedule-description { color: var(--text-secondary); font-size: 14px; }
     .form-group input[type="time"],
     .form-group input[type="number"] {
       padding: 10px 12px;
-      border: 1px solid #2a2a2a;
-      border-radius: 6px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
       font-size: 14px;
-      background: #0d0d0d;
-      color: #ffffff;
+      background: var(--bg);
+      color: var(--text);
       color-scheme: dark;
     }
     .form-group input[type="time"]:focus-visible,
     .form-group input[type="number"]:focus-visible {
-      outline: 2px solid #f5a623;
+      outline: 2px solid var(--accent);
       outline-offset: 2px;
-      border-color: #f5a623;
+      border-color: var(--accent);
     }
     .save-success {
-      color: #4caf50 !important;
+      color: var(--success) !important;
       font-weight: 500;
     }
-    .form-description { color: #666666; font-size: 14px; margin: 0; }
+    .form-description { color: var(--text-muted); font-size: 14px; margin: 0; }
     .progress-container { display: none; }
     .progress-container.active { display: block; }
     .progress-bar-outer {
-      background: #2a2a2a;
-      border-radius: 8px;
+      background: var(--border);
+      border-radius: var(--radius-lg);
       height: 8px;
       overflow: hidden;
       margin-bottom: 12px;
     }
     .progress-bar-inner {
-      background: #f5a623;
+      background: var(--accent);
       height: 100%;
       width: 0%;
       transition: width 0.3s ease;
     }
-    .progress-text { color: #999999; font-size: 14px; margin: 0 0 8px; }
-    .progress-step { color: #f5a623; font-size: 14px; margin: 0; }
-    .elapsed-time { color: #666666; font-size: 12px; margin-top: 8px; }
+    .progress-text { color: var(--text-secondary); font-size: 14px; margin: 0 0 8px; }
+    .progress-step { color: var(--accent); font-size: 14px; margin: 0; }
+    .elapsed-time { color: var(--text-muted); font-size: 12px; margin-top: 8px; }
     .scheduler-health {
       margin-top: 24px;
       padding-top: 24px;
-      border-top: 1px solid #2a2a2a;
+      border-top: 1px solid var(--border);
     }
     .scheduler-health h3 {
       margin: 0 0 16px;
-      font-size: 14px;
-      color: #999999;
+      font-size: 11px;
+      color: var(--text-secondary);
       text-transform: uppercase;
-      letter-spacing: 0.5px;
+      letter-spacing: 0.05em;
+      font-family: var(--font-mono);
+      font-weight: 500;
     }
     .status-grid {
       display: grid;
@@ -2021,49 +2040,54 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       gap: 12px;
     }
     .status-item {
-      background: #0d0d0d;
-      border: 1px solid #2a2a2a;
-      border-radius: 8px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
       padding: 12px 16px;
     }
     .status-item .label {
-      font-size: 11px;
-      color: #666666;
+      font-size: 10px;
+      color: var(--text-secondary);
       text-transform: uppercase;
-      letter-spacing: 0.5px;
+      letter-spacing: 0.05em;
       margin-bottom: 4px;
+      font-family: var(--font-mono);
+      font-weight: 500;
     }
     .status-item .value {
       font-size: 14px;
-      color: #ffffff;
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-feature-settings: 'tnum';
     }
-    .status-item .value.success { color: #4caf50; }
-    .status-item .value.error { color: #ef5350; }
-    .status-item .value.warning { color: #f5a623; }
-    .status-item .value.muted { color: #666666; }
+    .status-item .value.success { color: var(--success); }
+    .status-item .value.error { color: var(--error); }
+    .status-item .value.warning { color: var(--accent); }
+    .status-item .value.muted { color: var(--text-muted); }
     .status-item .error-msg {
       font-size: 12px;
-      color: #ef5350;
+      color: var(--error);
       margin-top: 4px;
-      font-family: monospace;
+      font-family: var(--font-mono);
+      font-feature-settings: 'tnum';
       word-break: break-word;
     }
     .refresh-btn {
       background: transparent;
-      border: 1px solid #2a2a2a;
-      color: #999999;
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
       padding: 6px 12px;
-      border-radius: 6px;
+      border-radius: var(--radius-md);
       font-size: 12px;
       cursor: pointer;
       margin-left: 12px;
     }
-    .refresh-btn:hover { border-color: #f5a623; color: #f5a623; }
+    .refresh-btn:hover { border-color: var(--accent); color: var(--accent); }
     .refresh-btn:focus-visible {
-      outline: 2px solid #f5a623;
+      outline: 2px solid var(--accent);
       outline-offset: 2px;
     }
-    #run-forum-btn:hover:not(:disabled) { background: #234a63; }
+    #run-forum-btn:hover:not(:disabled) { background: #1a2a3d; }
     .skip-link {
       position: absolute;
       left: -9999px;
@@ -2079,8 +2103,8 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       width: auto;
       height: auto;
       padding: 8px 16px;
-      background: #f5a623;
-      color: #0d0d0d;
+      background: var(--accent);
+      color: var(--accent-fg);
       border-radius: 4px;
       z-index: 9999;
       font-weight: 600;
@@ -2097,8 +2121,8 @@ function renderDashboard(files: StoredFile[], message?: string): string {
   <a href="#main-content" class="skip-link">Skip to content</a>
   <div class="header">
     <div class="header-content">
-      <h1 class="logo">📡 <span class="logo-grant">Grant</span><span class="logo-wire">Wire</span></h1>
-      <p>Newsletter Automation Dashboard</p>
+      <h1 class="logo">📡 <span class="logo-wire">Wire</span> <span class="logo-grant">Ops</span></h1>
+      <p>Monitoring the Situation</p>
     </div>
   </div>
   <div class="main" id="main-content">
@@ -2172,20 +2196,20 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         <button type="button" id="add-feed" class="button" style="padding: 8px 16px; font-size: 13px;">+ Add Feed</button>
       </div>
       <div id="feeds-list"></div>
-      <div id="feed-form" class="run-form" style="display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid #2a2a2a;">
+      <div id="feed-form" class="run-form" style="display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border);">
         <input type="hidden" id="feedEditKey" value="">
         <div class="form-row">
           <div class="form-group">
             <label for="feedKey">Key</label>
-            <input type="text" id="feedKey" placeholder="e.g. defi" style="background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 10px 12px; color: #fff; width: 120px;">
+            <input type="text" id="feedKey" placeholder="e.g. defi" style="background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 10px 12px; color: var(--text); width: 120px;">
           </div>
           <div class="form-group">
             <label for="feedDisplayName">Display Name</label>
-            <input type="text" id="feedDisplayName" placeholder="e.g. DeFi" style="background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 10px 12px; color: #fff; width: 150px;">
+            <input type="text" id="feedDisplayName" placeholder="e.g. DeFi" style="background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 10px 12px; color: var(--text); width: 150px;">
           </div>
           <div class="form-group">
             <label for="feedTitleTemplate">Title Template</label>
-            <input type="text" id="feedTitleTemplate" placeholder="Sov's DeFi Grant Wire Weekly Update" style="background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 10px 12px; color: #fff; width: 320px;">
+            <input type="text" id="feedTitleTemplate" placeholder="Sov's DeFi Grant Wire Weekly Update" style="background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 10px 12px; color: var(--text); width: 320px;">
           </div>
           <button type="button" id="save-feed" class="button">Save</button>
           <button type="button" id="cancel-feed" class="button secondary">Cancel</button>
@@ -2200,12 +2224,12 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       </div>
       <div id="schedules-list"></div>
       
-      <div id="schedule-form" class="run-form" style="display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid #2a2a2a;">
+      <div id="schedule-form" class="run-form" style="display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border);">
         <input type="hidden" id="scheduleId" value="">
         <div class="form-row">
           <div class="form-group">
             <label for="scheduleName">Name</label>
-            <input type="text" id="scheduleName" value="New Schedule" style="background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 10px 12px; color: #fff; width: 150px;">
+            <input type="text" id="scheduleName" value="New Schedule" style="background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 10px 12px; color: var(--text); width: 150px;">
           </div>
           <div class="form-group">
             <label for="scheduleType">Type</label>
@@ -2249,7 +2273,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           <div class="form-group">
             <label for="scheduleTime">Time</label>
             <input type="time" id="scheduleTime" value="09:00">
-            <p id="time-hint" style="display: none; color: #f5a623; font-size: 11px; margin: 4px 0 0;">Only the minute is used when frequency is set</p>
+            <p id="time-hint" style="display: none; color: var(--accent); font-size: 11px; margin: 4px 0 0;">Only the minute is used when frequency is set</p>
           </div>
           <div class="form-group">
             <label for="scheduleLookback">Lookback Days</label>
@@ -2295,7 +2319,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         <div class="form-row" id="scheduleNotifyRow" style="display: none; margin-top: 12px;">
           <div class="form-group" style="flex: 1;">
             <label for="scheduleNotifyEmails">Notify Emails (comma-separated, empty = default)</label>
-            <input type="text" id="scheduleNotifyEmails" placeholder="user@example.com, other@..." style="background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 10px 12px; color: #fff; width: 100%;">
+            <input type="text" id="scheduleNotifyEmails" placeholder="user@example.com, other@..." style="background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 10px 12px; color: var(--text); width: 100%;">
           </div>
         </div>
       </div>
@@ -2351,16 +2375,16 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         </div>
         <button type="button" id="run-crm-sync" class="button">Run CRM Sync</button>
       </div>
-      <div id="crm-sync-result" style="display: none; margin-top: 16px; padding: 12px 16px; background: #0d0d0d; border-radius: 8px; border: 1px solid #2a2a2a;">
-        <p style="margin: 0; color: #999;">Sync results will appear here</p>
+      <div id="crm-sync-result" style="display: none; margin-top: 16px; padding: 12px 16px; background: var(--bg); border-radius: var(--radius-lg); border: 1px solid var(--border);">
+        <p style="margin: 0; color: var(--text-secondary);">Sync results will appear here</p>
       </div>
 
-      <div style="margin-top: 24px; padding-top: 20px; border-top: 1px solid #2a2a2a;">
-        <h3 style="margin: 0 0 12px; font-size: 16px; color: #fff;">Pending Review <span id="crm-pending-badge" style="display: none; background: #f5a623; color: #000; font-size: 12px; padding: 2px 8px; border-radius: 10px; margin-left: 8px; font-weight: 600;"></span></h3>
+      <div style="margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border);">
+        <h3 style="margin: 0 0 12px; font-size: 16px; color: var(--text);">Pending Review <span id="crm-pending-badge" style="display: none; background: var(--accent); color: var(--accent-fg); font-size: 12px; padding: 2px 8px; border-radius: var(--radius-xl); margin-left: 8px; font-weight: 600;"></span></h3>
         <p class="form-description" style="margin-bottom: 12px;">Review discovered organizations. <strong>Approve</strong> = add to CRM. <strong>Reject</strong> = dismiss.</p>
         <button type="button" id="load-pending-orgs" class="button secondary" style="margin-bottom: 12px;">Load Pending</button>
         <div id="pending-orgs-table">
-          <p style="color: #666;">Click "Load Pending" to view organizations.</p>
+          <p style="color: var(--text-muted);">Click "Load Pending" to view organizations.</p>
         </div>
       </div>
     </div>
@@ -2379,12 +2403,12 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           <button type="button" id="run-scan-btn" class="button">Run Scan Now</button>
         </div>
         <div id="scan-run-progress" style="display: none; margin-top: 16px;" aria-live="polite">
-          <div style="background: #2a2a2a; border-radius: 4px; overflow: hidden; height: 20px;" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
-            <div id="scan-run-bar" style="background: #f5a623; height: 100%; width: 0%; transition: width 0.3s;"></div>
+          <div style="background: var(--border); border-radius: 4px; overflow: hidden; height: 20px;" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+            <div id="scan-run-bar" style="background: var(--accent); height: 100%; width: 0%; transition: width 0.3s;"></div>
           </div>
-          <p id="scan-run-step" style="color: #999; font-size: 13px; margin: 8px 0 0;">Initializing\u2026</p>
+          <p id="scan-run-step" style="color: var(--text-secondary); font-size: 13px; margin: 8px 0 0;">Initializing\u2026</p>
         </div>
-        <div id="scan-run-result" style="display: none; margin-top: 16px; padding: 12px 16px; background: #0d0d0d; border-radius: 8px; border: 1px solid #2a2a2a;">
+        <div id="scan-run-result" style="display: none; margin-top: 16px; padding: 12px 16px; background: var(--bg); border-radius: var(--radius-lg); border: 1px solid var(--border);">
         </div>
       </div>
     </div>
@@ -2400,15 +2424,15 @@ function renderDashboard(files: StoredFile[], message?: string): string {
               <option value="">All Wires</option>
             </select>
           </div>
-          <button type="button" id="run-forum-btn" class="button" style="background: #1a2c3c; border-color: #64b5f6;">Run Forum Scan</button>
+          <button type="button" id="run-forum-btn" class="button" style="background: #0a1520; border: 1px solid #64b5f6; color: #64b5f6;">Run Forum Scan</button>
         </div>
         <div id="forum-run-progress" style="display: none; margin-top: 16px;" aria-live="polite">
-          <div style="background: #2a2a2a; border-radius: 4px; overflow: hidden; height: 20px;" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+          <div style="background: var(--border); border-radius: 4px; overflow: hidden; height: 20px;" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
             <div id="forum-run-bar" style="background: #64b5f6; height: 100%; width: 0%; transition: width 0.3s;"></div>
           </div>
-          <p id="forum-run-step" style="color: #999; font-size: 13px; margin: 8px 0 0;">Initializing\u2026</p>
+          <p id="forum-run-step" style="color: var(--text-secondary); font-size: 13px; margin: 8px 0 0;">Initializing\u2026</p>
         </div>
-        <div id="forum-run-result" style="display: none; margin-top: 16px; padding: 12px 16px; background: #0d0d0d; border-radius: 8px; border: 1px solid #2a2a2a;">
+        <div id="forum-run-result" style="display: none; margin-top: 16px; padding: 12px 16px; background: var(--bg); border-radius: var(--radius-lg); border: 1px solid var(--border);">
         </div>
       </div>
     </div>
@@ -2446,19 +2470,19 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         </div>
         <div class="form-group" style="margin-top: 12px;">
           <label for="scanRawText">Raw Scan Output</label>
-          <textarea id="scanRawText" rows="8" placeholder="Paste structured Grok output here..." style="width: 100%; padding: 10px 12px; border: 1px solid #2a2a2a; border-radius: 6px; font-size: 13px; font-family: monospace; background: #0d0d0d; color: #ffffff; resize: vertical;"></textarea>
+          <textarea id="scanRawText" rows="8" placeholder="Paste structured Grok output here..." style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); font-size: 13px; font-family: var(--font-mono); background: var(--bg); color: var(--text); resize: vertical;"></textarea>
         </div>
         <div style="margin-top: 12px;">
           <button type="button" id="process-scan" class="button">Process Scan</button>
         </div>
       </div>
-      <div id="scan-result" style="display: none; margin-top: 16px; padding: 12px 16px; background: #0d0d0d; border-radius: 8px; border: 1px solid #2a2a2a;">
-        <p style="margin: 0; color: #999;">Results will appear here</p>
+      <div id="scan-result" style="display: none; margin-top: 16px; padding: 12px 16px; background: var(--bg); border-radius: var(--radius-lg); border: 1px solid var(--border);">
+        <p style="margin: 0; color: var(--text-secondary);">Results will appear here</p>
       </div>
     </div>
 
     <div class="card">
-      <h2>Daily Queue <span id="queue-count-badge" style="display: none; background: #f5a623; color: #000; font-size: 13px; padding: 2px 10px; border-radius: 12px; margin-left: 8px; font-weight: 600;"></span></h2>
+      <h2>Daily Queue <span id="queue-count-badge" style="display: none; background: var(--accent); color: var(--accent-fg); font-size: 13px; padding: 2px 10px; border-radius: var(--radius-xl); margin-left: 8px; font-weight: 600;"></span></h2>
       <div id="dedup-stats" class="status-grid" style="margin-bottom: 16px;"></div>
       <p class="form-description" style="margin-bottom: 16px;">Review prioritized scan entries. <strong>Approve</strong> = queue for newsletter. <strong>Review Later</strong> = come back to this. <strong>Decline</strong> = not relevant.</p>
       <div class="form-row" style="margin-bottom: 16px;">
@@ -2479,9 +2503,9 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         <button type="button" id="load-queue" class="button secondary">Load Queue</button>
       </div>
       <div id="queue-results">
-        <p style="color: #666;">Click "Load Queue" to view entries.</p>
+        <p style="color: var(--text-muted);">Click "Load Queue" to view entries.</p>
       </div>
-      <p style="margin-top: 12px;"><a href="/queue" style="color: #f5a623; text-decoration: none; font-size: 14px; font-weight: 500;">View Full Queue with Duplicates &rarr;</a></p>
+      <p style="margin-top: 12px;"><a href="/queue" style="color: var(--accent); text-decoration: none; font-size: 14px; font-weight: 500;">View Full Queue with Duplicates &rarr;</a></p>
     </div>
 
     <div class="card">
@@ -2491,7 +2515,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       </div>
       <p class="form-description" style="margin-bottom: 16px;">Manage scan prompts for automated Grok queries. Test prompts to preview output before scheduling.</p>
       <div id="prompts-list"></div>
-      <div id="prompt-form" class="run-form" style="display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid #2a2a2a;">
+      <div id="prompt-form" class="run-form" style="display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border);">
         <input type="hidden" id="promptEditId" value="">
         <div class="form-row">
           <div class="form-group">
@@ -2502,7 +2526,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           </div>
           <div class="form-group">
             <label for="promptLabel">Label</label>
-            <input type="text" id="promptLabel" placeholder="e.g. Action Scan" style="background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 10px 12px; color: #fff; width: 180px;">
+            <input type="text" id="promptLabel" placeholder="e.g. Action Scan" style="background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 10px 12px; color: var(--text); width: 180px;">
           </div>
           <div class="form-group">
             <label for="promptSortOrder">Order</label>
@@ -2525,19 +2549,19 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         </div>
         <div class="form-group" style="margin-top: 12px;">
           <label for="promptText">Prompt Text</label>
-          <textarea id="promptText" rows="6" placeholder="Enter the scan prompt..." style="width: 100%; padding: 10px 12px; border: 1px solid #2a2a2a; border-radius: 6px; font-size: 13px; font-family: monospace; background: #0d0d0d; color: #ffffff; resize: vertical;"></textarea>
+          <textarea id="promptText" rows="6" placeholder="Enter the scan prompt..." style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); font-size: 13px; font-family: var(--font-mono); background: var(--bg); color: var(--text); resize: vertical;"></textarea>
         </div>
         <div class="form-group" style="margin-top: 12px;">
           <label for="promptResponseFormat">Response Format (optional)</label>
-          <textarea id="promptResponseFormat" rows="3" placeholder="Optional structured output format..." style="width: 100%; padding: 10px 12px; border: 1px solid #2a2a2a; border-radius: 6px; font-size: 13px; font-family: monospace; background: #0d0d0d; color: #ffffff; resize: vertical;"></textarea>
+          <textarea id="promptResponseFormat" rows="3" placeholder="Optional structured output format..." style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); font-size: 13px; font-family: var(--font-mono); background: var(--bg); color: var(--text); resize: vertical;"></textarea>
         </div>
         <div style="margin-top: 12px;">
           <button type="button" id="save-prompt" class="button">Save Prompt</button>
           <button type="button" id="cancel-prompt" class="button secondary" style="margin-left: 8px;">Cancel</button>
         </div>
       </div>
-      <div id="prompt-test-result" style="display: none; margin-top: 16px; padding: 12px 16px; background: #0d0d0d; border-radius: 8px; border: 1px solid #2a2a2a;">
-        <p style="margin: 0; color: #999;">Test results will appear here</p>
+      <div id="prompt-test-result" style="display: none; margin-top: 16px; padding: 12px 16px; background: var(--bg); border-radius: var(--radius-lg); border: 1px solid var(--border);">
+        <p style="margin: 0; color: var(--text-secondary);">Test results will appear here</p>
       </div>
     </div>
 
@@ -2552,7 +2576,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         <button type="button" id="load-prompt-stats" class="button secondary">Refresh</button>
       </div>
       <div id="prompt-stats-results">
-        <p style="color: #666;">Loading stats\u2026</p>
+        <p style="color: var(--text-muted);">Loading stats\u2026</p>
       </div>
     </div>
   </div>
@@ -2651,13 +2675,13 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         renderFeedsList(feeds);
       } catch (error) {
         console.error('Failed to load feeds:', error);
-        feedsListEl.innerHTML = '<p style="color: #ef5350;">Failed to load feeds</p>';
+        feedsListEl.innerHTML = '<p style="color: var(--error);">Failed to load feeds</p>';
       }
     }
 
     function renderFeedsList(feeds) {
       if (feeds.length === 0) {
-        feedsListEl.innerHTML = '<p style="color: #666;">No feeds configured. Click "+ Add Feed" to create one.</p>';
+        feedsListEl.innerHTML = '<p style="color: var(--text-muted);">No feeds configured. Click "+ Add Feed" to create one.</p>';
         return;
       }
 
@@ -2665,13 +2689,13 @@ function renderDashboard(files: StoredFile[], message?: string): string {
 
       feeds.forEach(function(f) {
         html += '<tr>';
-        html += '<td><code style="background: #0d0d0d; padding: 2px 6px; border-radius: 4px;">' + escapeHtml(f.key) + '</code></td>';
+        html += '<td><code style="background: var(--bg); padding: 2px 6px; border-radius: 4px;">' + escapeHtml(f.key) + '</code></td>';
         html += '<td>' + escapeHtml(f.displayName) + '</td>';
         html += '<td>' + f.entryCount + '</td>';
-        html += '<td style="font-size: 12px; color: #999;">' + escapeHtml(f.titleTemplate || '-') + '</td>';
+        html += '<td style="font-size: 12px; color: var(--text-secondary);">' + escapeHtml(f.titleTemplate || '-') + '</td>';
         html += '<td>';
-        html += '<button class="edit-feed" data-key="' + escapeHtml(f.key) + '" data-display="' + escapeHtml(f.displayName) + '" data-template="' + escapeHtml(f.titleTemplate || '') + '" style="background: #2a2a2a; border: none; color: #f5a623; padding: 6px 12px; border-radius: 4px; cursor: pointer; margin-right: 8px;">Edit</button>';
-        html += '<button class="archive-feed" data-key="' + escapeHtml(f.key) + '" data-display="' + escapeHtml(f.displayName) + '" style="background: #2a2a2a; border: none; color: #ef5350; padding: 6px 12px; border-radius: 4px; cursor: pointer;">Archive</button>';
+        html += '<button class="edit-feed" data-key="' + escapeHtml(f.key) + '" data-display="' + escapeHtml(f.displayName) + '" data-template="' + escapeHtml(f.titleTemplate || '') + '" style="background: var(--border); border: none; color: var(--accent); padding: 6px 12px; border-radius: 4px; cursor: pointer; margin-right: 8px;">Edit</button>';
+        html += '<button class="archive-feed" data-key="' + escapeHtml(f.key) + '" data-display="' + escapeHtml(f.displayName) + '" style="background: var(--border); border: none; color: var(--error); padding: 6px 12px; border-radius: 4px; cursor: pointer;">Archive</button>';
         html += '</td>';
         html += '</tr>';
       });
@@ -2817,13 +2841,13 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         renderSchedulesList(data.schedules || []);
       } catch (error) {
         console.error('Failed to load schedules:', error);
-        schedulesListEl.innerHTML = '<p style="color: #ef5350;">Failed to load schedules</p>';
+        schedulesListEl.innerHTML = '<p style="color: var(--error);">Failed to load schedules</p>';
       }
     }
     
     function renderSchedulesList(schedules) {
       if (schedules.length === 0) {
-        schedulesListEl.innerHTML = '<p style="color: #666;">No schedules configured. Click "+ Add Schedule" to create one.</p>';
+        schedulesListEl.innerHTML = '<p style="color: var(--text-muted);">No schedules configured. Click "+ Add Schedule" to create one.</p>';
         return;
       }
       
@@ -2838,7 +2862,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         const time = hour12 + ':' + s.minute.toString().padStart(2, '0') + ' ' + ampm;
         const feedMatch = cachedWires.find(function(f) { return f.key === s.wire; });
         const feed = s.wire ? (feedMatch ? feedMatch.displayName : s.wire) : 'All';
-        const status = s.enabled ? '<span style="color: #4caf50;">Enabled</span>' : '<span style="color: #666;">Disabled</span>';
+        const status = s.enabled ? '<span style="color: var(--success);">Enabled</span>' : '<span style="color: var(--text-muted);">Disabled</span>';
         const tz = s.timezone || 'America/Los_Angeles';
         const tzShort = tz.split('/').pop().replace('_', ' ');
         const isScan = s.scheduleType === 'scan-execution' || s.scheduleType === 'forum-scan';
@@ -2856,15 +2880,15 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         html += '<td>' + escapeHtml(s.name || 'Untitled') + '</td>';
         html += '<td>' + typeLabel + '</td>';
         const freqLabel = isScan && s.frequencyHours ? 'Every ' + s.frequencyHours + 'h' : (isScan ? 'Daily' : day);
-        html += '<td>' + freqLabel + ' @ ' + (isScan && s.frequencyHours ? ':' + s.minute.toString().padStart(2, '0') : time) + ' <span style="color: #666; font-size: 11px;">(' + escapeHtml(tzShort) + ')</span>';
-        if (s.notifyEmails) html += '<div style="font-size: 11px; color: #888; margin-top: 2px;">Notify: ' + escapeHtml(s.notifyEmails) + '</div>';
+        html += '<td>' + freqLabel + ' @ ' + (isScan && s.frequencyHours ? ':' + s.minute.toString().padStart(2, '0') : time) + ' <span style="color: var(--text-muted); font-size: 11px;">(' + escapeHtml(tzShort) + ')</span>';
+        if (s.notifyEmails) html += '<div style="font-size: 11px; color: var(--text-secondary); margin-top: 2px;">Notify: ' + escapeHtml(s.notifyEmails) + '</div>';
         html += '</td>';
         html += '<td>' + escapeHtml(feed) + '</td>';
         html += '<td>' + status + '</td>';
-        html += '<td style="font-size: 12px;">' + escapeHtml(nextRun) + (s.nextRun ? ' <span style="color: #666; font-size: 10px;">(' + escapeHtml(tz === 'UTC' ? 'UTC' : tzShort) + ')</span>' : '') + '</td>';
+        html += '<td style="font-size: 12px;">' + escapeHtml(nextRun) + (s.nextRun ? ' <span style="color: var(--text-muted); font-size: 10px;">(' + escapeHtml(tz === 'UTC' ? 'UTC' : tzShort) + ')</span>' : '') + '</td>';
         html += '<td>';
-        html += '<button class="edit-schedule" data-id="' + escapeHtml(s.id) + '" style="background: #2a2a2a; border: none; color: #f5a623; padding: 6px 12px; border-radius: 4px; cursor: pointer; margin-right: 8px;">Edit</button>';
-        html += '<button class="delete-schedule" data-id="' + escapeHtml(s.id) + '" data-name="' + escapeHtml(s.name || 'Untitled') + '" style="background: #2a2a2a; border: none; color: #ef5350; padding: 6px 12px; border-radius: 4px; cursor: pointer;">Delete</button>';
+        html += '<button class="edit-schedule" data-id="' + escapeHtml(s.id) + '" style="background: var(--border); border: none; color: var(--accent); padding: 6px 12px; border-radius: 4px; cursor: pointer; margin-right: 8px;">Edit</button>';
+        html += '<button class="delete-schedule" data-id="' + escapeHtml(s.id) + '" data-name="' + escapeHtml(s.name || 'Untitled') + '" style="background: var(--border); border: none; color: var(--error); padding: 6px 12px; border-radius: 4px; cursor: pointer;">Delete</button>';
         html += '</td>';
         html += '</tr>';
       });
@@ -3084,7 +3108,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
 
         if (result.success) {
           testAlertBtn.textContent = 'Sent!';
-          testAlertBtn.style.background = '#4caf50';
+          testAlertBtn.style.background = 'var(--success)';
           setTimeout(() => {
             testAlertBtn.textContent = 'Test Alert';
             testAlertBtn.style.background = '';
@@ -3092,7 +3116,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           }, 3000);
         } else {
           testAlertBtn.textContent = 'Failed';
-          testAlertBtn.style.background = '#ef5350';
+          testAlertBtn.style.background = 'var(--error)';
           setTimeout(() => {
             testAlertBtn.textContent = 'Test Alert';
             testAlertBtn.style.background = '';
@@ -3102,7 +3126,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       } catch (error) {
         console.error('Failed to send test alert:', error);
         testAlertBtn.textContent = 'Error';
-        testAlertBtn.style.background = '#ef5350';
+        testAlertBtn.style.background = 'var(--error)';
         setTimeout(() => {
           testAlertBtn.textContent = 'Test Alert';
           testAlertBtn.style.background = '';
@@ -3287,7 +3311,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
     const pendingBadge = document.getElementById('crm-pending-badge');
 
     async function loadPendingOrgs() {
-      pendingOrgsTable.innerHTML = '<p style="color: #f5a623;">Loading\u2026</p>';
+      pendingOrgsTable.innerHTML = '<p style="color: var(--accent);">Loading\u2026</p>';
       try {
         const resp = await fetch('/api/crm-sync/staging-orgs?status=Pending');
         if (!resp.ok) throw new Error('Failed');
@@ -3302,7 +3326,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         }
 
         if (orgs.length === 0) {
-          pendingOrgsTable.innerHTML = '<p style="color: #666;">No pending organizations.</p>';
+          pendingOrgsTable.innerHTML = '<p style="color: var(--text-muted);">No pending organizations.</p>';
           return;
         }
 
@@ -3310,7 +3334,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         orgs.forEach(function(o) {
           html += '<tr id="staging-row-' + escapeHtml(o.id) + '">';
           html += '<td>' + escapeHtml(o.name || '') + '</td>';
-          html += '<td><code style="background: #0d0d0d; padding: 2px 6px; border-radius: 4px;">' + escapeHtml(o.wire || '-') + '</code></td>';
+          html += '<td><code style="background: var(--bg); padding: 2px 6px; border-radius: 4px;">' + escapeHtml(o.wire || '-') + '</code></td>';
           html += '<td>' + escapeHtml(o.sourceType || '-') + '</td>';
           html += '<td>';
           if (o.entryUrl) {
@@ -3321,15 +3345,15 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           html += '</td>';
           html += '<td style="font-size: 12px;">' + escapeHtml(o.firstSeen || '-') + '</td>';
           html += '<td style="white-space: nowrap;">';
-          html += '<button data-org-id="' + escapeHtml(o.id) + '" data-staging-action="approve" class="staging-action-btn" style="background: #1b5e20; border: none; color: #4caf50; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;">Approve</button>';
-          html += '<button data-org-id="' + escapeHtml(o.id) + '" data-staging-action="reject" class="staging-action-btn" style="background: #4a1515; border: none; color: #ef5350; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;">Reject</button>';
+          html += '<button data-org-id="' + escapeHtml(o.id) + '" data-staging-action="approve" class="staging-action-btn" style="background: #1b5e20; border: none; color: var(--success); padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;">Approve</button>';
+          html += '<button data-org-id="' + escapeHtml(o.id) + '" data-staging-action="reject" class="staging-action-btn" style="background: #4a1515; border: none; color: var(--error); padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;">Reject</button>';
           html += '</td>';
           html += '</tr>';
         });
         html += '</tbody></table>';
         pendingOrgsTable.innerHTML = html;
       } catch (err) {
-        pendingOrgsTable.innerHTML = '<p style="color: #ef5350;">Failed to load pending orgs</p>';
+        pendingOrgsTable.innerHTML = '<p style="color: var(--error);">Failed to load pending orgs</p>';
       }
     }
 
@@ -3366,7 +3390,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         if (remaining.length <= 1) {
           setTimeout(function() {
             pendingBadge.style.display = 'none';
-            pendingOrgsTable.innerHTML = '<p style="color: #666;">No pending organizations.</p>';
+            pendingOrgsTable.innerHTML = '<p style="color: var(--text-muted);">No pending organizations.</p>';
           }, 350);
         } else {
           pendingBadge.textContent = remaining.length - 1;
@@ -3439,7 +3463,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       processScanBtn.disabled = true;
       processScanBtn.textContent = 'Processing\u2026';
       scanResultEl.style.display = 'block';
-      scanResultEl.innerHTML = '<p style="margin: 0; color: #f5a623;">Processing scan\u2026</p>';
+      scanResultEl.innerHTML = '<p style="margin: 0; color: var(--accent);">Processing scan\u2026</p>';
 
       try {
         const endpoint = mode === 'batch' ? '/api/scan/submit-batch' : '/api/scan/submit';
@@ -3457,35 +3481,35 @@ function renderDashboard(files: StoredFile[], message?: string): string {
 
         if (data.success && data.summary) {
           const s = data.summary;
-          let html = '<p style="margin: 0 0 8px; color: #4caf50; font-weight: 600;">Intake complete!</p>';
-          html += '<p style="margin: 0; color: #999; font-size: 13px;">';
+          let html = '<p style="margin: 0 0 8px; color: var(--success); font-weight: 600;">Intake complete!</p>';
+          html += '<p style="margin: 0; color: var(--text-secondary); font-size: 13px;">';
           html += 'Ingested: ' + s.totalIngested + ' | Duplicates: ' + s.duplicatesFound;
           html += ' | Unique: ' + s.newUnique + ' | Avg Score: ' + s.averageQualityScore;
           html += ' | High Quality: ' + s.highQualityCount;
           html += '</p>';
 
           if (s.byPrompt && Object.keys(s.byPrompt).length > 0) {
-            html += '<p style="margin: 8px 0 4px; color: #999; font-size: 12px; text-transform: uppercase;">By Prompt:</p>';
+            html += '<p style="margin: 8px 0 4px; color: var(--text-secondary); font-size: 12px; text-transform: uppercase;">By Prompt:</p>';
             for (var key in s.byPrompt) {
               var p = s.byPrompt[key];
-              html += '<p style="margin: 0; color: #ccc; font-size: 12px;">' + escapeHtml(key) + ': ' + p.total + ' total, ' + p.duplicates + ' dupes, avg ' + p.avgScore + '</p>';
+              html += '<p style="margin: 0; color: var(--text); font-size: 12px;">' + escapeHtml(key) + ': ' + p.total + ' total, ' + p.duplicates + ' dupes, avg ' + p.avgScore + '</p>';
             }
           }
 
           if (s.topFinds && s.topFinds.length > 0) {
-            html += '<p style="margin: 8px 0 4px; color: #999; font-size: 12px; text-transform: uppercase;">Top Finds:</p>';
+            html += '<p style="margin: 8px 0 4px; color: var(--text-secondary); font-size: 12px; text-transform: uppercase;">Top Finds:</p>';
             s.topFinds.slice(0, 5).forEach(function(e) {
-              html += '<p style="margin: 0; color: #ccc; font-size: 12px;">[' + (e.quality_score || '-') + '] ' + escapeHtml(e.name) + (e.amount ? ' — ' + escapeHtml(e.amount) : '') + '</p>';
+              html += '<p style="margin: 0; color: var(--text); font-size: 12px;">[' + (e.quality_score || '-') + '] ' + escapeHtml(e.name) + (e.amount ? ' — ' + escapeHtml(e.amount) : '') + '</p>';
             });
           }
 
           scanResultEl.innerHTML = html;
           loadQueue();
         } else {
-          scanResultEl.innerHTML = '<p style="margin: 0; color: #ef5350;">Error: ' + escapeHtml(data.error || 'Unknown error') + '</p>';
+          scanResultEl.innerHTML = '<p style="margin: 0; color: var(--error);">Error: ' + escapeHtml(data.error || 'Unknown error') + '</p>';
         }
       } catch (error) {
-        scanResultEl.innerHTML = '<p style="margin: 0; color: #ef5350;">Error: ' + escapeHtml(error.message) + '</p>';
+        scanResultEl.innerHTML = '<p style="margin: 0; color: var(--error);">Error: ' + escapeHtml(error.message) + '</p>';
       } finally {
         processScanBtn.disabled = false;
         processScanBtn.textContent = 'Process Scan';
@@ -3498,22 +3522,22 @@ function renderDashboard(files: StoredFile[], message?: string): string {
     const queueCountBadge = document.getElementById('queue-count-badge');
 
     function scoreColor(score) {
-      if (score == null) return '#666';
-      if (score >= 60) return '#4caf50';
-      if (score >= 40) return '#f5a623';
-      return '#ef5350';
+      if (score == null) return 'var(--text-muted)';
+      if (score >= 60) return 'var(--success)';
+      if (score >= 40) return 'var(--accent)';
+      return 'var(--error)';
     }
 
     function sourceBadge(scanSource) {
       var badges = {
-        'x-scan': { label: 'X', bg: '#1a3a5c', color: '#5b9bd5' },
-        'web-search': { label: 'Web', bg: '#1a3c2c', color: '#81c784' },
-        'telegram': { label: 'TG', bg: '#1a3c3c', color: '#26c6da' },
-        'email': { label: 'Email', bg: '#3c2a1a', color: '#ff9800' },
-        'forum': { label: 'Forum', bg: '#1a2c3c', color: '#64b5f6' }
+        'x-scan': { label: 'X', bg: '#0f1a2a', color: '#5b9bd5' },
+        'web-search': { label: 'Web', bg: '#0a1f15', color: '#4ade80' },
+        'telegram': { label: 'TG', bg: '#0a1f1f', color: '#26c6da' },
+        'email': { label: 'Email', bg: '#1f150a', color: '#ff9800' },
+        'forum': { label: 'Forum', bg: '#0a1520', color: '#64b5f6' }
       };
-      var b = badges[scanSource] || { label: scanSource || '?', bg: '#2a2a2a', color: '#999' };
-      return '<span style="background:' + b.bg + '; color:' + b.color + '; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:600;">' + escapeHtml(b.label) + '</span>';
+      var b = badges[scanSource] || { label: scanSource || '?', bg: 'var(--border)', color: 'var(--text-secondary)' };
+      return '<span style="background:' + b.bg + '; color:' + b.color + '; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:600; font-family:var(--font-mono);">' + escapeHtml(b.label) + '</span>';
     }
 
     async function entryAction(id, action, btnEl) {
@@ -3563,10 +3587,10 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         if (el) {
           el.innerHTML =
             '<div class="status-item"><div class="label">Total Entries</div><div class="value">' + total + '</div></div>' +
-            '<div class="status-item"><div class="label">Unique</div><div class="value" style="color: #4caf50;">' + unique + '</div></div>' +
-            '<div class="status-item"><div class="label">Duplicates</div><div class="value" style="color: #999;">' + dup + '</div></div>' +
-            '<div class="status-item"><div class="label">Dup Rate</div><div class="value" style="color: ' + (dupRate > 50 ? '#ef5350' : '#999') + ';">' + dupRate + '%</div></div>' +
-            '<div class="status-item"><div class="label">Seeded URLs</div><div class="value" style="color: #666;">' + (data.seededUrls || 0) + '</div></div>';
+            '<div class="status-item"><div class="label">Unique</div><div class="value" style="color: var(--success);">' + unique + '</div></div>' +
+            '<div class="status-item"><div class="label">Duplicates</div><div class="value" style="color: var(--text-secondary);">' + dup + '</div></div>' +
+            '<div class="status-item"><div class="label">Dup Rate</div><div class="value" style="color: ' + (dupRate > 50 ? 'var(--error)' : 'var(--text-secondary)') + ';">' + dupRate + '%</div></div>' +
+            '<div class="status-item"><div class="label">Seeded URLs</div><div class="value" style="color: var(--text-muted);">' + (data.seededUrls || 0) + '</div></div>';
         }
         if (queued > 0) {
           queueCountBadge.textContent = queued + ' new';
@@ -3603,7 +3627,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         }
 
         if (data.entries.length === 0) {
-          queueResultsEl.innerHTML = '<p style="color: #666;">No entries found for these filters.</p>';
+          queueResultsEl.innerHTML = '<p style="color: var(--text-muted);">No entries found for these filters.</p>';
           return;
         }
 
@@ -3613,12 +3637,12 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           const desc = (e.description || '').length > 80 ? e.description.substring(0, 80) + '...' : (e.description || '');
           html += '<tr id="queue-row-' + e.id + '">';
           html += '<td><div>' + escapeHtml(e.name || '') + '</div>';
-          if (desc) html += '<div style="font-size: 11px; color: #888; margin-top: 2px;">' + escapeHtml(desc) + '</div>';
+          if (desc) html += '<div style="font-size: 11px; color: var(--text-secondary); margin-top: 2px;">' + escapeHtml(desc) + '</div>';
           html += '</td>';
           html += '<td>' + escapeHtml(e.amount || '-') + '</td>';
           html += '<td>' + escapeHtml(e.deadline || '-') + '</td>';
           html += '<td><span style="color: ' + sc + '; font-weight: 600;">' + (e.quality_score != null ? e.quality_score : '-') + '</span></td>';
-          html += '<td><code style="background: #0d0d0d; padding: 2px 6px; border-radius: 4px;">' + escapeHtml(e.wire || '') + '</code></td>';
+          html += '<td><code style="background: var(--bg); padding: 2px 6px; border-radius: 4px;">' + escapeHtml(e.wire || '') + '</code></td>';
           html += '<td style="white-space: nowrap;">';
           html += sourceBadge(e.scan_source);
           if (e.source_url) {
@@ -3626,18 +3650,18 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           }
           html += '</td>';
           html += '<td style="white-space: nowrap;">';
-          html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="approve" class="queue-action-btn" style="background: #1b5e20; border: none; color: #4caf50; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;" title="Approve">Approve</button>';
-          html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="reviewlater" class="queue-action-btn" style="background: #2a2a2a; border: none; color: #999; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;" title="Review Later">Review Later</button>';
-          html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="decline" class="queue-action-btn" style="background: #4a1515; border: none; color: #ef5350; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;" title="Decline">Decline</button>';
+          html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="approve" class="queue-action-btn" style="background: #1b5e20; border: none; color: var(--success); padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;" title="Approve">Approve</button>';
+          html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="reviewlater" class="queue-action-btn" style="background: var(--border); border: none; color: var(--text-secondary); padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;" title="Review Later">Review Later</button>';
+          html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="decline" class="queue-action-btn" style="background: #4a1515; border: none; color: var(--error); padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;" title="Decline">Decline</button>';
           html += '</td>';
           html += '</tr>';
         });
         html += '</tbody></table>';
-        html += '<p style="color: #666; font-size: 12px; margin-top: 8px;">' + data.count + ' entries</p>';
+        html += '<p style="color: var(--text-muted); font-size: 12px; margin-top: 8px;">' + data.count + ' entries</p>';
 
         queueResultsEl.innerHTML = html;
       } catch (error) {
-        queueResultsEl.innerHTML = '<p style="color: #ef5350;">Failed to load queue: ' + escapeHtml(error.message) + '</p>';
+        queueResultsEl.innerHTML = '<p style="color: var(--error);">Failed to load queue: ' + escapeHtml(error.message) + '</p>';
       }
     }
 
@@ -3690,13 +3714,13 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         renderPromptsList(prompts);
       } catch (error) {
         console.error('Failed to load prompts:', error);
-        promptsListEl.innerHTML = '<p style="color: #ef5350;">Failed to load prompts</p>';
+        promptsListEl.innerHTML = '<p style="color: var(--error);">Failed to load prompts</p>';
       }
     }
 
     function renderPromptsList(prompts) {
       if (prompts.length === 0) {
-        promptsListEl.innerHTML = '<p style="color: #666;">No prompts configured. Click "+ Add Prompt" to create one.</p>';
+        promptsListEl.innerHTML = '<p style="color: var(--text-muted);">No prompts configured. Click "+ Add Prompt" to create one.</p>';
         return;
       }
 
@@ -3704,26 +3728,26 @@ function renderDashboard(files: StoredFile[], message?: string): string {
 
       prompts.forEach(function(p) {
         const truncated = (p.promptText || '').length > 80 ? p.promptText.substring(0, 80) + '...' : p.promptText;
-        const statusColor = p.isActive ? '#4caf50' : '#666';
+        const statusColor = p.isActive ? 'var(--success)' : 'var(--text-muted)';
         const statusText = p.isActive ? 'Active' : 'Inactive';
 
         html += '<tr id="prompt-row-' + p.id + '">';
         const toolLabel = p.toolType === 'web_search' ? 'Web' : 'X';
-        const toolColor = p.toolType === 'web_search' ? '#4caf50' : '#5b9bd5';
-        html += '<td><code style="background: #0d0d0d; padding: 2px 6px; border-radius: 4px;">' + escapeHtml(p.wire) + '</code></td>';
+        const toolColor = p.toolType === 'web_search' ? 'var(--success)' : '#5b9bd5';
+        html += '<td><code style="background: var(--bg); padding: 2px 6px; border-radius: 4px;">' + escapeHtml(p.wire) + '</code></td>';
         html += '<td>' + escapeHtml(p.label) + '</td>';
         html += '<td><span style="color: ' + toolColor + '; font-size: 12px; font-weight: 600;">' + toolLabel + '</span></td>';
         html += '<td><span style="color: ' + statusColor + ';">' + statusText + '</span></td>';
         html += '<td>' + p.sortOrder + '</td>';
-        html += '<td style="font-size: 12px; color: #999; max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">' + escapeHtml(truncated) + '</td>';
+        html += '<td style="font-size: 12px; color: var(--text-secondary); max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">' + escapeHtml(truncated) + '</td>';
         html += '<td style="white-space: nowrap;">';
-        html += '<button class="toggle-prompt" data-id="' + p.id + '" data-active="' + p.isActive + '" style="background: #2a2a2a; border: none; color: ' + (p.isActive ? '#f5a623' : '#4caf50') + '; padding: 6px 10px; border-radius: 4px; cursor: pointer; margin-right: 4px; font-size: 12px;">' + (p.isActive ? 'Disable' : 'Enable') + '</button>';
-        html += '<button class="test-prompt" data-id="' + p.id + '" style="background: #2a2a2a; border: none; color: #9c27b0; padding: 6px 10px; border-radius: 4px; cursor: pointer; margin-right: 4px; font-size: 12px;">Test</button>';
-        html += '<button class="edit-prompt" data-id="' + p.id + '" style="background: #2a2a2a; border: none; color: #f5a623; padding: 6px 10px; border-radius: 4px; cursor: pointer; margin-right: 4px; font-size: 12px;">Edit</button>';
-        html += '<button class="delete-prompt" data-id="' + p.id + '" data-label="' + escapeHtml(p.label) + '" style="background: #2a2a2a; border: none; color: #ef5350; padding: 6px 10px; border-radius: 4px; cursor: pointer; font-size: 12px;">Delete</button>';
+        html += '<button class="toggle-prompt" data-id="' + p.id + '" data-active="' + p.isActive + '" style="background: var(--border); border: none; color: ' + (p.isActive ? 'var(--accent)' : 'var(--success)') + '; padding: 6px 10px; border-radius: 4px; cursor: pointer; margin-right: 4px; font-size: 12px;">' + (p.isActive ? 'Disable' : 'Enable') + '</button>';
+        html += '<button class="test-prompt" data-id="' + p.id + '" style="background: var(--border); border: none; color: #9c27b0; padding: 6px 10px; border-radius: 4px; cursor: pointer; margin-right: 4px; font-size: 12px;">Test</button>';
+        html += '<button class="edit-prompt" data-id="' + p.id + '" style="background: var(--border); border: none; color: var(--accent); padding: 6px 10px; border-radius: 4px; cursor: pointer; margin-right: 4px; font-size: 12px;">Edit</button>';
+        html += '<button class="delete-prompt" data-id="' + p.id + '" data-label="' + escapeHtml(p.label) + '" style="background: var(--border); border: none; color: var(--error); padding: 6px 10px; border-radius: 4px; cursor: pointer; font-size: 12px;">Delete</button>';
         html += '</td>';
         html += '</tr>';
-        html += '<tr id="prompt-test-row-' + p.id + '" style="display: none;"><td colspan="7" style="padding: 12px; background: #0d0d0d;"><div class="prompt-test-output" style="font-family: monospace; font-size: 12px; white-space: pre-wrap; color: #ccc; max-height: 300px; overflow-y: auto;"></div></td></tr>';
+        html += '<tr id="prompt-test-row-' + p.id + '" style="display: none;"><td colspan="7" style="padding: 12px; background: var(--bg);"><div class="prompt-test-output" style="font-family: var(--font-mono); font-size: 12px; white-space: pre-wrap; color: var(--text); max-height: 300px; overflow-y: auto;"></div></td></tr>';
       });
 
       html += '</tbody></table>';
@@ -3766,7 +3790,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
 
           testRow.style.display = 'table-row';
           outputEl.textContent = 'Running test\u2026';
-          outputEl.style.color = '#f5a623';
+          outputEl.style.color = 'var(--accent)';
           btn.disabled = true;
           btn.textContent = 'Running\u2026';
 
@@ -3780,15 +3804,15 @@ function renderDashboard(files: StoredFile[], message?: string): string {
             if (data.success) {
               let info = 'Model: ' + escapeHtml(data.model);
               if (data.tokensUsed) info += ' | Tokens: ' + data.tokensUsed;
-              outputEl.innerHTML = '<p style="margin: 0 0 8px; color: #4caf50; font-size: 11px;">' + info + '</p>' + escapeHtml(data.content);
+              outputEl.innerHTML = '<p style="margin: 0 0 8px; color: var(--success); font-size: 11px;">' + info + '</p>' + escapeHtml(data.content);
               outputEl.style.color = '#ccc';
             } else {
               outputEl.textContent = 'Error: ' + (data.error || 'Unknown error');
-              outputEl.style.color = '#ef5350';
+              outputEl.style.color = 'var(--error)';
             }
           } catch (e) {
             outputEl.textContent = 'Error: ' + e.message;
-            outputEl.style.color = '#ef5350';
+            outputEl.style.color = 'var(--error)';
           } finally {
             btn.disabled = false;
             btn.textContent = 'Test';
@@ -3901,7 +3925,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       runCrmSyncBtn.disabled = true;
       runCrmSyncBtn.textContent = 'Running\u2026';
       crmResultEl.style.display = 'block';
-      crmResultEl.innerHTML = '<p style="margin: 0; color: #f5a623;">Syncing organizations\u2026</p>';
+      crmResultEl.innerHTML = '<p style="margin: 0; color: var(--accent);">Syncing organizations\u2026</p>';
 
       try {
         const response = await fetch('/api/crm-sync', {
@@ -3914,10 +3938,10 @@ function renderDashboard(files: StoredFile[], message?: string): string {
 
         if (data.success) {
           const p1 = document.createElement('p');
-          p1.style.cssText = 'margin: 0; color: #4caf50;';
+          p1.style.cssText = 'margin: 0; color: var(--success);';
           p1.textContent = 'Sync complete!';
           const p2 = document.createElement('p');
-          p2.style.cssText = 'margin: 8px 0 0; color: #999; font-size: 13px;';
+          p2.style.cssText = 'margin: 8px 0 0; color: var(--text-secondary); font-size: 13px;';
           p2.textContent = 'Entries: ' + data.entriesProcessed + ' | Matched: ' + data.orgsMatched + ' | Created: ' + data.orgsCreated + ' | Skipped: ' + data.orgsSkipped + ' | Duration: ' + (data.duration / 1000).toFixed(1) + 's';
           crmResultEl.innerHTML = '';
           crmResultEl.appendChild(p1);
@@ -3925,14 +3949,14 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           loadCrmStatus();
         } else {
           const p = document.createElement('p');
-          p.style.cssText = 'margin: 0; color: #ef5350;';
+          p.style.cssText = 'margin: 0; color: var(--error);';
           p.textContent = 'Sync failed: ' + (data.error || 'Unknown error');
           crmResultEl.innerHTML = '';
           crmResultEl.appendChild(p);
         }
       } catch (error) {
         const p = document.createElement('p');
-        p.style.cssText = 'margin: 0; color: #ef5350;';
+        p.style.cssText = 'margin: 0; color: var(--error);';
         p.textContent = 'Error: ' + error.message;
         crmResultEl.innerHTML = '';
         crmResultEl.appendChild(p);
@@ -4011,30 +4035,30 @@ function renderDashboard(files: StoredFile[], message?: string): string {
 
               const r = status.result;
               if (r) {
-                let html = '<p style="color: #4caf50; margin: 0 0 8px; font-weight: 600;">Scan complete!</p>';
-                html += '<p style="color: #ccc; margin: 0 0 4px; font-size: 13px;">Prompts: ' + r.promptsExecuted + ' executed';
-                if (r.promptsFailed > 0) html += ', <span style="color: #ef5350;">' + r.promptsFailed + ' failed</span>';
+                let html = '<p style="color: var(--success); margin: 0 0 8px; font-weight: 600;">Scan complete!</p>';
+                html += '<p style="color: var(--text); margin: 0 0 4px; font-size: 13px;">Prompts: ' + r.promptsExecuted + ' executed';
+                if (r.promptsFailed > 0) html += ', <span style="color: var(--error);">' + r.promptsFailed + ' failed</span>';
                 html += ' | Total results: ' + r.totalResults;
                 html += ' | Duration: ' + Math.round(r.totalDurationMs / 1000) + 's</p>';
                 if (r.intakeSummary) {
-                  html += '<p style="color: #999; margin: 4px 0 0; font-size: 13px;">Unique: ' + r.intakeSummary.newUnique + ' | Duplicates: ' + r.intakeSummary.duplicatesFound + ' | High quality: ' + r.intakeSummary.highQualityCount + '</p>';
+                  html += '<p style="color: var(--text-secondary); margin: 4px 0 0; font-size: 13px;">Unique: ' + r.intakeSummary.newUnique + ' | Duplicates: ' + r.intakeSummary.duplicatesFound + ' | High quality: ' + r.intakeSummary.highQualityCount + '</p>';
                 }
                 if (r.perPrompt && r.perPrompt.length > 0) {
-                  html += '<details style="margin-top: 8px;"><summary style="color: #888; cursor: pointer; font-size: 12px;">Per-prompt breakdown</summary><table style="margin-top: 8px;"><thead><tr><th>Wire</th><th>Label</th><th>Results</th><th>Time</th><th>Status</th></tr></thead><tbody>';
+                  html += '<details style="margin-top: 8px;"><summary style="color: var(--text-secondary); cursor: pointer; font-size: 12px;">Per-prompt breakdown</summary><table style="margin-top: 8px;"><thead><tr><th>Wire</th><th>Label</th><th>Results</th><th>Time</th><th>Status</th></tr></thead><tbody>';
                   r.perPrompt.forEach(function(pp) {
                     html += '<tr>';
-                    html += '<td><code style="background: #0d0d0d; padding: 2px 6px; border-radius: 4px;">' + escapeHtml(pp.wire) + '</code></td>';
+                    html += '<td><code style="background: var(--bg); padding: 2px 6px; border-radius: 4px;">' + escapeHtml(pp.wire) + '</code></td>';
                     html += '<td>' + escapeHtml(pp.label) + '</td>';
                     html += '<td>' + pp.resultCount + '</td>';
                     html += '<td>' + Math.round(pp.durationMs / 1000) + 's</td>';
-                    html += '<td style="color: ' + (pp.error ? '#ef5350' : '#4caf50') + ';">' + (pp.error ? escapeHtml(pp.error.substring(0, 60)) : 'OK') + '</td>';
+                    html += '<td style="color: ' + (pp.error ? 'var(--error)' : 'var(--success)') + ';">' + (pp.error ? escapeHtml(pp.error.substring(0, 60)) : 'OK') + '</td>';
                     html += '</tr>';
                   });
                   html += '</tbody></table></details>';
                 }
                 scanRunResult.innerHTML = html;
               } else {
-                scanRunResult.innerHTML = '<p style="color: #4caf50; margin: 0;">Scan complete!</p>';
+                scanRunResult.innerHTML = '<p style="color: var(--success); margin: 0;">Scan complete!</p>';
               }
               scanRunResult.style.display = 'block';
               // Auto-refresh queue and dedup stats
@@ -4045,7 +4069,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
               scanRunProgress.style.display = 'none';
               runScanBtn.disabled = false;
               runScanBtn.textContent = 'Run Scan Now';
-              scanRunResult.innerHTML = '<p style="color: #ef5350; margin: 0;">Scan failed: ' + escapeHtml(status.error || 'Unknown error') + '</p>';
+              scanRunResult.innerHTML = '<p style="color: var(--error); margin: 0;">Scan failed: ' + escapeHtml(status.error || 'Unknown error') + '</p>';
               scanRunResult.style.display = 'block';
             }
           } catch (e) { console.error('SSE parse error:', e); }
@@ -4059,7 +4083,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         scanRunProgress.style.display = 'none';
         runScanBtn.disabled = false;
         runScanBtn.textContent = 'Run Scan Now';
-        scanRunResult.innerHTML = '<p style="color: #ef5350; margin: 0;">Error: ' + escapeHtml(error.message) + '</p>';
+        scanRunResult.innerHTML = '<p style="color: var(--error); margin: 0;">Error: ' + escapeHtml(error.message) + '</p>';
         scanRunResult.style.display = 'block';
       }
     });
@@ -4134,11 +4158,11 @@ function renderDashboard(files: StoredFile[], message?: string): string {
               const r = status.result || {};
               const intake = r.intakeSummary || {};
               let html = '<p style="color: #64b5f6; margin: 0 0 8px; font-weight: 600;">Forum scan complete</p>';
-              html += '<p style="color: #ccc; margin: 0; font-size: 13px;">';
+              html += '<p style="color: var(--text); margin: 0; font-size: 13px;">';
               html += 'Results: ' + (r.totalResults || 0);
               html += ' | Duration: ' + Math.round((r.durationMs || 0) / 1000) + 's';
               html += '</p>';
-              html += '<p style="color: #999; margin: 4px 0 0; font-size: 13px;">';
+              html += '<p style="color: var(--text-secondary); margin: 4px 0 0; font-size: 13px;">';
               html += 'Unique: ' + (intake.newUnique || 0);
               html += ' | Duplicates: ' + (intake.duplicatesFound || 0);
               html += ' | High quality: ' + (intake.highQualityCount || 0);
@@ -4150,7 +4174,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
               evtSource.close();
               runForumBtn.disabled = false;
               runForumBtn.textContent = 'Run Forum Scan';
-              forumRunResult.innerHTML = '<p style="color: #ef5350; margin: 0;">Failed: ' + escapeHtml(status.error || 'Unknown error') + '</p>';
+              forumRunResult.innerHTML = '<p style="color: var(--error); margin: 0;">Failed: ' + escapeHtml(status.error || 'Unknown error') + '</p>';
               forumRunResult.style.display = 'block';
             }
           } catch (e) { console.error('SSE parse error:', e); }
@@ -4164,7 +4188,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         forumRunProgress.style.display = 'none';
         runForumBtn.disabled = false;
         runForumBtn.textContent = 'Run Forum Scan';
-        forumRunResult.innerHTML = '<p style="color: #ef5350; margin: 0;">Error: ' + escapeHtml(error.message) + '</p>';
+        forumRunResult.innerHTML = '<p style="color: var(--error); margin: 0;">Error: ' + escapeHtml(error.message) + '</p>';
         forumRunResult.style.display = 'block';
       }
     });
@@ -4175,9 +4199,9 @@ function renderDashboard(files: StoredFile[], message?: string): string {
     const statsDaysInput = document.getElementById('statsDays');
 
     function dupRateColor(rate) {
-      if (rate < 0.3) return '#4caf50';
-      if (rate < 0.5) return '#f5a623';
-      return '#ef5350';
+      if (rate < 0.3) return 'var(--success)';
+      if (rate < 0.5) return 'var(--accent)';
+      return 'var(--error)';
     }
 
     async function loadPromptStats() {
@@ -4188,7 +4212,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         const data = await resp.json();
 
         if (!data.prompts || data.prompts.length === 0) {
-          statsResultsEl.innerHTML = '<p style="color: #666;">No prompt data found for this period.</p>';
+          statsResultsEl.innerHTML = '<p style="color: var(--text-muted);">No prompt data found for this period.</p>';
           return;
         }
 
@@ -4196,7 +4220,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         data.prompts.forEach(function(p) {
           const drc = dupRateColor(p.duplicateRate);
           html += '<tr>';
-          html += '<td><code style="background: #0d0d0d; padding: 2px 6px; border-radius: 4px;">' + escapeHtml(p.wire) + '</code></td>';
+          html += '<td><code style="background: var(--bg); padding: 2px 6px; border-radius: 4px;">' + escapeHtml(p.wire) + '</code></td>';
           html += '<td>' + escapeHtml(p.label) + '</td>';
           html += '<td>' + escapeHtml(p.variant || '-') + '</td>';
           html += '<td>' + p.totalResults + '</td>';
@@ -4210,12 +4234,12 @@ function renderDashboard(files: StoredFile[], message?: string): string {
 
         if (data.overlapStats) {
           const os = data.overlapStats;
-          html += '<p style="color: #999; font-size: 13px; margin-top: 12px;">Cross-prompt overlap: <span style="color: ' + dupRateColor(os.overlapRate) + '; font-weight: 600;">' + (os.overlapRate * 100).toFixed(0) + '%</span> (' + os.entriesFoundByMultiple + ' of ' + os.totalUniqueEntries + ' entries found by 2+ prompts)</p>';
+          html += '<p style="color: var(--text-secondary); font-size: 13px; margin-top: 12px;">Cross-prompt overlap: <span style="color: ' + dupRateColor(os.overlapRate) + '; font-weight: 600;">' + (os.overlapRate * 100).toFixed(0) + '%</span> (' + os.entriesFoundByMultiple + ' of ' + os.totalUniqueEntries + ' entries found by 2+ prompts)</p>';
         }
 
         statsResultsEl.innerHTML = html;
       } catch (error) {
-        statsResultsEl.innerHTML = '<p style="color: #ef5350;">Failed to load stats: ' + escapeHtml(error.message) + '</p>';
+        statsResultsEl.innerHTML = '<p style="color: var(--error);">Failed to load stats: ' + escapeHtml(error.message) + '</p>';
       }
     }
 
@@ -4234,25 +4258,29 @@ function renderQueuePage(): string {
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <title>Daily Queue - Grant Wire Summarizer</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#0d0d0d">
+  ${sharedHead('Daily Queue')}
   <style>
-    * { box-sizing: border-box; }
+    ${sharedBaseStyles()}
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #0d0d0d;
-      margin: 0;
       padding: 0;
       min-height: 100vh;
-      color: #ffffff;
-      color-scheme: dark;
+    }
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 0;
+      background: repeating-linear-gradient(
+        180deg, transparent 0px, transparent 48px,
+        rgba(17, 29, 48, 0.3) 48px, rgba(17, 29, 48, 0.3) 49px
+      );
+      mask-image: linear-gradient(180deg, transparent 0%, black 10%, black 90%, transparent 100%);
+      -webkit-mask-image: linear-gradient(180deg, transparent 0%, black 10%, black 90%, transparent 100%);
     }
     .header {
-      background: #1a1a1a;
-      border-bottom: 1px solid #2a2a2a;
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border);
       padding: 24px 32px;
     }
     .header-content {
@@ -4263,70 +4291,70 @@ function renderQueuePage(): string {
       justify-content: space-between;
     }
     .logo { margin: 0; font-size: 24px; font-weight: 700; }
-    .logo-crypto { color: #ffffff; }
-    .logo-grant { color: #f5a623; }
-    .logo-wire { color: #ffffff; }
+    .logo-crypto { color: var(--text); }
+    .logo-grant { color: var(--accent); }
+    .logo-wire { color: var(--text); }
     .header-right { display: flex; align-items: center; gap: 16px; }
-    .header-right a { color: #999; text-decoration: none; font-size: 14px; }
-    .header-right a:hover { color: #f5a623; }
+    .header-right a { color: var(--text-secondary); text-decoration: none; font-size: 14px; }
+    .header-right a:hover { color: var(--accent); }
     .main { padding: 32px; max-width: 960px; margin: 0 auto; }
     .card {
-      background: #1a1a1a;
-      border: 1px solid #2a2a2a;
-      border-radius: 12px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xl);
       padding: 24px;
       margin-bottom: 24px;
     }
-    .card h2 { margin: 0 0 16px; font-size: 18px; color: #ffffff; }
+    .card h2 { margin: 0 0 16px; font-size: 18px; color: var(--text); }
     .button {
       display: inline-block;
-      background: #f5a623;
-      color: #0d0d0d;
+      background: var(--accent);
+      color: var(--accent-fg);
       padding: 12px 24px;
       border: none;
-      border-radius: 8px;
+      border-radius: var(--radius-lg);
       font-size: 14px;
       font-weight: 600;
       cursor: pointer;
       text-decoration: none;
       transition: background 0.2s;
     }
-    .button:hover { background: #e6951a; }
+    .button:hover { background: var(--accent-hover); box-shadow: 0 0 4px rgba(212,160,23,0.3), 0 0 16px rgba(212,160,23,0.15); }
     .button:focus-visible {
-      outline: 2px solid #f5a623;
+      outline: 2px solid var(--accent);
       outline-offset: 2px;
     }
-    .button:disabled { background: #666666; cursor: not-allowed; }
-    .button.secondary { background: #2a2a2a; color: #ffffff; }
-    .button.secondary:hover { background: #3a3a3a; }
+    .button:disabled { background: var(--text-muted); cursor: not-allowed; }
+    .button.secondary { background: var(--border); color: var(--text); }
+    .button.secondary:hover { background: #1a2a3d; }
     table { width: 100%; border-collapse: collapse; }
-    th, td { padding: 10px 8px; text-align: left; border-bottom: 1px solid #2a2a2a; }
-    th { font-weight: 600; color: #999999; font-size: 12px; text-transform: uppercase; }
-    td { color: #ffffff; font-size: 14px; font-variant-numeric: tabular-nums; }
-    .download-link { color: #f5a623; text-decoration: none; font-weight: 500; }
+    th, td { padding: 10px 8px; text-align: left; border-bottom: 1px solid var(--border); }
+    th { font-weight: 500; color: var(--text-secondary); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; font-family: var(--font-mono); }
+    td { color: var(--text); font-size: 14px; font-variant-numeric: tabular-nums; font-feature-settings: 'tnum'; }
+    .download-link { color: var(--accent); text-decoration: none; font-weight: 500; }
     .download-link:hover { text-decoration: underline; }
     .form-row { display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap; }
     .form-group { display: flex; flex-direction: column; gap: 6px; }
-    .form-group label { font-size: 12px; color: #999999; text-transform: uppercase; font-weight: 600; }
+    .form-group label { font-size: 10px; color: var(--text-secondary); text-transform: uppercase; font-weight: 500; letter-spacing: 0.05em; font-family: var(--font-mono); }
     .form-group input[type="date"],
     .form-group select {
       padding: 10px 12px;
-      border: 1px solid #2a2a2a;
-      border-radius: 6px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
       font-size: 14px;
-      background: #0d0d0d;
-      color: #ffffff;
+      background: var(--bg);
+      color: var(--text);
       min-width: 120px;
       color-scheme: dark;
     }
     .form-group input:focus-visible,
     .form-group select:focus-visible {
-      outline: 2px solid #f5a623;
+      outline: 2px solid var(--accent);
       outline-offset: 2px;
-      border-color: #f5a623;
+      border-color: var(--accent);
     }
-    .form-group select option { background: #1a1a1a; color: #ffffff; }
-    .form-description { color: #666666; font-size: 14px; margin: 0; }
+    .form-group select option { background: var(--bg-card); color: var(--text); }
+    .form-description { color: var(--text-muted); font-size: 14px; margin: 0; }
     .status-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
@@ -4334,18 +4362,18 @@ function renderQueuePage(): string {
       margin-bottom: 16px;
     }
     .status-item {
-      background: #0d0d0d;
-      border: 1px solid #2a2a2a;
-      border-radius: 8px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
       padding: 12px;
       text-align: center;
     }
-    .status-item .label { font-size: 11px; color: #999; text-transform: uppercase; font-weight: 600; margin-bottom: 4px; }
-    .status-item .value { font-size: 20px; font-weight: 700; color: #fff; font-variant-numeric: tabular-nums; }
+    .status-item .label { font-size: 10px; color: var(--text-secondary); text-transform: uppercase; font-weight: 500; letter-spacing: 0.05em; margin-bottom: 4px; font-family: var(--font-mono); }
+    .status-item .value { font-size: 20px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; font-family: var(--font-mono); font-feature-settings: 'tnum'; }
     .tab-bar {
       display: flex;
       gap: 0;
-      border-bottom: 2px solid #2a2a2a;
+      border-bottom: 2px solid var(--border);
       margin-bottom: 16px;
     }
     .tab-bar button {
@@ -4354,21 +4382,21 @@ function renderQueuePage(): string {
       border-bottom: 2px solid transparent;
       margin-bottom: -2px;
       padding: 10px 16px;
-      color: #999;
+      color: var(--text-secondary);
       font-size: 14px;
       font-weight: 600;
       cursor: pointer;
       transition: color 0.2s, border-color 0.2s;
     }
-    .tab-bar button:hover { color: #ccc; }
+    .tab-bar button:hover { color: var(--text-secondary); }
     .tab-bar button:focus-visible {
-      outline: 2px solid #f5a623;
+      outline: 2px solid var(--accent);
       outline-offset: 2px;
     }
-    .tab-bar button.active { color: #f5a623; border-bottom-color: #f5a623; }
-    details summary { cursor: pointer; color: #999; font-size: 14px; }
-    details summary:hover { color: #f5a623; }
-    details[open] summary { color: #f5a623; }
+    .tab-bar button.active { color: var(--accent); border-bottom-color: var(--accent); }
+    details summary { cursor: pointer; color: var(--text-secondary); font-size: 14px; }
+    details summary:hover { color: var(--accent); }
+    details[open] summary { color: var(--accent); }
     .skip-link {
       position: absolute;
       left: -9999px;
@@ -4384,17 +4412,11 @@ function renderQueuePage(): string {
       width: auto;
       height: auto;
       padding: 8px 16px;
-      background: #f5a623;
-      color: #0d0d0d;
+      background: var(--accent);
+      color: var(--accent-fg);
       border-radius: 4px;
       z-index: 9999;
       font-weight: 600;
-    }
-    @media (prefers-reduced-motion: reduce) {
-      *, *::before, *::after {
-        animation-duration: 0.01ms !important;
-        transition-duration: 0.01ms !important;
-      }
     }
   </style>
 </head>
@@ -4403,10 +4425,10 @@ function renderQueuePage(): string {
   <div class="header">
     <div class="header-content">
       <h1 class="logo">
-        <span class="logo-crypto">Crypto</span><span class="logo-grant">Grant</span><span class="logo-wire">Wire</span>
+        📡 <span class="logo-wire">Wire</span> <span class="logo-grant">Ops</span>
       </h1>
       <div class="header-right">
-        <span style="color: #f5a623; font-size: 14px; font-weight: 600;">Daily Queue</span>
+        <span style="color: var(--accent); font-size: 14px; font-weight: 600;">Daily Queue</span>
         <a href="/dashboard">Dashboard</a>
       </div>
     </div>
@@ -4444,13 +4466,13 @@ function renderQueuePage(): string {
       </div>
 
       <div id="queue-results">
-        <p style="color: #666;">Loading\u2026</p>
+        <p style="color: var(--text-muted);">Loading\u2026</p>
       </div>
 
       <details id="seeded-urls-details" style="margin-top: 24px;">
         <summary id="seeded-urls-summary">Seeded URLs (loading\u2026)</summary>
         <div id="seeded-urls-content" style="margin-top: 12px;">
-          <p style="color: #666;">Click to load\u2026</p>
+          <p style="color: var(--text-muted);">Click to load\u2026</p>
         </div>
       </details>
     </div>
@@ -4477,10 +4499,10 @@ function renderQueuePage(): string {
     queueDateSelect.appendChild(todayOpt);
 
     function scoreColor(score) {
-      if (score == null) return '#666';
-      if (score >= 60) return '#4caf50';
-      if (score >= 40) return '#f5a623';
-      return '#ef5350';
+      if (score == null) return 'var(--text-muted)';
+      if (score >= 60) return 'var(--success)';
+      if (score >= 40) return 'var(--accent)';
+      return 'var(--error)';
     }
 
     function sourceBadge(scanSource) {
@@ -4491,7 +4513,7 @@ function renderQueuePage(): string {
         'email': { label: 'Email', bg: '#3c2a1a', color: '#ff9800' },
         'forum': { label: 'Forum', bg: '#1a2c3c', color: '#64b5f6' }
       };
-      var b = badges[scanSource] || { label: scanSource || '?', bg: '#2a2a2a', color: '#999' };
+      var b = badges[scanSource] || { label: scanSource || '?', bg: 'var(--border)', color: 'var(--text-secondary)' };
       return '<span style="background:' + b.bg + '; color:' + b.color + '; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:600;">' + escapeHtml(b.label) + '</span>';
     }
 
@@ -4502,17 +4524,17 @@ function renderQueuePage(): string {
         if (logs[i].channel === 'x' && !xLog) xLog = logs[i];
       }
       var badgeStyle = function(status) {
-        if (status === 'success') return 'background:#1b5e20; color:#4caf50;';
-        if (status === 'failed') return 'background:#4a1515; color:#ef5350;';
-        if (status === 'pending') return 'background:#33331a; color:#f5a623;';
-        return 'background:#2a2a2a; color:#666;';
+        if (status === 'success') return 'background:#1b5e20; color: var(--success);';
+        if (status === 'failed') return 'background:#4a1515; color: var(--error);';
+        if (status === 'pending') return 'background:#33331a; color: var(--accent);';
+        return 'background: var(--border); color: var(--text-muted);';
       };
       var tgStatus = tgLog ? tgLog.status : 'none';
       var xStatus = xLog ? xLog.status : 'none';
       var out = '<span style="' + badgeStyle(tgStatus) + ' padding:2px 6px; border-radius:4px; font-size:11px; font-weight:600; margin-right:3px;" title="Telegram: ' + tgStatus + '">TG</span>';
       out += '<span style="' + badgeStyle(xStatus) + ' padding:2px 6px; border-radius:4px; font-size:11px; font-weight:600;" title="X: ' + xStatus + '">X</span>';
       if (tgStatus === 'failed' || xStatus === 'failed') {
-        out += ' <button data-entry-id="' + entryId + '" class="dist-retry-btn" style="background:none; border:1px solid #666; color:#999; padding:2px 6px; border-radius:4px; cursor:pointer; font-size:10px; margin-left:4px;">Retry</button>';
+        out += ' <button data-entry-id="' + entryId + '" class="dist-retry-btn" style="background:none; border:1px solid #666; color: var(--text-secondary); padding:2px 6px; border-radius:4px; cursor:pointer; font-size:10px; margin-left:4px;">Retry</button>';
       }
       return out;
     }
@@ -4603,12 +4625,12 @@ function renderQueuePage(): string {
 
         // Stat tiles
         var tilesHtml = '';
-        tilesHtml += '<div class="status-item"><div class="label">Pending</div><div class="value" style="color: #f5a623;">' + queued + '</div></div>';
-        tilesHtml += '<div class="status-item"><div class="label">Approved</div><div class="value" style="color: #4caf50;">' + approved + '</div></div>';
-        tilesHtml += '<div class="status-item"><div class="label">Declined</div><div class="value" style="color: #ef5350;">' + declined + '</div></div>';
-        tilesHtml += '<div class="status-item"><div class="label">Duplicates</div><div class="value" style="color: #999;">' + dup + '</div></div>';
-        tilesHtml += '<div class="status-item"><div class="label">Review Later</div><div class="value" style="color: #999;">' + skipped + '</div></div>';
-        tilesHtml += '<div class="status-item"><div class="label">Seeded URLs</div><div class="value" style="color: #666;">' + (data.seededUrls || 0) + '</div></div>';
+        tilesHtml += '<div class="status-item"><div class="label">Pending</div><div class="value" style="color: var(--accent); font-family: var(--font-mono); font-feature-settings: \'tnum\';">' + queued + '</div></div>';
+        tilesHtml += '<div class="status-item"><div class="label">Approved</div><div class="value" style="color: var(--success); font-family: var(--font-mono); font-feature-settings: \'tnum\';">' + approved + '</div></div>';
+        tilesHtml += '<div class="status-item"><div class="label">Declined</div><div class="value" style="color: var(--error); font-family: var(--font-mono); font-feature-settings: \'tnum\';">' + declined + '</div></div>';
+        tilesHtml += '<div class="status-item"><div class="label">Duplicates</div><div class="value" style="color: var(--text-secondary);">' + dup + '</div></div>';
+        tilesHtml += '<div class="status-item"><div class="label">Review Later</div><div class="value" style="color: var(--text-secondary);">' + skipped + '</div></div>';
+        tilesHtml += '<div class="status-item"><div class="label">Seeded URLs</div><div class="value" style="color: var(--text-muted);">' + (data.seededUrls || 0) + '</div></div>';
         document.getElementById('stat-tiles').innerHTML = tilesHtml;
 
         document.getElementById('seeded-urls-summary').textContent = 'Seeded URLs (' + (data.seededUrls || 0) + ' from existing wire content)';
@@ -4630,7 +4652,7 @@ function renderQueuePage(): string {
         var data = await resp.json();
 
         if (data.entries.length === 0) {
-          queueResultsEl.innerHTML = '<p style="color: #666;">No entries in this tab.</p>';
+          queueResultsEl.innerHTML = '<p style="color: var(--text-muted);">No entries in this tab.</p>';
           return;
         }
 
@@ -4653,14 +4675,14 @@ function renderQueuePage(): string {
           var desc = (e.description || '').length > 80 ? e.description.substring(0, 80) + '...' : (e.description || '');
           html += '<tr>';
           html += '<td><div>' + escapeHtml(e.name || '') + '</div>';
-          if (desc) html += '<div style="font-size: 11px; color: #888; margin-top: 2px;">' + escapeHtml(desc) + '</div>';
+          if (desc) html += '<div style="font-size: 11px; color: var(--text-secondary); margin-top: 2px;">' + escapeHtml(desc) + '</div>';
           html += '</td>';
           html += '<td>' + escapeHtml(e.amount || '-') + '</td>';
           html += '<td>' + escapeHtml(e.deadline || '-') + '</td>';
           if (!isDup) {
             html += '<td><span style="color: ' + sc + '; font-weight: 600;">' + (e.quality_score != null ? e.quality_score : '-') + '</span></td>';
           }
-          html += '<td><code style="background: #0d0d0d; padding: 2px 6px; border-radius: 4px;">' + escapeHtml(e.wire || '') + '</code></td>';
+          html += '<td><code style="background: var(--bg); padding: 2px 6px; border-radius: 4px;">' + escapeHtml(e.wire || '') + '</code></td>';
           html += '<td style="white-space: nowrap;">';
           html += sourceBadge(e.scan_source);
           if (e.source_url) {
@@ -4668,13 +4690,13 @@ function renderQueuePage(): string {
           }
           html += '</td>';
           if (isDup) {
-            html += '<td style="font-size: 12px; color: #999;">' + escapeHtml(e.duplicate_reason || '-') + '</td>';
+            html += '<td style="font-size: 12px; color: var(--text-secondary);">' + escapeHtml(e.duplicate_reason || '-') + '</td>';
           }
           if (showActions) {
             html += '<td style="white-space: nowrap;">';
-            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="approve" class="queue-action-btn" style="background: #1b5e20; border: none; color: #4caf50; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;">Approve</button>';
-            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="reviewlater" class="queue-action-btn" style="background: #2a2a2a; border: none; color: #999; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;">Review Later</button>';
-            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="decline" class="queue-action-btn" style="background: #4a1515; border: none; color: #ef5350; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;">Decline</button>';
+            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="approve" class="queue-action-btn" style="background: #1b5e20; border: none; color: var(--success); padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;">Approve</button>';
+            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="reviewlater" class="queue-action-btn" style="background: var(--border); border: none; color: var(--text-secondary); padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;">Review Later</button>';
+            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="decline" class="queue-action-btn" style="background: #4a1515; border: none; color: var(--error); padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;">Decline</button>';
             html += '</td>';
           }
           if (showDistribution) {
@@ -4688,10 +4710,10 @@ function renderQueuePage(): string {
           html += '</tr>';
         });
         html += '</tbody></table>';
-        html += '<p style="color: #666; font-size: 12px; margin-top: 8px;">' + data.total + ' total entries</p>';
+        html += '<p style="color: var(--text-muted); font-size: 12px; margin-top: 8px;">' + data.total + ' total entries</p>';
         queueResultsEl.innerHTML = html;
       } catch (err) {
-        queueResultsEl.innerHTML = '<p style="color: #ef5350;">Failed to load: ' + escapeHtml(err.message) + '</p>';
+        queueResultsEl.innerHTML = '<p style="color: var(--error);">Failed to load: ' + escapeHtml(err.message) + '</p>';
       }
     }
 
@@ -4714,24 +4736,24 @@ function renderQueuePage(): string {
         if (!resp.ok) throw new Error('Failed');
         var data = await resp.json();
         if (data.urls.length === 0) {
-          el.innerHTML = '<p style="color: #666;">No seeded URLs found.</p>';
+          el.innerHTML = '<p style="color: var(--text-muted);">No seeded URLs found.</p>';
           return;
         }
         var html = '<table><thead><tr><th>URL</th><th>Wire</th><th>First Seen</th></tr></thead><tbody>';
         data.urls.forEach(function(u) {
           html += '<tr>';
           html += '<td style="font-size: 12px; word-break: break-all;"><a href="' + escapeHtml(u.url) + '" target="_blank" class="download-link">' + escapeHtml(u.url.length > 60 ? u.url.substring(0, 60) + '...' : u.url) + '</a></td>';
-          html += '<td><code style="background: #0d0d0d; padding: 2px 6px; border-radius: 4px;">' + escapeHtml(u.wire || '') + '</code></td>';
+          html += '<td><code style="background: var(--bg); padding: 2px 6px; border-radius: 4px;">' + escapeHtml(u.wire || '') + '</code></td>';
           html += '<td style="font-size: 12px;">' + escapeHtml(u.first_seen_date || '-') + '</td>';
           html += '</tr>';
         });
         html += '</tbody></table>';
         if (data.total > data.urls.length) {
-          html += '<p style="color: #666; font-size: 12px; margin-top: 8px;">Showing ' + data.urls.length + ' of ' + data.total + '</p>';
+          html += '<p style="color: var(--text-muted); font-size: 12px; margin-top: 8px;">Showing ' + data.urls.length + ' of ' + data.total + '</p>';
         }
         el.innerHTML = html;
       } catch (err) {
-        el.innerHTML = '<p style="color: #ef5350;">Failed to load seeded URLs</p>';
+        el.innerHTML = '<p style="color: var(--error);">Failed to load seeded URLs</p>';
       }
     }
 
@@ -4789,48 +4811,13 @@ function renderDownloadPage(filename: string, downloadToken: string): string {
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <title>Download - Grant Wire Summarizer</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#0d0d0d">
+  ${sharedHead('Download')}
   <style>
-    * { box-sizing: border-box; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #0d0d0d;
-      margin: 0;
-      padding: 20px;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color-scheme: dark;
-    }
-    .container {
-      max-width: 500px;
-      background: #1a1a1a;
-      border: 1px solid #2a2a2a;
-      padding: 40px;
-      border-radius: 12px;
-      box-shadow: 0 4px 24px rgba(0,0,0,0.4);
-      text-align: center;
-    }
-    h1 { color: #ffffff; margin-bottom: 8px; font-size: 24px; }
-    .filename { color: #f5a623; margin-bottom: 24px; font-family: monospace; }
-    .button {
-      display: inline-block;
-      background: #f5a623;
-      color: #0d0d0d;
-      padding: 14px 32px;
-      text-decoration: none;
-      border-radius: 8px;
-      font-weight: 600;
-      font-size: 16px;
-      transition: background 0.2s;
-    }
-    .button:hover { background: #e6951a; }
-    .note { margin-top: 20px; font-size: 14px; color: #666666; }
+    ${sharedBaseStyles()}
+    ${sharedCenteredPageStyles()}
+    h1 { color: var(--text); margin-bottom: 8px; font-size: 24px; }
+    .filename { color: var(--accent); margin-bottom: 24px; font-family: var(--font-mono); }
+    .note { margin-top: 20px; font-size: 14px; color: var(--text-muted); }
   </style>
 </head>
 <body>
@@ -4850,53 +4837,17 @@ function renderExpiredLinkPage(message: string): string {
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <title>Link Expired - Grant Wire Summarizer</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#0d0d0d">
+  ${sharedHead('Link Expired')}
   <style>
-    * { box-sizing: border-box; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #0d0d0d;
-      margin: 0;
-      padding: 20px;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color-scheme: dark;
-    }
-    .container {
-      max-width: 500px;
-      background: #1a1a1a;
-      border: 1px solid #2a2a2a;
-      padding: 40px;
-      border-radius: 12px;
-      box-shadow: 0 4px 24px rgba(0,0,0,0.4);
-      text-align: center;
-    }
-    h1 { color: #ef5350; margin-bottom: 16px; }
-    p { color: #999999; margin-bottom: 24px; }
-    .button {
-      display: inline-block;
-      background: #f5a623;
-      color: #0d0d0d;
-      padding: 12px 24px;
-      border: none;
-      border-radius: 8px;
-      font-size: 14px;
-      font-weight: 600;
-      cursor: pointer;
-      text-decoration: none;
-      margin-bottom: 16px;
-    }
-    .button:hover { background: #e09000; }
+    ${sharedBaseStyles()}
+    ${sharedCenteredPageStyles()}
+    h1 { color: var(--error); margin-bottom: 16px; }
+    p { color: var(--text-secondary); margin-bottom: 24px; }
+    .button { margin-bottom: 16px; }
     .back {
       display: block;
       margin-top: 16px;
-      color: #f5a623;
+      color: var(--accent);
       text-decoration: none;
     }
     .back:hover { text-decoration: underline; }
@@ -4921,40 +4872,17 @@ function renderResendSuccessPage(): string {
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <title>Link Sent - Grant Wire Summarizer</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#0d0d0d">
+  ${sharedHead('Link Sent')}
   <style>
-    * { box-sizing: border-box; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #0d0d0d;
-      margin: 0;
-      padding: 20px;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color-scheme: dark;
-    }
-    .container {
-      max-width: 500px;
-      background: #1a1a1a;
-      border: 1px solid #2a2a2a;
-      padding: 40px;
-      border-radius: 12px;
-      box-shadow: 0 4px 24px rgba(0,0,0,0.4);
-      text-align: center;
-    }
+    ${sharedBaseStyles()}
+    ${sharedCenteredPageStyles()}
     .icon { font-size: 48px; margin-bottom: 16px; }
-    h1 { color: #4caf50; margin-bottom: 16px; }
-    p { color: #999999; }
+    h1 { color: var(--success); margin-bottom: 16px; }
+    p { color: var(--text-secondary); }
     .back {
       display: inline-block;
       margin-top: 24px;
-      color: #f5a623;
+      color: var(--accent);
       text-decoration: none;
     }
     .back:hover { text-decoration: underline; }
@@ -4977,39 +4905,16 @@ function renderErrorPage(message: string): string {
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <title>Error - Grant Wire Summarizer</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#0d0d0d">
+  ${sharedHead('Error')}
   <style>
-    * { box-sizing: border-box; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #0d0d0d;
-      margin: 0;
-      padding: 20px;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color-scheme: dark;
-    }
-    .container {
-      max-width: 500px;
-      background: #1a1a1a;
-      border: 1px solid #2a2a2a;
-      padding: 40px;
-      border-radius: 12px;
-      box-shadow: 0 4px 24px rgba(0,0,0,0.4);
-      text-align: center;
-    }
-    h1 { color: #ef5350; margin-bottom: 16px; }
-    p { color: #999999; }
+    ${sharedBaseStyles()}
+    ${sharedCenteredPageStyles()}
+    h1 { color: var(--error); margin-bottom: 16px; }
+    p { color: var(--text-secondary); }
     .back {
       display: inline-block;
       margin-top: 24px;
-      color: #f5a623;
+      color: var(--accent);
       text-decoration: none;
     }
     .back:hover { text-decoration: underline; }
