@@ -31,7 +31,7 @@ interface TelegramUpdate {
   };
 }
 
-async function sendMessage(chatId: number, text: string, parseMode: string = 'HTML'): Promise<void> {
+export async function sendMessage(chatId: number | string, text: string, parseMode: string = 'HTML'): Promise<void> {
   const url = `${TELEGRAM_API}${config.telegram.botToken}/sendMessage`;
   try {
     const resp = await fetch(url, {

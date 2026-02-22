@@ -6,7 +6,7 @@ import { runCrmSyncJob } from './crm-sync';
 import { config } from '../config';
 import { sendNotificationEmail, sendTestAlertEmail, sendScheduledJobFailureEmail, sendScanDigestEmail } from './email';
 import { createMagicLink } from './auth';
-import { ensureScheduleTable, getAllSchedules, getScheduleById, createSchedule, updateSchedule, deleteSchedule as dbDeleteSchedule, StoredScheduleConfig, ensureFeedsTable, ensureScanTables, ensureScanPromptsTable, getPool } from '../db';
+import { ensureScheduleTable, getAllSchedules, getScheduleById, createSchedule, updateSchedule, deleteSchedule as dbDeleteSchedule, StoredScheduleConfig, ensureFeedsTable, ensureScanTables, ensureScanPromptsTable, ensureDistributionTable, getPool } from '../db';
 
 export interface ScheduleConfig {
   id: string;
@@ -485,6 +485,8 @@ export async function initScheduler(): Promise<void> {
     console.log('[Scheduler] Scan pipeline tables ready');
     await ensureScanPromptsTable();
     console.log('[Scheduler] Scan prompts table ready');
+    await ensureDistributionTable();
+    console.log('[Scheduler] Distribution logs table ready');
 
     // Load all schedules from database
     const savedSchedules = await getAllSchedules();

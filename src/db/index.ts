@@ -1,7 +1,7 @@
 import { Pool } from 'pg';
 import { config } from '../config';
 import { DatabaseEntry } from '../types';
-import type { ToolType } from '../types/intake';
+import type { ToolType, DistributionChannel, DistributionStatus, DistributionLog } from '../types/intake';
 import { normalizeUrl } from '../utils/url';
 
 let pool: Pool | null = null;
@@ -1140,4 +1140,149 @@ export async function getSeenUrlsList(
   ]);
 
   return { urls: dataRes.rows, total: countRes.rows[0].total };
+}
+
+// --- Distribution logs table ---
+
+export async function ensureDistributionTable(): Promise<void> {
+  const pool = getPool();
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS distribution_logs (
+      id SERIAL PRIMARY KEY,
+      entry_id INTEGER NOT NULL REFERENCES scan_entries(id),
+      channel TEXT NOT NULL CHECK (channel IN ('telegram', 'x')),
+      wire TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'success', 'failed', 'skipped')),
+      post_text TEXT,
+      external_id TEXT,
+      external_url TEXT,
+      error_message TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_distribution_logs_entry_id ON distribution_logs(entry_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_distribution_logs_wire_channel ON distribution_logs(wire, channel)`);
+  // Prevent double-posting: only one pending/success row per entry+channel
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_distribution_logs_entry_channel_active ON distribution_logs(entry_id, channel) WHERE status IN ('pending', 'success')`);
+
+  // updated_at trigger
+  await pool.query(`
+    CREATE OR REPLACE FUNCTION update_distribution_logs_updated_at()
+    RETURNS TRIGGER AS $$
+    BEGIN
+      NEW.updated_at = NOW();
+      RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql
+  `);
+  await pool.query(`DROP TRIGGER IF EXISTS distribution_logs_updated_at ON distribution_logs`);
+  await pool.query(`
+    CREATE TRIGGER distribution_logs_updated_at
+      BEFORE UPDATE ON distribution_logs
+      FOR EACH ROW
+      EXECUTE FUNCTION update_distribution_logs_updated_at()
+  `);
+
+  console.log('[DB] Distribution logs table ready');
+}
+
+function parseDistributionLogRow(row: any): DistributionLog {
+  return {
+    id: row.id,
+    entryId: row.entry_id,
+    channel: row.channel as DistributionChannel,
+    wire: row.wire,
+    status: row.status as DistributionStatus,
+    postText: row.post_text || null,
+    externalId: row.external_id || null,
+    externalUrl: row.external_url || null,
+    errorMessage: row.error_message || null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function insertDistributionLog(params: {
+  entryId: number;
+  channel: DistributionChannel;
+  wire: string;
+  status?: DistributionStatus;
+  postText?: string;
+}): Promise<DistributionLog> {
+  const pool = getPool();
+  const result = await pool.query(
+    `INSERT INTO distribution_logs (entry_id, channel, wire, status, post_text)
+     VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+    [params.entryId, params.channel, params.wire, params.status || 'pending', params.postText || null]
+  );
+  return parseDistributionLogRow(result.rows[0]);
+}
+
+export async function updateDistributionLog(
+  id: number,
+  updates: Partial<{ status: DistributionStatus; postText: string; externalId: string; externalUrl: string; errorMessage: string }>
+): Promise<DistributionLog | null> {
+  const pool = getPool();
+  const setClauses: string[] = [];
+  const values: any[] = [];
+  let paramIndex = 1;
+
+  if (updates.status !== undefined) { setClauses.push(`status = $${paramIndex++}`); values.push(updates.status); }
+  if (updates.postText !== undefined) { setClauses.push(`post_text = $${paramIndex++}`); values.push(updates.postText); }
+  if (updates.externalId !== undefined) { setClauses.push(`external_id = $${paramIndex++}`); values.push(updates.externalId); }
+  if (updates.externalUrl !== undefined) { setClauses.push(`external_url = $${paramIndex++}`); values.push(updates.externalUrl); }
+  if (updates.errorMessage !== undefined) { setClauses.push(`error_message = $${paramIndex++}`); values.push(updates.errorMessage); }
+
+  if (setClauses.length === 0) return null;
+
+  values.push(id);
+  const result = await pool.query(
+    `UPDATE distribution_logs SET ${setClauses.join(', ')} WHERE id = $${paramIndex} RETURNING *`,
+    values
+  );
+  return result.rows.length > 0 ? parseDistributionLogRow(result.rows[0]) : null;
+}
+
+export async function getDistributionLogs(entryId: number): Promise<DistributionLog[]> {
+  const pool = getPool();
+  const result = await pool.query(
+    `SELECT * FROM distribution_logs WHERE entry_id = $1 ORDER BY created_at DESC`,
+    [entryId]
+  );
+  return result.rows.map(parseDistributionLogRow);
+}
+
+export async function getDistributionLogsByEntryIds(entryIds: number[]): Promise<Map<number, DistributionLog[]>> {
+  if (entryIds.length === 0) return new Map();
+  const pool = getPool();
+  const result = await pool.query(
+    `SELECT * FROM distribution_logs WHERE entry_id = ANY($1) ORDER BY entry_id, created_at DESC`,
+    [entryIds]
+  );
+  const map = new Map<number, DistributionLog[]>();
+  for (const row of result.rows) {
+    const log = parseDistributionLogRow(row);
+    const existing = map.get(log.entryId) || [];
+    existing.push(log);
+    map.set(log.entryId, existing);
+  }
+  return map;
+}
+
+export async function deleteDistributionLogs(entryId: number, statusFilter?: DistributionStatus): Promise<number> {
+  const pool = getPool();
+  if (statusFilter) {
+    const result = await pool.query(
+      `DELETE FROM distribution_logs WHERE entry_id = $1 AND status = $2`,
+      [entryId, statusFilter]
+    );
+    return result.rowCount ?? 0;
+  }
+  const result = await pool.query(
+    `DELETE FROM distribution_logs WHERE entry_id = $1`,
+    [entryId]
+  );
+  return result.rowCount ?? 0;
 }

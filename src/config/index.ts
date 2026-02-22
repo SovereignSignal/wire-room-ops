@@ -66,6 +66,35 @@ export const config = {
     discussWatchBaseUrl: process.env.DISCUSS_WATCH_API_URL || 'https://discuss-dot-watch-production.up.railway.app/api/v1',
     enabled: process.env.FORUM_SCAN_ENABLED === 'true',
   },
+
+  distribution: {
+    enabled: process.env.DISTRIBUTION_ENABLED === 'true',
+    x: {
+      crypto: {
+        apiKey: process.env.X_CRYPTO_API_KEY || '',
+        apiSecret: process.env.X_CRYPTO_API_SECRET || '',
+        accessToken: process.env.X_CRYPTO_ACCESS_TOKEN || '',
+        accessTokenSecret: process.env.X_CRYPTO_ACCESS_TOKEN_SECRET || '',
+      },
+      ai: {
+        apiKey: process.env.X_AI_API_KEY || '',
+        apiSecret: process.env.X_AI_API_SECRET || '',
+        accessToken: process.env.X_AI_ACCESS_TOKEN || '',
+        accessTokenSecret: process.env.X_AI_ACCESS_TOKEN_SECRET || '',
+      },
+      oss: {
+        apiKey: process.env.X_OSS_API_KEY || '',
+        apiSecret: process.env.X_OSS_API_SECRET || '',
+        accessToken: process.env.X_OSS_ACCESS_TOKEN || '',
+        accessTokenSecret: process.env.X_OSS_ACCESS_TOKEN_SECRET || '',
+      },
+    },
+    telegramChannels: {
+      crypto: process.env.TELEGRAM_CHANNEL_CRYPTO || '',
+      ai: process.env.TELEGRAM_CHANNEL_AI || '',
+      oss: process.env.TELEGRAM_CHANNEL_OSS || '',
+    },
+  },
 };
 
 export function validateConfig(): void {

@@ -172,3 +172,28 @@ export interface SeenName {
   wire: string;
   firstSeen: Date;
 }
+
+// --- Distribution types ---
+
+export type DistributionChannel = 'telegram' | 'x';
+export type DistributionStatus = 'pending' | 'success' | 'failed' | 'skipped';
+
+export interface DistributionLog {
+  id: number;
+  entryId: number;
+  channel: DistributionChannel;
+  wire: string;
+  status: DistributionStatus;
+  postText: string | null;
+  externalId: string | null;
+  externalUrl: string | null;
+  errorMessage: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface DistributionResult {
+  entryId: number;
+  telegram: { status: DistributionStatus; url?: string; error?: string };
+  x: { status: DistributionStatus; url?: string; error?: string };
+}

@@ -3,7 +3,7 @@ import cookieParser from 'cookie-parser';
 import { config } from './config';
 import { validateMagicLink, createMagicLink, createDownloadToken, createSessionToken, validateSession, createLoginMagicLink } from './services/auth';
 import { getFile, listFiles } from './services/storage';
-import { getAvailableWires, closePool, getAllFeeds, getFeedByKey, createFeed, updateFeed, archiveFeed, getEntryCountsByWire, getAllScanPrompts, getScanPromptById, createScanPrompt, updateScanPrompt, deleteScanPrompt, getStatusCounts, getEntriesByStatus, getSeenUrlStats, getSeenUrlsList } from './db';
+import { getAvailableWires, closePool, getAllFeeds, getFeedByKey, createFeed, updateFeed, archiveFeed, getEntryCountsByWire, getAllScanPrompts, getScanPromptById, createScanPrompt, updateScanPrompt, deleteScanPrompt, getStatusCounts, getEntriesByStatus, getSeenUrlStats, getSeenUrlsList, getDistributionLogs, getDistributionLogsByEntryIds } from './db';
 import { sendLoginEmail, sendScanDigestEmail } from './services/email';
 import { runWeeklySummaryJob } from './jobs/weekly-summary';
 import { StoredFile } from './types';
@@ -24,6 +24,7 @@ import { getPromptEffectivenessStats } from './services/scan-stats';
 import { registerTelegramWebhook, handleTelegramUpdate } from './services/telegram';
 import { handleInboundEmail, verifyResendSignature, ResendInboundPayload } from './services/email-inbound';
 import { escapeHtml } from './utils/html';
+import { distributeEntry, getDistributionStatus, retryDistribution } from './services/distribution';
 
 const app = express();
 
@@ -1504,10 +1505,66 @@ app.post('/api/scan/entries/:id/action', requireAuth, async (req: Request, res: 
       return;
     }
 
+    // Fire-and-forget distribution on approve
+    if (newStatus === 'approved') {
+      distributeEntry(entryId).catch(err => {
+        console.error(`[Distribution] Fire-and-forget failed for entry ${entryId}:`, err);
+      });
+    }
+
     res.json({ success: true, newStatus });
   } catch (error) {
     console.error('Failed to update entry status:', error);
     res.status(500).json({ error: 'Failed to update entry' });
+  }
+});
+
+// API: Get distribution status for an entry
+app.get('/api/scan/entries/:id/distribution', requireAuth, async (req: Request, res: Response) => {
+  const entryId = parseInt(req.params.id, 10);
+  if (isNaN(entryId)) {
+    res.status(400).json({ error: 'Invalid entry ID' });
+    return;
+  }
+  try {
+    const logs = await getDistributionStatus(entryId);
+    res.json({ logs });
+  } catch (error) {
+    console.error('Failed to get distribution status:', error);
+    res.status(500).json({ error: 'Failed to get distribution status' });
+  }
+});
+
+// API: Retry distribution for an entry
+app.post('/api/scan/entries/:id/redistribute', requireAuth, async (req: Request, res: Response) => {
+  const entryId = parseInt(req.params.id, 10);
+  if (isNaN(entryId)) {
+    res.status(400).json({ error: 'Invalid entry ID' });
+    return;
+  }
+
+  if (!rateLimit('redistribute', 5, 5 * 60 * 1000)) {
+    res.status(429).json({ error: 'Too many retry requests. Please wait.' });
+    return;
+  }
+
+  try {
+    const pool = getPool();
+    const check = await pool.query('SELECT status FROM scan_entries WHERE id = $1', [entryId]);
+    if (check.rows.length === 0) {
+      res.status(404).json({ error: 'Entry not found' });
+      return;
+    }
+    if (check.rows[0].status !== 'approved') {
+      res.status(400).json({ error: 'Can only redistribute approved entries' });
+      return;
+    }
+
+    const result = await retryDistribution(entryId);
+    res.json({ success: true, result });
+  } catch (error) {
+    console.error('Failed to retry distribution:', error);
+    res.status(500).json({ error: 'Failed to retry distribution' });
   }
 });
 
@@ -1526,6 +1583,16 @@ app.get('/api/scan/entries', requireAuth, async (req: Request, res: Response) =>
     const offset = Math.max(parseInt(req.query.offset as string, 10) || 0, 0);
 
     const { entries, total } = await getEntriesByStatus(statuses, { wire, date, limit, offset });
+
+    // Attach distribution logs for approved entries
+    if (statuses.includes('approved') && entries.length > 0) {
+      const entryIds = entries.map((e: any) => e.id);
+      const distMap = await getDistributionLogsByEntryIds(entryIds);
+      for (const entry of entries) {
+        (entry as any).distribution_logs = distMap.get(entry.id) || [];
+      }
+    }
+
     res.json({ entries, total, count: entries.length });
   } catch (error) {
     console.error('Failed to fetch scan entries:', error);
@@ -4428,6 +4495,49 @@ function renderQueuePage(): string {
       return '<span style="background:' + b.bg + '; color:' + b.color + '; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:600;">' + escapeHtml(b.label) + '</span>';
     }
 
+    function distBadges(logs, entryId) {
+      var tgLog = null, xLog = null;
+      for (var i = 0; i < logs.length; i++) {
+        if (logs[i].channel === 'telegram' && !tgLog) tgLog = logs[i];
+        if (logs[i].channel === 'x' && !xLog) xLog = logs[i];
+      }
+      var badgeStyle = function(status) {
+        if (status === 'success') return 'background:#1b5e20; color:#4caf50;';
+        if (status === 'failed') return 'background:#4a1515; color:#ef5350;';
+        if (status === 'pending') return 'background:#33331a; color:#f5a623;';
+        return 'background:#2a2a2a; color:#666;';
+      };
+      var tgStatus = tgLog ? tgLog.status : 'none';
+      var xStatus = xLog ? xLog.status : 'none';
+      var out = '<span style="' + badgeStyle(tgStatus) + ' padding:2px 6px; border-radius:4px; font-size:11px; font-weight:600; margin-right:3px;" title="Telegram: ' + tgStatus + '">TG</span>';
+      out += '<span style="' + badgeStyle(xStatus) + ' padding:2px 6px; border-radius:4px; font-size:11px; font-weight:600;" title="X: ' + xStatus + '">X</span>';
+      if (tgStatus === 'failed' || xStatus === 'failed') {
+        out += ' <button data-entry-id="' + entryId + '" class="dist-retry-btn" style="background:none; border:1px solid #666; color:#999; padding:2px 6px; border-radius:4px; cursor:pointer; font-size:10px; margin-left:4px;">Retry</button>';
+      }
+      return out;
+    }
+
+    // Retry distribution click
+    document.addEventListener('click', function(e) {
+      var btn = e.target.closest('.dist-retry-btn');
+      if (!btn) return;
+      var entryId = parseInt(btn.dataset.entryId, 10);
+      if (isNaN(entryId)) return;
+      btn.disabled = true;
+      btn.textContent = '...';
+      fetch('/api/scan/entries/' + entryId + '/redistribute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      }).then(function(r) {
+        if (!r.ok) throw new Error('Failed');
+        loadEntries();
+      }).catch(function(err) {
+        console.error('Retry failed:', err);
+        btn.disabled = false;
+        btn.textContent = 'Retry';
+      });
+    });
+
     // Tab bar click
     document.getElementById('tab-bar').addEventListener('click', function(e) {
       var btn = e.target.closest('button[data-tab]');
@@ -4527,11 +4637,13 @@ function renderQueuePage(): string {
         var isDup = activeTab === 'duplicate';
         var showRestore = activeTab === 'skipped' || activeTab === 'declined';
         var showActions = activeTab === 'queued';
+        var showDistribution = activeTab === 'approved';
 
         var cols = '<th>Name</th><th>Amount</th><th>Deadline</th>';
         if (!isDup) cols += '<th>Score</th>';
         cols += '<th>Wire</th><th>Source</th>';
         if (isDup) cols += '<th>Dup Reason</th>';
+        if (showDistribution) cols += '<th>Distribution</th>';
         if (showActions) cols += '<th>Actions</th>';
         if (showRestore) cols += '<th>Actions</th>';
 
@@ -4563,6 +4675,11 @@ function renderQueuePage(): string {
             html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="approve" class="queue-action-btn" style="background: #1b5e20; border: none; color: #4caf50; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;">Approve</button>';
             html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="reviewlater" class="queue-action-btn" style="background: #2a2a2a; border: none; color: #999; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;">Review Later</button>';
             html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="decline" class="queue-action-btn" style="background: #4a1515; border: none; color: #ef5350; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;">Decline</button>';
+            html += '</td>';
+          }
+          if (showDistribution) {
+            html += '<td style="white-space: nowrap;">';
+            html += distBadges(e.distribution_logs || [], parseInt(e.id));
             html += '</td>';
           }
           if (showRestore) {
