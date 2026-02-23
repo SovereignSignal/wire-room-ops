@@ -37,6 +37,7 @@ export const config = {
   privy: {
     appId: process.env.PRIVY_APP_ID || '',
     appSecret: process.env.PRIVY_APP_SECRET || '',
+    verificationKey: process.env.PRIVY_VERIFICATION_KEY || '',
   },
 
   auth: {
@@ -111,6 +112,7 @@ export function validateConfig(): void {
     ['NOTIFICATION_EMAIL', config.email.notificationEmail],
     ['PRIVY_APP_ID', config.privy.appId],
     ['PRIVY_APP_SECRET', config.privy.appSecret],
+    ['PRIVY_VERIFICATION_KEY', config.privy.verificationKey],
   ];
   
   const missing = required.filter(([, value]) => !value).map(([name]) => name);
