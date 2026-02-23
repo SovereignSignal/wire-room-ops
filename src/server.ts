@@ -1765,26 +1765,27 @@ function renderLoginPage(): string {
 </head>
 <body>
   <div id="privy-root"></div>
-  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script type="importmap">
     {
       "imports": {
         "react": "https://esm.sh/react@18",
         "react-dom": "https://esm.sh/react-dom@18",
+        "react-dom/client": "https://esm.sh/react-dom@18/client",
         "react/jsx-runtime": "https://esm.sh/react@18/jsx-runtime"
       }
     }
   </script>
   <script type="module">
+    import React, { useState, useEffect } from 'react';
+    import { createRoot } from 'react-dom/client';
     import { PrivyProvider, usePrivy } from 'https://esm.sh/@privy-io/react-auth@2?external=react,react-dom';
 
     function LoginApp() {
       const { login, authenticated, getAccessToken } = usePrivy();
-      const [error, setError] = React.useState(null);
-      const [authenticating, setAuthenticating] = React.useState(false);
+      const [error, setError] = useState(null);
+      const [authenticating, setAuthenticating] = useState(false);
 
-      React.useEffect(() => {
+      useEffect(() => {
         if (authenticated && !authenticating) {
           setAuthenticating(true);
           getAccessToken().then(token => {
@@ -1826,7 +1827,7 @@ function renderLoginPage(): string {
       );
     }
 
-    const root = ReactDOM.createRoot(document.getElementById('privy-root'));
+    const root = createRoot(document.getElementById('privy-root'));
     root.render(
       React.createElement(PrivyProvider, {
         appId: '${config.privy.appId}',
