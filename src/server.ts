@@ -1777,7 +1777,7 @@ function renderLoginPage(): string {
   </script>
   <script type="module">
     import React, { useState, useEffect } from 'react';
-    import { createRoot } from 'react-dom/client';
+    import { createRoot } from 'https://esm.sh/react-dom@18/client?external=react';
     import { PrivyProvider, usePrivy } from 'https://esm.sh/@privy-io/react-auth@2?external=react,react-dom';
 
     function LoginApp() {
