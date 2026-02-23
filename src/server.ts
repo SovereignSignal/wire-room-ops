@@ -2,8 +2,8 @@ import express, { Request, Response } from 'express';
 import cookieParser from 'cookie-parser';
 import { config } from './config';
 import { validateMagicLink, createMagicLink, createDownloadToken, createSessionToken, validateSession } from './services/auth';
-import { verifyAccessToken } from '@privy-io/node';
-import { createRemoteJWKSet } from 'jose';
+import jwt from 'jsonwebtoken';
+import jwksClient from 'jwks-rsa';
 import { getFile, listFiles } from './services/storage';
 import { getAvailableWires, closePool, getAllFeeds, getFeedByKey, createFeed, updateFeed, archiveFeed, getEntryCountsByWire, getAllScanPrompts, getScanPromptById, createScanPrompt, updateScanPrompt, deleteScanPrompt, getStatusCounts, getEntriesByStatus, getSeenUrlStats, getSeenUrlsList, getDistributionLogs, getDistributionLogsByEntryIds } from './db';
 import { sendScanDigestEmail } from './services/email';
@@ -29,7 +29,28 @@ import { escapeHtml } from './utils/html';
 import { distributeEntry, getDistributionStatus, retryDistribution } from './services/distribution';
 
 const app = express();
-const privyJwks = createRemoteJWKSet(new URL(`https://auth.privy.io/api/v1/apps/${config.privy.appId}/.well-known/jwks.json`));
+const privyJwks = jwksClient({
+  jwksUri: `https://auth.privy.io/api/v1/apps/${config.privy.appId}/.well-known/jwks.json`,
+  cache: true,
+  rateLimit: true,
+});
+
+function verifyPrivyToken(token: string): Promise<jwt.JwtPayload> {
+  return new Promise((resolve, reject) => {
+    jwt.verify(token, (header, callback) => {
+      privyJwks.getSigningKey(header.kid, (err, key) => {
+        if (err) return callback(err);
+        callback(null, key?.getPublicKey());
+      });
+    }, {
+      issuer: 'privy.io',
+      audience: config.privy.appId,
+    }, (err, decoded) => {
+      if (err) return reject(err);
+      resolve(decoded as jwt.JwtPayload);
+    });
+  });
+}
 
 app.use(express.json({
   verify: (req, _res, buf) => {
@@ -211,12 +232,8 @@ app.post('/api/auth/callback', async (req: Request, res: Response) => {
   }
 
   try {
-    const claims = await verifyAccessToken({
-      access_token: token,
-      app_id: config.privy.appId,
-      verification_key: privyJwks,
-    });
-    const sessionToken = createSessionToken(claims.user_id);
+    const claims = await verifyPrivyToken(token);
+    const sessionToken = createSessionToken(claims.sub || 'unknown');
     res.cookie('session', sessionToken, {
       httpOnly: true,
       secure: config.app.url.startsWith('https'),
