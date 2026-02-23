@@ -223,6 +223,11 @@ app.get('/', (req: Request, res: Response) => {
   res.send(renderLoginPage());
 });
 
+app.get('/logout', (_req: Request, res: Response) => {
+  res.clearCookie('session', { httpOnly: true, sameSite: 'lax' });
+  res.redirect('/');
+});
+
 // Privy auth callback - verifies token and creates session
 app.post('/api/auth/callback', async (req: Request, res: Response) => {
   const { token } = req.body;
