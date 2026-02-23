@@ -1767,8 +1767,17 @@ function renderLoginPage(): string {
   <div id="privy-root"></div>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script type="importmap">
+    {
+      "imports": {
+        "react": "https://esm.sh/react@18",
+        "react-dom": "https://esm.sh/react-dom@18",
+        "react/jsx-runtime": "https://esm.sh/react@18/jsx-runtime"
+      }
+    }
+  </script>
   <script type="module">
-    import { PrivyProvider, usePrivy } from 'https://esm.sh/@privy-io/react-auth@2';
+    import { PrivyProvider, usePrivy } from 'https://esm.sh/@privy-io/react-auth@2?external=react,react-dom';
 
     function LoginApp() {
       const { login, authenticated, getAccessToken } = usePrivy();
