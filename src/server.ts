@@ -4657,9 +4657,9 @@ function renderQueuePage(): string {
 
         // Stat tiles
         var tilesHtml = '';
-        tilesHtml += '<div class="status-item"><div class="label">Pending</div><div class="value" style="color: var(--accent); font-family: var(--font-mono); font-feature-settings: \'tnum\';">' + queued + '</div></div>';
-        tilesHtml += '<div class="status-item"><div class="label">Approved</div><div class="value" style="color: var(--success); font-family: var(--font-mono); font-feature-settings: \'tnum\';">' + approved + '</div></div>';
-        tilesHtml += '<div class="status-item"><div class="label">Declined</div><div class="value" style="color: var(--error); font-family: var(--font-mono); font-feature-settings: \'tnum\';">' + declined + '</div></div>';
+        tilesHtml += '<div class="status-item"><div class="label">Pending</div><div class="value" style="color: var(--accent);">' + queued + '</div></div>';
+        tilesHtml += '<div class="status-item"><div class="label">Approved</div><div class="value" style="color: var(--success);">' + approved + '</div></div>';
+        tilesHtml += '<div class="status-item"><div class="label">Declined</div><div class="value" style="color: var(--error);">' + declined + '</div></div>';
         tilesHtml += '<div class="status-item"><div class="label">Duplicates</div><div class="value" style="color: var(--text-secondary);">' + dup + '</div></div>';
         tilesHtml += '<div class="status-item"><div class="label">Review Later</div><div class="value" style="color: var(--text-secondary);">' + skipped + '</div></div>';
         tilesHtml += '<div class="status-item"><div class="label">Seeded URLs</div><div class="value" style="color: var(--text-muted);">' + (data.seededUrls || 0) + '</div></div>';
