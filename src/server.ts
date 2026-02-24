@@ -4512,10 +4512,9 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         const data = await resp.json();
         const configs = data.configs || [];
 
-        if (configs.length === 0) {
-          distConfigList.innerHTML = '<p style="color: var(--text-muted);">No distribution configs found. Edit a wire to configure.</p>';
-        } else {
-          let html = '<table><thead><tr><th>Wire</th><th>Status</th><th>Telegram</th><th>X</th><th></th></tr></thead><tbody>';
+        let html = '';
+        if (configs.length > 0) {
+          html += '<table><thead><tr><th>Wire</th><th>Status</th><th>Telegram</th><th>X</th><th></th></tr></thead><tbody>';
           configs.forEach(function(c) {
             const enabledBadge = c.enabled
               ? '<span style="background:#1b5e20; color: var(--success); padding:2px 8px; border-radius:4px; font-size:11px; font-weight:600;">ON</span>'
@@ -4533,20 +4532,24 @@ function renderDashboard(files: StoredFile[], message?: string): string {
             html += '</tr>';
           });
           html += '</tbody></table>';
-
-          // Add buttons for wires not yet in config
-          const configuredWires = configs.map(function(c) { return c.wire; });
-          const feedSelect = document.getElementById('wireFilter');
-          if (feedSelect) {
-            Array.from(feedSelect.options).forEach(function(opt) {
-              if (opt.value && configuredWires.indexOf(opt.value) === -1) {
-                html += '<button class="button secondary dist-edit-btn" data-wire="' + escapeHtml(opt.value) + '" style="margin-top:8px; padding:6px 12px; font-size:12px;">+ Configure ' + escapeHtml(opt.value) + '</button> ';
-              }
-            });
-          }
-
-          distConfigList.innerHTML = html;
         }
+
+        // Add buttons for wires not yet in config
+        const configuredWires = configs.map(function(c) { return c.wire; });
+        const feedSelect = document.getElementById('wireFilter');
+        if (feedSelect) {
+          Array.from(feedSelect.options).forEach(function(opt) {
+            if (opt.value && configuredWires.indexOf(opt.value) === -1) {
+              html += '<button class="button secondary dist-edit-btn" data-wire="' + escapeHtml(opt.value) + '" style="margin-top:8px; margin-right:8px; padding:6px 12px; font-size:12px;">+ Configure ' + escapeHtml(opt.value) + '</button>';
+            }
+          });
+        }
+
+        if (!html) {
+          html = '<p style="color: var(--text-muted);">No feeds found. Create a feed first.</p>';
+        }
+
+        distConfigList.innerHTML = html;
       } catch (err) {
         distConfigList.innerHTML = '<p style="color: var(--error);">Failed to load distribution config.</p>';
       }
