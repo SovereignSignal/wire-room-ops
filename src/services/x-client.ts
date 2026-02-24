@@ -6,27 +6,24 @@
  */
 
 import { TwitterApi } from 'twitter-api-v2';
-import { config } from '../config';
+
+export interface XCredentials {
+  apiKey: string;
+  apiSecret: string;
+  accessToken: string;
+  accessTokenSecret: string;
+}
 
 // Cache instantiated clients per wire
 const clients = new Map<string, TwitterApi>();
 
-function getXCredentials(wire: string): { apiKey: string; apiSecret: string; accessToken: string; accessTokenSecret: string } | null {
-  const wireConfig = (config.distribution.x as Record<string, { apiKey: string; apiSecret: string; accessToken: string; accessTokenSecret: string }>)[wire];
-  if (!wireConfig) return null;
-
-  const { apiKey, apiSecret, accessToken, accessTokenSecret } = wireConfig;
-  if (!apiKey || !apiSecret || !accessToken || !accessTokenSecret) return null;
-
-  return { apiKey, apiSecret, accessToken, accessTokenSecret };
+export function clearClientCache(wire: string): void {
+  clients.delete(wire);
 }
 
-function getClient(wire: string): TwitterApi | null {
+function getClient(wire: string, creds: XCredentials): TwitterApi {
   const cached = clients.get(wire);
   if (cached) return cached;
-
-  const creds = getXCredentials(wire);
-  if (!creds) return null;
 
   const client = new TwitterApi({
     appKey: creds.apiKey,
@@ -39,23 +36,22 @@ function getClient(wire: string): TwitterApi | null {
   return client;
 }
 
-export async function postTweet(wire: string, text: string): Promise<{ tweetId: string; url: string } | null> {
-  const client = getClient(wire);
-  if (!client) {
+export async function postTweet(
+  wire: string,
+  text: string,
+  creds?: XCredentials,
+  handle?: string,
+): Promise<{ tweetId: string; url: string } | null> {
+  if (!creds || !creds.apiKey || !creds.apiSecret || !creds.accessToken || !creds.accessTokenSecret) {
     console.log(`[X] No credentials configured for wire "${wire}", skipping`);
     return null;
   }
 
+  const client = getClient(wire, creds);
   const result = await client.v2.tweet(text);
   const tweetId = result.data.id;
-  // Derive URL from the wire's X handle — fallback to generic
-  const handleMap: Record<string, string> = {
-    crypto: 'CryptoGrantWire',
-    ai: 'AIGrantWire',
-    oss: 'OSSGrantWire',
-  };
-  const handle = handleMap[wire] || wire;
-  const url = `https://x.com/${handle}/status/${tweetId}`;
+  const xHandle = handle || wire;
+  const url = `https://x.com/${xHandle}/status/${tweetId}`;
 
   console.log(`[X] Posted tweet for wire "${wire}": ${url}`);
   return { tweetId, url };

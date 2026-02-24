@@ -1142,10 +1142,212 @@ export async function getSeenUrlsList(
   return { urls: dataRes.rows, total: countRes.rows[0].total };
 }
 
+// --- Distribution config table ---
+
+export interface DistributionConfigRecord {
+  wire: string;
+  enabled: boolean;
+  telegramChannelId: string;
+  xApiKey: string;
+  xApiSecret: string;
+  xAccessToken: string;
+  xAccessTokenSecret: string;
+  xHandle: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+function parseDistributionConfigRow(row: any): DistributionConfigRecord {
+  return {
+    wire: row.wire,
+    enabled: row.enabled,
+    telegramChannelId: row.telegram_channel_id || '',
+    xApiKey: row.x_api_key || '',
+    xApiSecret: row.x_api_secret || '',
+    xAccessToken: row.x_access_token || '',
+    xAccessTokenSecret: row.x_access_token_secret || '',
+    xHandle: row.x_handle || '',
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function getDistributionConfigs(): Promise<DistributionConfigRecord[]> {
+  const pool = getPool();
+  const result = await pool.query(`SELECT * FROM distribution_config ORDER BY wire ASC`);
+  return result.rows.map(parseDistributionConfigRow);
+}
+
+export async function getDistributionConfig(wire: string): Promise<DistributionConfigRecord | null> {
+  const pool = getPool();
+  const result = await pool.query(`SELECT * FROM distribution_config WHERE wire = $1`, [wire]);
+  return result.rows.length > 0 ? parseDistributionConfigRow(result.rows[0]) : null;
+}
+
+export async function upsertDistributionConfig(
+  wire: string,
+  fields: Partial<Omit<DistributionConfigRecord, 'wire' | 'createdAt' | 'updatedAt'>>
+): Promise<DistributionConfigRecord> {
+  const pool = getPool();
+
+  // Build SET clauses dynamically so we only update provided fields
+  const setClauses: string[] = [];
+  const values: any[] = [wire];
+  let paramIndex = 2;
+
+  // For INSERT, we need defaults
+  const insertCols = ['wire'];
+  const insertVals = ['$1'];
+
+  if (fields.enabled !== undefined) {
+    setClauses.push(`enabled = $${paramIndex}`);
+    insertCols.push('enabled');
+    insertVals.push(`$${paramIndex}`);
+    values.push(fields.enabled);
+    paramIndex++;
+  }
+  if (fields.telegramChannelId !== undefined) {
+    setClauses.push(`telegram_channel_id = $${paramIndex}`);
+    insertCols.push('telegram_channel_id');
+    insertVals.push(`$${paramIndex}`);
+    values.push(fields.telegramChannelId);
+    paramIndex++;
+  }
+  if (fields.xApiKey !== undefined) {
+    setClauses.push(`x_api_key = $${paramIndex}`);
+    insertCols.push('x_api_key');
+    insertVals.push(`$${paramIndex}`);
+    values.push(fields.xApiKey);
+    paramIndex++;
+  }
+  if (fields.xApiSecret !== undefined) {
+    setClauses.push(`x_api_secret = $${paramIndex}`);
+    insertCols.push('x_api_secret');
+    insertVals.push(`$${paramIndex}`);
+    values.push(fields.xApiSecret);
+    paramIndex++;
+  }
+  if (fields.xAccessToken !== undefined) {
+    setClauses.push(`x_access_token = $${paramIndex}`);
+    insertCols.push('x_access_token');
+    insertVals.push(`$${paramIndex}`);
+    values.push(fields.xAccessToken);
+    paramIndex++;
+  }
+  if (fields.xAccessTokenSecret !== undefined) {
+    setClauses.push(`x_access_token_secret = $${paramIndex}`);
+    insertCols.push('x_access_token_secret');
+    insertVals.push(`$${paramIndex}`);
+    values.push(fields.xAccessTokenSecret);
+    paramIndex++;
+  }
+  if (fields.xHandle !== undefined) {
+    setClauses.push(`x_handle = $${paramIndex}`);
+    insertCols.push('x_handle');
+    insertVals.push(`$${paramIndex}`);
+    values.push(fields.xHandle);
+    paramIndex++;
+  }
+
+  if (setClauses.length === 0) {
+    // No fields to update — just ensure the row exists
+    const result = await pool.query(
+      `INSERT INTO distribution_config (wire) VALUES ($1)
+       ON CONFLICT (wire) DO NOTHING
+       RETURNING *`,
+      [wire]
+    );
+    if (result.rows.length > 0) return parseDistributionConfigRow(result.rows[0]);
+    // Row already existed
+    const existing = await getDistributionConfig(wire);
+    return existing!;
+  }
+
+  setClauses.push(`updated_at = NOW()`);
+
+  const result = await pool.query(
+    `INSERT INTO distribution_config (${insertCols.join(', ')})
+     VALUES (${insertVals.join(', ')})
+     ON CONFLICT (wire) DO UPDATE SET ${setClauses.join(', ')}
+     RETURNING *`,
+    values
+  );
+
+  return parseDistributionConfigRow(result.rows[0]);
+}
+
 // --- Distribution logs table ---
 
 export async function ensureDistributionTable(): Promise<void> {
   const pool = getPool();
+
+  // Distribution config: per-wire channel settings (DB-managed, not env vars)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS distribution_config (
+      wire TEXT PRIMARY KEY,
+      enabled BOOLEAN NOT NULL DEFAULT false,
+      telegram_channel_id TEXT NOT NULL DEFAULT '',
+      x_api_key TEXT NOT NULL DEFAULT '',
+      x_api_secret TEXT NOT NULL DEFAULT '',
+      x_access_token TEXT NOT NULL DEFAULT '',
+      x_access_token_secret TEXT NOT NULL DEFAULT '',
+      x_handle TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+
+  // updated_at trigger for distribution_config
+  await pool.query(`
+    CREATE OR REPLACE FUNCTION update_distribution_config_updated_at()
+    RETURNS TRIGGER AS $$
+    BEGIN
+      NEW.updated_at = NOW();
+      RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql
+  `);
+  await pool.query(`DROP TRIGGER IF EXISTS distribution_config_updated_at ON distribution_config`);
+  await pool.query(`
+    CREATE TRIGGER distribution_config_updated_at
+      BEFORE UPDATE ON distribution_config
+      FOR EACH ROW
+      EXECUTE FUNCTION update_distribution_config_updated_at()
+  `);
+
+  // Seed from env vars on first run (if table is empty and env vars exist)
+  const countRes = await pool.query(`SELECT COUNT(*)::int AS cnt FROM distribution_config`);
+  if (countRes.rows[0].cnt === 0) {
+    const { config: appConfig } = await import('../config');
+    const wires = ['crypto', 'ai', 'oss'];
+    let seeded = 0;
+    for (const wire of wires) {
+      const xCreds = (appConfig.distribution.x as Record<string, { apiKey: string; apiSecret: string; accessToken: string; accessTokenSecret: string }>)[wire];
+      const tgChannel = (appConfig.distribution.telegramChannels as Record<string, string>)[wire];
+      const hasAnything = !!(xCreds?.apiKey || tgChannel);
+      if (hasAnything || appConfig.distribution.enabled) {
+        await pool.query(
+          `INSERT INTO distribution_config (wire, enabled, telegram_channel_id, x_api_key, x_api_secret, x_access_token, x_access_token_secret)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT (wire) DO NOTHING`,
+          [
+            wire,
+            appConfig.distribution.enabled,
+            tgChannel || '',
+            xCreds?.apiKey || '',
+            xCreds?.apiSecret || '',
+            xCreds?.accessToken || '',
+            xCreds?.accessTokenSecret || '',
+          ]
+        );
+        seeded++;
+      }
+    }
+    if (seeded > 0) {
+      console.log(`[DB] Distribution config seeded from env vars (${seeded} wires)`);
+    }
+  }
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS distribution_logs (
       id SERIAL PRIMARY KEY,

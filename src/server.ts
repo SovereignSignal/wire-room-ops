@@ -5,7 +5,7 @@ import { validateMagicLink, createMagicLink, createDownloadToken, createSessionT
 import jwt from 'jsonwebtoken';
 import jwksClient from 'jwks-rsa';
 import { getFile, listFiles } from './services/storage';
-import { getAvailableWires, closePool, getAllFeeds, getFeedByKey, createFeed, updateFeed, archiveFeed, getEntryCountsByWire, getAllScanPrompts, getScanPromptById, createScanPrompt, updateScanPrompt, deleteScanPrompt, getStatusCounts, getEntriesByStatus, getSeenUrlStats, getSeenUrlsList, getDistributionLogs, getDistributionLogsByEntryIds } from './db';
+import { getAvailableWires, closePool, getAllFeeds, getFeedByKey, createFeed, updateFeed, archiveFeed, getEntryCountsByWire, getAllScanPrompts, getScanPromptById, createScanPrompt, updateScanPrompt, deleteScanPrompt, getStatusCounts, getEntriesByStatus, getSeenUrlStats, getSeenUrlsList, getDistributionLogs, getDistributionLogsByEntryIds, getDistributionConfigs, getDistributionConfig, upsertDistributionConfig } from './db';
 import { sendScanDigestEmail } from './services/email';
 import { runWeeklySummaryJob } from './jobs/weekly-summary';
 import { StoredFile } from './types';
@@ -1565,6 +1565,173 @@ app.post('/api/scan/entries/:id/redistribute', requireAuth, async (req: Request,
   }
 });
 
+// API: Distribution config management
+app.get('/api/distribution-config', requireAuth, async (_req: Request, res: Response) => {
+  try {
+    const configs = await getDistributionConfigs();
+    // Mask secrets — never return raw X credentials
+    const masked = configs.map(c => ({
+      wire: c.wire,
+      enabled: c.enabled,
+      telegramChannelId: c.telegramChannelId,
+      hasXCredentials: !!(c.xApiKey && c.xApiSecret && c.xAccessToken && c.xAccessTokenSecret),
+      xHandle: c.xHandle,
+    }));
+    res.json({ configs: masked });
+  } catch (error) {
+    console.error('Failed to get distribution configs:', error);
+    res.status(500).json({ error: 'Failed to get distribution configs' });
+  }
+});
+
+app.put('/api/distribution-config/:wire', requireAuth, async (req: Request, res: Response) => {
+  const wire = req.params.wire;
+  if (!wire || !/^[a-z0-9_-]+$/.test(wire)) {
+    res.status(400).json({ error: 'Invalid wire key' });
+    return;
+  }
+
+  // Validate wire exists as a feed
+  const feed = await getFeedByKey(wire);
+  if (!feed) {
+    res.status(400).json({ error: `Unknown wire "${wire}". Create a feed first.` });
+    return;
+  }
+
+  try {
+    const body = req.body || {};
+    const fields: any = {};
+
+    if (typeof body.enabled === 'boolean') fields.enabled = body.enabled;
+
+    // Validate Telegram channel format
+    if (typeof body.telegramChannelId === 'string') {
+      const tg = body.telegramChannelId.trim();
+      if (tg && !/^(@[a-zA-Z0-9_]{5,}|-?\d+)$/.test(tg)) {
+        res.status(400).json({ error: 'Invalid Telegram channel ID format (use @handle or numeric ID)' });
+        return;
+      }
+      fields.telegramChannelId = tg;
+    }
+
+    // Validate X handle format
+    if (typeof body.xHandle === 'string') {
+      const handle = body.xHandle.trim().replace(/^@/, '');
+      if (handle && !/^[a-zA-Z0-9_]{1,15}$/.test(handle)) {
+        res.status(400).json({ error: 'Invalid X handle format' });
+        return;
+      }
+      fields.xHandle = handle;
+    }
+
+    // For X credential fields: skip if sent as masked placeholder "****" or empty string
+    let credChanged = false;
+    const credFields = ['xApiKey', 'xApiSecret', 'xAccessToken', 'xAccessTokenSecret'] as const;
+    for (const field of credFields) {
+      const val = body[field];
+      if (typeof val === 'string' && val !== '' && val !== '****') {
+        if (val.length > 500) {
+          res.status(400).json({ error: `${field} exceeds maximum length` });
+          return;
+        }
+        fields[field] = val;
+        credChanged = true;
+      }
+    }
+
+    const updated = await upsertDistributionConfig(wire, fields);
+
+    // Clear cached X client if credentials changed (C1 fix)
+    if (credChanged) {
+      const { clearClientCache } = await import('./services/x-client');
+      clearClientCache(wire);
+    }
+
+    // Return masked response
+    res.json({
+      wire: updated.wire,
+      enabled: updated.enabled,
+      telegramChannelId: updated.telegramChannelId,
+      hasXCredentials: !!(updated.xApiKey && updated.xApiSecret && updated.xAccessToken && updated.xAccessTokenSecret),
+      xHandle: updated.xHandle,
+    });
+  } catch (error) {
+    console.error('Failed to update distribution config:', error);
+    res.status(500).json({ error: 'Failed to update distribution config' });
+  }
+});
+
+app.post('/api/distribution-config/:wire/test', requireAuth, async (req: Request, res: Response) => {
+  const wire = req.params.wire;
+  if (!wire || !/^[a-z0-9_-]+$/.test(wire)) {
+    res.status(400).json({ error: 'Invalid wire key' });
+    return;
+  }
+
+  if (!rateLimit('dist-config-test', 5, 5 * 60 * 1000)) {
+    res.status(429).json({ error: 'Too many test requests. Please wait.' });
+    return;
+  }
+
+  try {
+    const distConfig = await getDistributionConfig(wire);
+    const results: { telegram: { ok: boolean; error?: string }; x: { ok: boolean; error?: string } } = {
+      telegram: { ok: false, error: 'Not configured' },
+      x: { ok: false, error: 'Not configured' },
+    };
+
+    // Test Telegram: call getChat to verify bot can see the channel
+    if (distConfig?.telegramChannelId && config.telegram.botToken) {
+      try {
+        const tgResp = await fetch(
+          `https://api.telegram.org/bot${config.telegram.botToken}/getChat`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: distConfig.telegramChannelId }),
+          }
+        );
+        const tgData = await tgResp.json() as any;
+        if (tgData.ok) {
+          results.telegram = { ok: true };
+        } else {
+          results.telegram = { ok: false, error: tgData.description || 'Unknown error' };
+        }
+      } catch (err) {
+        results.telegram = { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    } else if (!config.telegram.botToken) {
+      results.telegram = { ok: false, error: 'Bot token not configured (env var)' };
+    }
+
+    // Test X: verify credentials with v2.me()
+    if (distConfig?.xApiKey && distConfig?.xApiSecret && distConfig?.xAccessToken && distConfig?.xAccessTokenSecret) {
+      try {
+        const { TwitterApi } = await import('twitter-api-v2');
+        const testClient = new TwitterApi({
+          appKey: distConfig.xApiKey,
+          appSecret: distConfig.xApiSecret,
+          accessToken: distConfig.xAccessToken,
+          accessSecret: distConfig.xAccessTokenSecret,
+        });
+        const me = await testClient.v2.me();
+        results.x = { ok: true };
+        // Update handle if we got one back
+        if (me.data?.username && me.data.username !== distConfig.xHandle) {
+          await upsertDistributionConfig(wire, { xHandle: me.data.username });
+        }
+      } catch (err) {
+        results.x = { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    }
+
+    res.json(results);
+  } catch (error) {
+    console.error('Failed to test distribution config:', error);
+    res.status(500).json({ error: 'Failed to test distribution config' });
+  }
+});
+
 // API: Scan entries by status (for queue tabs)
 app.get('/api/scan/entries', requireAuth, async (req: Request, res: Response) => {
   try {
@@ -2382,6 +2549,61 @@ function renderDashboard(files: StoredFile[], message?: string): string {
             </div>
           </div>
         </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Distribution Settings</h2>
+      <p class="form-description" style="margin-bottom: 16px;">Configure Telegram and X channels per wire. Approved entries auto-post to enabled channels.</p>
+      <div id="dist-config-list">Loading...</div>
+      <div id="dist-config-form" style="display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border);">
+        <h3 style="margin: 0 0 12px;">Edit <span id="dist-form-wire" style="color: var(--accent);"></span></h3>
+        <div class="form-row" style="margin-bottom: 12px;">
+          <div class="form-group">
+            <label>Enabled</label>
+            <select id="distEnabled" style="padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); font-size: 14px; background: var(--bg); color: var(--text);">
+              <option value="true">Yes</option>
+              <option value="false">No</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row" style="margin-bottom: 12px;">
+          <div class="form-group" style="flex: 1;">
+            <label for="distTelegramChannel">Telegram Channel ID</label>
+            <input type="text" id="distTelegramChannel" placeholder="@ChannelHandle or -100..." style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); font-size: 14px; background: var(--bg); color: var(--text);">
+          </div>
+          <div class="form-group" style="flex: 1;">
+            <label for="distXHandle">X Handle (without @)</label>
+            <input type="text" id="distXHandle" placeholder="CryptoGrantWire" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); font-size: 14px; background: var(--bg); color: var(--text);">
+          </div>
+        </div>
+        <div class="form-row" style="margin-bottom: 12px;">
+          <div class="form-group" style="flex: 1;">
+            <label for="distXApiKey">X API Key</label>
+            <input type="password" id="distXApiKey" placeholder="****" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); font-size: 14px; background: var(--bg); color: var(--text);">
+          </div>
+          <div class="form-group" style="flex: 1;">
+            <label for="distXApiSecret">X API Secret</label>
+            <input type="password" id="distXApiSecret" placeholder="****" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); font-size: 14px; background: var(--bg); color: var(--text);">
+          </div>
+        </div>
+        <div class="form-row" style="margin-bottom: 12px;">
+          <div class="form-group" style="flex: 1;">
+            <label for="distXAccessToken">X Access Token</label>
+            <input type="password" id="distXAccessToken" placeholder="****" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); font-size: 14px; background: var(--bg); color: var(--text);">
+          </div>
+          <div class="form-group" style="flex: 1;">
+            <label for="distXAccessSecret">X Access Token Secret</label>
+            <input type="password" id="distXAccessSecret" placeholder="****" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); font-size: 14px; background: var(--bg); color: var(--text);">
+          </div>
+        </div>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <button type="button" id="save-dist-config" class="button">Save</button>
+          <button type="button" id="cancel-dist-config" class="button secondary">Cancel</button>
+          <button type="button" id="test-dist-config" class="button secondary">Test Connection</button>
+          <span id="dist-save-status" style="margin-left: 8px; font-size: 13px;"></span>
+        </div>
+        <div id="dist-test-result" style="display: none; margin-top: 12px; padding: 12px 16px; background: var(--bg); border-radius: var(--radius-lg); border: 1px solid var(--border);"></div>
       </div>
     </div>
 
@@ -4276,9 +4498,202 @@ function renderDashboard(files: StoredFile[], message?: string): string {
     }
 
     loadStatsBtn.addEventListener('click', loadPromptStats);
+
+    // ---- Distribution Settings ----
+    const distConfigList = document.getElementById('dist-config-list');
+    const distConfigForm = document.getElementById('dist-config-form');
+    const distFormWire = document.getElementById('dist-form-wire');
+    let editingDistWire = '';
+
+    async function loadDistConfig() {
+      try {
+        const resp = await fetch('/api/distribution-config');
+        if (!resp.ok) throw new Error('Failed to load');
+        const data = await resp.json();
+        const configs = data.configs || [];
+
+        if (configs.length === 0) {
+          distConfigList.innerHTML = '<p style="color: var(--text-muted);">No distribution configs found. Edit a wire to configure.</p>';
+        } else {
+          let html = '<table><thead><tr><th>Wire</th><th>Status</th><th>Telegram</th><th>X</th><th></th></tr></thead><tbody>';
+          configs.forEach(function(c) {
+            const enabledBadge = c.enabled
+              ? '<span style="background:#1b5e20; color: var(--success); padding:2px 8px; border-radius:4px; font-size:11px; font-weight:600;">ON</span>'
+              : '<span style="background:#4a1515; color: var(--error); padding:2px 8px; border-radius:4px; font-size:11px; font-weight:600;">OFF</span>';
+            const tgText = c.telegramChannelId ? escapeHtml(c.telegramChannelId) : '<span style="color: var(--text-muted);">-</span>';
+            const xText = c.hasXCredentials
+              ? '<span style="color: var(--success);">' + escapeHtml('@' + (c.xHandle || c.wire)) + '</span>'
+              : '<span style="color: var(--text-muted);">Not configured</span>';
+            html += '<tr>';
+            html += '<td><code style="background: var(--bg); padding: 2px 6px; border-radius: 4px;">' + escapeHtml(c.wire) + '</code></td>';
+            html += '<td>' + enabledBadge + '</td>';
+            html += '<td>' + tgText + '</td>';
+            html += '<td>' + xText + '</td>';
+            html += '<td><button class="button secondary dist-edit-btn" data-wire="' + escapeHtml(c.wire) + '" style="padding:6px 12px; font-size:12px;">Edit</button></td>';
+            html += '</tr>';
+          });
+          html += '</tbody></table>';
+
+          // Add buttons for wires not yet in config
+          const configuredWires = configs.map(function(c) { return c.wire; });
+          const feedSelect = document.getElementById('wireFilter');
+          if (feedSelect) {
+            Array.from(feedSelect.options).forEach(function(opt) {
+              if (opt.value && configuredWires.indexOf(opt.value) === -1) {
+                html += '<button class="button secondary dist-edit-btn" data-wire="' + escapeHtml(opt.value) + '" style="margin-top:8px; padding:6px 12px; font-size:12px;">+ Configure ' + escapeHtml(opt.value) + '</button> ';
+              }
+            });
+          }
+
+          distConfigList.innerHTML = html;
+        }
+      } catch (err) {
+        distConfigList.innerHTML = '<p style="color: var(--error);">Failed to load distribution config.</p>';
+      }
+    }
+
+    // Event delegation for edit buttons
+    document.addEventListener('click', function(e) {
+      var btn = e.target.closest('.dist-edit-btn');
+      if (!btn) return;
+      editDistConfig(btn.dataset.wire);
+    });
+
+    async function editDistConfig(wire) {
+      editingDistWire = wire;
+      distFormWire.textContent = wire;
+
+      // Fetch current config (will be empty for new wires)
+      try {
+        const resp = await fetch('/api/distribution-config');
+        if (!resp.ok) throw new Error('Failed');
+        const data = await resp.json();
+        const cfg = (data.configs || []).find(function(c) { return c.wire === wire; });
+
+        document.getElementById('distEnabled').value = cfg && cfg.enabled ? 'true' : 'false';
+        document.getElementById('distTelegramChannel').value = cfg ? cfg.telegramChannelId || '' : '';
+        document.getElementById('distXHandle').value = cfg ? cfg.xHandle || '' : '';
+        // Clear credential fields — they're always masked
+        document.getElementById('distXApiKey').value = '';
+        document.getElementById('distXApiSecret').value = '';
+        document.getElementById('distXAccessToken').value = '';
+        document.getElementById('distXAccessSecret').value = '';
+        // Show placeholder hint for existing creds
+        const hasX = cfg && cfg.hasXCredentials;
+        document.getElementById('distXApiKey').placeholder = hasX ? '(unchanged)' : 'Enter API key';
+        document.getElementById('distXApiSecret').placeholder = hasX ? '(unchanged)' : 'Enter API secret';
+        document.getElementById('distXAccessToken').placeholder = hasX ? '(unchanged)' : 'Enter access token';
+        document.getElementById('distXAccessSecret').placeholder = hasX ? '(unchanged)' : 'Enter access token secret';
+
+        document.getElementById('dist-test-result').style.display = 'none';
+        document.getElementById('dist-save-status').textContent = '';
+        distConfigForm.style.display = 'block';
+        distConfigForm.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      } catch (err) {
+        console.error('Failed to load config for editing:', err);
+      }
+    }
+
+    document.getElementById('cancel-dist-config').addEventListener('click', function() {
+      distConfigForm.style.display = 'none';
+      editingDistWire = '';
+    });
+
+    document.getElementById('save-dist-config').addEventListener('click', async function() {
+      if (!editingDistWire) return;
+      const statusEl = document.getElementById('dist-save-status');
+      statusEl.textContent = 'Saving...';
+      statusEl.style.color = 'var(--text-secondary)';
+
+      const body = {
+        enabled: document.getElementById('distEnabled').value === 'true',
+        telegramChannelId: document.getElementById('distTelegramChannel').value,
+        xHandle: document.getElementById('distXHandle').value,
+        xApiKey: document.getElementById('distXApiKey').value || '****',
+        xApiSecret: document.getElementById('distXApiSecret').value || '****',
+        xAccessToken: document.getElementById('distXAccessToken').value || '****',
+        xAccessTokenSecret: document.getElementById('distXAccessSecret').value || '****',
+      };
+
+      try {
+        const resp = await fetch('/api/distribution-config/' + encodeURIComponent(editingDistWire), {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!resp.ok) {
+          const err = await resp.json();
+          throw new Error(err.error || 'Failed');
+        }
+        statusEl.textContent = 'Saved!';
+        statusEl.style.color = 'var(--success)';
+        loadDistConfig();
+      } catch (err) {
+        statusEl.textContent = 'Error: ' + err.message;
+        statusEl.style.color = 'var(--error)';
+      }
+    });
+
+    document.getElementById('test-dist-config').addEventListener('click', async function() {
+      if (!editingDistWire) return;
+      const resultEl = document.getElementById('dist-test-result');
+      resultEl.style.display = 'block';
+      resultEl.innerHTML = '<p style="color: var(--text-secondary); margin: 0;">Saving then testing...</p>';
+
+      // Save first so test uses current form values
+      try {
+        const saveBody = {
+          enabled: document.getElementById('distEnabled').value === 'true',
+          telegramChannelId: document.getElementById('distTelegramChannel').value,
+          xHandle: document.getElementById('distXHandle').value,
+          xApiKey: document.getElementById('distXApiKey').value || '****',
+          xApiSecret: document.getElementById('distXApiSecret').value || '****',
+          xAccessToken: document.getElementById('distXAccessToken').value || '****',
+          xAccessTokenSecret: document.getElementById('distXAccessSecret').value || '****',
+        };
+        const saveResp = await fetch('/api/distribution-config/' + encodeURIComponent(editingDistWire), {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(saveBody),
+        });
+        if (!saveResp.ok) {
+          const err = await saveResp.json();
+          throw new Error('Save failed: ' + (err.error || 'Unknown'));
+        }
+        loadDistConfig();
+      } catch (err) {
+        resultEl.innerHTML = '<p style="color: var(--error); margin: 0;">' + escapeHtml(err.message) + '</p>';
+        return;
+      }
+
+      resultEl.innerHTML = '<p style="color: var(--text-secondary); margin: 0;">Testing connections...</p>';
+
+      try {
+        const resp = await fetch('/api/distribution-config/' + encodeURIComponent(editingDistWire) + '/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        if (!resp.ok) {
+          const err = await resp.json();
+          throw new Error(err.error || 'Failed');
+        }
+        const data = await resp.json();
+        let html = '<table style="margin: 0;"><tbody>';
+        const tgIcon = data.telegram.ok ? '<span style="color: var(--success);">OK</span>' : '<span style="color: var(--error);">FAIL</span>';
+        const xIcon = data.x.ok ? '<span style="color: var(--success);">OK</span>' : '<span style="color: var(--error);">FAIL</span>';
+        html += '<tr><td>Telegram</td><td>' + tgIcon + '</td><td style="color: var(--text-muted); font-size: 12px;">' + escapeHtml(data.telegram.error || '') + '</td></tr>';
+        html += '<tr><td>X (Twitter)</td><td>' + xIcon + '</td><td style="color: var(--text-muted); font-size: 12px;">' + escapeHtml(data.x.error || '') + '</td></tr>';
+        html += '</tbody></table>';
+        resultEl.innerHTML = html;
+      } catch (err) {
+        resultEl.innerHTML = '<p style="color: var(--error); margin: 0;">Test failed: ' + escapeHtml(err.message) + '</p>';
+      }
+    });
+
     // Auto-load stats and dedup stats on page load
     loadPromptStats();
     loadDedupStats();
+    loadDistConfig();
   </script>
 </body>
 </html>
