@@ -217,7 +217,8 @@ app.post('/webhook/email', (req: Request, res: Response) => {
 app.get('/', (req: Request, res: Response) => {
   const session = req.cookies?.session as string;
   if (session && validateSession(session)) {
-    res.redirect('/dashboard');
+    const returnTo = req.query.returnTo as string;
+    res.redirect((returnTo && returnTo.startsWith('/')) ? returnTo : '/dashboard');
     return;
   }
   res.send(renderLoginPage());
@@ -257,7 +258,7 @@ app.get('/dashboard', async (req: Request, res: Response) => {
   const session = req.cookies?.session as string;
 
   if (!session || !validateSession(session)) {
-    res.redirect('/');
+    res.redirect('/?returnTo=/dashboard');
     return;
   }
 
@@ -269,7 +270,7 @@ app.get('/dashboard', async (req: Request, res: Response) => {
 app.get('/queue', async (req: Request, res: Response) => {
   const session = req.cookies?.session as string;
   if (!session || !validateSession(session)) {
-    res.redirect('/');
+    res.redirect('/?returnTo=/queue');
     return;
   }
   res.send(renderQueuePage());
@@ -1968,7 +1969,9 @@ function renderLoginPage(): string {
             });
           }).then(r => r.json()).then(data => {
             if (data.ok) {
-              window.location.href = '/dashboard';
+              const params = new URLSearchParams(window.location.search);
+              const returnTo = params.get('returnTo');
+              window.location.href = (returnTo && returnTo.startsWith('/')) ? returnTo : '/dashboard';
             } else {
               setError(data.error || 'Authentication failed');
               setAuthenticating(false);
