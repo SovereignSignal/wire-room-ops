@@ -4737,7 +4737,7 @@ function renderQueuePage(): string {
       padding: 24px 32px;
     }
     .header-content {
-      max-width: 960px;
+      max-width: 1100px;
       margin: 0 auto;
       display: flex;
       align-items: center;
@@ -4750,7 +4750,7 @@ function renderQueuePage(): string {
     .header-right { display: flex; align-items: center; gap: 16px; }
     .header-right a { color: var(--text-secondary); text-decoration: none; font-size: 14px; }
     .header-right a:hover { color: var(--accent); }
-    .main { padding: 32px; max-width: 960px; margin: 0 auto; }
+    .main { padding: 32px; max-width: 1100px; margin: 0 auto; }
     .card {
       background: var(--bg-card);
       border: 1px solid var(--border);
@@ -4871,6 +4871,88 @@ function renderQueuePage(): string {
       z-index: 9999;
       font-weight: 600;
     }
+    .entry-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+    }
+    @media (max-width: 768px) {
+      .entry-grid { grid-template-columns: 1fr; }
+    }
+    .entry-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      transition: border-color 0.15s;
+    }
+    .entry-card:hover { border-color: #2a3a4d; }
+    .entry-card .entry-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 8px;
+    }
+    .entry-card .entry-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      line-height: 1.35;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      flex: 1;
+    }
+    .entry-card .entry-score {
+      font-size: 14px;
+      font-weight: 700;
+      font-family: var(--font-mono);
+      flex-shrink: 0;
+    }
+    .entry-card .entry-desc {
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.4;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .entry-card .entry-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+    }
+    .entry-card .meta-tag {
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+    .entry-card .entry-actions {
+      display: flex;
+      gap: 6px;
+      margin-top: auto;
+      padding-top: 4px;
+    }
+    .entry-card .entry-actions button {
+      flex: 1;
+      padding: 6px 0;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 600;
+      transition: opacity 0.15s;
+    }
+    .entry-card .entry-actions button:hover { opacity: 0.85; }
+    .entry-card .entry-actions button:disabled { opacity: 0.4; cursor: not-allowed; }
   </style>
 </head>
 <body>
@@ -5114,56 +5196,69 @@ function renderQueuePage(): string {
         var showActions = activeTab === 'queued';
         var showDistribution = activeTab === 'approved';
 
-        var cols = '<th>Name</th><th>Amount</th><th>Deadline</th>';
-        if (!isDup) cols += '<th>Score</th>';
-        cols += '<th>Wire</th><th>Source</th>';
-        if (isDup) cols += '<th>Dup Reason</th>';
-        if (showDistribution) cols += '<th>Distribution</th>';
-        if (showActions) cols += '<th>Actions</th>';
-        if (showRestore) cols += '<th>Actions</th>';
-
-        var html = '<table><thead><tr>' + cols + '</tr></thead><tbody>';
+        var html = '<div class="entry-grid">';
         data.entries.forEach(function(e) {
           var sc = scoreColor(e.quality_score);
-          var desc = (e.description || '').length > 80 ? e.description.substring(0, 80) + '...' : (e.description || '');
-          html += '<tr>';
-          html += '<td><div>' + escapeHtml(e.name || '') + '</div>';
-          if (desc) html += '<div style="font-size: 11px; color: var(--text-secondary); margin-top: 2px;">' + escapeHtml(desc) + '</div>';
-          html += '</td>';
-          html += '<td>' + escapeHtml(e.amount || '-') + '</td>';
-          html += '<td>' + escapeHtml(e.deadline || '-') + '</td>';
-          if (!isDup) {
-            html += '<td><span style="color: ' + sc + '; font-weight: 600;">' + (e.quality_score != null ? e.quality_score : '-') + '</span></td>';
+          var desc = (e.description || '').length > 120 ? e.description.substring(0, 120) + '...' : (e.description || '');
+
+          html += '<div class="entry-card">';
+
+          // Header: name + score
+          html += '<div class="entry-header">';
+          html += '<div class="entry-name">' + escapeHtml(e.name || '') + '</div>';
+          if (!isDup && e.quality_score != null) {
+            html += '<div class="entry-score" style="color:' + sc + ';">' + e.quality_score + '</div>';
           }
-          html += '<td><code style="background: var(--bg); padding: 2px 6px; border-radius: 4px;">' + escapeHtml(e.wire || '') + '</code></td>';
-          html += '<td style="white-space: nowrap;">';
+          html += '</div>';
+
+          // Description
+          if (desc) {
+            html += '<div class="entry-desc">' + escapeHtml(desc) + '</div>';
+          }
+
+          // Meta row: amount, deadline, wire, source, link
+          html += '<div class="entry-meta">';
+          if (e.amount && e.amount !== '-') {
+            html += '<span class="meta-tag" style="background:#1a2c1a; color:var(--success);">' + escapeHtml(e.amount) + '</span>';
+          }
+          if (e.deadline && e.deadline !== '-') {
+            html += '<span class="meta-tag" style="background:var(--bg-card); color:var(--text-secondary);">' + escapeHtml(e.deadline) + '</span>';
+          }
+          html += '<code style="background:var(--bg-card); padding:2px 6px; border-radius:4px; font-size:11px;">' + escapeHtml(e.wire || '') + '</code>';
           html += sourceBadge(e.scan_source);
           if (e.source_url) {
-            html += ' <a href="' + escapeHtml(e.source_url) + '" target="_blank" class="download-link" style="font-size: 12px;">Link</a>';
+            html += '<a href="' + escapeHtml(e.source_url) + '" target="_blank" rel="noopener" class="download-link" style="font-size:11px;">Link</a>';
           }
-          html += '</td>';
-          if (isDup) {
-            html += '<td style="font-size: 12px; color: var(--text-secondary);">' + escapeHtml(e.duplicate_reason || '-') + '</td>';
+          html += '</div>';
+
+          // Duplicate reason
+          if (isDup && e.duplicate_reason) {
+            html += '<div style="font-size:11px; color:var(--text-muted);">' + escapeHtml(e.duplicate_reason) + '</div>';
           }
-          if (showActions) {
-            html += '<td style="white-space: nowrap;">';
-            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="approve" class="queue-action-btn" style="background: #1b5e20; border: none; color: var(--success); padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;">Approve</button>';
-            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="reviewlater" class="queue-action-btn" style="background: var(--border); border: none; color: var(--text-secondary); padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 3px;">Review Later</button>';
-            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="decline" class="queue-action-btn" style="background: #4a1515; border: none; color: var(--error); padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;">Decline</button>';
-            html += '</td>';
-          }
+
+          // Distribution badges
           if (showDistribution) {
-            html += '<td style="white-space: nowrap;">';
-            html += distBadges(e.distribution_logs || [], parseInt(e.id));
-            html += '</td>';
+            html += '<div style="margin-top:2px;">' + distBadges(e.distribution_logs || [], parseInt(e.id)) + '</div>';
+          }
+
+          // Actions
+          if (showActions) {
+            html += '<div class="entry-actions">';
+            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="approve" class="queue-action-btn" style="background:#1b5e20; color:var(--success);">Approve</button>';
+            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="reviewlater" class="queue-action-btn" style="background:var(--border); color:var(--text-secondary);">Later</button>';
+            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="decline" class="queue-action-btn" style="background:#4a1515; color:var(--error);">Decline</button>';
+            html += '</div>';
           }
           if (showRestore) {
-            html += '<td><button data-entry-id="' + parseInt(e.id) + '" data-action="restore" class="queue-action-btn" style="background: #1a3a5c; border: none; color: #5b9bd5; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;">Restore</button></td>';
+            html += '<div class="entry-actions">';
+            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="restore" class="queue-action-btn" style="background:#1a3a5c; color:#5b9bd5;">Restore</button>';
+            html += '</div>';
           }
-          html += '</tr>';
+
+          html += '</div>';
         });
-        html += '</tbody></table>';
-        html += '<p style="color: var(--text-muted); font-size: 12px; margin-top: 8px;">' + data.total + ' total entries</p>';
+        html += '</div>';
+        html += '<p style="color:var(--text-muted); font-size:12px; margin-top:12px;">' + data.total + ' total entries</p>';
         queueResultsEl.innerHTML = html;
       } catch (err) {
         queueResultsEl.innerHTML = '<p style="color: var(--error);">Failed to load: ' + escapeHtml(err.message) + '</p>';
