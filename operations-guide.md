@@ -1,4 +1,4 @@
-# CryptoGrantWire Operations Guide
+# Wire Room Ops — Operations Guide
 
 ## Where You Are Now
 

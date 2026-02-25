@@ -1,6 +1,6 @@
-# Crypto Grant Wire Summarizer
+# Wire Room Ops
 
-Automated weekly newsletter preparation for Crypto Grant Wire. Pulls pre-categorized entries from Postgres, enriches content via Grok (for X.com/Twitter) and Anthropic Claude (for other URLs with web scraping), and delivers a formatted markdown file ready for final publication.
+Backend pipeline and admin dashboard for The Wire Room. Automates grant discovery, intake processing, and multi-channel distribution across crypto, AI, and OSS beats. Pulls categorized entries from Postgres, enriches content via Grok (for X.com/Twitter) and Anthropic Claude (for other URLs with web scraping), and delivers formatted markdown files ready for publication.
 
 ## Features
 
@@ -10,7 +10,7 @@ Automated weekly newsletter preparation for Crypto Grant Wire. Pulls pre-categor
 - **Email Ingestion**: Forward emails with URLs to a Resend inbound address for automated intake
 - **Forum Scanning**: Automated discovery across 150+ Discourse forums via discuss.watch API
 - **Multi-Channel Distribution**: Auto-publish AI-crafted posts to Telegram channels and X (Twitter) on approval
-- **Web Dashboard**: Modern dark-themed UI with magic link authentication
+- **Web Dashboard**: Modern dark-themed UI with Privy authentication
 - **Multi-Feed Support**: Dynamic wire/feed management (crypto, ai, oss, and custom feeds)
 - **Scheduled Jobs**: Multiple configurable schedules — weekly newsletter and daily scan execution
 - **CRM Integration**: Notion-based org tracking with staging database workflow for new organizations
@@ -30,7 +30,7 @@ Automated weekly newsletter preparation for Crypto Grant Wire. Pulls pre-categor
 [Postgres DB] --> [Web Dashboard / Scheduler] --> [AI Processing] --> [Markdown File]
                          │                              │
                          ▼                              ▼
-                  [Magic Link Auth]            [Grok for X.com]
+                  [Privy Auth]                 [Grok for X.com]
                   [Email via Resend]           [Claude + Firecrawl for other URLs]
                                               [Scan Pipeline: Dedup → Score → Queue]
                                                          │
@@ -65,7 +65,8 @@ Required variables:
 - `FIRECRAWL_API_KEY` - For web scraping non-X.com content
 - `RESEND_API_KEY` - For sending notification emails
 - `NOTIFICATION_EMAIL` - Email to receive notifications and for dashboard login
-- `MAGIC_LINK_SECRET` - Random secret for token generation
+- `PRIVY_APP_ID` - Privy app ID for authentication
+- `PRIVY_APP_SECRET` - Privy app secret for authentication
 
 ### 3. Build
 
@@ -133,6 +134,8 @@ CREATE TABLE schedules (
   timezone TEXT NOT NULL DEFAULT 'America/Los_Angeles',
   wire TEXT,
   schedule_type TEXT DEFAULT 'weekly-summary',
+  frequency_hours INTEGER,       -- Sub-daily interval (1-23) for scan/forum schedules
+  notify_emails TEXT,            -- Comma-separated emails for job notifications
   created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
@@ -233,6 +236,20 @@ CREATE TABLE distribution_logs (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Per-wire distribution channel settings (auto-created by app, seeded from env vars)
+CREATE TABLE distribution_config (
+  wire TEXT PRIMARY KEY,
+  enabled BOOLEAN NOT NULL DEFAULT false,
+  telegram_channel_id TEXT NOT NULL DEFAULT '',
+  x_api_key TEXT NOT NULL DEFAULT '',
+  x_api_secret TEXT NOT NULL DEFAULT '',
+  x_access_token TEXT NOT NULL DEFAULT '',
+  x_access_token_secret TEXT NOT NULL DEFAULT '',
+  x_handle TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Managed scan prompts (auto-created by app)
 CREATE TABLE scan_prompts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -274,7 +291,7 @@ src/
 │   └── forum-scan.ts      # Forum scan orchestrator (discuss.watch → intake)
 ├── services/
 │   ├── anthropic.ts       # Claude API integration with scraping
-│   ├── auth.ts            # Magic link and session management
+│   ├── auth.ts            # Session tokens, download tokens, cleanup timers
 │   ├── crm-sync.ts        # Notion CRM sync - org matching and auto-creation
 │   ├── dedup.ts           # URL exact-match and fuzzy name deduplication
 │   ├── distribution.ts    # Distribution orchestrator (approve → Telegram + X)
@@ -316,9 +333,9 @@ src/
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/health` | GET | Health check (returns `{ status: 'ok', timestamp }`) |
-| `/` | GET | Login page |
-| `/login` | POST | Request magic link email |
-| `/auth` | GET | Magic link authentication |
+| `/` | GET | Login page (redirects to dashboard if already authenticated) |
+| `/logout` | GET | Clear session and redirect to login |
+| `/api/auth/callback` | POST | Privy auth callback (verifies JWT, creates session) |
 | `/download` | GET | Legacy download landing (from email links) |
 | `/download/:token` | GET | Legacy file download |
 | `/resend-link` | POST | Resend file download link via email |
@@ -331,6 +348,7 @@ src/
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/dashboard` | GET | Main dashboard UI |
+| `/queue` | GET | Scan queue review page |
 | `/file/:fileId` | GET | Download generated markdown file |
 | **Models & Files** | | |
 | `/api/models` | GET | Get available AI models from Grok and Anthropic |
@@ -355,13 +373,19 @@ src/
 | `/api/crm-sync` | POST | Run CRM org sync job |
 | `/api/crm-sync/status` | GET | Get CRM sync status (staging config, pending count) |
 | `/api/crm-sync/staging-orgs` | GET | List organizations in staging database |
+| `/api/crm-sync/staging-orgs/:id/approve` | POST | Approve a staging org |
+| `/api/crm-sync/staging-orgs/:id/reject` | POST | Reject a staging org |
 | **Scan Pipeline** | | |
 | `/api/scan/submit` | POST | Submit single scan results for intake processing |
 | `/api/scan/submit-batch` | POST | Submit batch scan results (multiple prompts at once) |
 | `/api/scan/queue` | GET | Get daily queue of quality entries (filter by wire, date, minScore) |
+| `/api/scan/entries` | GET | List scan entries with flexible status filtering |
 | `/api/scan/stats` | GET | Get intake stats for dashboard (entries by day/wire) |
+| `/api/scan/status-counts` | GET | Get entry counts by status |
+| `/api/scan/seen-urls` | GET | List seen URLs for dedup inspection |
 | `/api/scan/run` | POST | Trigger automated scan execution (all active prompts) |
-| `/api/scan/entries/:id/action` | POST | Take action on a scan entry (skip, archive, queue) |
+| `/api/forum/run` | POST | Trigger manual forum scan |
+| `/api/scan/entries/:id/action` | POST | Take action on a scan entry (approve, skip, archive, queue) |
 | `/api/scan/prompt-stats` | GET | Get prompt effectiveness metrics and overlap stats |
 | **Scan Prompts** | | |
 | `/api/scan/prompts` | GET | List all scan prompts (filter by wire, active only) |
@@ -370,6 +394,9 @@ src/
 | `/api/scan/prompts/:id` | DELETE | Delete a scan prompt |
 | `/api/scan/prompts/:id/test` | POST | Test-execute a prompt against Grok and return results |
 | **Distribution** | | |
+| `/api/distribution-config` | GET | Get per-wire distribution config (credentials masked) |
+| `/api/distribution-config/:wire` | PUT | Update distribution config for a wire |
+| `/api/distribution-config/:wire/test` | POST | Test distribution channels for a wire |
 | `/api/scan/entries/:id/distribution` | GET | Get distribution logs for an approved entry |
 | `/api/scan/entries/:id/redistribute` | POST | Retry failed distribution for an approved entry |
 
@@ -507,16 +534,18 @@ When an entry is approved, AI-crafted posts are automatically published to confi
 ### How It Works
 
 1. **Trigger**: Approving an entry in the dashboard fires a background distribution job
-2. **Generate**: A single Claude API call (`claude-sonnet-4-20250514`) creates both a tweet (<=270 chars) and a Telegram HTML message, tailored to the wire's grant focus
-3. **Publish**: Posts are dispatched to the wire's Telegram channel and X account in parallel
-4. **Track**: Each dispatch is logged in `distribution_logs` with status tracking and external URLs
-5. **Retry**: Failed distributions can be retried from the dashboard or via `POST /api/scan/entries/:id/redistribute`
+2. **Config**: Per-wire channel settings (Telegram channel ID, X credentials) are read from the `distribution_config` DB table, managed via the dashboard UI or `/api/distribution-config` API
+3. **Generate**: A single Claude API call (`claude-sonnet-4-20250514`) creates both a tweet (<=270 chars) and a Telegram HTML message, tailored to the wire's grant focus
+4. **Publish**: Posts are dispatched to the wire's Telegram channel and X account in parallel
+5. **Track**: Each dispatch is logged in `distribution_logs` with status tracking and external URLs
+6. **Retry**: Failed distributions can be retried from the dashboard or via `POST /api/scan/entries/:id/redistribute`
 
 ### Key Properties
 
 - **Fire-and-forget**: Distribution failures never block the approval
 - **Idempotent**: Won't double-post; checks for existing success logs before dispatching
-- **Per-wire**: Each wire (crypto, ai, oss) has its own X credentials and Telegram channel
+- **Per-wire**: Each wire (crypto, ai, oss) has its own X credentials and Telegram channel, configured via dashboard
+- **DB-managed config**: Distribution settings stored in `distribution_config` table; env vars only used as seed values on first run
 - **Graceful degradation**: If AI generation fails, a template-based fallback is used; if credentials are missing for a channel, it is skipped
 
 ## How It Works
@@ -527,7 +556,7 @@ When an entry is approved, AI-crafted posts are automatically published to confi
 4. **Process**: Each URL is summarized with retry logic (3 attempts with exponential backoff)
 5. **Generate**: Markdown file organized by category with hyperlinked organization names
 6. **Store**: File saved to Postgres with unique ID (keeps last 10 files)
-7. **Notify**: Optional email sent with magic link to download
+7. **Notify**: Optional email sent with download link
 
 ## Scheduled Jobs
 
@@ -550,12 +579,14 @@ Default schedule: Wednesday at 9:00 AM Pacific, looking back 7 days.
 | `FIRECRAWL_API_KEY` | Firecrawl API key for web scraping | Yes |
 | `RESEND_API_KEY` | Resend email API key | Yes |
 | `NOTIFICATION_EMAIL` | Email for notifications and login | Yes |
-| `MAGIC_LINK_SECRET` | Secret for token hashing | Yes |
+| `PRIVY_APP_ID` | Privy app ID for authentication | Yes |
+| `PRIVY_APP_SECRET` | Privy app secret for authentication | Yes |
 | `APP_URL` | Public URL of the app (default: `http://localhost:3000`) | No |
 | `FROM_EMAIL` | Sender email (default: `noreply@cryptograntwire.com`) | No |
 | `PORT` | Server port (default: 3000) | No |
 | `START_DATE` | Override start date for CLI job (ISO format) | No |
 | `END_DATE` | Override end date for CLI job (ISO format) | No |
+| `ALLOWED_EMAILS` | Comma-separated extra emails allowed dashboard access | No |
 | `NOTION_API_KEY` | Notion integration API key | No* |
 | `NOTION_ORGS_DB_ID` | Main organizations database ID | No* |
 | `NOTION_STAGING_ORGS_DB_ID` | Staging database for new orgs | No* |
@@ -570,37 +601,28 @@ Default schedule: Wednesday at 9:00 AM Pacific, looking back 7 days.
 | `RESEND_WEBHOOK_SECRET` | Resend webhook signing secret (HMAC-SHA256) | No*** |
 | `FORUM_SCAN_ENABLED` | Set to `true` to enable forum scanning | No**** |
 | `DISCUSS_WATCH_API_URL` | discuss.watch API base URL | No**** |
-| `DISTRIBUTION_ENABLED` | Set to `true` to enable multi-channel distribution | No***** |
-| `X_CRYPTO_API_KEY` | X API key for crypto wire | No***** |
-| `X_CRYPTO_API_SECRET` | X API secret for crypto wire | No***** |
-| `X_CRYPTO_ACCESS_TOKEN` | X OAuth access token for crypto wire | No***** |
-| `X_CRYPTO_ACCESS_TOKEN_SECRET` | X access token secret for crypto wire | No***** |
-| `X_AI_API_KEY` | X API key for AI wire | No***** |
-| `X_AI_API_SECRET` | X API secret for AI wire | No***** |
-| `X_AI_ACCESS_TOKEN` | X OAuth access token for AI wire | No***** |
-| `X_AI_ACCESS_TOKEN_SECRET` | X access token secret for AI wire | No***** |
-| `X_OSS_API_KEY` | X API key for OSS wire | No***** |
-| `X_OSS_API_SECRET` | X API secret for OSS wire | No***** |
-| `X_OSS_ACCESS_TOKEN` | X OAuth access token for OSS wire | No***** |
-| `X_OSS_ACCESS_TOKEN_SECRET` | X access token secret for OSS wire | No***** |
-| `TELEGRAM_CHANNEL_CRYPTO` | Telegram channel ID for crypto wire | No***** |
-| `TELEGRAM_CHANNEL_AI` | Telegram channel ID for AI wire | No***** |
-| `TELEGRAM_CHANNEL_OSS` | Telegram channel ID for OSS wire | No***** |
+| `DISTRIBUTION_ENABLED` | Seed value for distribution on first run | No***** |
+| `X_{WIRE}_API_KEY` | X API key seed per wire (e.g., `X_CRYPTO_API_KEY`) | No***** |
+| `X_{WIRE}_API_SECRET` | X API secret seed per wire | No***** |
+| `X_{WIRE}_ACCESS_TOKEN` | X OAuth access token seed per wire | No***** |
+| `X_{WIRE}_ACCESS_TOKEN_SECRET` | X access token secret seed per wire | No***** |
+| `TELEGRAM_CHANNEL_{WIRE}` | Telegram channel ID seed per wire | No***** |
 
 *Required for CRM integration features
 **Required for Telegram bot integration
 ***Required for email ingestion
 ****Required for forum scanning
-*****Required for multi-channel distribution (at least one channel per wire)
+*****Distribution env vars are only used as initial seed values on first run. After that, distribution is managed via the dashboard UI or `/api/distribution-config` API.
 
 ## Authentication
 
-The app uses magic link authentication:
+The app uses Privy for authentication:
 
-1. User enters email at `/` (must match `NOTIFICATION_EMAIL`)
-2. Magic link sent via Resend (expires in 15 minutes)
-3. Clicking link creates a 24-hour session stored as an HttpOnly cookie
-4. All authenticated endpoints use the `requireAuth` middleware to validate the session cookie
+1. User clicks "Sign In" at `/`, which opens the Privy login flow (email, social, etc.)
+2. On success, the frontend sends the Privy JWT to `POST /api/auth/callback`
+3. The server verifies the JWT, fetches the user's email from Privy, and checks it against the allowlist (`NOTIFICATION_EMAIL` + optional `ALLOWED_EMAILS` env var)
+4. If allowed, a 24-hour session is created and stored as an HttpOnly cookie
+5. All authenticated endpoints use the `requireAuth` middleware to validate the session cookie
 
 Sessions and tokens are stored in-memory (reset on server restart). Generated files are persisted to Postgres.
 
@@ -630,13 +652,13 @@ Sessions and tokens are stored in-memory (reset on server restart). Generated fi
 
 | Endpoint | Limit | Window |
 |----------|-------|--------|
-| `/login` | 5 per IP | 15 minutes |
 | `/resend-link` | 2 per IP | 30 minutes |
 | `/api/run-job` | 3 global | 5 minutes |
 | `/api/scan/prompts/:id/test` | 5 global | 5 minutes |
 | `/api/scan/run` | 1 global | 15 minutes |
 | `/api/forum/run` | 1 global | 15 minutes |
 | `/api/scan/entries/:id/redistribute` | 5 global | 5 minutes |
+| `/api/distribution-config/:wire/test` | 5 global | 5 minutes |
 | `/webhook/telegram` | 10 per chat | 1 minute |
 | `/webhook/email` | 5 per sender | 15 minutes |
 
