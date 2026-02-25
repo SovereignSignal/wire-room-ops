@@ -22,97 +22,6 @@ function formatDateRange(start: Date, end: Date): string {
   return `${start.toLocaleDateString('en-US', options)} - ${end.toLocaleDateString('en-US', options)}`;
 }
 
-export async function sendLoginEmail(email: string, magicLink: string): Promise<void> {
-  console.log(`[Email] Sending login email to: ${email}`);
-
-  const client = getResend();
-
-  const htmlContent = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Sign in to The Wire Room</title>
-</head>
-<body style="margin: 0; padding: 0; background-color: #0d0d0d; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
-  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #0d0d0d;">
-    <tr>
-      <td align="center" style="padding: 40px 20px;">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 480px; background-color: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 16px;">
-          <tr>
-            <td style="padding: 48px 40px; text-align: center;">
-              <!-- Logo -->
-              <h1 style="margin: 0 0 8px; font-size: 28px; font-weight: 700;">
-                <span style="color: #ffffff;">The</span> <span style="color: #f5a623;">Wire</span> <span style="color: #ffffff;">Room</span>
-              </h1>
-              <p style="margin: 0 0 32px; color: #999999; font-size: 16px;">Sign in to your dashboard</p>
-
-              <!-- Message -->
-              <p style="margin: 0 0 32px; color: #ffffff; font-size: 16px; line-height: 1.6;">
-                Click the button below to securely sign in to your account.
-              </p>
-
-              <!-- Button -->
-              <table role="presentation" cellspacing="0" cellpadding="0" style="margin: 0 auto;">
-                <tr>
-                  <td style="background-color: #f5a623; border-radius: 8px;">
-                    <a href="${escapeHtml(magicLink)}" target="_blank" style="display: inline-block; padding: 16px 32px; color: #0d0d0d; font-size: 16px; font-weight: 600; text-decoration: none;">
-                      Sign In
-                    </a>
-                  </td>
-                </tr>
-              </table>
-
-              <!-- Footer -->
-              <p style="margin: 32px 0 0; color: #666666; font-size: 14px; line-height: 1.5;">
-                This link expires in 15 minutes.<br>
-                If you didn't request this, you can safely ignore this email.
-              </p>
-            </td>
-          </tr>
-        </table>
-
-        <!-- Bottom text -->
-        <p style="margin: 24px 0 0; color: #666666; font-size: 12px;">
-          The Wire Room
-        </p>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>
-  `.trim();
-
-  const textContent = `
-The Wire Room - Sign In
-
-Click here to sign in to your dashboard:
-${magicLink}
-
-This link expires in 15 minutes.
-If you didn't request this, you can safely ignore this email.
-
----
-The Wire Room
-  `.trim();
-
-  try {
-    const result = await client.emails.send({
-      from: config.email.fromEmail,
-      to: email,
-      subject: 'Sign in to The Wire Room',
-      html: htmlContent,
-      text: textContent,
-    });
-    console.log(`[Email] Send result:`, JSON.stringify(result));
-  } catch (error: any) {
-    console.error(`[Email] Failed to send:`, error?.message || error);
-    console.error(`[Email] Full error:`, JSON.stringify(error, null, 2));
-    throw error;
-  }
-}
-
 export async function sendNotificationEmail(
   downloadUrl: string,
   stats: ProcessingStats,
@@ -147,7 +56,7 @@ export async function sendNotificationEmail(
                 Weekly Summaries Ready
               </h2>
               <p style="margin: 0 0 24px; color: #cccccc; font-size: 15px; line-height: 1.5;">
-                Hey Sov, your Grant Wire summaries for this week are ready for review.
+                Your Wire Room summaries for this week are ready for review.
               </p>
 
               <!-- Stats Box -->
@@ -224,7 +133,7 @@ export async function sendNotificationEmail(
   const textContent = `
 The Wire Room - Weekly Summaries Ready
 
-Hey Sov, your Grant Wire summaries for this week are ready for review.
+Your Wire Room summaries for this week are ready for review.
 
 THIS WEEK'S STATS
 -----------------

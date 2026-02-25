@@ -51,7 +51,7 @@ export function generateMarkdown(
   const lines: string[] = [];
 
   // Header - use feed title from DB, or fall back to generic
-  const title = feedTitle || "Grant Wire Weekly Update";
+  const title = feedTitle || "The Wire Room Weekly Update";
   lines.push(`# ${title}`);
   lines.push(`### ${formatDateRange(dateRange.start, dateRange.end)}`);
   lines.push('');

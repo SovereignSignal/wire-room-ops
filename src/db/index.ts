@@ -233,47 +233,7 @@ export async function ensureScheduleTable(): Promise<void> {
   }
 }
 
-export async function getAllSchedules(): Promise<StoredScheduleConfig[]> {
-  const pool = getPool();
-  const result = await pool.query(`
-    SELECT id, name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, schedule_type, frequency_hours, notify_emails, created_at, updated_at
-    FROM schedules
-    ORDER BY created_at ASC
-  `);
-
-  return result.rows.map(row => ({
-    id: row.id,
-    name: row.name,
-    enabled: row.enabled,
-    dayOfWeek: row.day_of_week,
-    hour: row.hour,
-    minute: row.minute,
-    lookbackDays: row.lookback_days,
-    grokModel: row.grok_model || undefined,
-    anthropicModel: row.anthropic_model || undefined,
-    timezone: row.timezone,
-    wire: row.wire || undefined,
-    scheduleType: row.schedule_type || 'weekly-summary',
-    frequencyHours: row.frequency_hours || undefined,
-    notifyEmails: row.notify_emails || undefined,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  }));
-}
-
-export async function getScheduleById(id: string): Promise<StoredScheduleConfig | null> {
-  const pool = getPool();
-  const result = await pool.query(`
-    SELECT id, name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, schedule_type, frequency_hours, notify_emails, created_at, updated_at
-    FROM schedules
-    WHERE id = $1
-  `, [id]);
-
-  if (result.rows.length === 0) {
-    return null;
-  }
-
-  const row = result.rows[0];
+function parseScheduleRow(row: any): StoredScheduleConfig {
   return {
     id: row.id,
     name: row.name,
@@ -292,6 +252,32 @@ export async function getScheduleById(id: string): Promise<StoredScheduleConfig 
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+export async function getAllSchedules(): Promise<StoredScheduleConfig[]> {
+  const pool = getPool();
+  const result = await pool.query(`
+    SELECT id, name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, schedule_type, frequency_hours, notify_emails, created_at, updated_at
+    FROM schedules
+    ORDER BY created_at ASC
+  `);
+
+  return result.rows.map(parseScheduleRow);
+}
+
+export async function getScheduleById(id: string): Promise<StoredScheduleConfig | null> {
+  const pool = getPool();
+  const result = await pool.query(`
+    SELECT id, name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, schedule_type, frequency_hours, notify_emails, created_at, updated_at
+    FROM schedules
+    WHERE id = $1
+  `, [id]);
+
+  if (result.rows.length === 0) {
+    return null;
+  }
+
+  return parseScheduleRow(result.rows[0]);
 }
 
 export async function createSchedule(config: Omit<StoredScheduleConfig, 'id' | 'createdAt' | 'updatedAt'>): Promise<StoredScheduleConfig> {
@@ -316,25 +302,7 @@ export async function createSchedule(config: Omit<StoredScheduleConfig, 'id' | '
     config.notifyEmails || null,
   ]);
 
-  const row = result.rows[0];
-  return {
-    id: row.id,
-    name: row.name,
-    enabled: row.enabled,
-    dayOfWeek: row.day_of_week,
-    hour: row.hour,
-    minute: row.minute,
-    lookbackDays: row.lookback_days,
-    grokModel: row.grok_model || undefined,
-    anthropicModel: row.anthropic_model || undefined,
-    timezone: row.timezone,
-    wire: row.wire || undefined,
-    scheduleType: row.schedule_type || 'weekly-summary',
-    frequencyHours: row.frequency_hours || undefined,
-    notifyEmails: row.notify_emails || undefined,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
+  return parseScheduleRow(result.rows[0]);
 }
 
 export async function updateSchedule(id: string, config: Partial<Omit<StoredScheduleConfig, 'id' | 'createdAt' | 'updatedAt'>>): Promise<StoredScheduleConfig | null> {
@@ -376,25 +344,7 @@ export async function updateSchedule(id: string, config: Partial<Omit<StoredSche
     return null;
   }
 
-  const row = result.rows[0];
-  return {
-    id: row.id,
-    name: row.name,
-    enabled: row.enabled,
-    dayOfWeek: row.day_of_week,
-    hour: row.hour,
-    minute: row.minute,
-    lookbackDays: row.lookback_days,
-    grokModel: row.grok_model || undefined,
-    anthropicModel: row.anthropic_model || undefined,
-    timezone: row.timezone,
-    wire: row.wire || undefined,
-    scheduleType: row.schedule_type || 'weekly-summary',
-    frequencyHours: row.frequency_hours || undefined,
-    notifyEmails: row.notify_emails || undefined,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
+  return parseScheduleRow(result.rows[0]);
 }
 
 export async function deleteSchedule(id: string): Promise<boolean> {

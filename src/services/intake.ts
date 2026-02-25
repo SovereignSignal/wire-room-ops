@@ -508,7 +508,7 @@ export function parseDeadline(deadline: string | null): Date | null {
 
   // Try direct parse first
   const d = new Date(deadline);
-  if (!isNaN(d.getTime()) && d.getFullYear() > 2024) return d;
+  if (!isNaN(d.getTime()) && d.getFullYear() >= new Date().getFullYear() - 1) return d;
 
   // Try common formats
   // "March 8, 2026" or "Mar 8 2026"
@@ -672,9 +672,8 @@ const STOP_WORDS = new Set([
   'round',
   'wave',
   'new',
-  '2025',
-  '2026',
-  '2027',
+  // Dynamically include current year ± 1 to avoid hardcoding
+  ...Array.from({ length: 3 }, (_, i) => String(new Date().getFullYear() - 1 + i)),
 ]);
 
 /**

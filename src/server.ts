@@ -1872,7 +1872,7 @@ app.get('/api/scan/prompt-stats', requireAuth, async (req: Request, res: Respons
 // ── Shared CSS Helpers ──────────────────────────────────────────────────
 function sharedHead(title: string) {
   return `
-  <title>${title} - Wire Ops</title>
+  <title>${escapeHtml(title)} - Wire Ops</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
@@ -2503,7 +2503,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           </div>
           <div class="form-group">
             <label for="feedTitleTemplate">Title Template</label>
-            <input type="text" id="feedTitleTemplate" placeholder="Sov's DeFi Grant Wire Weekly Update" style="background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 10px 12px; color: var(--text); width: 320px;">
+            <input type="text" id="feedTitleTemplate" placeholder="The Wire Room — DeFi Weekly Update" style="background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 10px 12px; color: var(--text); width: 320px;">
           </div>
           <button type="button" id="save-feed" class="button">Save</button>
           <button type="button" id="cancel-feed" class="button secondary">Cancel</button>

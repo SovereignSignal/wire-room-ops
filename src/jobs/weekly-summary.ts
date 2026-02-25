@@ -32,7 +32,7 @@ export async function runWeeklySummaryJob(options: JobOptions | boolean = false)
   const { sendEmail = false, dateRange: customDateRange, onProgress, models, wire } = opts;
 
   const wireLabel = wire ? (Array.isArray(wire) ? wire.join(', ') : wire) : 'all';
-  console.log(`=== Grant Wire Weekly Summary Job (${wireLabel}) ===`);
+  console.log(`=== Wire Room Weekly Summary Job (${wireLabel}) ===`);
   console.log(`Started at: ${new Date().toISOString()}`);
 
   // Validate configuration
