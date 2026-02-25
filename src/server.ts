@@ -4873,7 +4873,7 @@ function renderQueuePage(): string {
     }
     .entry-grid {
       display: grid;
-      grid-template-columns: repeat(2, 1fr);
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 12px;
     }
     @media (max-width: 768px) {
@@ -4887,6 +4887,8 @@ function renderQueuePage(): string {
       display: flex;
       flex-direction: column;
       gap: 8px;
+      min-width: 0;
+      overflow: hidden;
       transition: border-color 0.15s;
     }
     .entry-card:hover { border-color: #2a3a4d; }
@@ -4934,6 +4936,9 @@ function renderQueuePage(): string {
       font-size: 11px;
       font-weight: 500;
       white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 160px;
     }
     .entry-card .entry-actions {
       display: flex;
@@ -5219,10 +5224,12 @@ function renderQueuePage(): string {
           // Meta row: amount, deadline, wire, source, link
           html += '<div class="entry-meta">';
           if (e.amount && e.amount !== '-') {
-            html += '<span class="meta-tag" style="background:#1a2c1a; color:var(--success);">' + escapeHtml(e.amount) + '</span>';
+            var amt = e.amount.length > 20 ? e.amount.substring(0, 20) : e.amount;
+            html += '<span class="meta-tag" style="background:#1a2c1a; color:var(--success);">' + escapeHtml(amt) + '</span>';
           }
           if (e.deadline && e.deadline !== '-') {
-            html += '<span class="meta-tag" style="background:var(--bg-card); color:var(--text-secondary);">' + escapeHtml(e.deadline) + '</span>';
+            var dl = e.deadline.length > 20 ? e.deadline.substring(0, 20) : e.deadline;
+            html += '<span class="meta-tag" style="background:var(--bg-card); color:var(--text-secondary);">' + escapeHtml(dl) + '</span>';
           }
           html += '<code style="background:var(--bg-card); padding:2px 6px; border-radius:4px; font-size:11px;">' + escapeHtml(e.wire || '') + '</code>';
           html += sourceBadge(e.scan_source);
