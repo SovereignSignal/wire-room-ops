@@ -264,13 +264,14 @@ function createJobExecutor(schedule: ScheduleConfig) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       const isNoEntries = errorMsg.includes('No entries found');
 
-      status.status = 'failed';
-      status.error = errorMsg;
-
       if (isNoEntries) {
-        // "No entries found" is not a real failure — skip email and retry
+        // "No entries found" is not a real failure — mark success, skip email and retry
+        status.status = 'success';
+        status.error = errorMsg;
         console.warn(`[Scheduler] Job "${schedule.name}" found nothing: ${errorMsg}`);
       } else {
+        status.status = 'failed';
+        status.error = errorMsg;
         console.error(`[Scheduler] Job "${schedule.name}" failed:`, error);
 
         // Send failure notification email (include schedule name for context)
@@ -288,10 +289,11 @@ function createJobExecutor(schedule: ScheduleConfig) {
         if (!status.retried) {
           status.retried = true;
           console.log(`[Scheduler] Will retry "${schedule.name}" in 5 minutes...`);
-          setTimeout(() => {
+          const retryTimer = setTimeout(() => {
             console.log(`[Scheduler] Retrying "${schedule.name}"...`);
             executor();
           }, 5 * 60 * 1000);
+          retryTimer.unref();
         }
       }
     }

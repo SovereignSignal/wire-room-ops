@@ -255,17 +255,26 @@ export function scoreEntry(entry: {
 // Classification Helpers
 // ============================================================
 
+/**
+ * Check if text contains a phrase as a whole word (not a substring).
+ * e.g. "grant" matches "open grant program" but not "immigrant".
+ */
+function containsWord(text: string, phrase: string): boolean {
+  const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\b${escaped}\\b`, 'i').test(text);
+}
+
 function classifyAsFunding(name: string, desc: string): boolean {
   const combined = `${name} ${desc}`;
 
   for (const type of FUNDING_TYPES) {
-    if (combined.includes(type)) return true;
+    if (containsWord(combined, type)) return true;
   }
 
   // Check for opportunity keywords
   let opportunitySignals = 0;
   for (const kw of OPPORTUNITY_KEYWORDS) {
-    if (combined.includes(kw)) opportunitySignals++;
+    if (containsWord(combined, kw)) opportunitySignals++;
   }
 
   return opportunitySignals >= 2;
@@ -276,18 +285,18 @@ function classifyAsActionable(name: string, desc: string): boolean {
 
   // If it's a funding type, it's automatically actionable
   for (const type of FUNDING_TYPES) {
-    if (combined.includes(type)) return true;
+    if (containsWord(combined, type)) return true;
   }
 
   // Check actionable types
   for (const type of ACTIONABLE_TYPES) {
-    if (combined.includes(type)) return true;
+    if (containsWord(combined, type)) return true;
   }
 
   // Check opportunity keywords
   let signals = 0;
   for (const kw of OPPORTUNITY_KEYWORDS) {
-    if (combined.includes(kw)) signals++;
+    if (containsWord(combined, kw)) signals++;
   }
 
   return signals >= 1;
@@ -297,7 +306,7 @@ function isGovernanceNoise(name: string, desc: string): boolean {
   const combined = `${name} ${desc}`;
 
   for (const kw of GOVERNANCE_KEYWORDS) {
-    if (combined.includes(kw)) return true;
+    if (containsWord(combined, kw)) return true;
   }
 
   return false;

@@ -1329,8 +1329,8 @@ export async function ensureDistributionTable(): Promise<void> {
       const hasAnything = !!(xCreds?.apiKey || tgChannel);
       if (hasAnything || appConfig.distribution.enabled) {
         await pool.query(
-          `INSERT INTO distribution_config (wire, enabled, telegram_channel_id, x_api_key, x_api_secret, x_access_token, x_access_token_secret)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)
+          `INSERT INTO distribution_config (wire, enabled, telegram_channel_id, x_api_key, x_api_secret, x_access_token, x_access_token_secret, x_handle)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
            ON CONFLICT (wire) DO NOTHING`,
           [
             wire,
@@ -1340,6 +1340,7 @@ export async function ensureDistributionTable(): Promise<void> {
             xCreds?.apiSecret || '',
             xCreds?.accessToken || '',
             xCreds?.accessTokenSecret || '',
+            '',  // x_handle is set via dashboard, not env vars
           ]
         );
         seeded++;

@@ -245,6 +245,12 @@ function tokenOverlapScore(tokensA: string[], tokensB: string[]): number {
   // This handles the case where "DARPA CLARA" matches "DARPA CLARA High-Assurance AI"
   const minSize = Math.min(setA.size, setB.size);
 
+  // Require at least 2 overlapping tokens to avoid single-token false positives
+  // e.g. "Optimism Grant" vs "Optimism Governance Update" sharing only "optimism"
+  if (minSize <= 1 && intersection <= 1 && setA.size + setB.size > 2) {
+    return 0;
+  }
+
   return intersection / minSize;
 }
 
@@ -270,20 +276,32 @@ export async function registerSeen(
   const normalized_name = normalizeName(entry.name);
   const tokens = extractNameTokens(entry.name);
 
-  // Register URL (upsert, ignore conflict on normalized_url + wire)
-  await pool.query(
-    `INSERT INTO seen_urls (url, normalized_url, first_seen_entry_id, first_seen_date, wire)
-     VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT (normalized_url, wire) DO NOTHING`,
-    [entry.sourceUrl, normalized_url, entry.id, entry.scanDate, entry.wire]
-  );
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
 
-  // Register name
-  await pool.query(
-    `INSERT INTO seen_names (name_original, name_normalized, name_tokens, entry_id, wire, first_seen)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
-    [entry.name, normalized_name, tokens, entry.id, entry.wire, entry.scanDate]
-  );
+    // Register URL (upsert, ignore conflict on normalized_url + wire)
+    await client.query(
+      `INSERT INTO seen_urls (url, normalized_url, first_seen_entry_id, first_seen_date, wire)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (normalized_url, wire) DO NOTHING`,
+      [entry.sourceUrl, normalized_url, entry.id, entry.scanDate, entry.wire]
+    );
+
+    // Register name
+    await client.query(
+      `INSERT INTO seen_names (name_original, name_normalized, name_tokens, entry_id, wire, first_seen)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [entry.name, normalized_name, tokens, entry.id, entry.wire, entry.scanDate]
+    );
+
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 // ============================================================
