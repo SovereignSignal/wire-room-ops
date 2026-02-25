@@ -239,7 +239,52 @@ app.post('/api/auth/callback', async (req: Request, res: Response) => {
 
   try {
     const claims = await verifyPrivyToken(token);
-    const sessionToken = createSessionToken(claims.sub || 'unknown');
+    const privyUserId = claims.sub;
+
+    if (!privyUserId) {
+      res.status(401).json({ error: 'Invalid token: no user ID' });
+      return;
+    }
+
+    // Fetch user details from Privy to get their email
+    const privyUserRes = await fetch(`https://auth.privy.io/api/v1/users/${privyUserId}`, {
+      headers: {
+        'Authorization': `Basic ${Buffer.from(`${config.privy.appId}:${config.privy.appSecret}`).toString('base64')}`,
+        'privy-app-id': config.privy.appId,
+      },
+    });
+
+    if (!privyUserRes.ok) {
+      console.error(`[Auth] Failed to fetch Privy user ${privyUserId}: ${privyUserRes.status}`);
+      res.status(401).json({ error: 'Could not verify user identity' });
+      return;
+    }
+
+    const privyUser = await privyUserRes.json() as { linked_accounts?: Array<{ type: string; address?: string }> };
+
+    // Extract email from linked accounts
+    const linkedEmail = privyUser.linked_accounts?.find(
+      (a) => a.type === 'email'
+    )?.address?.toLowerCase();
+
+    // Check against allowed emails (NOTIFICATION_EMAIL + optional ALLOWED_EMAILS)
+    const allowedEmails = new Set<string>();
+    if (config.email.notificationEmail) {
+      allowedEmails.add(config.email.notificationEmail.toLowerCase());
+    }
+    const extraEmails = process.env.ALLOWED_EMAILS;
+    if (extraEmails) {
+      extraEmails.split(',').map(e => e.trim().toLowerCase()).filter(Boolean).forEach(e => allowedEmails.add(e));
+    }
+
+    if (!linkedEmail || !allowedEmails.has(linkedEmail)) {
+      console.warn(`[Auth] Access denied for ${linkedEmail || 'unknown email'} (Privy user ${privyUserId})`);
+      res.status(403).json({ error: 'Access denied. This dashboard is restricted.' });
+      return;
+    }
+
+    console.log(`[Auth] Login granted for ${linkedEmail}`);
+    const sessionToken = createSessionToken(linkedEmail);
     res.cookie('session', sessionToken, {
       httpOnly: true,
       secure: config.app.url.startsWith('https'),
@@ -1967,7 +2012,12 @@ function renderLoginPage(): string {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ token }),
             });
-          }).then(r => r.json()).then(data => {
+          }).then(r => {
+            if (r.status === 403) {
+              return r.json().then(d => { throw new Error(d.error || 'Access denied'); });
+            }
+            return r.json();
+          }).then(data => {
             if (data.ok) {
               const params = new URLSearchParams(window.location.search);
               const returnTo = params.get('returnTo');
