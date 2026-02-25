@@ -1,7 +1,7 @@
 import express, { Request, Response } from 'express';
 import cookieParser from 'cookie-parser';
 import { config } from './config';
-import { validateMagicLink, createMagicLink, createDownloadToken, createSessionToken, validateSession } from './services/auth';
+import { validateMagicLink, createMagicLink, createDownloadToken, createSessionToken, validateSession, invalidateSession } from './services/auth';
 import jwt from 'jsonwebtoken';
 import jwksClient from 'jwks-rsa';
 import { getFile, listFiles } from './services/storage';
@@ -218,13 +218,17 @@ app.get('/', (req: Request, res: Response) => {
   const session = req.cookies?.session as string;
   if (session && validateSession(session)) {
     const returnTo = req.query.returnTo as string;
-    res.redirect((returnTo && returnTo.startsWith('/')) ? returnTo : '/dashboard');
+    res.redirect((returnTo && returnTo.startsWith('/') && !returnTo.startsWith('//')) ? returnTo : '/dashboard');
     return;
   }
   res.send(renderLoginPage());
 });
 
-app.get('/logout', (_req: Request, res: Response) => {
+app.get('/logout', (req: Request, res: Response) => {
+  const sessionToken = req.cookies?.session as string;
+  if (sessionToken) {
+    invalidateSession(sessionToken);
+  }
   res.clearCookie('session', { httpOnly: true, sameSite: 'lax' });
   res.redirect('/');
 });
@@ -2015,15 +2019,17 @@ function renderLoginPage(): string {
               body: JSON.stringify({ token }),
             });
           }).then(r => {
-            if (r.status === 403) {
-              return r.json().then(d => { throw new Error(d.error || 'Access denied'); });
+            if (!r.ok) {
+              return r.json().catch(() => ({})).then(d => {
+                throw new Error(d.error || 'Authentication failed (' + r.status + ')');
+              });
             }
             return r.json();
           }).then(data => {
             if (data.ok) {
               const params = new URLSearchParams(window.location.search);
               const returnTo = params.get('returnTo');
-              window.location.href = (returnTo && returnTo.startsWith('/')) ? returnTo : '/dashboard';
+              window.location.href = (returnTo && returnTo.startsWith('/') && !returnTo.startsWith('//')) ? returnTo : '/dashboard';
             } else {
               setError(data.error || 'Authentication failed');
               setAuthenticating(false);
@@ -2057,7 +2063,7 @@ function renderLoginPage(): string {
     const root = createRoot(document.getElementById('privy-root'));
     root.render(
       React.createElement(PrivyProvider, {
-        appId: '${config.privy.appId}',
+        appId: ${JSON.stringify(config.privy.appId)},
         config: {
           loginMethods: ['email', 'wallet', 'google'],
           appearance: {

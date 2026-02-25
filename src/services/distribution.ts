@@ -46,17 +46,21 @@ export async function distributeEntry(entryId: number): Promise<DistributionResu
     return result;
   }
 
-  // Idempotency check: skip channels with existing success logs
+  // Idempotency check: skip channels with existing success or in-progress logs
   const existingLogs = await getDistributionLogs(entryId);
-  const tgSuccess = existingLogs.some(l => l.channel === 'telegram' && l.status === 'success');
-  const xSuccess = existingLogs.some(l => l.channel === 'x' && l.status === 'success');
+  const tgDone = existingLogs.some(l => l.channel === 'telegram' && (l.status === 'success' || l.status === 'pending'));
+  const xDone = existingLogs.some(l => l.channel === 'x' && (l.status === 'success' || l.status === 'pending'));
 
-  if (tgSuccess && xSuccess) {
-    console.log(`[Distribution] Entry ${entryId} already fully distributed, skipping`);
+  if (tgDone && xDone) {
+    console.log(`[Distribution] Entry ${entryId} already distributed or in progress, skipping`);
     result.telegram = { status: 'success' };
     result.x = { status: 'success' };
     return result;
   }
+
+  // Use narrower check for per-channel skip below
+  const tgSuccess = existingLogs.some(l => l.channel === 'telegram' && l.status === 'success');
+  const xSuccess = existingLogs.some(l => l.channel === 'x' && l.status === 'success');
 
   // Check channel availability from DB config
   const telegramChannelId = distConfig.telegramChannelId;

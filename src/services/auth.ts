@@ -104,6 +104,11 @@ export function validateSession(token: string): boolean {
   return true;
 }
 
+export function invalidateSession(token: string): void {
+  const hashedToken = hashToken(token);
+  sessions.delete(hashedToken);
+}
+
 export function createDownloadToken(fileId: string): string {
   const token = uuidv4();
   const hashedToken = hashToken(token);
