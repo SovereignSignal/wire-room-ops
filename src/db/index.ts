@@ -963,11 +963,12 @@ export async function createScanPrompt(params: {
   isActive?: boolean;
   sortOrder?: number;
   toolType?: ToolType;
+  variant?: string;
 }): Promise<ScanPromptRecord> {
   const pool = getPool();
   const result = await pool.query(`
-    INSERT INTO scan_prompts (wire, label, prompt_text, response_format, is_active, sort_order, tool_type)
-    VALUES ($1, $2, $3, $4, $5, $6, $7)
+    INSERT INTO scan_prompts (wire, label, prompt_text, response_format, is_active, sort_order, tool_type, variant)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
     RETURNING *
   `, [
     params.wire,
@@ -977,6 +978,7 @@ export async function createScanPrompt(params: {
     params.isActive ?? true,
     params.sortOrder ?? 0,
     params.toolType || 'x_search',
+    params.variant || null,
   ]);
 
   return parseScanPromptRow(result.rows[0]);

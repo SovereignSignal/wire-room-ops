@@ -1239,7 +1239,7 @@ app.get('/api/scan/prompts', requireAuth, async (req: Request, res: Response) =>
 
 // API: Create scan prompt
 app.post('/api/scan/prompts', requireAuth, async (req: Request, res: Response) => {
-  const { wire, label, promptText, responseFormat, isActive, sortOrder, toolType } = req.body;
+  const { wire, label, promptText, responseFormat, isActive, sortOrder, toolType, variant } = req.body;
 
   if (!wire || typeof wire !== 'string') {
     res.status(400).json({ error: 'wire is required' });
@@ -1275,6 +1275,7 @@ app.post('/api/scan/prompts', requireAuth, async (req: Request, res: Response) =
       isActive: isActive ?? true,
       sortOrder: typeof sortOrder === 'number' ? sortOrder : undefined,
       toolType: toolType || 'x_search',
+      variant: variant || undefined,
     });
 
     res.json(prompt);
@@ -1292,7 +1293,7 @@ app.put('/api/scan/prompts/:id', requireAuth, async (req: Request, res: Response
     return;
   }
 
-  const { wire, label, promptText, responseFormat, isActive, sortOrder, toolType } = req.body;
+  const { wire, label, promptText, responseFormat, isActive, sortOrder, toolType, variant } = req.body;
   const updates: Record<string, any> = {};
 
   if (wire !== undefined) {
@@ -1310,6 +1311,7 @@ app.put('/api/scan/prompts/:id', requireAuth, async (req: Request, res: Response
   if (responseFormat !== undefined) updates.responseFormat = responseFormat || null;
   if (isActive !== undefined) updates.isActive = isActive;
   if (sortOrder !== undefined) updates.sortOrder = sortOrder;
+  if (variant !== undefined) updates.variant = variant;
   if (toolType !== undefined) {
     if (!['x_search', 'web_search'].includes(toolType)) {
       res.status(400).json({ error: 'toolType must be "x_search" or "web_search"' });
