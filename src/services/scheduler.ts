@@ -262,29 +262,37 @@ function createJobExecutor(schedule: ScheduleConfig) {
       status.error = null;
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      const isNoEntries = errorMsg.includes('No entries found');
+
       status.status = 'failed';
       status.error = errorMsg;
-      console.error(`[Scheduler] Job "${schedule.name}" failed:`, error);
 
-      // Send failure notification email
-      try {
-        const recipients = currentScheduleData.notifyEmails
-          ? currentScheduleData.notifyEmails.split(',').map(e => e.trim()).filter(Boolean)
-          : undefined;
-        await sendScheduledJobFailureEmail(errorMsg, jobStartTime, recipients);
-        console.log(`[Scheduler] Failure notification email sent.`);
-      } catch (emailError) {
-        console.error(`[Scheduler] Failed to send failure notification:`, emailError);
-      }
+      if (isNoEntries) {
+        // "No entries found" is not a real failure — skip email and retry
+        console.warn(`[Scheduler] Job "${schedule.name}" found nothing: ${errorMsg}`);
+      } else {
+        console.error(`[Scheduler] Job "${schedule.name}" failed:`, error);
 
-      // Retry once after 5 minutes for transient failures
-      if (!status.retried) {
-        status.retried = true;
-        console.log(`[Scheduler] Will retry "${schedule.name}" in 5 minutes...`);
-        setTimeout(() => {
-          console.log(`[Scheduler] Retrying "${schedule.name}"...`);
-          executor();
-        }, 5 * 60 * 1000);
+        // Send failure notification email (include schedule name for context)
+        try {
+          const recipients = currentScheduleData.notifyEmails
+            ? currentScheduleData.notifyEmails.split(',').map(e => e.trim()).filter(Boolean)
+            : undefined;
+          await sendScheduledJobFailureEmail(`[${currentScheduleData.name}] ${errorMsg}`, jobStartTime, recipients);
+          console.log(`[Scheduler] Failure notification email sent.`);
+        } catch (emailError) {
+          console.error(`[Scheduler] Failed to send failure notification:`, emailError);
+        }
+
+        // Retry once after 5 minutes for transient failures
+        if (!status.retried) {
+          status.retried = true;
+          console.log(`[Scheduler] Will retry "${schedule.name}" in 5 minutes...`);
+          setTimeout(() => {
+            console.log(`[Scheduler] Retrying "${schedule.name}"...`);
+            executor();
+          }, 5 * 60 * 1000);
+        }
       }
     }
   };

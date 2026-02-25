@@ -55,7 +55,7 @@ export async function runWeeklySummaryJob(options: JobOptions | boolean = false)
   onProgress?.(0, entries.length, `Found ${entries.length} entries`);
 
   if (entries.length === 0) {
-    throw new Error('No entries found for this date range');
+    throw new Error(`No entries found for date range ${dateRange.start.toISOString().slice(0,10)} to ${dateRange.end.toISOString().slice(0,10)} (wire: ${wireLabel})`);
   }
 
   // Process entries
