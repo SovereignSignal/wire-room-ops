@@ -2093,6 +2093,35 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       margin-bottom: 24px;
     }
     .card h2 { margin: 0 0 16px; font-size: 18px; color: var(--text); }
+    .header-content {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .header-right { display: flex; align-items: center; gap: 16px; }
+    .header-right a { color: var(--text-secondary); text-decoration: none; font-size: 14px; }
+    .header-right a:hover { color: var(--accent); }
+    details.card summary {
+      cursor: pointer;
+      list-style: none;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      user-select: none;
+    }
+    details.card summary::-webkit-details-marker { display: none; }
+    details.card summary::before {
+      content: '\\25b6';
+      font-size: 10px;
+      color: var(--text-muted);
+      margin-right: 10px;
+      transition: transform 0.2s;
+      flex-shrink: 0;
+    }
+    details.card[open] > summary::before {
+      transform: rotate(90deg);
+    }
+    details.card summary h2 { margin: 0; }
     .message {
       padding: 12px 16px;
       border-radius: var(--radius-lg);
@@ -2324,14 +2353,18 @@ function renderDashboard(files: StoredFile[], message?: string): string {
   <div class="header">
     <div class="header-content">
       <h1 class="logo">📡 <span class="logo-wire">Wire</span> <span class="logo-grant">Ops</span></h1>
-      <p>Monitoring the Situation</p>
+      <div class="header-right">
+        <a href="/queue">Daily Queue</a>
+        <span style="color: var(--accent); font-size: 14px; font-weight: 600;">Dashboard</span>
+        <a href="/logout" style="color: var(--text-muted);">Logout</a>
+      </div>
     </div>
   </div>
   <div class="main" id="main-content">
     ${message ? `<div class="message ${message.startsWith('Error') ? 'error' : 'success'}">${escapeHtml(decodeURIComponent(message))}</div>` : ''}
 
-    <div class="card">
-      <h2>Generate Weekly Summary</h2>
+    <details class="card">
+      <summary><h2>Generate Weekly Summary</h2></summary>
       <form id="job-form" class="run-form">
         <div class="form-row">
           <div class="form-group">
@@ -2374,10 +2407,10 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         <p id="progress-step" class="progress-step"></p>
         <p id="elapsed-time" class="elapsed-time"></p>
       </div>
-    </div>
+    </details>
 
-    <div class="card">
-      <h2>Generated Files</h2>
+    <details class="card">
+      <summary><h2>Generated Files</h2></summary>
       <table>
         <thead>
           <tr>
@@ -2390,13 +2423,13 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           ${fileRows}
         </tbody>
       </table>
-    </div>
+    </details>
 
-    <div class="card">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-        <h2 style="margin: 0;">Feed Management</h2>
+    <details class="card">
+      <summary style="margin-bottom: 16px;">
+        <h2>Feed Management</h2>
         <button type="button" id="add-feed" class="button" style="padding: 8px 16px; font-size: 13px;">+ Add Feed</button>
-      </div>
+      </summary>
       <div id="feeds-list"></div>
       <div id="feed-form" class="run-form" style="display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border);">
         <input type="hidden" id="feedEditKey" value="">
@@ -2417,13 +2450,13 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           <button type="button" id="cancel-feed" class="button secondary">Cancel</button>
         </div>
       </div>
-    </div>
+    </details>
 
-    <div class="card">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-        <h2 style="margin: 0;">Scheduled Runs</h2>
+    <details class="card" open>
+      <summary style="margin-bottom: 16px;">
+        <h2>Scheduled Runs</h2>
         <button type="button" id="add-schedule" class="button" style="padding: 8px 16px; font-size: 13px;">+ Add Schedule</button>
-      </div>
+      </summary>
       <div id="schedules-list"></div>
       
       <div id="schedule-form" class="run-form" style="display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border);">
@@ -2553,10 +2586,10 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           </div>
         </div>
       </div>
-    </div>
+    </details>
 
-    <div class="card">
-      <h2>Distribution Settings</h2>
+    <details class="card">
+      <summary><h2>Distribution Settings</h2></summary>
       <p class="form-description" style="margin-bottom: 16px;">Configure Telegram and X channels per wire. Approved entries auto-post to enabled channels.</p>
       <div id="dist-config-list">Loading...</div>
       <div id="dist-config-form" style="display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border);">
@@ -2608,10 +2641,10 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         </div>
         <div id="dist-test-result" style="display: none; margin-top: 12px; padding: 12px 16px; background: var(--bg); border-radius: var(--radius-lg); border: 1px solid var(--border);"></div>
       </div>
-    </div>
+    </details>
 
-    <div class="card">
-      <h2>CRM Org Sync</h2>
+    <details class="card">
+      <summary><h2>CRM Org Sync</h2></summary>
       <p class="form-description" style="margin-bottom: 16px;">Sync organization names from entries to Notion staging database for review.</p>
       <div id="crm-sync-status" style="margin-bottom: 16px;">
         <div class="status-grid">
@@ -2644,10 +2677,10 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           <p style="color: var(--text-muted);">Click "Load Pending" to view organizations.</p>
         </div>
       </div>
-    </div>
+    </details>
 
-    <div class="card">
-      <h2>Run Scan</h2>
+    <details class="card" open>
+      <summary><h2>Run Scan</h2></summary>
       <p class="form-description" style="margin-bottom: 16px;">Execute all active prompts against Grok and feed results through the intake pipeline.</p>
       <div class="run-form">
         <div class="form-row" style="align-items: flex-end;">
@@ -2668,10 +2701,10 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         <div id="scan-run-result" style="display: none; margin-top: 16px; padding: 12px 16px; background: var(--bg); border-radius: var(--radius-lg); border: 1px solid var(--border);">
         </div>
       </div>
-    </div>
+    </details>
 
-    <div class="card">
-      <h2>Forum Scan</h2>
+    <details class="card" open>
+      <summary><h2>Forum Scan</h2></summary>
       <p class="form-description" style="margin-bottom: 16px;">Search discuss.watch forums for grant-related discussions across 150+ Discourse communities.</p>
       <div class="run-form">
         <div class="form-row" style="align-items: flex-end;">
@@ -2692,10 +2725,10 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         <div id="forum-run-result" style="display: none; margin-top: 16px; padding: 12px 16px; background: var(--bg); border-radius: var(--radius-lg); border: 1px solid var(--border);">
         </div>
       </div>
-    </div>
+    </details>
 
-    <div class="card">
-      <h2>Scan Intake</h2>
+    <details class="card">
+      <summary><h2>Scan Intake</h2></summary>
       <p class="form-description" style="margin-bottom: 16px;">Paste structured Grok scan output to ingest, deduplicate, and score entries.</p>
       <div class="run-form">
         <div class="form-row">
@@ -2736,10 +2769,10 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       <div id="scan-result" style="display: none; margin-top: 16px; padding: 12px 16px; background: var(--bg); border-radius: var(--radius-lg); border: 1px solid var(--border);">
         <p style="margin: 0; color: var(--text-secondary);">Results will appear here</p>
       </div>
-    </div>
+    </details>
 
-    <div class="card">
-      <h2>Daily Queue <span id="queue-count-badge" style="display: none; background: var(--accent); color: var(--accent-fg); font-size: 13px; padding: 2px 10px; border-radius: var(--radius-xl); margin-left: 8px; font-weight: 600;"></span></h2>
+    <details class="card">
+      <summary><h2>Daily Queue <span id="queue-count-badge" style="display: none; background: var(--accent); color: var(--accent-fg); font-size: 13px; padding: 2px 10px; border-radius: var(--radius-xl); margin-left: 8px; font-weight: 600;"></span></h2></summary>
       <div id="dedup-stats" class="status-grid" style="margin-bottom: 16px;"></div>
       <p class="form-description" style="margin-bottom: 16px;">Review prioritized scan entries. <strong>Approve</strong> = queue for newsletter. <strong>Review Later</strong> = come back to this. <strong>Decline</strong> = not relevant.</p>
       <div class="form-row" style="margin-bottom: 16px;">
@@ -2763,13 +2796,13 @@ function renderDashboard(files: StoredFile[], message?: string): string {
         <p style="color: var(--text-muted);">Click "Load Queue" to view entries.</p>
       </div>
       <p style="margin-top: 12px;"><a href="/queue" style="color: var(--accent); text-decoration: none; font-size: 14px; font-weight: 500;">View Full Queue with Duplicates &rarr;</a></p>
-    </div>
+    </details>
 
-    <div class="card">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-        <h2 style="margin: 0;">Prompt Management</h2>
+    <details class="card">
+      <summary style="margin-bottom: 16px;">
+        <h2>Prompt Management</h2>
         <button type="button" id="add-prompt" class="button" style="padding: 8px 16px; font-size: 13px;">+ Add Prompt</button>
-      </div>
+      </summary>
       <p class="form-description" style="margin-bottom: 16px;">Manage scan prompts for automated Grok queries. Test prompts to preview output before scheduling.</p>
       <div id="prompts-list"></div>
       <div id="prompt-form" class="run-form" style="display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border);">
@@ -2820,10 +2853,10 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       <div id="prompt-test-result" style="display: none; margin-top: 16px; padding: 12px 16px; background: var(--bg); border-radius: var(--radius-lg); border: 1px solid var(--border);">
         <p style="margin: 0; color: var(--text-secondary);">Test results will appear here</p>
       </div>
-    </div>
+    </details>
 
-    <div class="card">
-      <h2>Prompt Effectiveness</h2>
+    <details class="card">
+      <summary><h2>Prompt Effectiveness</h2></summary>
       <p class="form-description" style="margin-bottom: 16px;">How well each prompt performs: unique results, duplicate rate, quality scores.</p>
       <div class="form-row" style="margin-bottom: 16px; align-items: flex-end;">
         <div class="form-group">
@@ -2835,10 +2868,17 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       <div id="prompt-stats-results">
         <p style="color: var(--text-muted);">Loading stats\u2026</p>
       </div>
-    </div>
+    </details>
   </div>
 
   <script>
+    // Prevent buttons inside <summary> from toggling the details
+    document.querySelectorAll('details.card summary button').forEach(function(btn) {
+      btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+      });
+    });
+
     function escapeHtml(str) {
       const div = document.createElement('div');
       div.textContent = str;
@@ -4970,6 +5010,7 @@ function renderQueuePage(): string {
       <div class="header-right">
         <span style="color: var(--accent); font-size: 14px; font-weight: 600;">Daily Queue</span>
         <a href="/dashboard">Dashboard</a>
+        <a href="/logout" style="color: var(--text-muted);">Logout</a>
       </div>
     </div>
   </div>
