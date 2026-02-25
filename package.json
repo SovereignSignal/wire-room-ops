@@ -1,5 +1,5 @@
 {
-  "name": "grant-wire-summarizer",
+  "name": "wire-room-ops",
   "version": "1.0.0",
   "description": "Automated weekly newsletter preparation for Crypto Grant Wire",
   "main": "dist/index.js",

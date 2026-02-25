@@ -1,5 +1,5 @@
 -- Migration: Add scan pipeline tables
--- Run this against your existing grant-wire-summarizer Postgres database
+-- Run this against your existing wire-room-ops Postgres database
 
 -- ============================================================
 -- scan_entries: All raw and processed scan results

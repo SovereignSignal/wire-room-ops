@@ -1,7 +1,7 @@
 # Wire Ops Dashboard QA Report
 
 **Date**: 2026-02-23
-**URL Tested**: https://grant-wire-summarizer-production.up.railway.app/
+**URL Tested**: https://wire-room-ops-production.up.railway.app/
 **Server Health**: OK (timestamp: 2026-02-24T02:55:11.795Z)
 
 ---
@@ -68,7 +68,7 @@ Conducted systematic testing of the Wire Ops dashboard covering: login flow, das
 
 **Severity**: Critical
 **Steps to Reproduce**:
-1. Navigate to https://grant-wire-summarizer-production.up.railway.app/queue
+1. Navigate to https://wire-room-ops-production.up.railway.app/queue
 2. Page renders HTML structure but shows "Loading..." indefinitely
 3. Tabs, filters, and Refresh button are non-functional
 

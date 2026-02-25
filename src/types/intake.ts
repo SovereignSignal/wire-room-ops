@@ -1,6 +1,6 @@
 /**
  * Types for the scan intake, deduplication, and quality scoring pipeline.
- * These extend the existing grant-wire-summarizer type system.
+ * These extend the existing wire-room-ops type system.
  */
 
 // Wire values are dynamic (driven by feeds table), so we use string

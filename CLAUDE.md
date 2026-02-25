@@ -1,10 +1,10 @@
-# CLAUDE.md - AI Context for CryptoGrantWire
+# CLAUDE.md - AI Context for Wire Room Ops
 
 This file provides context for AI assistants working with this codebase.
 
 ## Project Overview
 
-**CryptoGrantWire Summarizer** is a Node.js/TypeScript application that automates weekly newsletter preparation for a cryptocurrency grants-focused newsletter. It pulls categorized entries from a Postgres database, enriches them using AI (Grok for X.com content, Claude for other URLs), and generates formatted markdown files.
+**Wire Room Ops** is a Node.js/TypeScript application that powers the backend pipeline and admin dashboard for The Wire Room. It automates grant discovery, intake processing, and multi-channel distribution across crypto, AI, and OSS beats. It pulls categorized entries from a Postgres database, enriches them using AI (Grok for X.com content, Claude for other URLs), and generates formatted markdown files.
 
 ## Multi-Repo Architecture
 
@@ -12,7 +12,7 @@ This backend is one half of a two-repo system:
 
 | Repo | Role | Location |
 |------|------|----------|
-| `grant-wire-summarizer` (this repo) | Backend pipeline + admin dashboard | `~/GitHub/grant-wire-summarizer` |
+| `wire-room-ops` (this repo) | Backend pipeline + admin dashboard | `~/GitHub/wire-room-ops` |
 | `the-wire-room` | Public-facing Next.js website | `~/GitHub/the-wire-room` |
 
 Both repos share the **same PostgreSQL database**. This repo writes to it; the Wire Room reads from it.
