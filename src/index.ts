@@ -2,7 +2,7 @@ import { validateConfig } from './config';
 import { startServer } from './server';
 
 async function main() {
-  console.log('[Startup] Starting Crypto Grant Wire Summarizer...');
+  console.log('[Startup] Starting Wire Room Ops...');
 
   try {
     validateConfig();

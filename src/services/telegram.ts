@@ -215,7 +215,7 @@ async function handleStatusCommand(chatId: number, userId: string): Promise<void
 }
 
 function formatHelpMessage(): string {
-  return `<b>CryptoGrantWire Bot</b>
+  return `<b>The Wire Room Bot</b>
 
 Send me a URL to a grant or funding opportunity and I'll extract the details and add it to the pipeline.
 

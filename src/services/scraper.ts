@@ -61,7 +61,7 @@ export async function resolveUrl(url: string): Promise<string> {
       method: 'HEAD',
       redirect: 'follow',
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; CryptoGrantWire/1.0)',
+        'User-Agent': 'Mozilla/5.0 (compatible; WireRoomOps/1.0)',
       },
     });
 
@@ -78,7 +78,7 @@ export async function resolveUrl(url: string): Promise<string> {
         method: 'GET',
         redirect: 'manual',
         headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; CryptoGrantWire/1.0)',
+          'User-Agent': 'Mozilla/5.0 (compatible; WireRoomOps/1.0)',
         },
       });
 

@@ -33,7 +33,7 @@ export async function sendLoginEmail(email: string, magicLink: string): Promise<
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Sign in to CryptoGrantWire</title>
+  <title>Sign in to The Wire Room</title>
 </head>
 <body style="margin: 0; padding: 0; background-color: #0d0d0d; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
   <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #0d0d0d;">
@@ -44,7 +44,7 @@ export async function sendLoginEmail(email: string, magicLink: string): Promise<
             <td style="padding: 48px 40px; text-align: center;">
               <!-- Logo -->
               <h1 style="margin: 0 0 8px; font-size: 28px; font-weight: 700;">
-                <span style="color: #ffffff;">Crypto</span><span style="color: #f5a623;">Grant</span><span style="color: #ffffff;">Wire</span>
+                <span style="color: #ffffff;">The</span> <span style="color: #f5a623;">Wire</span> <span style="color: #ffffff;">Room</span>
               </h1>
               <p style="margin: 0 0 32px; color: #999999; font-size: 16px;">Sign in to your dashboard</p>
 
@@ -75,7 +75,7 @@ export async function sendLoginEmail(email: string, magicLink: string): Promise<
 
         <!-- Bottom text -->
         <p style="margin: 24px 0 0; color: #666666; font-size: 12px;">
-          CryptoGrantWire Newsletter Automation
+          The Wire Room
         </p>
       </td>
     </tr>
@@ -85,7 +85,7 @@ export async function sendLoginEmail(email: string, magicLink: string): Promise<
   `.trim();
 
   const textContent = `
-CryptoGrantWire - Sign In
+The Wire Room - Sign In
 
 Click here to sign in to your dashboard:
 ${magicLink}
@@ -94,14 +94,14 @@ This link expires in 15 minutes.
 If you didn't request this, you can safely ignore this email.
 
 ---
-CryptoGrantWire Newsletter Automation
+The Wire Room
   `.trim();
 
   try {
     const result = await client.emails.send({
       from: config.email.fromEmail,
       to: email,
-      subject: 'Sign in to Crypto Grant Wire',
+      subject: 'Sign in to The Wire Room',
       html: htmlContent,
       text: textContent,
     });
@@ -127,7 +127,7 @@ export async function sendNotificationEmail(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Weekly Summaries Ready - CryptoGrantWire</title>
+  <title>Weekly Summaries Ready - The Wire Room</title>
 </head>
 <body style="margin: 0; padding: 0; background-color: #0d0d0d; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
   <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #0d0d0d;">
@@ -138,7 +138,7 @@ export async function sendNotificationEmail(
             <td style="padding: 40px;">
               <!-- Logo -->
               <h1 style="margin: 0 0 8px; font-size: 24px; font-weight: 700; text-align: center;">
-                <span style="color: #ffffff;">Crypto</span><span style="color: #f5a623;">Grant</span><span style="color: #ffffff;">Wire</span>
+                <span style="color: #ffffff;">The</span> <span style="color: #f5a623;">Wire</span> <span style="color: #ffffff;">Room</span>
               </h1>
               <p style="margin: 0 0 24px; color: #999999; font-size: 14px; text-align: center;">Newsletter Automation</p>
 
@@ -193,7 +193,7 @@ export async function sendNotificationEmail(
               </table>
 
               <p style="margin: 16px 0 0; color: #666666; font-size: 13px; text-align: center;">
-                This link requires Magic Link authentication.
+                This link requires dashboard authentication.
               </p>
 
               <!-- Footer -->
@@ -212,7 +212,7 @@ export async function sendNotificationEmail(
 
         <!-- Bottom text -->
         <p style="margin: 24px 0 0; color: #666666; font-size: 12px;">
-          CryptoGrantWire Newsletter Automation
+          The Wire Room
         </p>
       </td>
     </tr>
@@ -222,7 +222,7 @@ export async function sendNotificationEmail(
   `.trim();
 
   const textContent = `
-CryptoGrantWire - Weekly Summaries Ready
+The Wire Room - Weekly Summaries Ready
 
 Hey Sov, your Grant Wire summaries for this week are ready for review.
 
@@ -236,17 +236,17 @@ ${stats.failedProcessing > 0 ? `- ${stats.failedProcessing} entries need manual 
 Download your file:
 ${downloadUrl}
 
-(This link requires Magic Link authentication)
+(This link requires dashboard authentication)
 
 ---
 Week of ${dateRangeStr}
-CryptoGrantWire Newsletter Automation
+The Wire Room
   `.trim();
 
   await client.emails.send({
     from: config.email.fromEmail,
     to: config.email.notificationEmail,
-    subject: `Crypto Grant Wire Weekly Summaries Ready - ${dateRangeStr}`,
+    subject: `Weekly Summaries Ready - ${dateRangeStr}`,
     html: htmlContent,
     text: textContent,
   });
@@ -271,7 +271,7 @@ export async function sendTestAlertEmail(): Promise<void> {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Test Alert - CryptoGrantWire</title>
+  <title>Test Alert - The Wire Room</title>
 </head>
 <body style="margin: 0; padding: 0; background-color: #0d0d0d; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
   <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #0d0d0d;">
@@ -282,7 +282,7 @@ export async function sendTestAlertEmail(): Promise<void> {
             <td style="padding: 48px 40px; text-align: center;">
               <!-- Logo -->
               <h1 style="margin: 0 0 8px; font-size: 28px; font-weight: 700;">
-                <span style="color: #ffffff;">Crypto</span><span style="color: #f5a623;">Grant</span><span style="color: #ffffff;">Wire</span>
+                <span style="color: #ffffff;">The</span> <span style="color: #f5a623;">Wire</span> <span style="color: #ffffff;">Room</span>
               </h1>
               <p style="margin: 0 0 32px; color: #999999; font-size: 16px;">Test Alert</p>
 
@@ -308,7 +308,7 @@ export async function sendTestAlertEmail(): Promise<void> {
 
         <!-- Bottom text -->
         <p style="margin: 24px 0 0; color: #666666; font-size: 12px;">
-          CryptoGrantWire Newsletter Automation
+          The Wire Room
         </p>
       </td>
     </tr>
@@ -318,7 +318,7 @@ export async function sendTestAlertEmail(): Promise<void> {
   `.trim();
 
   const textContent = `
-CryptoGrantWire - Test Alert
+The Wire Room - Test Alert
 
 Email Alerts Are Working!
 
@@ -328,7 +328,7 @@ If you received this email, your scheduled alerts will work properly.
 Sent at: ${timestamp}
 
 ---
-CryptoGrantWire Newsletter Automation
+The Wire Room
   `.trim();
 
   console.log(`[Email] Sending test alert to: ${config.email.notificationEmail}`);
@@ -336,7 +336,7 @@ CryptoGrantWire Newsletter Automation
   await client.emails.send({
     from: config.email.fromEmail,
     to: config.email.notificationEmail,
-    subject: 'Test Alert - CryptoGrantWire',
+    subject: 'Test Alert - The Wire Room',
     html: htmlContent,
     text: textContent,
   });
@@ -362,7 +362,7 @@ export async function sendScheduledJobFailureEmail(errorMessage: string, jobStar
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Scheduled Job Failed - CryptoGrantWire</title>
+  <title>Scheduled Job Failed - The Wire Room</title>
 </head>
 <body style="margin: 0; padding: 0; background-color: #0d0d0d; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
   <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #0d0d0d;">
@@ -373,7 +373,7 @@ export async function sendScheduledJobFailureEmail(errorMessage: string, jobStar
             <td style="padding: 48px 40px; text-align: center;">
               <!-- Logo -->
               <h1 style="margin: 0 0 8px; font-size: 28px; font-weight: 700;">
-                <span style="color: #ffffff;">Crypto</span><span style="color: #f5a623;">Grant</span><span style="color: #ffffff;">Wire</span>
+                <span style="color: #ffffff;">The</span> <span style="color: #f5a623;">Wire</span> <span style="color: #ffffff;">Room</span>
               </h1>
               <p style="margin: 0 0 32px; color: #999999; font-size: 16px;">Scheduled Job Alert</p>
 
@@ -412,7 +412,7 @@ export async function sendScheduledJobFailureEmail(errorMessage: string, jobStar
 
         <!-- Bottom text -->
         <p style="margin: 24px 0 0; color: #666666; font-size: 12px;">
-          CryptoGrantWire Newsletter Automation
+          The Wire Room
         </p>
       </td>
     </tr>
@@ -422,7 +422,7 @@ export async function sendScheduledJobFailureEmail(errorMessage: string, jobStar
   `.trim();
 
   const textContent = `
-CryptoGrantWire - Scheduled Job Failed
+The Wire Room - Scheduled Job Failed
 
 The scheduled weekly summary job failed to complete.
 
@@ -435,7 +435,7 @@ Job started at: ${timestamp}
 Please check the dashboard or server logs for more details.
 
 ---
-CryptoGrantWire Newsletter Automation
+The Wire Room
   `.trim();
 
   const to = recipients && recipients.length > 0 ? recipients : config.email.notificationEmail;
@@ -444,7 +444,7 @@ CryptoGrantWire Newsletter Automation
   await client.emails.send({
     from: config.email.fromEmail,
     to,
-    subject: 'CryptoGrantWire Scheduled Job Failed',
+    subject: 'Wire Room Ops - Scheduled Job Failed',
     html: htmlContent,
     text: textContent,
   });
@@ -463,7 +463,7 @@ export async function sendResendLinkEmail(email: string, downloadUrl: string, fi
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>New Download Link - CryptoGrantWire</title>
+  <title>New Download Link - The Wire Room</title>
 </head>
 <body style="margin: 0; padding: 0; background-color: #0d0d0d; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
   <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #0d0d0d;">
@@ -473,7 +473,7 @@ export async function sendResendLinkEmail(email: string, downloadUrl: string, fi
           <tr>
             <td style="padding: 48px 40px; text-align: center;">
               <h1 style="margin: 0 0 8px; font-size: 28px; font-weight: 700;">
-                <span style="color: #ffffff;">Crypto</span><span style="color: #f5a623;">Grant</span><span style="color: #ffffff;">Wire</span>
+                <span style="color: #ffffff;">The</span> <span style="color: #f5a623;">Wire</span> <span style="color: #ffffff;">Room</span>
               </h1>
               <p style="margin: 0 0 32px; color: #999999; font-size: 16px;">Fresh Download Link</p>
 
@@ -501,7 +501,7 @@ export async function sendResendLinkEmail(email: string, downloadUrl: string, fi
   `.trim();
 
   const textContent = `
-CryptoGrantWire - Fresh Download Link
+The Wire Room - Fresh Download Link
 
 Your new download link is ready.
 
@@ -515,7 +515,7 @@ This link expires in 24 hours.
   await client.emails.send({
     from: config.email.fromEmail,
     to: email,
-    subject: 'CryptoGrantWire - Fresh Download Link',
+    subject: 'The Wire Room - Fresh Download Link',
     html: htmlContent,
     text: textContent,
   });
@@ -613,7 +613,7 @@ export async function sendScanDigestEmail(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Daily Scan Digest - CryptoGrantWire</title>
+  <title>Daily Scan Digest - The Wire Room</title>
 </head>
 <body style="margin: 0; padding: 0; background-color: #0d0d0d; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
   <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #0d0d0d;">
@@ -624,7 +624,7 @@ export async function sendScanDigestEmail(
             <td style="padding: 40px;">
               <!-- Logo -->
               <h1 style="margin: 0 0 8px; font-size: 24px; font-weight: 700; text-align: center;">
-                <span style="color: #ffffff;">Crypto</span><span style="color: #f5a623;">Grant</span><span style="color: #ffffff;">Wire</span>
+                <span style="color: #ffffff;">The</span> <span style="color: #f5a623;">Wire</span> <span style="color: #ffffff;">Room</span>
               </h1>
               <p style="margin: 0 0 24px; color: #999999; font-size: 14px; text-align: center;">Daily Scan Digest</p>
 
@@ -708,7 +708,7 @@ export async function sendScanDigestEmail(
 
         <!-- Bottom text -->
         <p style="margin: 24px 0 0; color: #666666; font-size: 12px;">
-          CryptoGrantWire Newsletter Automation
+          The Wire Room
         </p>
       </td>
     </tr>
@@ -718,7 +718,7 @@ export async function sendScanDigestEmail(
   `.trim();
 
   const textContent = `
-CryptoGrantWire - Daily Scan Digest
+The Wire Room - Daily Scan Digest
 
 Scan Results for ${dateStr}
 
@@ -741,7 +741,7 @@ Review Queue: ${reviewUrl}
 
 ---
 You're receiving this because scan-execution completed. Manage schedules on your dashboard.
-CryptoGrantWire Newsletter Automation
+The Wire Room
   `.trim();
 
   const to = recipients && recipients.length > 0 ? recipients : config.email.notificationEmail;

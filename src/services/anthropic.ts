@@ -4,7 +4,7 @@ import { DatabaseEntry } from '../types';
 import { scrapeUrl, isScrapableUrl, truncateContent } from './scraper';
 
 // Prompt when we have scraped content
-const SCRAPED_CONTENT_PROMPT = `Summarize this web page for the Crypto Grant Wire newsletter.
+const SCRAPED_CONTENT_PROMPT = `Summarize this web page for The Wire Room newsletter.
 
 URL: {url}
 
@@ -34,7 +34,7 @@ BAD EXAMPLE (too vague):
 **Cornaro Labs** published a report on EU crypto funding. The report covers funded projects and how to apply. More details in the linked analysis.`;
 
 // Fallback prompt when scraping fails
-const FALLBACK_PROMPT = `Refine this summary for the Crypto Grant Wire newsletter.
+const FALLBACK_PROMPT = `Refine this summary for The Wire Room newsletter.
 
 URL: {url}
 Existing summary: {existing_summary}

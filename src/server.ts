@@ -2028,8 +2028,8 @@ function renderLoginPage(): string {
               setError(data.error || 'Authentication failed');
               setAuthenticating(false);
             }
-          }).catch(() => {
-            setError('Authentication failed. Please try again.');
+          }).catch(err => {
+            setError(err.message || 'Authentication failed. Please try again.');
             setAuthenticating(false);
           });
         }
@@ -2662,7 +2662,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
           </div>
           <div class="form-group" style="flex: 1;">
             <label for="distXHandle">X Handle (without @)</label>
-            <input type="text" id="distXHandle" placeholder="CryptoGrantWire" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); font-size: 14px; background: var(--bg); color: var(--text);">
+            <input type="text" id="distXHandle" placeholder="TheWireRoom" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); font-size: 14px; background: var(--bg); color: var(--text);">
           </div>
         </div>
         <div class="form-row" style="margin-bottom: 12px;">

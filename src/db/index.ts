@@ -498,9 +498,9 @@ function parseScanPromptRow(row: any): ScanPromptRecord {
 }
 
 const SEED_FEEDS: Record<string, { displayName: string; titleTemplate: string }> = {
-  crypto: { displayName: 'Crypto', titleTemplate: "Sov's Crypto Grant Wire Weekly Update" },
-  ai: { displayName: 'AI', titleTemplate: "Sov's AI Grant Wire Weekly Update" },
-  oss: { displayName: 'OSS', titleTemplate: "Sov's OSS Grant Wire Weekly Update" },
+  crypto: { displayName: 'Crypto', titleTemplate: "The Wire Room — Crypto Weekly Update" },
+  ai: { displayName: 'AI', titleTemplate: "The Wire Room — AI Weekly Update" },
+  oss: { displayName: 'OSS', titleTemplate: "The Wire Room — OSS Weekly Update" },
 };
 
 export async function ensureFeedsTable(): Promise<void> {

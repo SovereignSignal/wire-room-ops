@@ -2,7 +2,7 @@ import { config } from '../config';
 import { DatabaseEntry } from '../types';
 import type { ToolType } from '../types/intake';
 
-const GROK_PROMPT = `You have access to X.com posts. Access and summarize this X.com/Twitter post for the Crypto Grant Wire newsletter.
+const GROK_PROMPT = `You have access to X.com posts. Access and summarize this X.com/Twitter post for The Wire Room newsletter.
 
 URL: {url}
 
