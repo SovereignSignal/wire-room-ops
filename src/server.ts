@@ -2105,8 +2105,8 @@ function renderDashboard(files: StoredFile[], message?: string): string {
       cursor: pointer;
       list-style: none;
       display: flex;
-      justify-content: space-between;
       align-items: center;
+      gap: 0;
       user-select: none;
     }
     details.card summary::-webkit-details-marker { display: none; }
@@ -2121,7 +2121,7 @@ function renderDashboard(files: StoredFile[], message?: string): string {
     details.card[open] > summary::before {
       transform: rotate(90deg);
     }
-    details.card summary h2 { margin: 0; }
+    details.card summary h2 { margin: 0; flex: 1; }
     .message {
       padding: 12px 16px;
       border-radius: var(--radius-lg);
