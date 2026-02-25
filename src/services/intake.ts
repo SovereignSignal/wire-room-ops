@@ -287,6 +287,9 @@ function parseXPostFormat(text: string): RawScanResult[] {
   // Strip the "Model:" header line if present
   let content = text.replace(/^Model:.*\n/, '');
 
+  // Normalize markdown-linked handles: [@Handle](url) → @Handle
+  content = content.replace(/\[@(\w+)\]\([^)]*\)/g, '@$1');
+
   // Split into blocks by @Handle headers
   const blocks: string[] = [];
   let currentBlock = '';
@@ -320,14 +323,15 @@ function parseXPostFormat(text: string): RawScanResult[] {
     for (let i = 1; i < lines.length; i++) {
       const line = lines[i];
 
-      // X.com URL
-      if (/^https?:\/\/(x\.com|twitter\.com)\/\S+/.test(line)) {
-        sourceUrl = line;
+      // X.com URL (standalone or as markdown link)
+      const urlMatch = line.match(/https?:\/\/(x\.com|twitter\.com)\/\S+/);
+      if (urlMatch && line.replace(urlMatch[0], '').trim().length < 5) {
+        sourceUrl = urlMatch[0].replace(/[)\]]+$/, ''); // strip trailing ] or )
         continue;
       }
 
-      // Date line (YYYY-MM-DD)
-      if (/^\d{4}-\d{2}-\d{2}$/.test(line)) {
+      // Date line (YYYY-MM-DD or "Day, DD Mon YYYY..." format)
+      if (/^\d{4}-\d{2}-\d{2}$/.test(line) || /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+\d{1,2}\s+\w+\s+\d{4}/i.test(line)) {
         continue;
       }
 
