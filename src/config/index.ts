@@ -2,6 +2,13 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
+function normalizeAppUrl(url: string): string {
+  if (url && !url.startsWith('http://') && !url.startsWith('https://')) {
+    return `https://${url}`;
+  }
+  return url;
+}
+
 export const config = {
   database: {
     url: process.env.DATABASE_URL || '',
@@ -44,8 +51,10 @@ export const config = {
   },
   
   app: {
-    url: process.env.APP_URL
-      || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : 'http://localhost:3000'),
+    url: normalizeAppUrl(
+      process.env.APP_URL
+        || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : 'http://localhost:3000')
+    ),
     port: parseInt(process.env.PORT || '3000', 10),
   },
   
