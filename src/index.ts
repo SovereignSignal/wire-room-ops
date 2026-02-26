@@ -1,4 +1,4 @@
-import { validateConfig } from './config';
+import { validateConfig, config } from './config';
 import { startServer } from './server';
 
 async function main() {
@@ -7,6 +7,7 @@ async function main() {
   try {
     validateConfig();
     console.log('[Startup] Configuration validated');
+    console.log(`[Startup] APP_URL: ${config.app.url}`);
   } catch (error) {
     console.error('[Startup] Configuration error:', error);
     process.exit(1);

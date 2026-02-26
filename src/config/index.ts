@@ -44,7 +44,8 @@ export const config = {
   },
   
   app: {
-    url: process.env.APP_URL || 'http://localhost:3000',
+    url: process.env.APP_URL
+      || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : 'http://localhost:3000'),
     port: parseInt(process.env.PORT || '3000', 10),
   },
   
