@@ -1,7 +1,7 @@
 {
   "name": "wire-room-ops",
   "version": "1.0.0",
-  "description": "Automated weekly newsletter preparation for Crypto Grant Wire",
+  "description": "Backend pipeline and admin dashboard for The Wire Room",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",

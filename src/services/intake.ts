@@ -16,6 +16,18 @@ import type {
   ScanSubmission,
 } from '../types/intake';
 
+/**
+ * Strip markdown artifacts that Grok injects into output.
+ * Removes reference-style links [[N]](url) and code fence markers.
+ */
+function stripMarkdownArtifacts(text: string): string {
+  return text
+    .replace(/\[?\[(\d+)\]\]?\([^)]*\)/g, '')  // [[N]](url) or [N](url)
+    .replace(/```[\w]*\n?/g, '')                 // ``` or ```json
+    .replace(/\s{2,}/g, ' ')                     // collapse extra whitespace
+    .trim();
+}
+
 // ============================================================
 // Text Parser: Structured Grok Output -> RawScanResult[]
 // ============================================================
@@ -69,8 +81,8 @@ function parseStructuredText(text: string): RawScanResult[] {
       if (currentEntry && currentEntry.name && currentEntry.sourceUrl) {
         results.push(currentEntry as RawScanResult);
       }
-      const name = headerMatch[1].trim();
-      const description = headerMatch[2].trim();
+      const name = stripMarkdownArtifacts(headerMatch[1].trim());
+      const description = stripMarkdownArtifacts(headerMatch[2].trim());
       currentEntry = {
         name,
         description,
@@ -170,8 +182,8 @@ function parseJsonOutput(text: string): RawScanResult[] {
     if (!name && !description) continue;
 
     results.push({
-      name: String(name).trim() || 'Unknown',
-      description: String(description).trim() || 'Found via X scan',
+      name: stripMarkdownArtifacts(String(name).trim()) || 'Unknown',
+      description: stripMarkdownArtifacts(String(description).trim()) || 'Found via X scan',
       amount: obj.amount ? String(obj.amount) : extractAmount(String(description)),
       deadline: obj.deadline ? normalizeDeadline(String(obj.deadline)) : null,
       sourceUrl: String(sourceUrl).trim(),
@@ -202,8 +214,8 @@ function parseLenientNumberedList(text: string): RawScanResult[] {
       if (currentEntry && currentEntry.name) {
         results.push(finalizeLenientEntry(currentEntry));
       }
-      const name = headerMatch[1].trim();
-      const description = headerMatch[2].trim();
+      const name = stripMarkdownArtifacts(headerMatch[1].trim());
+      const description = stripMarkdownArtifacts(headerMatch[2].trim());
       const inlineUrl = description.match(/(https?:\/\/\S+)/);
 
       currentEntry = {
@@ -339,7 +351,7 @@ function parseXPostFormat(text: string): RawScanResult[] {
     }
 
     // Build description from body (first 300 chars)
-    const description = bodyLines.join(' ').substring(0, 300).trim() || title;
+    const description = stripMarkdownArtifacts(bodyLines.join(' ').substring(0, 300).trim()) || stripMarkdownArtifacts(title);
 
     // Extract amount from combined text
     const fullText = title + ' ' + bodyLines.join(' ');
@@ -423,9 +435,9 @@ export function parseAmount(
   else if (text.match(/[â¹]|INR/i)) currency = 'INR';
   else if (text.match(/NGN|4b¦/i)) currency = 'NGN';
   else if (text.match(/N\$/)) currency = 'NAD';
-  else if (text.match(/SOL/i)) currency = 'SOL';
-  else if (text.match(/STX/i)) currency = 'STX';
-  else if (text.match(/ENS/i)) currency = 'ENS';
+  else if (text.match(/\bSOL\b/)) currency = 'SOL';
+  else if (text.match(/\bSTX\b/)) currency = 'STX';
+  else if (text.match(/\bENS\b/)) currency = 'ENS';
   else if (text.match(/USDT|USDC/i)) currency = 'USD';
 
   // Strip currency symbols and words

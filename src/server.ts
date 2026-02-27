@@ -6,7 +6,7 @@ import jwt from 'jsonwebtoken';
 import jwksClient from 'jwks-rsa';
 import { getFile, listFiles } from './services/storage';
 import { getAvailableWires, closePool, getAllFeeds, getFeedByKey, createFeed, updateFeed, archiveFeed, getEntryCountsByWire, getAllScanPrompts, getScanPromptById, createScanPrompt, updateScanPrompt, deleteScanPrompt, getStatusCounts, getEntriesByStatus, getSeenUrlStats, getSeenUrlsList, getDistributionLogs, getDistributionLogsByEntryIds, getDistributionConfigs, getDistributionConfig, upsertDistributionConfig } from './db';
-import { sendScanDigestEmail } from './services/email';
+import { sendScanDigestEmail, sendResendLinkEmail } from './services/email';
 import { runWeeklySummaryJob } from './jobs/weekly-summary';
 import { StoredFile } from './types';
 import { jobQueue } from './services/job-queue';
@@ -161,13 +161,16 @@ app.get('/health', (_req: Request, res: Response) => {
 
 // Telegram Bot Webhook
 app.post('/webhook/telegram', (req: Request, res: Response) => {
-  // Verify webhook secret
-  if (config.telegram.webhookSecret) {
-    const secretHeader = req.headers['x-telegram-bot-api-secret-token'] as string;
-    if (secretHeader !== config.telegram.webhookSecret) {
-      res.status(403).json({ error: 'Invalid secret' });
-      return;
-    }
+  // Verify webhook secret (fail closed — reject if not configured)
+  if (!config.telegram.webhookSecret) {
+    console.warn('[Webhook/Telegram] Rejecting: TELEGRAM_WEBHOOK_SECRET not configured');
+    res.status(403).json({ error: 'Webhook not configured' });
+    return;
+  }
+  const secretHeader = req.headers['x-telegram-bot-api-secret-token'] as string;
+  if (secretHeader !== config.telegram.webhookSecret) {
+    res.status(403).json({ error: 'Invalid secret' });
+    return;
   }
 
   // Rate limit: 10 messages per minute per chat
@@ -187,14 +190,17 @@ app.post('/webhook/telegram', (req: Request, res: Response) => {
 
 // Resend Inbound Email Webhook
 app.post('/webhook/email', (req: Request, res: Response) => {
-  // Verify Resend signature if secret is configured
-  if (config.inboundEmail.webhookSigningSecret) {
-    const signature = req.headers['resend-signature'] as string || '';
-    const rawBody = (req as any).rawBody?.toString() || JSON.stringify(req.body);
-    if (!verifyResendSignature(rawBody, signature)) {
-      res.status(403).json({ error: 'Invalid signature' });
-      return;
-    }
+  // Verify Resend signature (fail closed — reject if not configured)
+  if (!config.inboundEmail.webhookSigningSecret) {
+    console.warn('[Webhook/Email] Rejecting: RESEND_WEBHOOK_SECRET not configured');
+    res.status(403).json({ error: 'Webhook not configured' });
+    return;
+  }
+  const signature = req.headers['resend-signature'] as string || '';
+  const rawBody = (req as any).rawBody?.toString() || JSON.stringify(req.body);
+  if (!verifyResendSignature(rawBody, signature)) {
+    res.status(403).json({ error: 'Invalid signature' });
+    return;
   }
 
   const payload: ResendInboundPayload = req.body;
@@ -669,7 +675,6 @@ app.post('/resend-link', async (req: Request, res: Response) => {
     const latestFile = files[0];
 
     const downloadUrl = createMagicLink(config.email.notificationEmail, latestFile.id);
-    const { sendResendLinkEmail } = require('./services/email');
     await sendResendLinkEmail(config.email.notificationEmail, downloadUrl, latestFile.filename);
     
     res.send(renderResendSuccessPage());
@@ -920,6 +925,12 @@ app.delete('/api/schedules/:id', requireAuth, async (req: Request, res: Response
 
 // API: Update schedule (legacy POST compatibility)
 app.post('/api/schedule', requireAuth, async (req: Request, res: Response) => {
+  const validationError = validateScheduleParams(req.body);
+  if (validationError) {
+    res.status(400).json({ error: validationError });
+    return;
+  }
+
   const id = req.body.id;
 
   const { name, enabled, dayOfWeek, hour, minute, lookbackDays, grokModel, anthropicModel, timezone, wire, scheduleType } = req.body;

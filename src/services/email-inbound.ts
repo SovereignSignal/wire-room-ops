@@ -50,21 +50,26 @@ export function verifyResendSignature(
 ): boolean {
   const secret = config.inboundEmail.webhookSigningSecret;
   if (!secret) return false;
+  if (!signature) return false;
 
   const expected = crypto
     .createHmac('sha256', secret)
     .update(payload)
     .digest('hex');
 
+  // Resend may send signature as "v1=<hex>" — extract the hash part
+  const signatureHash = signature.includes('=')
+    ? signature.split('=').slice(1).join('=')
+    : signature;
+
+  // timingSafeEqual throws on length mismatch
+  if (signatureHash.length !== expected.length) return false;
+
   // Constant-time comparison
-  try {
-    return crypto.timingSafeEqual(
-      Buffer.from(signature),
-      Buffer.from(expected)
-    );
-  } catch {
-    return false;
-  }
+  return crypto.timingSafeEqual(
+    Buffer.from(signatureHash),
+    Buffer.from(expected)
+  );
 }
 
 // ============================================================

@@ -385,7 +385,7 @@ src/
 | `/api/scan/seen-urls` | GET | List seen URLs for dedup inspection |
 | `/api/scan/run` | POST | Trigger automated scan execution (all active prompts) |
 | `/api/forum/run` | POST | Trigger manual forum scan |
-| `/api/scan/entries/:id/action` | POST | Take action on a scan entry (approve, skip, archive, queue) |
+| `/api/scan/entries/:id/action` | POST | Take action on a scan entry (approve, decline, reviewlater, restore) |
 | `/api/scan/prompt-stats` | GET | Get prompt effectiveness metrics and overlap stats |
 | **Scan Prompts** | | |
 | `/api/scan/prompts` | GET | List all scan prompts (filter by wire, active only) |
@@ -582,7 +582,7 @@ Default schedule: Wednesday at 9:00 AM Pacific, looking back 7 days.
 | `PRIVY_APP_ID` | Privy app ID for authentication | Yes |
 | `PRIVY_APP_SECRET` | Privy app secret for authentication | Yes |
 | `APP_URL` | Public URL of the app (default: `http://localhost:3000`) | No |
-| `FROM_EMAIL` | Sender email (default: `noreply@cryptograntwire.com`) | No |
+| `FROM_EMAIL` | Sender email (default: `noreply@thewireroom.xyz`) | No |
 | `PORT` | Server port (default: 3000) | No |
 | `START_DATE` | Override start date for CLI job (ISO format) | No |
 | `END_DATE` | Override end date for CLI job (ISO format) | No |

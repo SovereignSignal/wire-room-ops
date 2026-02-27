@@ -33,7 +33,7 @@ The Wire Room queries with `WHERE status = 'approved'` (optionally `AND wire = $
 ### Dual AI Processing
 - **Grok API** handles X.com/Twitter URLs because it has native access to tweet content
 - **Claude API** handles all other URLs, using Firecrawl for web scraping
-- This routing happens in `src/services/processor.ts` via `isXcomUrl()` check
+- This routing happens in `src/services/processor.ts` which imports `isXcomUrl()` from `src/services/grok.ts`
 
 ### Storage Strategy
 - **Generated files** and **schedule configs** are persisted to Postgres (survive restarts)
@@ -393,12 +393,16 @@ Automated discovery of grant opportunities via X.com scanning, web search, forum
 |--------|--------|-----------|
 | Has amount | +25 | Non-empty amount field |
 | Amount > $5K | +15 | Parsed numeric >= 5000 |
+| Small amount | -5 | Parsed numeric < 1000 |
 | Has deadline | +15 | Specific date (not "Rolling" or empty) |
+| Rolling deadline | +5 | Deadline is exactly "Rolling" |
 | Deadline upcoming | +10 | Within 60 days |
-| Funding opportunity | +20 | Grant, fellowship, hackathon, etc. |
-| Is actionable | +15 | Someone can apply/register |
+| Expired deadline | -10 | Deadline has passed |
+| Funding opportunity | +20 | Grant, fellowship, accelerator, etc. (FUNDING_TYPES) |
+| Is actionable | +15 | Hackathon, bounty, competition, or has opportunity keywords |
 | Governance noise | -15 | DAO proposals, treasury votes |
-| Already awarded | -10 | Past-tense grant language |
+| Already awarded | -10 | Past-tense grant language (when not also actionable/funding) |
+| Vague description | -5 | Description shorter than 30 characters |
 
 ### Common Tasks for Scan Pipeline
 - **Adjusting quality scoring weights**: `src/services/quality-scorer.ts` — modify point values in `scoreEntry()`

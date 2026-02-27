@@ -84,9 +84,10 @@ function generateFallback(entry: EntryData): PostContent {
   }
   const detailStr = details.length > 0 ? ` (${details.join(' | ')})` : '';
 
-  // Tweet: truncate description to fit
+  // Tweet: truncate description to fit (max 256 chars — leaves room for \n + 23-char t.co URL = 280)
+  const MAX_TWEET_TEXT = 256;
   const prefix = `${entry.name}${detailStr}`;
-  const maxDescLen = 270 - prefix.length - 3; // 3 for " - "
+  const maxDescLen = MAX_TWEET_TEXT - prefix.length - 3; // 3 for " - "
   let tweet: string;
   if (maxDescLen > 20) {
     const desc = entry.description.length > maxDescLen
@@ -94,7 +95,7 @@ function generateFallback(entry: EntryData): PostContent {
       : entry.description;
     tweet = `${prefix} - ${desc}`;
   } else {
-    tweet = prefix.substring(0, 270);
+    tweet = prefix.substring(0, MAX_TWEET_TEXT);
   }
 
   // Telegram: structured HTML

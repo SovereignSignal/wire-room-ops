@@ -117,13 +117,22 @@ async function distributeTelegram(
     return { status: 'skipped' };
   }
 
-  const log = await insertDistributionLog({
-    entryId,
-    channel: 'telegram',
-    wire,
-    status: 'pending',
-    postText: posts?.telegram,
-  });
+  let log;
+  try {
+    log = await insertDistributionLog({
+      entryId,
+      channel: 'telegram',
+      wire,
+      status: 'pending',
+      postText: posts?.telegram,
+    });
+  } catch (error: any) {
+    if (error?.code === '23505') {
+      console.log(`[Distribution] Telegram already in progress for entry ${entryId}, skipping`);
+      return { status: 'skipped' };
+    }
+    throw error;
+  }
 
   if (!posts) {
     await updateDistributionLog(log.id, { status: 'failed', errorMessage: 'Post generation returned null' });
@@ -158,20 +167,34 @@ async function distributeX(
   }
 
   if (!posts) {
-    const log = await insertDistributionLog({ entryId, channel: 'x', wire, status: 'failed' });
-    await updateDistributionLog(log.id, { errorMessage: 'Post generation returned null' });
+    try {
+      const log = await insertDistributionLog({ entryId, channel: 'x', wire, status: 'failed' });
+      await updateDistributionLog(log.id, { errorMessage: 'Post generation returned null' });
+    } catch (error: any) {
+      if (error?.code === '23505') return { status: 'skipped' };
+      throw error;
+    }
     return { status: 'failed', error: 'No post content generated' };
   }
 
   // Append source URL to tweet
   const tweetText = `${posts.tweet}\n${sourceUrl}`;
-  const log = await insertDistributionLog({
-    entryId,
-    channel: 'x',
-    wire,
-    status: 'pending',
-    postText: tweetText,
-  });
+  let log;
+  try {
+    log = await insertDistributionLog({
+      entryId,
+      channel: 'x',
+      wire,
+      status: 'pending',
+      postText: tweetText,
+    });
+  } catch (error: any) {
+    if (error?.code === '23505') {
+      console.log(`[Distribution] X already in progress for entry ${entryId}, skipping`);
+      return { status: 'skipped' };
+    }
+    throw error;
+  }
 
   try {
     const tweetResult = await postTweet(wire, tweetText, creds, handle);
@@ -203,6 +226,16 @@ export async function getDistributionStatus(entryId: number): Promise<Distributi
  * Retry distribution for an entry. Clears failed logs and re-runs.
  */
 export async function retryDistribution(entryId: number): Promise<DistributionResult> {
+  // Validate entry exists and is approved before deleting logs
+  const pool = getPool();
+  const entryRes = await pool.query(
+    `SELECT id FROM scan_entries WHERE id = $1 AND status = 'approved'`,
+    [entryId]
+  );
+  if (entryRes.rows.length === 0) {
+    throw new Error(`Entry ${entryId} not found or not approved`);
+  }
+
   await deleteDistributionLogs(entryId, 'failed');
   return distributeEntry(entryId);
 }

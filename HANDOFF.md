@@ -1,4 +1,4 @@
-# Grant Wire Summarizer: Session Handoff
+# Wire Room Ops: Session Handoff (Historical)
 
 ## What This Session Covered
 

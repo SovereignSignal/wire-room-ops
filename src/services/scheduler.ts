@@ -288,8 +288,14 @@ function createJobExecutor(schedule: ScheduleConfig) {
         // Retry once after 5 minutes for transient failures
         if (!status.retried) {
           status.retried = true;
+          const scheduleId = schedule.id;
           console.log(`[Scheduler] Will retry "${schedule.name}" in 5 minutes...`);
           const retryTimer = setTimeout(() => {
+            // Skip if schedule was reconfigured (stopScheduleTask clears the task)
+            if (!scheduledTasks.has(scheduleId)) {
+              console.log(`[Scheduler] Skipping retry for "${schedule.name}" — schedule was reconfigured`);
+              return;
+            }
             console.log(`[Scheduler] Retrying "${schedule.name}"...`);
             executor();
           }, 5 * 60 * 1000);

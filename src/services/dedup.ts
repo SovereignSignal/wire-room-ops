@@ -245,9 +245,10 @@ function tokenOverlapScore(tokensA: string[], tokensB: string[]): number {
   // This handles the case where "DARPA CLARA" matches "DARPA CLARA High-Assurance AI"
   const minSize = Math.min(setA.size, setB.size);
 
-  // Require at least 2 overlapping tokens to avoid single-token false positives
-  // e.g. "Optimism Grant" vs "Optimism Governance Update" sharing only "optimism"
-  if (minSize <= 1 && intersection <= 1 && setA.size + setB.size > 2) {
+  // Require at least 2 overlapping tokens when both sets have multiple tokens,
+  // to avoid false positives like "Optimism Grant" vs "Optimism Governance Update".
+  // Allow single-token overlap when one set has only 1 token (specific match).
+  if (intersection < 2 && minSize > 1 && setA.size + setB.size > 3) {
     return 0;
   }
 

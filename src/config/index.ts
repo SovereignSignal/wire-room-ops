@@ -3,10 +3,12 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 function normalizeAppUrl(url: string): string {
-  if (url && !url.startsWith('http://') && !url.startsWith('https://')) {
-    return `https://${url}`;
+  const trimmed = url.trim();
+  if (!trimmed) return '';
+  if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+    return `https://${trimmed}`;
   }
-  return url;
+  return trimmed.replace(/\/+$/, '');
 }
 
 export const config = {
