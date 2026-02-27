@@ -820,6 +820,13 @@ export async function ensureScanPromptsTable(): Promise<void> {
 export async function seedSeenUrlsFromMessages(): Promise<number> {
   const pool = getPool();
 
+  // Skip if seen_urls already has data — this is a one-time bootstrap
+  const { rows: existing } = await pool.query('SELECT 1 FROM seen_urls LIMIT 1');
+  if (existing.length > 0) {
+    console.log('[Seed] seen_urls already populated, skipping seed');
+    return 0;
+  }
+
   // Check if the messages table exists (it's tele-sum's table, not ours)
   const tableCheck = await pool.query(`
     SELECT EXISTS (
