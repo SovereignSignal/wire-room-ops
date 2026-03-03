@@ -1,12 +1,9 @@
 import cron, { ScheduledTask } from 'node-cron';
-import { runWeeklySummaryJob } from '../jobs/weekly-summary';
 import { runScanExecution } from '../jobs/scan-execution';
 import { runForumScan } from '../jobs/forum-scan';
-import { runCrmSyncJob } from './crm-sync';
 import { config } from '../config';
-import { sendNotificationEmail, sendTestAlertEmail, sendScheduledJobFailureEmail, sendScanDigestEmail } from './email';
-import { createMagicLink } from './auth';
-import { ensureScheduleTable, getAllSchedules, getScheduleById, createSchedule, updateSchedule, deleteSchedule as dbDeleteSchedule, StoredScheduleConfig, ensureFeedsTable, ensureScanTables, ensureScanPromptsTable, ensureDistributionTable, getPool } from '../db';
+import { sendTestAlertEmail, sendScheduledJobFailureEmail, sendScanDigestEmail } from './email';
+import { ensureScheduleTable, getAllSchedules, getScheduleById, createSchedule, updateSchedule, deleteSchedule as dbDeleteSchedule, StoredScheduleConfig, ensureFeedsTable, ensureScanTables, ensureScanPromptsTable, getPool } from '../db';
 
 export interface ScheduleConfig {
   id: string;
@@ -193,18 +190,6 @@ function createJobExecutor(schedule: ScheduleConfig) {
           }
         }
 
-        // Auto CRM sync after scan
-        try {
-          const crmResult = await runCrmSyncJob({ lookbackDays: 1, wire: currentScheduleData.wire || undefined });
-          if (crmResult.success) {
-            console.log(`[Scheduler] Auto CRM sync completed: ${crmResult.orgsCreated} created, ${crmResult.orgsMatched} matched`);
-          } else {
-            console.warn(`[Scheduler] Auto CRM sync skipped: ${crmResult.error || 'unknown reason'}`);
-          }
-        } catch (crmErr) {
-          console.error(`[Scheduler] Auto CRM sync failed:`, crmErr);
-          // Don't fail the job - CRM sync is non-critical
-        }
       } else if (currentScheduleData.scheduleType === 'forum-scan') {
         // ---- Forum Scan Job ----
         const pool = getPool();
@@ -226,36 +211,8 @@ function createJobExecutor(schedule: ScheduleConfig) {
         status.error = null;
         console.log(`[Scheduler] Forum scan "${currentScheduleData.name}" completed: ${forumResult.totalResults} results, ${forumResult.intakeSummary.newUnique} unique`);
       } else {
-        // ---- Weekly Summary Job ----
-        // Calculate date range based on lookback days
-        const endDate = new Date();
-        const startDate = new Date();
-        startDate.setDate(startDate.getDate() - currentScheduleData.lookbackDays);
-
-        // Set to start/end of day
-        startDate.setHours(0, 0, 0, 0);
-        endDate.setHours(23, 59, 59, 999);
-
-        console.log(`[Scheduler] Date range: ${startDate.toISOString()} to ${endDate.toISOString()}`);
-
-        const wireLabel = currentScheduleData.wire || 'all feeds';
-        console.log(`[Scheduler] Running for: ${wireLabel}`);
-
-        const result = await runWeeklySummaryJob({
-          sendEmail: false,
-          dateRange: { start: startDate, end: endDate },
-          models: {
-            grokModel: currentScheduleData.grokModel,
-            anthropicModel: currentScheduleData.anthropicModel,
-          },
-          wire: currentScheduleData.wire || undefined,
-        });
-
-        // Send notification email with download link
-        const downloadUrl = createMagicLink(config.email.notificationEmail, result.file.id);
-        await sendNotificationEmail(downloadUrl, result.stats, result.dateRange);
-
-        console.log(`[Scheduler] Job "${schedule.name}" completed successfully. Email sent.`);
+        // weekly-summary type is no longer supported in this service
+        console.warn(`[Scheduler] Unsupported schedule type "${currentScheduleData.scheduleType}" — skipping`);
       }
 
       status.status = 'success';
@@ -501,9 +458,6 @@ export async function initScheduler(): Promise<void> {
     console.log('[Scheduler] Scan pipeline tables ready');
     await ensureScanPromptsTable();
     console.log('[Scheduler] Scan prompts table ready');
-    await ensureDistributionTable();
-    console.log('[Scheduler] Distribution logs table ready');
-
     // Load all schedules from database
     const savedSchedules = await getAllSchedules();
 
