@@ -28,13 +28,6 @@ export const config = {
       apiKey: process.env.FIRECRAWL_API_KEY || '',
       baseUrl: 'https://api.firecrawl.dev/v1',
     },
-    notion: {
-      apiKey: process.env.NOTION_API_KEY || '',
-      orgsDbId: process.env.NOTION_ORGS_DB_ID || '',
-      oppsDbId: process.env.NOTION_OPPS_DB_ID || '',
-      crmPageId: process.env.NOTION_CRM_PAGE_ID || '',
-      stagingOrgsDbId: process.env.NOTION_STAGING_ORGS_DB_ID || '',
-    },
   },
   
   email: {
@@ -65,52 +58,12 @@ export const config = {
     endDate: process.env.END_DATE,
   },
 
-  telegram: {
-    botToken: process.env.TELEGRAM_BOT_TOKEN || '',
-    webhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET || '',
-    allowedUserIds: (process.env.TELEGRAM_ALLOWED_USER_IDS || '').split(',').map(s => s.trim()).filter(Boolean),
-    defaultWire: process.env.TELEGRAM_DEFAULT_WIRE || 'crypto',
-  },
-
-  inboundEmail: {
-    allowedSenders: (process.env.INBOUND_EMAIL_ALLOWED_SENDERS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
-    inboundAddress: process.env.INBOUND_EMAIL_ADDRESS || '',
-    webhookSigningSecret: process.env.RESEND_WEBHOOK_SECRET || '',
-  },
 
   forum: {
     discussWatchBaseUrl: process.env.DISCUSS_WATCH_API_URL || 'https://discuss-dot-watch-production.up.railway.app/api/v1',
     enabled: process.env.FORUM_SCAN_ENABLED === 'true',
   },
 
-  distribution: {
-    enabled: process.env.DISTRIBUTION_ENABLED === 'true',
-    x: {
-      crypto: {
-        apiKey: process.env.X_CRYPTO_API_KEY || '',
-        apiSecret: process.env.X_CRYPTO_API_SECRET || '',
-        accessToken: process.env.X_CRYPTO_ACCESS_TOKEN || '',
-        accessTokenSecret: process.env.X_CRYPTO_ACCESS_TOKEN_SECRET || '',
-      },
-      ai: {
-        apiKey: process.env.X_AI_API_KEY || '',
-        apiSecret: process.env.X_AI_API_SECRET || '',
-        accessToken: process.env.X_AI_ACCESS_TOKEN || '',
-        accessTokenSecret: process.env.X_AI_ACCESS_TOKEN_SECRET || '',
-      },
-      oss: {
-        apiKey: process.env.X_OSS_API_KEY || '',
-        apiSecret: process.env.X_OSS_API_SECRET || '',
-        accessToken: process.env.X_OSS_ACCESS_TOKEN || '',
-        accessTokenSecret: process.env.X_OSS_ACCESS_TOKEN_SECRET || '',
-      },
-    },
-    telegramChannels: {
-      crypto: process.env.TELEGRAM_CHANNEL_CRYPTO || '',
-      ai: process.env.TELEGRAM_CHANNEL_AI || '',
-      oss: process.env.TELEGRAM_CHANNEL_OSS || '',
-    },
-  },
 };
 
 export function validateConfig(): void {

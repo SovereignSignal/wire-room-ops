@@ -33,10 +33,14 @@ export interface PromptEffectivenessStats {
 
 export async function getPromptEffectivenessStats(
   pool: Pool,
-  days: number = 7
+  days: number = 7,
+  wire?: string
 ): Promise<PromptEffectivenessStats> {
   // Per-prompt stats: join scan_entries to scan_prompts, group by prompt
   // For legacy entries without prompt_id, fall back to wire + prompt_variant
+  const params: (number | string)[] = [days];
+  const wireFilter = wire ? `AND COALESCE(p.wire, e.wire) = $${params.push(wire)}` : '';
+
   const perPromptResult = await pool.query(`
     WITH prompt_entries AS (
       SELECT
@@ -49,6 +53,7 @@ export async function getPromptEffectivenessStats(
       FROM scan_entries e
       LEFT JOIN scan_prompts p ON e.prompt_id = p.id
       WHERE e.created_at >= NOW() - INTERVAL '1 day' * $1
+      ${wireFilter}
     )
     SELECT
       prompt_id,
@@ -83,6 +88,9 @@ export async function getPromptEffectivenessStats(
   }));
 
   // Cross-prompt overlap: count source_urls found by 2+ different prompts
+  const overlapParams: (number | string)[] = [days];
+  const overlapWireFilter = wire ? `AND wire = $${overlapParams.push(wire)}` : '';
+
   const overlapResult = await pool.query(`
     WITH url_prompts AS (
       SELECT
@@ -91,13 +99,14 @@ export async function getPromptEffectivenessStats(
       FROM scan_entries
       WHERE created_at >= NOW() - INTERVAL '1 day' * $1
         AND status != 'duplicate'
+        ${overlapWireFilter}
       GROUP BY source_url
     )
     SELECT
       COUNT(*) AS total_unique,
       COUNT(*) FILTER (WHERE prompt_count >= 2) AS found_by_multiple
     FROM url_prompts
-  `, [days]);
+  `, overlapParams);
 
   const overlapRow = overlapResult.rows[0];
   const totalUnique = parseInt(overlapRow?.total_unique || '0', 10);
