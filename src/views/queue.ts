@@ -141,6 +141,12 @@ export function renderQueuePage(feeds?: FeedNav[]): string {
           </select>
         </div>
         <div class="form-group">
+          <label for="queuePrompt">Prompt</label>
+          <select id="queuePrompt">
+            <option value="">All Prompts</option>
+          </select>
+        </div>
+        <div class="form-group">
           <label for="queueDate">Date</label>
           <select id="queueDate">
             <option value="">All Time</option>
@@ -187,10 +193,12 @@ export function renderQueuePage(feeds?: FeedNav[]): string {
     }
 
     var queueWireSelect = document.getElementById('queueWire');
+    var queuePromptSelect = document.getElementById('queuePrompt');
     var queueDateSelect = document.getElementById('queueDate');
     var queueResultsEl = document.getElementById('queue-results');
     var loadQueueBtn = document.getElementById('load-queue');
     var activeTab = 'queued';
+    var allPrompts = [];
 
     // Add "Today" option client-side using local date
     var todayStr = new Date().toLocaleDateString('sv-SE');
@@ -216,6 +224,42 @@ export function renderQueuePage(feeds?: FeedNav[]): string {
       };
       var b = badges[scanSource] || { label: scanSource || '?', bg: 'var(--border)', color: 'var(--text-secondary)' };
       return '<span style="background:' + b.bg + '; color:' + b.color + '; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:600;">' + escapeHtml(b.label) + '</span>';
+    }
+
+    function promptBadge(promptId) {
+      var label = getPromptLabel(promptId);
+      if (!label) return '';
+      return '<span style="background:#2c1a3c; color:#ce93d8; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:600;" title="Prompt: ' + escapeHtml(label) + '">' + escapeHtml(label) + '</span>';
+    }
+
+    function getPromptLabel(promptId) {
+      if (!promptId) return '';
+      for (var i = 0; i < allPrompts.length; i++) {
+        if (allPrompts[i].id === promptId) return allPrompts[i].label;
+      }
+      return '';
+    }
+
+    async function loadPrompts() {
+      try {
+        var resp = await fetch('/api/scan/prompts');
+        if (!resp.ok) throw new Error('Failed to fetch prompts');
+        allPrompts = await resp.json();
+        updatePromptDropdown();
+      } catch (err) {
+        console.error('Failed to load prompts:', err);
+      }
+    }
+
+    function updatePromptDropdown() {
+      var wire = queueWireSelect.value;
+      var filtered = wire ? allPrompts.filter(function(p) { return p.wire === wire; }) : allPrompts;
+      var options = '<option value="">All Prompts</option>';
+      filtered.forEach(function(p) {
+        var label = wire ? p.label : p.label + ' (' + p.wire + ')';
+        options += '<option value="' + escapeHtml(p.id) + '">' + escapeHtml(label) + '</option>';
+      });
+      queuePromptSelect.innerHTML = options;
     }
 
     // Tab bar click
@@ -263,6 +307,7 @@ export function renderQueuePage(feeds?: FeedNav[]): string {
       try {
         var params = new URLSearchParams();
         if (queueWireSelect.value) params.set('wire', queueWireSelect.value);
+        if (queuePromptSelect.value) params.set('promptId', queuePromptSelect.value);
         if (queueDateSelect.value) params.set('date', queueDateSelect.value);
 
         var resp = await fetch('/api/scan/status-counts?' + params.toString());
@@ -300,6 +345,7 @@ export function renderQueuePage(feeds?: FeedNav[]): string {
       var params = new URLSearchParams();
       params.set('status', statusesForTab(activeTab));
       if (queueWireSelect.value) params.set('wire', queueWireSelect.value);
+      if (queuePromptSelect.value) params.set('promptId', queuePromptSelect.value);
       if (queueDateSelect.value) params.set('date', queueDateSelect.value);
       params.set('limit', '100');
 
@@ -345,6 +391,7 @@ export function renderQueuePage(feeds?: FeedNav[]): string {
           }
           html += '<code style="background:var(--bg-card); padding:2px 6px; border-radius:4px; font-size:11px;">' + escapeHtml(e.wire || '') + '</code>';
           html += sourceBadge(e.scan_source);
+          html += promptBadge(e.prompt_id);
           if (e.source_url) {
             html += '<a href="' + escapeHtml(e.source_url) + '" target="_blank" rel="noopener" class="download-link" style="font-size:11px;">Link</a>';
           }
@@ -439,12 +486,17 @@ export function renderQueuePage(feeds?: FeedNav[]): string {
     });
     queueWireSelect.addEventListener('change', function() {
       seededLoaded = false;
+      updatePromptDropdown();
       loadStatusCounts();
       loadEntries();
       if (document.getElementById('seeded-urls-details').open) {
         seededLoaded = true;
         loadSeededUrls();
       }
+    });
+    queuePromptSelect.addEventListener('change', function() {
+      loadStatusCounts();
+      loadEntries();
     });
     queueDateSelect.addEventListener('change', function() {
       loadStatusCounts();
@@ -458,6 +510,8 @@ export function renderQueuePage(feeds?: FeedNav[]): string {
       if (wireParam) {
         queueWireSelect.value = wireParam;
       }
+      return loadPrompts();
+    }).then(function() {
       loadStatusCounts();
       loadEntries();
     });

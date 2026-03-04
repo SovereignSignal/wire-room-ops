@@ -1340,14 +1340,19 @@ app.get('/api/scan/entries', requireAuth, async (req: Request, res: Response) =>
     const statuses = statusParam.split(',').map(s => s.trim()).filter(Boolean);
     const wire = req.query.wire as string | undefined;
     const date = req.query.date as string | undefined;
+    const promptId = req.query.promptId as string | undefined;
     if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD.' });
+      return;
+    }
+    if (promptId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(promptId)) {
+      res.status(400).json({ error: 'Invalid promptId format.' });
       return;
     }
     const limit = Math.min(Math.max(parseInt(req.query.limit as string, 10) || 100, 1), 500);
     const offset = Math.max(parseInt(req.query.offset as string, 10) || 0, 0);
 
-    const { entries, total } = await getEntriesByStatus(statuses, { wire, date, limit, offset });
+    const { entries, total } = await getEntriesByStatus(statuses, { wire, date, promptId, limit, offset });
 
     res.json({ entries, total, count: entries.length });
   } catch (error) {
@@ -1376,13 +1381,18 @@ app.get('/api/scan/status-counts', requireAuth, async (req: Request, res: Respon
   try {
     const wire = req.query.wire as string | undefined;
     const date = req.query.date as string | undefined;
+    const promptId = req.query.promptId as string | undefined;
     if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD.' });
       return;
     }
+    if (promptId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(promptId)) {
+      res.status(400).json({ error: 'Invalid promptId format.' });
+      return;
+    }
 
     const [counts, urlStats] = await Promise.all([
-      getStatusCounts(wire, date),
+      getStatusCounts(wire, date, promptId),
       getSeenUrlStats(wire),
     ]);
 

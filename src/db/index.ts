@@ -979,7 +979,7 @@ export async function deleteScanPrompt(id: string): Promise<boolean> {
 
 // --- Scan pipeline query helpers ---
 
-export async function getStatusCounts(wire?: string, date?: string): Promise<Record<string, number>> {
+export async function getStatusCounts(wire?: string, date?: string, promptId?: string): Promise<Record<string, number>> {
   const pool = getPool();
   const conditions: string[] = [];
   const values: any[] = [];
@@ -992,6 +992,10 @@ export async function getStatusCounts(wire?: string, date?: string): Promise<Rec
   if (date) {
     conditions.push(`scan_date = $${paramIndex++}`);
     values.push(date);
+  }
+  if (promptId) {
+    conditions.push(`prompt_id = $${paramIndex++}`);
+    values.push(promptId);
   }
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -1009,7 +1013,7 @@ export async function getStatusCounts(wire?: string, date?: string): Promise<Rec
 
 export async function getEntriesByStatus(
   statuses: string[],
-  opts?: { wire?: string; date?: string; limit?: number; offset?: number }
+  opts?: { wire?: string; date?: string; promptId?: string; limit?: number; offset?: number }
 ): Promise<{ entries: any[]; total: number }> {
   const pool = getPool();
   const conditions: string[] = [`status = ANY($1)`];
@@ -1023,6 +1027,10 @@ export async function getEntriesByStatus(
   if (opts?.date) {
     conditions.push(`scan_date = $${paramIndex++}`);
     values.push(opts.date);
+  }
+  if (opts?.promptId) {
+    conditions.push(`prompt_id = $${paramIndex++}`);
+    values.push(opts.promptId);
   }
 
   const whereClause = `WHERE ${conditions.join(' AND ')}`;
