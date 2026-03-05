@@ -1,0 +1,78 @@
+name: Backup Database to R2
+
+on:
+  schedule:
+    - cron: '0 5 * * *' # Daily at 5:00 AM UTC
+  workflow_dispatch: # Manual trigger
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client
+
+      - name: Dump database
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
+          FILENAME="backup-${TIMESTAMP}.sql.gz"
+          echo "BACKUP_FILE=${FILENAME}" >> "$GITHUB_ENV"
+
+          pg_dump "$DATABASE_URL" --no-owner --no-acl | gzip > "$FILENAME"
+
+          FILE_SIZE=$(du -h "$FILENAME" | cut -f1)
+          echo "BACKUP_SIZE=${FILE_SIZE}" >> "$GITHUB_ENV"
+          echo "Backup created: ${FILENAME} (${FILE_SIZE})"
+
+      - name: Upload to Cloudflare R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: https://${{ secrets.CF_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: |
+          aws s3 cp "$BACKUP_FILE" "s3://wire-room-backups/${BACKUP_FILE}" \
+            --endpoint-url "$R2_ENDPOINT"
+          echo "Uploaded ${BACKUP_FILE} to R2"
+
+      - name: Prune backups older than 30 days
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: https://${{ secrets.CF_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: |
+          CUTOFF=$(date -u -d '30 days ago' +%Y%m%d)
+          DELETED=0
+
+          aws s3 ls "s3://wire-room-backups/" --endpoint-url "$R2_ENDPOINT" | while read -r line; do
+            FILE=$(echo "$line" | awk '{print $4}')
+            # Extract date from filename: backup-YYYYMMDD-HHMMSS.sql.gz
+            FILE_DATE=$(echo "$FILE" | grep -oP '\d{8}' | head -1)
+            if [ -n "$FILE_DATE" ] && [ "$FILE_DATE" -lt "$CUTOFF" ]; then
+              aws s3 rm "s3://wire-room-backups/${FILE}" --endpoint-url "$R2_ENDPOINT"
+              echo "Pruned: ${FILE}"
+              DELETED=$((DELETED + 1))
+            fi
+          done
+
+          echo "Pruned ${DELETED} backup(s) older than 30 days"
+
+      - name: Summary
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: https://${{ secrets.CF_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: |
+          TOTAL=$(aws s3 ls "s3://wire-room-backups/" --endpoint-url "$R2_ENDPOINT" | wc -l)
+          echo "=== Backup Summary ==="
+          echo "File: ${BACKUP_FILE}"
+          echo "Size: ${BACKUP_SIZE}"
+          echo "Total backups in R2: ${TOTAL}"
