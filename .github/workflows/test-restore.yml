@@ -80,9 +80,9 @@ jobs:
 
           echo "=== Row counts per table ==="
           /usr/lib/postgresql/17/bin/psql -t -c "
-            SELECT tablename, n_live_tup
+            SELECT relname, n_live_tup
             FROM pg_stat_user_tables
-            ORDER BY tablename;
+            ORDER BY relname;
           "
 
           echo "=== Key table spot checks ==="
