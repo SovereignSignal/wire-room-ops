@@ -20,6 +20,7 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
           sudo apt-get update -qq
           sudo apt-get install -y -qq postgresql-client-17
+          /usr/lib/postgresql/17/bin/pg_dump --version
 
       - name: Dump database
         env:
@@ -29,7 +30,7 @@ jobs:
           FILENAME="backup-${TIMESTAMP}.sql.gz"
           echo "BACKUP_FILE=${FILENAME}" >> "$GITHUB_ENV"
 
-          pg_dump "$DATABASE_URL" --no-owner --no-acl 2>pg_dump_stderr.log | gzip > "$FILENAME"
+          /usr/lib/postgresql/17/bin/pg_dump "$DATABASE_URL" --no-owner --no-acl 2>pg_dump_stderr.log | gzip > "$FILENAME"
 
           if [ -s pg_dump_stderr.log ]; then
             echo "pg_dump warnings/errors:"
