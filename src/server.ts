@@ -18,6 +18,7 @@ import { executeScanPrompt } from './services/grok';
 import { withRetry } from './services/processor';
 import { runScanExecution } from './jobs/scan-execution';
 import { runForumScan } from './jobs/forum-scan';
+import { syncSummariesToScanEntries, startSummarySync, stopSummarySync } from './jobs/summary-sync';
 import { getPromptEffectivenessStats } from './services/scan-stats';
 import { renderLoginPage } from './views/login';
 import { renderSettingsPage } from './views/settings';
@@ -1292,6 +1293,24 @@ app.post('/api/forum/run', requireAuth, async (req: Request, res: Response) => {
   });
 });
 
+// API: Manual trigger for summary sync (tele-sum summaries → scan_entries)
+app.post('/api/summary-sync', requireAuth, async (_req: Request, res: Response) => {
+  if (!rateLimit('summary-sync', 3, 5 * 60 * 1000)) {
+    res.status(429).json({ error: 'Summary sync recently run. Please wait 5 minutes.' });
+    return;
+  }
+
+  try {
+    const pool = getPool();
+    const result = await syncSummariesToScanEntries(pool);
+    res.json({ success: true, ...result });
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[SummarySync] Manual trigger failed:', error);
+    res.status(500).json({ error: errorMsg });
+  }
+});
+
 // API: Queue action on single entry (approve/decline/reviewlater/restore)
 app.post('/api/scan/entries/:id/action', requireAuth, async (req: Request, res: Response) => {
   const entryId = parseInt(req.params.id, 10);
@@ -1428,6 +1447,13 @@ export async function startServer(): Promise<void> {
     console.error('Scheduler initialization failed (non-fatal):', error);
   }
 
+  // Start the summary sync bridge (tele-sum summaries → approved scan_entries)
+  try {
+    startSummarySync(getPool(), 15);
+  } catch (error) {
+    console.error('Summary sync startup failed (non-fatal):', error);
+  }
+
   const server = app.listen(config.app.port, () => {
     console.log(`Server running on port ${config.app.port}`);
   });
@@ -1436,6 +1462,7 @@ export async function startServer(): Promise<void> {
   const shutdown = async (signal: string) => {
     console.log(`\n[Server] ${signal} received, shutting down gracefully...`);
     stopScheduler();
+    stopSummarySync();
     server.close(async () => {
       await closePool();
       console.log('[Server] Shutdown complete');
