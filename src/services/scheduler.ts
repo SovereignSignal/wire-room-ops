@@ -46,6 +46,8 @@ interface JobStatus {
   retried?: boolean;
 }
 let jobStatuses: Map<string, JobStatus> = new Map();
+let executingJobs: Set<string> = new Set(); // Prevents overlapping cron runs
+let pendingRetryTimers: Map<string, NodeJS.Timeout> = new Map(); // Track retry timers for cleanup
 let schedulerStartTime: Date | null = null;
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -147,6 +149,12 @@ function buildCronExpression(schedule: ScheduleConfig): string {
 
 function createJobExecutor(schedule: ScheduleConfig) {
   const executor = async function executeScheduledJob(): Promise<void> {
+    // Prevent overlapping execution
+    if (executingJobs.has(schedule.id)) {
+      console.log(`[Scheduler] Job "${schedule.name}" is already running, skipping overlapping execution`);
+      return;
+    }
+
     const jobStartTime = new Date();
     console.log(`[Scheduler] Starting job for "${schedule.name}" at ${jobStartTime.toISOString()}`);
 
@@ -157,6 +165,7 @@ function createJobExecutor(schedule: ScheduleConfig) {
       return;
     }
 
+    executingJobs.add(schedule.id);
     const status: JobStatus = { lastRun: jobStartTime, status: null, error: null };
     jobStatuses.set(schedule.id, status);
 
@@ -248,6 +257,7 @@ function createJobExecutor(schedule: ScheduleConfig) {
           const scheduleId = schedule.id;
           console.log(`[Scheduler] Will retry "${schedule.name}" in 5 minutes...`);
           const retryTimer = setTimeout(() => {
+            pendingRetryTimers.delete(scheduleId);
             // Skip if schedule was reconfigured (stopScheduleTask clears the task)
             if (!scheduledTasks.has(scheduleId)) {
               console.log(`[Scheduler] Skipping retry for "${schedule.name}" — schedule was reconfigured`);
@@ -257,8 +267,11 @@ function createJobExecutor(schedule: ScheduleConfig) {
             executor();
           }, 5 * 60 * 1000);
           retryTimer.unref();
+          pendingRetryTimers.set(scheduleId, retryTimer);
         }
       }
+    } finally {
+      executingJobs.delete(schedule.id);
     }
   };
   return executor;
@@ -288,6 +301,13 @@ function stopScheduleTask(id: string): void {
     scheduledTasks.delete(id);
     console.log(`[Scheduler] Stopped task for schedule ${id}`);
   }
+  // Cancel any pending retry timer
+  const retryTimer = pendingRetryTimers.get(id);
+  if (retryTimer) {
+    clearTimeout(retryTimer);
+    pendingRetryTimers.delete(id);
+    console.log(`[Scheduler] Cancelled pending retry for schedule ${id}`);
+  }
 }
 
 export function startScheduler(): void {
@@ -310,6 +330,21 @@ export function stopScheduler(): void {
   console.log('[Scheduler] All schedulers stopped');
 }
 
+// Get the timezone offset in ms between UTC and a given IANA timezone
+function getTimezoneOffsetMs(timezone: string, date: Date = new Date()): number {
+  // Format the date in the target timezone to extract components
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  }).formatToParts(date);
+
+  const get = (type: string) => parseInt(parts.find(p => p.type === type)?.value || '0', 10);
+  const tzDate = new Date(Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second')));
+  return tzDate.getTime() - date.getTime();
+}
+
 export function getNextRunTime(scheduleId?: string): Date | null {
   const schedule = scheduleId ? schedules.get(scheduleId) : getSchedules().find(s => s.enabled);
   if (!schedule || !schedule.enabled) {
@@ -317,20 +352,18 @@ export function getNextRunTime(scheduleId?: string): Date | null {
   }
 
   const now = new Date();
+  const tzOffset = getTimezoneOffsetMs(schedule.timezone, now);
 
-  // Get current time in the schedule's timezone
-  const tzNow = new Date(now.toLocaleString('en-US', { timeZone: schedule.timezone }));
-  const tzOffset = tzNow.getTime() - now.getTime();
-
-  // Calculate next run in timezone-local time
+  // Current time in the schedule's timezone (as UTC-based Date for arithmetic)
+  const tzNow = new Date(now.getTime() + tzOffset);
   const next = new Date(tzNow);
 
   if (schedule.scheduleType === 'scan-execution' || schedule.scheduleType === 'forum-scan') {
     if (schedule.frequencyHours && schedule.frequencyHours < 24) {
       // Sub-daily: find next hour that matches */N pattern
       const freq = schedule.frequencyHours;
-      const currentHour = tzNow.getHours();
-      const currentMin = tzNow.getMinutes();
+      const currentHour = tzNow.getUTCHours();
+      const currentMin = tzNow.getUTCMinutes();
 
       // Find next matching hour (hours that are divisible by freq)
       let nextHour = currentHour;
@@ -340,20 +373,20 @@ export function getNextRunTime(scheduleId?: string): Date | null {
       // Round up to next multiple of freq
       nextHour = Math.ceil(nextHour / freq) * freq;
       if (nextHour >= 24) {
-        next.setDate(next.getDate() + 1);
+        next.setUTCDate(next.getUTCDate() + 1);
         nextHour = 0;
       }
-      next.setHours(nextHour, schedule.minute, 0, 0);
+      next.setUTCHours(nextHour, schedule.minute, 0, 0);
     } else {
       // Daily schedule -- next run is today or tomorrow at the scheduled time
-      next.setHours(schedule.hour, schedule.minute, 0, 0);
+      next.setUTCHours(schedule.hour, schedule.minute, 0, 0);
       if (next <= tzNow) {
-        next.setDate(next.getDate() + 1);
+        next.setUTCDate(next.getUTCDate() + 1);
       }
     }
   } else {
     // Weekly schedule
-    const currentDay = tzNow.getDay();
+    const currentDay = tzNow.getUTCDay();
     const targetDay = schedule.dayOfWeek;
 
     let daysUntilTarget = targetDay - currentDay;
@@ -361,15 +394,15 @@ export function getNextRunTime(scheduleId?: string): Date | null {
       daysUntilTarget += 7;
     }
 
-    next.setDate(tzNow.getDate() + daysUntilTarget);
-    next.setHours(schedule.hour, schedule.minute, 0, 0);
+    next.setUTCDate(tzNow.getUTCDate() + daysUntilTarget);
+    next.setUTCHours(schedule.hour, schedule.minute, 0, 0);
 
     if (next <= tzNow) {
-      next.setDate(next.getDate() + 7);
+      next.setUTCDate(next.getUTCDate() + 7);
     }
   }
 
-  // Convert back from timezone-local to real time
+  // Convert back from timezone-local to real UTC time
   return new Date(next.getTime() - tzOffset);
 }
 
