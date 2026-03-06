@@ -1,7 +1,7 @@
 import { Pool } from 'pg';
 import { config } from '../config';
 import { DatabaseEntry } from '../types';
-import type { ToolType } from '../types/intake';
+import type { ToolType, DistributionChannel, DistributionStatus, DistributionConfig, DistributionLog } from '../types/intake';
 import { normalizeUrl } from '../utils/url';
 
 let pool: Pool | null = null;
@@ -1122,5 +1122,232 @@ export async function getSeenUrlsList(
   return { urls: dataRes.rows, total: countRes.rows[0].total };
 }
 
-// Note: distribution_config and distribution_logs tables are left in DB
-// but no longer managed by this codebase (extracted to separate service)
+// --- Distribution tables ---
+
+export async function ensureDistributionTables(): Promise<void> {
+  const pool = getPool();
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    // Recreate distribution tables with new schema if old ones exist
+    // Check if the old schema is present (old tables had different columns)
+    const oldSchemaCheck = await client.query(`
+      SELECT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'distribution_config' AND column_name = 'id'
+      )
+    `);
+    if (oldSchemaCheck.rows[0].exists) {
+      // Old schema had an 'id' PK column; new schema uses composite (wire, channel) PK
+      await client.query(`DROP TABLE IF EXISTS distribution_logs`);
+      await client.query(`DROP TABLE IF EXISTS distribution_config`);
+      console.log('[DB] Dropped old distribution tables (schema migration)');
+    }
+
+    // distribution_config — per-wire per-channel settings
+    await client.query(`CREATE TABLE IF NOT EXISTS distribution_config (
+      wire TEXT NOT NULL,
+      channel TEXT NOT NULL CHECK (channel IN ('telegram', 'x', 'newsletter')),
+      enabled BOOLEAN NOT NULL DEFAULT false,
+      config JSONB NOT NULL DEFAULT '{}',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (wire, channel)
+    )`);
+
+    // distribution_logs — per-entry per-channel delivery records
+    await client.query(`CREATE TABLE IF NOT EXISTS distribution_logs (
+      id SERIAL PRIMARY KEY,
+      entry_id INTEGER NOT NULL REFERENCES scan_entries(id),
+      channel TEXT NOT NULL CHECK (channel IN ('telegram', 'x', 'newsletter')),
+      wire TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'success', 'failed', 'skipped')),
+      post_text TEXT,
+      external_id TEXT,
+      error_message TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+
+    // Indexes
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_dist_logs_entry ON distribution_logs(entry_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_dist_logs_wire_channel ON distribution_logs(wire, channel)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_dist_logs_status ON distribution_logs(status)`);
+
+    // Unique partial index prevents double-posts: only one pending/success log per entry+channel
+    await client.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_dist_logs_no_dupes
+      ON distribution_logs(entry_id, channel)
+      WHERE status IN ('pending', 'success')
+    `);
+
+    // updated_at trigger for distribution_config
+    await client.query(`
+      CREATE OR REPLACE FUNCTION update_distribution_config_updated_at()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        NEW.updated_at = NOW();
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql
+    `);
+    await client.query(`DROP TRIGGER IF EXISTS distribution_config_updated_at ON distribution_config`);
+    await client.query(`
+      CREATE TRIGGER distribution_config_updated_at
+        BEFORE UPDATE ON distribution_config
+        FOR EACH ROW
+        EXECUTE FUNCTION update_distribution_config_updated_at()
+    `);
+
+    await client.query('COMMIT');
+    console.log('[DB] Distribution tables ready');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+function parseDistributionConfigRow(row: any): DistributionConfig {
+  return {
+    wire: row.wire,
+    channel: row.channel,
+    enabled: row.enabled,
+    config: row.config || {},
+  };
+}
+
+function parseDistributionLogRow(row: any): DistributionLog {
+  return {
+    id: row.id,
+    entryId: row.entry_id,
+    channel: row.channel,
+    wire: row.wire,
+    status: row.status,
+    postText: row.post_text || null,
+    externalId: row.external_id || null,
+    errorMessage: row.error_message || null,
+    createdAt: row.created_at,
+  };
+}
+
+export async function getDistributionConfigs(wire?: string): Promise<DistributionConfig[]> {
+  const pool = getPool();
+  if (wire) {
+    const result = await pool.query(
+      `SELECT * FROM distribution_config WHERE wire = $1 ORDER BY channel`,
+      [wire]
+    );
+    return result.rows.map(parseDistributionConfigRow);
+  }
+  const result = await pool.query(`SELECT * FROM distribution_config ORDER BY wire, channel`);
+  return result.rows.map(parseDistributionConfigRow);
+}
+
+export async function upsertDistributionConfig(
+  wire: string,
+  channel: DistributionChannel,
+  enabled: boolean,
+  configData: Record<string, string>
+): Promise<DistributionConfig> {
+  const pool = getPool();
+  const result = await pool.query(`
+    INSERT INTO distribution_config (wire, channel, enabled, config)
+    VALUES ($1, $2, $3, $4)
+    ON CONFLICT (wire, channel)
+    DO UPDATE SET enabled = $3, config = $4
+    RETURNING *
+  `, [wire, channel, enabled, JSON.stringify(configData)]);
+  return parseDistributionConfigRow(result.rows[0]);
+}
+
+export async function getUndistributedEntries(
+  wire: string,
+  channel?: DistributionChannel
+): Promise<any[]> {
+  const pool = getPool();
+  // Find approved entries that don't have a success/pending log for the given channel(s)
+  const channels = channel ? [channel] : ['telegram', 'x'];
+  const result = await pool.query(`
+    SELECT se.*
+    FROM scan_entries se
+    WHERE se.wire = $1
+      AND se.status = 'approved'
+      AND NOT EXISTS (
+        SELECT 1 FROM distribution_logs dl
+        WHERE dl.entry_id = se.id
+          AND dl.channel = ANY($2)
+          AND dl.status IN ('pending', 'success')
+      )
+    ORDER BY se.created_at DESC
+  `, [wire, channels]);
+  return result.rows;
+}
+
+export async function logDistribution(params: {
+  entryId: number;
+  channel: DistributionChannel;
+  wire: string;
+  status: DistributionStatus;
+  postText?: string;
+  externalId?: string;
+  errorMessage?: string;
+}): Promise<DistributionLog> {
+  const pool = getPool();
+  const result = await pool.query(`
+    INSERT INTO distribution_logs (entry_id, channel, wire, status, post_text, external_id, error_message)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
+    RETURNING *
+  `, [
+    params.entryId,
+    params.channel,
+    params.wire,
+    params.status,
+    params.postText || null,
+    params.externalId || null,
+    params.errorMessage || null,
+  ]);
+  return parseDistributionLogRow(result.rows[0]);
+}
+
+export async function getDistributionLogs(entryId: number): Promise<DistributionLog[]> {
+  const pool = getPool();
+  const result = await pool.query(
+    `SELECT * FROM distribution_logs WHERE entry_id = $1 ORDER BY created_at DESC`,
+    [entryId]
+  );
+  return result.rows.map(parseDistributionLogRow);
+}
+
+export async function getDistributionStatusBulk(
+  wire: string
+): Promise<Record<number, Record<string, DistributionStatus>>> {
+  const pool = getPool();
+  // Get the latest log per entry+channel for all approved entries in this wire
+  const result = await pool.query(`
+    SELECT DISTINCT ON (dl.entry_id, dl.channel)
+      dl.entry_id, dl.channel, dl.status
+    FROM distribution_logs dl
+    JOIN scan_entries se ON se.id = dl.entry_id
+    WHERE se.wire = $1 AND se.status = 'approved'
+    ORDER BY dl.entry_id, dl.channel, dl.created_at DESC
+  `, [wire]);
+
+  const statusMap: Record<number, Record<string, DistributionStatus>> = {};
+  for (const row of result.rows) {
+    if (!statusMap[row.entry_id]) statusMap[row.entry_id] = {};
+    statusMap[row.entry_id][row.channel] = row.status;
+  }
+  return statusMap;
+}
+
+export async function deleteFailedDistributionLogs(entryId: number): Promise<number> {
+  const pool = getPool();
+  const result = await pool.query(
+    `DELETE FROM distribution_logs WHERE entry_id = $1 AND status = 'failed'`,
+    [entryId]
+  );
+  return result.rowCount ?? 0;
+}

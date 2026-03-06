@@ -3,7 +3,7 @@ import { runScanExecution } from '../jobs/scan-execution';
 import { runForumScan } from '../jobs/forum-scan';
 import { config } from '../config';
 import { sendTestAlertEmail, sendScheduledJobFailureEmail, sendScanDigestEmail } from './email';
-import { ensureScheduleTable, getAllSchedules, getScheduleById, createSchedule, updateSchedule, deleteSchedule as dbDeleteSchedule, StoredScheduleConfig, ensureFeedsTable, ensureScanTables, ensureScanPromptsTable, getPool } from '../db';
+import { ensureScheduleTable, getAllSchedules, getScheduleById, createSchedule, updateSchedule, deleteSchedule as dbDeleteSchedule, StoredScheduleConfig, ensureFeedsTable, ensureScanTables, ensureScanPromptsTable, ensureDistributionTables, getPool } from '../db';
 
 export interface ScheduleConfig {
   id: string;
@@ -475,6 +475,8 @@ export async function initScheduler(): Promise<void> {
     console.log('[Scheduler] Scan pipeline tables ready');
     await ensureScanPromptsTable();
     console.log('[Scheduler] Scan prompts table ready');
+    await ensureDistributionTables();
+    console.log('[Scheduler] Distribution tables ready');
     // Load all schedules from database
     const savedSchedules = await getAllSchedules();
 

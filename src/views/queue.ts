@@ -123,6 +123,21 @@ export function renderQueuePage(feeds?: FeedNav[]): string {
     }
     .entry-card .entry-actions button:hover { opacity: 0.85; }
     .entry-card .entry-actions button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .dist-pills {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+    }
+    .dist-pill {
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 700;
+      font-family: var(--font-mono);
+    }
+    .dist-pill.success { background: rgba(74,222,128,0.15); color: var(--success); }
+    .dist-pill.failed { background: rgba(239,68,68,0.15); color: var(--error); cursor: pointer; }
+    .dist-pill.none { background: rgba(122,138,154,0.1); color: var(--text-muted); }
     .main-inner { max-width: 1100px; }
   `;
 
@@ -195,6 +210,7 @@ ${CLIENT_ESCAPE_HTML}
     var loadQueueBtn = document.getElementById('load-queue');
     var activeTab = 'queued';
     var allPrompts = [];
+    var distStatusMap = {};
 
     // Add "Today" option client-side using local date
     var todayStr = new Date().toLocaleDateString('sv-SE');
@@ -345,6 +361,14 @@ ${CLIENT_ESCAPE_HTML}
       if (queueDateSelect.value) params.set('date', queueDateSelect.value);
       params.set('limit', '100');
 
+      // Load distribution status for approved tab
+      if (activeTab === 'approved' && queueWireSelect.value) {
+        try {
+          var dResp = await fetch('/api/distribution/status/' + encodeURIComponent(queueWireSelect.value));
+          if (dResp.ok) distStatusMap = await dResp.json();
+        } catch(e) { distStatusMap = {}; }
+      }
+
       try {
         var resp = await fetch('/api/scan/entries?' + params.toString());
         if (!resp.ok) throw new Error('Failed to load entries');
@@ -356,6 +380,7 @@ ${CLIENT_ESCAPE_HTML}
         }
 
         var isDup = activeTab === 'duplicate';
+        var isApproved = activeTab === 'approved';
         var showRestore = activeTab === 'skipped' || activeTab === 'declined';
         var showActions = activeTab === 'queued';
         var html = '<div class="entry-grid">';
@@ -391,6 +416,16 @@ ${CLIENT_ESCAPE_HTML}
           if (e.source_url) {
             html += '<a href="' + escapeHtml(e.source_url) + '" target="_blank" rel="noopener" class="download-link" style="font-size:11px;">Link</a>';
           }
+
+          // Distribution status pills (approved tab only)
+          if (isApproved) {
+            var ds = distStatusMap[e.id] || {};
+            html += '<span class="dist-pills">';
+            html += distPill('TG', ds.telegram, e.id);
+            html += distPill('X', ds.x, e.id);
+            html += distPill('NL', ds.newsletter, e.id);
+            html += '</span>';
+          }
           html += '</div>';
 
           if (isDup && e.duplicate_reason) {
@@ -419,6 +454,24 @@ ${CLIENT_ESCAPE_HTML}
         queueResultsEl.innerHTML = '<p style="color: var(--error);">Failed to load: ' + escapeHtml(err.message) + '</p>';
       }
     }
+
+    function distPill(label, status, entryId) {
+      if (status === 'success') return '<span class="dist-pill success">' + label + '</span>';
+      if (status === 'failed') return '<span class="dist-pill failed" data-retry-entry="' + entryId + '" title="Click to retry">' + label + '</span>';
+      return '<span class="dist-pill none">' + label + '</span>';
+    }
+
+    // Retry distribution on failed pill click
+    document.addEventListener('click', function(e) {
+      var pill = e.target.closest('[data-retry-entry]');
+      if (!pill) return;
+      var entryId = pill.dataset.retryEntry;
+      pill.textContent = '\\u2026';
+      fetch('/api/scan/entries/' + entryId + '/redistribute', { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function() { loadEntries(); })
+        .catch(function() { pill.style.color = 'var(--error)'; });
+    });
 
     // Seeded URLs lazy load
     var seededLoaded = false;

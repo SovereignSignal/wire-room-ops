@@ -175,3 +175,32 @@ export interface SeenName {
   firstSeen: Date;
 }
 
+// --- Distribution types ---
+
+export type DistributionChannel = 'telegram' | 'x' | 'newsletter';
+export type DistributionStatus = 'pending' | 'success' | 'failed' | 'skipped';
+
+export interface DistributionConfig {
+  wire: string;
+  channel: DistributionChannel;
+  enabled: boolean;
+  config: Record<string, string>;
+}
+
+export interface DistributionLog {
+  id: number;
+  entryId: number;
+  channel: DistributionChannel;
+  wire: string;
+  status: DistributionStatus;
+  postText: string | null;
+  externalId: string | null;
+  errorMessage: string | null;
+  createdAt: Date;
+}
+
+export interface GeneratedPosts {
+  tweet: string;
+  telegram: string;
+}
+

@@ -13,13 +13,14 @@ import { getAllModels } from './services/models';
 import { getSchedule, getSchedules, setSchedule, addSchedule, removeSchedule, formatScheduleDescription, getNextRunTime, initScheduler, stopScheduler, ScheduleConfig, sendTestAlert, getSchedulerStatus } from './services/scheduler';
 import { buildSubmission, buildBatchSubmission } from './services/intake';
 import { runDailyIntake, getDailyQueue, getIntakeStats } from './jobs/daily-intake';
-import { getPool } from './db';
+import { getPool, getDistributionConfigs, upsertDistributionConfig, getDistributionLogs, getDistributionStatusBulk } from './db';
 import { executeScanPrompt } from './services/grok';
 import { withRetry } from './services/processor';
 import { runScanExecution } from './jobs/scan-execution';
 import { runForumScan } from './jobs/forum-scan';
 import { syncSummariesToScanEntries, startSummarySync, stopSummarySync } from './jobs/summary-sync';
 import { getPromptEffectivenessStats } from './services/scan-stats';
+import { distributeEntries, retryDistribution, generateNewsletterMarkdown } from './services/distribution';
 import { renderLoginPage } from './views/login';
 import { renderSettingsPage } from './views/settings';
 import { renderQueuePage } from './views/queue';
@@ -495,6 +496,7 @@ app.delete('/api/feeds/:key', requireAuth, async (req: Request, res: Response) =
 // Running job trackers to prevent concurrent execution
 let runningScanJobId: string | null = null;
 let runningForumJobId: string | null = null;
+const distributionRunning = new Set<string>();
 
 // SSE endpoint for job progress
 app.get('/api/job/:jobId/progress', requireAuth, (req: Request, res: Response) => {
@@ -1471,6 +1473,210 @@ app.get('/api/scan/prompt-stats', requireAuth, async (req: Request, res: Respons
   } catch (error) {
     console.error('Failed to fetch prompt stats:', error);
     res.status(500).json({ error: 'Failed to fetch prompt stats' });
+  }
+});
+
+// --- Distribution API ---
+
+// GET /api/distribution/config — list all configs (creds masked)
+app.get('/api/distribution/config', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const wire = req.query.wire as string | undefined;
+    const configs = await getDistributionConfigs(wire);
+
+    // Mask sensitive credential values
+    const masked = configs.map(c => ({
+      wire: c.wire,
+      channel: c.channel,
+      enabled: c.enabled,
+      config: maskConfig(c.channel, c.config),
+    }));
+
+    res.json(masked);
+  } catch (error) {
+    console.error('Failed to fetch distribution configs:', error);
+    res.status(500).json({ error: 'Failed to fetch distribution configs' });
+  }
+});
+
+function maskConfig(channel: string, cfg: Record<string, string>): Record<string, string> {
+  const masked: Record<string, string> = {};
+  for (const [k, v] of Object.entries(cfg)) {
+    // Mask secret-looking keys
+    if (['appSecret', 'accessSecret', 'accessToken', 'appKey'].includes(k)) {
+      masked[k] = v ? '****' + v.slice(-4) : '';
+    } else {
+      masked[k] = v;
+    }
+  }
+  return masked;
+}
+
+// PUT /api/distribution/config/:wire/:channel — update channel config
+app.put('/api/distribution/config/:wire/:channel', requireAuth, async (req: Request, res: Response) => {
+  const { wire, channel } = req.params;
+  if (!wire || !isValidFeedKey(wire)) {
+    res.status(400).json({ error: 'Invalid wire' });
+    return;
+  }
+  if (!['telegram', 'x', 'newsletter'].includes(channel)) {
+    res.status(400).json({ error: 'Invalid channel. Must be telegram, x, or newsletter.' });
+    return;
+  }
+
+  const { enabled, config: configData } = req.body;
+  if (typeof enabled !== 'boolean') {
+    res.status(400).json({ error: 'enabled must be a boolean' });
+    return;
+  }
+  if (configData && typeof configData !== 'object') {
+    res.status(400).json({ error: 'config must be an object' });
+    return;
+  }
+
+  try {
+    // Merge incoming config with existing to avoid overwriting secrets on partial updates
+    const existing = await getDistributionConfigs(wire);
+    const current = existing.find(c => c.channel === channel);
+    const mergedConfig = { ...(current?.config || {}), ...(configData || {}) };
+
+    const result = await upsertDistributionConfig(
+      wire,
+      channel as any,
+      enabled,
+      mergedConfig
+    );
+    res.json({
+      wire: result.wire,
+      channel: result.channel,
+      enabled: result.enabled,
+      config: maskConfig(result.channel, result.config),
+    });
+  } catch (error) {
+    console.error('Failed to update distribution config:', error);
+    res.status(500).json({ error: 'Failed to update distribution config' });
+  }
+});
+
+// POST /api/distribution/run/:wire — trigger distribution (fire-and-forget)
+app.post('/api/distribution/run/:wire', requireAuth, async (req: Request, res: Response) => {
+  const { wire } = req.params;
+  if (!wire || !isValidFeedKey(wire)) {
+    res.status(400).json({ error: 'Invalid wire' });
+    return;
+  }
+
+  if (!rateLimit(`distribution-run:${wire}`, 3, 5 * 60 * 1000)) {
+    res.status(429).json({ error: 'Distribution recently run. Please wait a few minutes.' });
+    return;
+  }
+
+  if (distributionRunning.has(wire)) {
+    res.status(409).json({ error: 'Distribution already running for this wire' });
+    return;
+  }
+
+  distributionRunning.add(wire);
+  try {
+    const result = await distributeEntries(wire);
+    res.json({ success: true, ...result });
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[Distribution] Run failed:', error);
+    res.status(500).json({ error: errorMsg });
+  } finally {
+    distributionRunning.delete(wire);
+  }
+});
+
+// GET /api/distribution/newsletter/:wire — generate newsletter markdown
+app.get('/api/distribution/newsletter/:wire', requireAuth, async (req: Request, res: Response) => {
+  const { wire } = req.params;
+  if (!wire || !isValidFeedKey(wire)) {
+    res.status(400).json({ error: 'Invalid wire' });
+    return;
+  }
+
+  if (!rateLimit('distribution-newsletter', 5, 5 * 60 * 1000)) {
+    res.status(429).json({ error: 'Newsletter recently generated. Please wait a few minutes.' });
+    return;
+  }
+
+  try {
+    const feed = await getFeedByKey(wire);
+    const displayName = feed?.displayName || wire;
+    const markdown = await generateNewsletterMarkdown(wire, displayName);
+    res.json({ success: true, markdown });
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[Distribution] Newsletter generation failed:', error);
+    res.status(500).json({ error: errorMsg });
+  }
+});
+
+// GET /api/distribution/status/:wire — bulk distribution status for approved entries
+app.get('/api/distribution/status/:wire', requireAuth, async (req: Request, res: Response) => {
+  const { wire } = req.params;
+  if (!wire || !isValidFeedKey(wire)) {
+    res.status(400).json({ error: 'Invalid wire' });
+    return;
+  }
+
+  try {
+    const statusMap = await getDistributionStatusBulk(wire);
+    res.json(statusMap);
+  } catch (error) {
+    console.error('Failed to fetch distribution status:', error);
+    res.status(500).json({ error: 'Failed to fetch distribution status' });
+  }
+});
+
+// GET /api/scan/entries/:id/distribution — logs for single entry
+app.get('/api/scan/entries/:id/distribution', requireAuth, async (req: Request, res: Response) => {
+  const entryId = parseInt(req.params.id, 10);
+  if (isNaN(entryId)) {
+    res.status(400).json({ error: 'Invalid entry ID' });
+    return;
+  }
+
+  try {
+    const logs = await getDistributionLogs(entryId);
+    res.json(logs);
+  } catch (error) {
+    console.error('Failed to fetch distribution logs:', error);
+    res.status(500).json({ error: 'Failed to fetch distribution logs' });
+  }
+});
+
+// POST /api/scan/entries/:id/redistribute — retry failed distribution
+app.post('/api/scan/entries/:id/redistribute', requireAuth, async (req: Request, res: Response) => {
+  const entryId = parseInt(req.params.id, 10);
+  if (isNaN(entryId)) {
+    res.status(400).json({ error: 'Invalid entry ID' });
+    return;
+  }
+
+  if (!rateLimit('redistribute', 5, 5 * 60 * 1000)) {
+    res.status(429).json({ error: 'Too many retry attempts. Please wait a few minutes.' });
+    return;
+  }
+
+  try {
+    // Look up the entry's wire
+    const pool = getPool();
+    const entryResult = await pool.query('SELECT wire FROM scan_entries WHERE id = $1', [entryId]);
+    if (entryResult.rows.length === 0) {
+      res.status(404).json({ error: 'Entry not found' });
+      return;
+    }
+    const wire = entryResult.rows[0].wire;
+
+    const result = await retryDistribution(entryId, wire);
+    res.json({ success: true, ...result });
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[Distribution] Redistribute failed:', error);
+    res.status(500).json({ error: errorMsg });
   }
 });
 

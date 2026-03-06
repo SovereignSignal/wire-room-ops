@@ -6,7 +6,7 @@ This file provides context for AI assistants working with this codebase.
 
 **Wire Room Ops** is a Node.js/TypeScript application that powers the backend pipeline and admin dashboard for The Wire Room. It automates grant discovery, intake processing, and approval across crypto, AI, and OSS beats. It pulls categorized entries from a Postgres database, enriches them using AI (Grok for X.com content, Claude for other URLs), and surfaces high-quality grant opportunities for operator review.
 
-> Current-code note (March 2026): parts of this file describe historical modules that were extracted from this repo (notably distribution/CRM/Telegram inbound services). When in doubt, trust `src/` and `README.md` for the implemented scope.
+> Current-code note (March 2026): parts of this file describe historical modules that were extracted from this repo (notably CRM/Telegram inbound services). Multi-channel distribution has been re-implemented in this repo. When in doubt, trust `src/` and `README.md` for the implemented scope.
 
 ## Multi-Repo Architecture
 
@@ -47,9 +47,9 @@ Dashboard login is handled via Privy (social/email auth). On successful Privy lo
 ```
 src/
 ├── index.ts              # Entry point - validates config, starts server
-├── server.ts             # Express routes (1400+ lines — candidate for splitting)
+├── server.ts             # Express routes (includes scan, distribution, feed, schedule APIs)
 ├── config/index.ts       # Environment variables and validation
-├── db/index.ts           # Postgres queries, schedules, feeds, scan tables, scan prompts
+├── db/index.ts           # Postgres queries, schedules, feeds, scan tables, scan prompts, distribution tables
 ├── jobs/
 │   ├── daily-intake.ts     # Scan intake pipeline orchestrator (parse -> dedup -> score -> queue)
 │   ├── scan-execution.ts   # Automated scan execution (prompt fetch -> Grok -> intake)
@@ -58,19 +58,23 @@ src/
 ├── services/
 │   ├── anthropic.ts      # Claude API calls with scraping integration
 │   ├── auth.ts           # Session tokens, download tokens, cleanup timers
-│   ├── dedup.ts          # URL exact-match and fuzzy name deduplication
-│   ├── email.ts          # Resend email templates (5 types)
-│   ├── forum.ts          # discuss.watch API client for forum scanning
-│   ├── grok.ts           # Grok Chat + Responses API for X.com content and scans
-│   ├── intake.ts         # Scan result parser, URL/name normalization
-│   ├── job-queue.ts      # SSE-based job progress tracking
-│   ├── models.ts         # Dynamic model fetching from both APIs
-│   ├── processor.ts      # Entry processing with retry logic
-│   ├── quality-scorer.ts # 0-100 quality scoring engine for scan entries
-│   ├── scan-stats.ts     # Prompt effectiveness and overlap metrics
-│   ├── scheduler.ts      # node-cron scheduling with health tracking
-│   ├── scraper.ts        # Firecrawl integration, URL resolution
-│   └── storage.ts        # Postgres-backed file storage with in-memory cache (keeps last 10)
+│   ├── dedup.ts            # URL exact-match and fuzzy name deduplication
+│   ├── distribution.ts     # Distribution orchestrator: send entries to channels, retry, newsletter
+│   ├── email.ts            # Resend email templates (5 types)
+│   ├── forum.ts            # discuss.watch API client for forum scanning
+│   ├── grok.ts             # Grok Chat + Responses API for X.com content and scans
+│   ├── intake.ts           # Scan result parser, URL/name normalization
+│   ├── job-queue.ts        # SSE-based job progress tracking
+│   ├── models.ts           # Dynamic model fetching from both APIs
+│   ├── post-generator.ts   # Claude Sonnet AI generates tweet + Telegram HTML per entry
+│   ├── processor.ts        # Entry processing with retry logic
+│   ├── quality-scorer.ts   # 0-100 quality scoring engine for scan entries
+│   ├── scan-stats.ts       # Prompt effectiveness and overlap metrics
+│   ├── scheduler.ts        # node-cron scheduling with health tracking
+│   ├── scraper.ts          # Firecrawl integration, URL resolution
+│   ├── storage.ts          # Postgres-backed file storage with in-memory cache (keeps last 10)
+│   ├── telegram-channel.ts # Telegram Bot API posting to channels
+│   └── x-client.ts         # Twitter/X posting via twitter-api-v2
 ├── views/
 │   ├── shared.ts         # Page shell, nav, shared styles, client-side escapeHtml
 │   ├── feed.ts           # Per-wire feed dashboard page
@@ -84,7 +88,7 @@ src/
 │   └── url.ts            # Shared normalizeUrl() for URL deduplication
 └── types/
     ├── index.ts          # Core TypeScript interfaces
-    └── intake.ts         # Scan pipeline types (ScanEntry, etc.)
+    └── intake.ts         # Scan pipeline + distribution types (ScanEntry, DistributionConfig, etc.)
 ```
 
 ## Common Tasks
@@ -126,7 +130,7 @@ Schedule configuration uses a `schedules` table with UUID primary keys, supporti
 
 The `feeds` table manages dynamic wire/feed types, seeded from `SEED_FEEDS` and auto-discovered from `channel_configs`. Scan pipeline uses 4 tables: `scan_entries`, `seen_urls`, `seen_names`, `intake_runs`. Scan prompts are stored in `scan_prompts` with CRUD support.
 
-Note: `distribution_config` and `distribution_logs` tables exist in the DB but are no longer managed by this codebase.
+Distribution uses 2 tables: `distribution_config` (composite PK on `wire` + `channel`, stores per-channel settings in JSONB) and `distribution_logs` (tracks per-entry, per-channel send status with a unique partial index on `(entry_id, channel) WHERE status IN ('pending','success')` to prevent double-posts). Tables are auto-created via `ensureDistributionTables()` on scheduler startup.
 
 ## API Integration Details
 
@@ -164,8 +168,9 @@ If Firecrawl fails, Claude uses only the cached summary from the database. Outpu
 Scheduled jobs that fail send email via `sendScheduledJobFailureEmail()` with error details, then retry once after 5 minutes.
 
 ### Concurrent Job Guard
-- `src/server.ts` prevents duplicate manual job execution — if a scan execution is already running, subsequent requests return 409 with the existing job ID.
-- `src/services/scheduler.ts` prevents overlapping cron runs via an `executingJobs` set — if a scheduled job is still running when the next cron tick fires, it is skipped.
+- `src/server.ts` prevents duplicate manual job execution -- if a scan execution is already running, subsequent requests return 409 with the existing job ID.
+- `src/server.ts` also guards distribution runs per wire -- if distribution for a wire is already running, subsequent requests return 409.
+- `src/services/scheduler.ts` prevents overlapping cron runs via an `executingJobs` set -- if a scheduled job is still running when the next cron tick fires, it is skipped.
 
 ### Database Reliability
 - Pool has `on('error')` handler to prevent crash on idle connection drops
@@ -222,6 +227,7 @@ Generated files are persisted to Postgres, but sessions and job queues are in-me
 - `PORT` - Server port (default: 3000)
 - `APP_URL` - Base URL (auto-detected on Railway from `RAILWAY_PUBLIC_DOMAIN`)
 - `ALLOWED_EMAILS` - Comma-separated additional emails for dashboard access
+- `TELEGRAM_BOT_TOKEN` - Telegram Bot API token for channel posting (channel ID stored per wire in `distribution_config`)
 - `FORUM_SCAN_ENABLED` - Set to `true` to enable forum scanning
 - `DISCUSS_WATCH_API_URL` - Base URL for discuss.watch API
 - `FROM_EMAIL` - Sender email address for notifications
@@ -302,6 +308,64 @@ Automated discovery of grant opportunities via X.com scanning, web search, and f
 - **Running a forum scan**: `POST /api/forum/run` with optional `{ "wire": "crypto" }` (requires `FORUM_SCAN_ENABLED=true`)
 - **Adding forum search keywords**: Edit `GRANT_KEYWORDS` array in `src/services/forum.ts`
 
+## Distribution System
+
+### Overview
+Per-feed multi-channel distribution of approved scan entries. Distribution is a **manual action** triggered from the feed dashboard -- it is NOT auto-triggered on approval. Three channels are supported: Telegram, X/Twitter, and newsletter (copyable markdown).
+
+### Architecture
+- **Orchestrator**: `src/services/distribution.ts` -- coordinates sending approved-but-undistributed entries to all enabled channels for a wire, with retry support and newsletter markdown generation
+- **Post generator**: `src/services/post-generator.ts` -- uses Claude Sonnet to generate a tweet (280 chars) and Telegram HTML post per entry. Falls back to a template if AI generation fails
+- **Telegram client**: `src/services/telegram-channel.ts` -- sends HTML-formatted posts to Telegram channels via Bot API. Bot token from `TELEGRAM_BOT_TOKEN` env var; channel ID from `distribution_config` per wire
+- **X/Twitter client**: `src/services/x-client.ts` -- posts tweets via `twitter-api-v2`. All 4 OAuth credentials (API key, API secret, access token, access secret) stored in `distribution_config` JSONB per wire
+- **Types**: `src/types/intake.ts` -- `DistributionChannel`, `DistributionStatus`, `DistributionConfig`, `DistributionLog`, `GeneratedPosts`
+
+### Database Tables
+- **`distribution_config`**: Composite PK `(wire, channel)`. Columns: `wire`, `channel` (telegram/x/newsletter), `enabled` boolean, `config` JSONB (channel-specific settings like channel ID or OAuth creds). Created via `ensureDistributionTables()` on scheduler startup.
+- **`distribution_logs`**: Tracks each send attempt. Columns: `id` (UUID), `entry_id` FK to `scan_entries`, `channel`, `wire`, `status` (pending/success/failed), `post_text`, `external_id` (platform post ID), `error_message`, `created_at`. Has unique partial index on `(entry_id, channel) WHERE status IN ('pending','success')` to prevent double-posts.
+
+### API Routes
+| Method | Path | Purpose | Rate Limit |
+|--------|------|---------|------------|
+| GET | `/api/distribution/config` | List all configs (credentials masked) | -- |
+| PUT | `/api/distribution/config/:wire/:channel` | Update channel config (merge, not replace) | -- |
+| POST | `/api/distribution/run/:wire` | Trigger distribution for a wire | 3 per wire / 5 min |
+| GET | `/api/distribution/newsletter/:wire` | Generate newsletter markdown | 5 global / 5 min |
+| GET | `/api/distribution/status/:wire` | Bulk distribution status for approved entries | -- |
+| GET | `/api/scan/entries/:id/distribution` | Distribution logs for a single entry | -- |
+| POST | `/api/scan/entries/:id/redistribute` | Retry failed distribution for an entry | 5 global / 5 min |
+
+### User Flow
+1. Approve entries in the queue (status changes to `approved` -- this already existed)
+2. Go to the feed page for a wire -- the Distribution section shows channel config cards
+3. Click Configure on a channel card to set credentials/channel ID and enable it
+4. Click "Distribute to Channels" to send approved-but-undistributed entries to Telegram + X
+5. Click "Generate Newsletter" to get copyable markdown of undistributed entries
+6. Distribution status is visible as colored pills (TG/X/NL) on the approved tab in the queue page
+7. Failed pills are clickable to retry distribution for that entry and channel
+
+### Key Design Decisions
+- **Manual trigger, not auto-on-approve**: Distribution is a separate deliberate action so operators can batch-review before sending
+- **Claude Sonnet for post generation**: Uses a smaller model (not Opus) for cost efficiency when generating tweets and Telegram posts
+- **Template fallback**: If AI post generation fails, a structured template is used instead
+- **3-second inter-entry delay**: Respects X/Twitter rate limits during batch distribution
+- **Concurrent execution guard**: Prevents double-posting if distribution is triggered while already running (returns 409 with existing job ID)
+- **Config merge on partial update**: PUT to config endpoint merges new fields into existing JSONB, preventing accidental credential loss
+- **Retry sends only to failed channels**: Redistribution skips channels that already have a `success` or `pending` log entry
+
+### Dashboard UI
+- **Feed page** (`src/views/feed.ts`): Distribution section with per-channel config cards showing enabled/disabled status, a configure dialog, "Distribute to Channels" button, and "Generate Newsletter" button
+- **Queue page** (`src/views/queue.ts`): Approved entries tab shows distribution status pills (TG/X/NL) -- green for success, red for failed (clickable to retry), gray for pending
+
+### Common Tasks for Distribution
+- **Configuring Telegram for a wire**: PUT `/api/distribution/config/:wire/telegram` with `{ "enabled": true, "config": { "channelId": "@yourchannel" } }`. Requires `TELEGRAM_BOT_TOKEN` env var.
+- **Configuring X/Twitter for a wire**: PUT `/api/distribution/config/:wire/x` with `{ "enabled": true, "config": { "apiKey": "...", "apiSecret": "...", "accessToken": "...", "accessSecret": "..." } }`
+- **Triggering distribution**: POST `/api/distribution/run/:wire` -- sends to all enabled channels
+- **Generating newsletter**: GET `/api/distribution/newsletter/:wire` -- returns markdown of undistributed approved entries
+- **Retrying a failed send**: POST `/api/scan/entries/:id/redistribute` -- retries only failed channels
+- **Checking distribution status**: GET `/api/distribution/status/:wire` -- bulk status for all approved entries in a wire
+- **Viewing logs for an entry**: GET `/api/scan/entries/:id/distribution` -- full log history
+
 ## Rate Limiting
 
 In-memory rate limiter in `src/server.ts`:
@@ -312,6 +376,9 @@ In-memory rate limiter in `src/server.ts`:
 | `/api/scan/run` | 1 global | 15 min |
 | `/api/forum/run` | 1 global | 15 min |
 | `/api/summary-sync` | 3 global | 5 min |
+| `/api/distribution/run/:wire` | 3 per wire | 5 min |
+| `/api/distribution/newsletter/:wire` | 5 global | 5 min |
+| `/api/scan/entries/:id/redistribute` | 5 global | 5 min |
 
 ## Code Style Notes
 
@@ -327,10 +394,11 @@ In-memory rate limiter in `src/server.ts`:
 ## Planned / Not Yet Implemented
 
 The following features are planned but not yet built:
-- **Multi-channel distribution** (Telegram + X posting on approval)
 - **CRM sync** (Notion organization tracking)
 - **Telegram bot ingestion** (URL submission via Telegram)
 - **Email inbound ingestion** (URL extraction from forwarded emails)
-- **Weekly newsletter generation** (weekly-summary job)
+- **Automated scheduled distribution** (currently manual trigger only)
 
-The database tables `distribution_config` and `distribution_logs` exist but are not managed by the current codebase.
+Previously planned and now implemented:
+- ~~Multi-channel distribution~~ -- Implemented: Telegram, X/Twitter, and newsletter channels (see Distribution System section)
+- ~~Weekly newsletter generation~~ -- Implemented: on-demand newsletter markdown generation via `/api/distribution/newsletter/:wire`

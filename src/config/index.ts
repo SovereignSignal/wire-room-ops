@@ -64,6 +64,10 @@ export const config = {
     enabled: process.env.FORUM_SCAN_ENABLED === 'true',
   },
 
+  telegram: {
+    botToken: process.env.TELEGRAM_BOT_TOKEN || '',
+  },
+
 };
 
 export function validateConfig(): void {
