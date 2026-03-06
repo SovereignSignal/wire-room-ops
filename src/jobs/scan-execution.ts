@@ -67,6 +67,10 @@ function resolveVariant(prompt: ScanPromptRecord): PromptVariant {
   return VARIANT_MAP[prompt.sortOrder % 3];
 }
 
+function isQuotaExhaustedError(message: string): boolean {
+  return /resource has been exhausted|used all available credits|monthly spending limit/i.test(message);
+}
+
 // ============================================================
 // Main execution
 // ============================================================
@@ -98,6 +102,7 @@ export async function runScanExecution(
   const perPrompt: PerPromptResult[] = [];
   let totalResults = 0;
   let promptsFailed = 0;
+  let fatalError: string | null = null;
 
   // Progress range: 2% -> 70% for prompt execution
   const progressPerPrompt = 68 / prompts.length;
@@ -178,12 +183,46 @@ export async function runScanExecution(
         `"${prompt.label}" FAILED: ${errMsg.substring(0, 80)}`,
         Math.round(pctBase + progressPerPrompt * 0.9)
       );
-      // Continue to next prompt — don't abort entire scan
+
+      if (isQuotaExhaustedError(errMsg)) {
+        fatalError = errMsg;
+
+        // Mark all remaining prompts as skipped due fatal upstream error.
+        for (let j = i + 1; j < prompts.length; j++) {
+          const remainingPrompt = prompts[j];
+          const remainingVariant = resolveVariant(remainingPrompt);
+          perPrompt.push({
+            promptId: remainingPrompt.id,
+            wire: remainingPrompt.wire,
+            label: remainingPrompt.label,
+            variant: remainingVariant,
+            resultCount: 0,
+            error: `Skipped after fatal quota error: ${errMsg}`,
+            durationMs: 0,
+          });
+        }
+
+        promptsFailed += prompts.length - i - 1;
+        progress(
+          `Aborting remaining prompts: upstream Grok quota exhausted`,
+          Math.round(pctBase + progressPerPrompt)
+        );
+        break;
+      }
     }
   }
 
   // 3. Run intake pipeline on all collected submissions
+  if (fatalError) {
+    throw new Error(`Scan execution aborted: ${fatalError}`);
+  }
+
   if (submissions.length === 0 || totalResults === 0) {
+    if (promptsFailed === prompts.length) {
+      const firstError = perPrompt.find((p) => !!p.error)?.error || 'Unknown prompt execution error';
+      throw new Error(`All scan prompts failed: ${firstError}`);
+    }
+
     const totalDurationMs = Date.now() - startTime;
     // Return empty result with a minimal summary
     return {
