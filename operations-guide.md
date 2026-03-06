@@ -47,6 +47,7 @@ Common optional settings:
 ## 2) First Validation
 
 - `GET /health` returns `{ status: "ok" }`.
+- `GET /ready` returns `{ status: "ready" }` with `checks.db=true`.
 - You can log in at `/` and load `/queue` + `/settings`.
 - `POST /api/test-alert` sends a test email.
 

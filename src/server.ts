@@ -152,6 +152,38 @@ app.get('/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Readiness check (includes DB connectivity)
+app.get('/ready', async (_req: Request, res: Response) => {
+  const checks = {
+    db: false,
+    schedulerInitialized: false,
+  };
+
+  try {
+    await getPool().query('SELECT 1');
+    checks.db = true;
+  } catch (error) {
+    console.error('[Ready] DB connectivity check failed:', error);
+  }
+
+  const schedulerStatus = getSchedulerStatus();
+  checks.schedulerInitialized = schedulerStatus.totalSchedules > 0;
+
+  const ready = checks.db;
+  const payload = {
+    status: ready ? 'ready' : 'not_ready',
+    timestamp: new Date().toISOString(),
+    checks,
+  };
+
+  if (!ready) {
+    res.status(503).json(payload);
+    return;
+  }
+
+  res.json(payload);
+});
+
 // Landing page - login (dev mode skips straight to first feed)
 app.get('/', async (req: Request, res: Response) => {
   const session = req.cookies?.session as string;

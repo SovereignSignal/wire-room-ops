@@ -139,6 +139,7 @@ src/
 Public:
 
 - `GET /health`
+- `GET /ready`
 - `GET /`
 - `POST /api/auth/callback`
 - `POST /resend-link`
