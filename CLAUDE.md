@@ -6,6 +6,8 @@ This file provides context for AI assistants working with this codebase.
 
 **Wire Room Ops** is a Node.js/TypeScript application that powers the backend pipeline and admin dashboard for The Wire Room. It automates grant discovery, intake processing, and multi-channel distribution across crypto, AI, and OSS beats. It pulls categorized entries from a Postgres database, enriches them using AI (Grok for X.com content, Claude for other URLs), and generates formatted markdown files.
 
+> Current-code note (March 2026): parts of this file describe historical modules that were extracted from this repo (notably distribution/CRM/Telegram inbound services). When in doubt, trust `src/` and `README.md` for the implemented scope.
+
 ## Multi-Repo Architecture
 
 This backend is one half of a two-repo system:

@@ -168,7 +168,7 @@ export interface StoredScheduleConfig {
   anthropicModel?: string;
   timezone: string;
   wire?: string;
-  scheduleType?: 'weekly-summary' | 'scan-execution' | 'forum-scan';
+  scheduleType?: 'scan-execution' | 'forum-scan';
   frequencyHours?: number;
   notifyEmails?: string;
   createdAt?: Date;
@@ -192,9 +192,29 @@ export async function ensureScheduleTable(): Promise<void> {
       anthropic_model TEXT,
       timezone TEXT NOT NULL DEFAULT 'America/Los_Angeles',
       wire TEXT,
+      schedule_type TEXT NOT NULL DEFAULT 'scan-execution',
+      frequency_hours INTEGER,
+      notify_emails TEXT,
       created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
     )
+  `);
+
+  // Migrate older schedule schema forward (idempotent)
+  await pool.query(`ALTER TABLE schedules ADD COLUMN IF NOT EXISTS schedule_type TEXT DEFAULT 'scan-execution'`);
+  await pool.query(`ALTER TABLE schedules ADD COLUMN IF NOT EXISTS frequency_hours INTEGER`);
+  await pool.query(`ALTER TABLE schedules ADD COLUMN IF NOT EXISTS notify_emails TEXT`);
+  await pool.query(`
+    UPDATE schedules
+    SET schedule_type = 'scan-execution'
+    WHERE schedule_type IS NULL
+      OR schedule_type NOT IN ('scan-execution', 'forum-scan')
+  `);
+  await pool.query(`ALTER TABLE schedules DROP CONSTRAINT IF EXISTS schedules_schedule_type_check`);
+  await pool.query(`
+    ALTER TABLE schedules
+    ADD CONSTRAINT schedules_schedule_type_check
+    CHECK (schedule_type IN ('scan-execution', 'forum-scan'))
   `);
 
   // Migrate data from old schedule_config table if it exists
@@ -213,8 +233,8 @@ export async function ensureScheduleTable(): Promise<void> {
       const existingSchedules = await pool.query(`SELECT COUNT(*) FROM schedules`);
       if (parseInt(existingSchedules.rows[0].count, 10) === 0) {
         await pool.query(`
-          INSERT INTO schedules (name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          INSERT INTO schedules (name, enabled, day_of_week, hour, minute, lookback_days, grok_model, anthropic_model, timezone, wire, schedule_type)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'scan-execution')
         `, [
           'Default Schedule',
           row.enabled,
@@ -234,6 +254,8 @@ export async function ensureScheduleTable(): Promise<void> {
 }
 
 function parseScheduleRow(row: any): StoredScheduleConfig {
+  const normalizedScheduleType = row.schedule_type === 'forum-scan' ? 'forum-scan' : 'scan-execution';
+
   return {
     id: row.id,
     name: row.name,
@@ -246,7 +268,7 @@ function parseScheduleRow(row: any): StoredScheduleConfig {
     anthropicModel: row.anthropic_model || undefined,
     timezone: row.timezone,
     wire: row.wire || undefined,
-    scheduleType: row.schedule_type || 'weekly-summary',
+    scheduleType: normalizedScheduleType,
     frequencyHours: row.frequency_hours || undefined,
     notifyEmails: row.notify_emails || undefined,
     createdAt: row.created_at,
@@ -297,7 +319,7 @@ export async function createSchedule(config: Omit<StoredScheduleConfig, 'id' | '
     config.anthropicModel || null,
     config.timezone,
     config.wire || null,
-    config.scheduleType || 'weekly-summary',
+    config.scheduleType || 'scan-execution',
     config.frequencyHours || null,
     config.notifyEmails || null,
   ]);
@@ -791,15 +813,6 @@ export async function ensureScanPromptsTable(): Promise<void> {
     ALTER TABLE scan_entries ADD CONSTRAINT scan_entries_status_check
       CHECK (status IN ('raw','deduped','duplicate','scored','queued','enriched','published','archived','skipped','approved','declined'))
   `);
-
-  // Phase 2: schedule_type for distinguishing weekly-summary vs scan-execution
-  await pool.query(`
-    ALTER TABLE schedules ADD COLUMN IF NOT EXISTS schedule_type TEXT DEFAULT 'weekly-summary'
-  `);
-
-  // Schedule frequency + notify emails columns
-  await pool.query(`ALTER TABLE schedules ADD COLUMN IF NOT EXISTS frequency_hours INTEGER`);
-  await pool.query(`ALTER TABLE schedules ADD COLUMN IF NOT EXISTS notify_emails TEXT`);
 
   // Phase 3 migration: tool_type column for x_search vs web_search
   await pool.query(`

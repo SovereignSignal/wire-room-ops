@@ -17,7 +17,7 @@ export interface ScheduleConfig {
   anthropicModel?: string;
   timezone: string;
   wire?: string; // Optional wire/feed filter
-  scheduleType?: 'weekly-summary' | 'scan-execution' | 'forum-scan';
+  scheduleType?: 'scan-execution' | 'forum-scan';
   frequencyHours?: number; // Sub-daily interval (1-23) for scan-execution
   notifyEmails?: string; // Comma-separated email recipients
 }
@@ -31,6 +31,7 @@ const DEFAULT_SCHEDULE_TEMPLATE: Omit<ScheduleConfig, 'id'> = {
   minute: 0,
   lookbackDays: 7,
   timezone: 'America/Los_Angeles',
+  scheduleType: 'scan-execution',
 };
 
 // In-memory cache of all schedules
@@ -47,8 +48,6 @@ interface JobStatus {
 }
 let jobStatuses: Map<string, JobStatus> = new Map();
 let schedulerStartTime: Date | null = null;
-
-const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
 export function getSchedules(): ScheduleConfig[] {
   return Array.from(schedules.values());
@@ -114,7 +113,7 @@ export function formatScheduleDescription(schedule: ScheduleConfig): string {
   const ampm = schedule.hour >= 12 ? 'PM' : 'AM';
   const hour12 = schedule.hour % 12 || 12;
 
-  if (schedule.scheduleType === 'scan-execution') {
+  if (schedule.scheduleType === 'scan-execution' || !schedule.scheduleType) {
     if (schedule.frequencyHours && schedule.frequencyHours < 24) {
       return `Every ${schedule.frequencyHours}h at :${minute} (${schedule.timezone}) \u2014 Scan Execution`;
     }
@@ -128,21 +127,17 @@ export function formatScheduleDescription(schedule: ScheduleConfig): string {
     return `Daily at ${hour12}:${minute} ${ampm} (${schedule.timezone}) \u2014 Forum Scan`;
   }
 
-  const day = DAY_NAMES[schedule.dayOfWeek];
-  return `Every ${day} at ${hour12}:${minute} ${ampm} (${schedule.timezone}), looking back ${schedule.lookbackDays} days`;
+  return `Daily at ${hour12}:${minute} ${ampm} (${schedule.timezone}) \u2014 Scan Execution`;
 }
 
 function buildCronExpression(schedule: ScheduleConfig): string {
   // Cron format: minute hour dayOfMonth month dayOfWeek
-  if (schedule.scheduleType === 'scan-execution' || schedule.scheduleType === 'forum-scan') {
-    if (schedule.frequencyHours && schedule.frequencyHours < 24) {
-      // Sub-daily: run every N hours at the configured minute
-      return `${schedule.minute} */${schedule.frequencyHours} * * *`;
-    }
-    // Daily schedule
-    return `${schedule.minute} ${schedule.hour} * * *`;
+  if (schedule.frequencyHours && schedule.frequencyHours < 24) {
+    // Sub-daily: run every N hours at the configured minute
+    return `${schedule.minute} */${schedule.frequencyHours} * * *`;
   }
-  return `${schedule.minute} ${schedule.hour} * * ${schedule.dayOfWeek}`;
+  // Daily schedule
+  return `${schedule.minute} ${schedule.hour} * * *`;
 }
 
 function createJobExecutor(schedule: ScheduleConfig) {
@@ -211,7 +206,6 @@ function createJobExecutor(schedule: ScheduleConfig) {
         status.error = null;
         console.log(`[Scheduler] Forum scan "${currentScheduleData.name}" completed: ${forumResult.totalResults} results, ${forumResult.intakeSummary.newUnique} unique`);
       } else {
-        // weekly-summary type is no longer supported in this service
         console.warn(`[Scheduler] Unsupported schedule type "${currentScheduleData.scheduleType}" — skipping`);
       }
 
@@ -325,47 +319,29 @@ export function getNextRunTime(scheduleId?: string): Date | null {
   // Calculate next run in timezone-local time
   const next = new Date(tzNow);
 
-  if (schedule.scheduleType === 'scan-execution' || schedule.scheduleType === 'forum-scan') {
-    if (schedule.frequencyHours && schedule.frequencyHours < 24) {
-      // Sub-daily: find next hour that matches */N pattern
-      const freq = schedule.frequencyHours;
-      const currentHour = tzNow.getHours();
-      const currentMin = tzNow.getMinutes();
+  if (schedule.frequencyHours && schedule.frequencyHours < 24) {
+    // Sub-daily: find next hour that matches */N pattern
+    const freq = schedule.frequencyHours;
+    const currentHour = tzNow.getHours();
+    const currentMin = tzNow.getMinutes();
 
-      // Find next matching hour (hours that are divisible by freq)
-      let nextHour = currentHour;
-      if (currentMin >= schedule.minute) {
-        nextHour++;
-      }
-      // Round up to next multiple of freq
-      nextHour = Math.ceil(nextHour / freq) * freq;
-      if (nextHour >= 24) {
-        next.setDate(next.getDate() + 1);
-        nextHour = 0;
-      }
-      next.setHours(nextHour, schedule.minute, 0, 0);
-    } else {
-      // Daily schedule -- next run is today or tomorrow at the scheduled time
-      next.setHours(schedule.hour, schedule.minute, 0, 0);
-      if (next <= tzNow) {
-        next.setDate(next.getDate() + 1);
-      }
+    // Find next matching hour (hours that are divisible by freq)
+    let nextHour = currentHour;
+    if (currentMin >= schedule.minute) {
+      nextHour++;
     }
+    // Round up to next multiple of freq
+    nextHour = Math.ceil(nextHour / freq) * freq;
+    if (nextHour >= 24) {
+      next.setDate(next.getDate() + 1);
+      nextHour = 0;
+    }
+    next.setHours(nextHour, schedule.minute, 0, 0);
   } else {
-    // Weekly schedule
-    const currentDay = tzNow.getDay();
-    const targetDay = schedule.dayOfWeek;
-
-    let daysUntilTarget = targetDay - currentDay;
-    if (daysUntilTarget < 0) {
-      daysUntilTarget += 7;
-    }
-
-    next.setDate(tzNow.getDate() + daysUntilTarget);
+    // Daily schedule -- next run is today or tomorrow at the scheduled time
     next.setHours(schedule.hour, schedule.minute, 0, 0);
-
     if (next <= tzNow) {
-      next.setDate(next.getDate() + 7);
+      next.setDate(next.getDate() + 1);
     }
   }
 

@@ -35,7 +35,7 @@ function stripMarkdownArtifacts(text: string): string {
 /**
  * Parses the structured output format our Grok prompts produce:
  *
- * **[Program Name]** â [Description]
+ * **[Program Name]** - [Description]
  * Deadline: [date or "Rolling" or "None listed"]
  * Link: [URL]
  */
@@ -390,19 +390,22 @@ function finalizeLenientEntry(entry: Partial<RawScanResult>): RawScanResult {
 
 /**
  * Extract dollar/currency amounts from a description string.
- * Handles formats like: $50K, $3M, â¬125M, Â£4.5M, â¹500K, $5,000, etc.
+ * Handles formats like: $50K, $3M, EUR 125M, GBP 4.5M, INR 500K, $5,000, etc.
  */
 export function extractAmount(text: string): string | null {
+  const currencyClass = '[\\u20AC\\u00A3\\u20B9\\u20A6]'; // EUR, GBP, INR, NGN symbols
+  const dashClass = '[-\\u2013\\u2014]'; // hyphen, en dash, em dash
+
   // Match currency symbol + number + optional multiplier
   const patterns = [
     // $50,000 or $50K or $3M or $3.5M
     /(\$[\d,]+(?:\.\d+)?(?:\s*[KkMmBb](?:illion)?)?)/,
-    // â¬125M or Â£4.5M
-    /((?:[â¬Â£â¹]|EUR|GBP|INR)\s*[\d,]+(?:\.\d+)?(?:\s*[KkMmBb](?:illion)?)?)/i,
-    // "Up to $X" or "up to â¬X"
-    /(up\s+to\s+(?:[\$â¬Â£â¹]|USD|EUR|GBP|INR)\s*[\d,]+(?:\.\d+)?(?:\s*[KkMmBb](?:illion)?)?)/i,
+    // EUR 125M or GBP 4.5M
+    new RegExp(`((?:${currencyClass}|USD|EUR|GBP|INR|NGN)\\s*[\\d,]+(?:\\.\\d+)?(?:\\s*[KkMmBb](?:illion)?)?)`, 'i'),
+    // "Up to $X" or "up to EUR X"
+    new RegExp(`(up\\s+to\\s+(?:[\\$${currencyClass}]|USD|EUR|GBP|INR|NGN)\\s*[\\d,]+(?:\\.\\d+)?(?:\\s*[KkMmBb](?:illion)?)?)`, 'i'),
     // "$5,000 to $350,000" ranges
-    /([\$â¬Â£â¹][\d,]+(?:\.\d+)?(?:\s*[KkMm])?\s*(?:to|[-â])\s*[\$â¬Â£â¹]?[\d,]+(?:\.\d+)?(?:\s*[KkMm])?)/i,
+    new RegExp(`([\\$${currencyClass}][\\d,]+(?:\\.\\d+)?(?:\\s*[KkMm])?\\s*(?:to|${dashClass})\\s*[\\$${currencyClass}]?[\\d,]+(?:\\.\\d+)?(?:\\s*[KkMm])?)`, 'i'),
     // "X million" or "X billion"
     /([\d,]+(?:\.\d+)?\s*(?:million|billion|mil|M|B)\s*(?:dollars|USD|EUR)?)/i,
   ];
@@ -430,10 +433,10 @@ export function parseAmount(
   let text = raw.trim();
 
   // Detect currency
-  if (text.match(/[â¬]|EUR/i)) currency = 'EUR';
-  else if (text.match(/[Â£]|GBP/i)) currency = 'GBP';
-  else if (text.match(/[â¹]|INR/i)) currency = 'INR';
-  else if (text.match(/NGN|4b¦/i)) currency = 'NGN';
+  if (text.match(/\u20AC|EUR/i)) currency = 'EUR';
+  else if (text.match(/\u00A3|GBP/i)) currency = 'GBP';
+  else if (text.match(/\u20B9|INR/i)) currency = 'INR';
+  else if (text.match(/\u20A6|NGN/i)) currency = 'NGN';
   else if (text.match(/N\$/)) currency = 'NAD';
   else if (text.match(/\bSOL\b/)) currency = 'SOL';
   else if (text.match(/\bSTX\b/)) currency = 'STX';
@@ -441,7 +444,7 @@ export function parseAmount(
   else if (text.match(/USDT|USDC/i)) currency = 'USD';
 
   // Strip currency symbols and words
-  text = text.replace(/[\$â¬Â£â¹â¦]/g, '');
+  text = text.replace(/[\$\u20AC\u00A3\u20B9\u20A6]/g, '');
   text = text.replace(
     /\b(USD|EUR|GBP|INR|NGN|SOL|STX|ENS|USDT|USDC|up\s+to|per\s+award|total|pool|prizes?|credits?|stipend|matching|varies|free)\b/gi,
     ''
@@ -450,7 +453,7 @@ export function parseAmount(
 
   // Handle ranges: take the higher number
   const rangeMatch = text.match(
-    /([\d,]+(?:\.\d+)?)\s*[KkMm]?\s*(?:to|[-â])\s*([\d,]+(?:\.\d+)?)\s*([KkMmBb])?/
+    /([\d,]+(?:\.\d+)?)\s*[KkMm]?\s*(?:to|[-\u2013\u2014])\s*([\d,]+(?:\.\d+)?)\s*([KkMmBb])?/
   );
   if (rangeMatch) {
     text = rangeMatch[2] + (rangeMatch[3] || '');

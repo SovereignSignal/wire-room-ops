@@ -1,5 +1,7 @@
 # Wire Room Ops: Session Handoff (Historical)
 
+> Note: This document is retained for historical context. Some sections (especially distribution/weekly-summary references) are no longer accurate for the current codebase.
+
 ## What This Session Covered
 
 This was a working session on the `wire-room-ops` repo (deployed on Railway) focused on transitioning from a fully manual grant discovery workflow to the automated scan pipeline that already exists in the codebase but has never been turned on.

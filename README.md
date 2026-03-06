@@ -1,667 +1,257 @@
 # Wire Room Ops
 
-Backend pipeline and admin dashboard for The Wire Room. Automates grant discovery, intake processing, and multi-channel distribution across crypto, AI, and OSS beats. Pulls categorized entries from Postgres, enriches content via Grok (for X.com/Twitter) and Anthropic Claude (for other URLs with web scraping), and delivers formatted markdown files ready for publication.
+Backend pipeline and admin dashboard for The Wire Room editorial workflow.
+
+This service discovers opportunities (X/web/forum), runs intake (parse -> dedup -> quality score), queues items for review, and marks approved entries in `scan_entries` so the public site can publish them.
+
+## Current Scope (March 2026)
+
+- Includes: scan execution, intake pipeline, queue review, schedule management, summary sync bridge, model listing, email alerts.
+- Does **not** include: multi-channel distribution posting (Telegram/X) in this repo. Some historical docs may still reference it.
+
+## Core Workflow
+
+1. Prompts are stored in `scan_prompts`.
+2. `scan-execution` (or manual trigger) calls Grok Responses API (`x_search` / `web_search`).
+3. Results are parsed into structured entries.
+4. Intake pipeline inserts raw rows, deduplicates against `seen_urls` + `seen_names`, scores quality, and moves entries to `queued` or `archived`.
+5. Operator reviews queue in dashboard and sets action:
+   - `approve` -> `status = 'approved'`
+   - `decline` -> `status = 'declined'`
+   - `reviewlater` -> `status = 'skipped'`
+6. The Wire Room frontend reads approved rows directly from `scan_entries`.
 
 ## Features
 
-- **Multi-AI Processing**: Routes X.com/Twitter URLs to Grok API (with live tweet access) and other URLs to Claude (with Firecrawl web scraping)
-- **Scan Pipeline**: Automated grant discovery via X.com scanning with intake, dedup, and quality scoring
-- **Telegram Bot**: Send URLs to a Telegram bot for instant scraping, extraction, and intake processing
-- **Email Ingestion**: Forward emails with URLs to a Resend inbound address for automated intake
-- **Forum Scanning**: Automated discovery across 150+ Discourse forums via discuss.watch API
-- **Multi-Channel Distribution**: Auto-publish AI-crafted posts to Telegram channels and X (Twitter) on approval
-- **Web Dashboard**: Modern dark-themed UI with Privy authentication
-- **Multi-Feed Support**: Dynamic wire/feed management (crypto, ai, oss, and custom feeds)
-- **Scheduled Jobs**: Multiple configurable schedules — weekly newsletter and daily scan execution
-- **CRM Integration**: Notion-based org tracking with staging database workflow for new organizations
-- **Health Monitoring**: Real-time scheduler status, job history, and failure notifications
-- **Model Selection**: Dynamic model loading from Grok and Anthropic APIs with UI selection
-- **Email Notifications**: Branded emails for login, job completion, test alerts, and failure notifications
-
-## Architecture
-
-```
-                    ┌──────────────────────────────────────────────────────────────┐
-                    │                    Ingestion Channels                        │
-                    │  [X Scan]  [Web Search]  [Forum Scan]  [Telegram]  [Email]  │
-                    └──────────┬────────────┬────────────┬────────┬────────┬──────┘
-                               └────────────┴────────────┼────────┘        │
-                                                         ▼                 │
-[Postgres DB] --> [Web Dashboard / Scheduler] --> [AI Processing] --> [Markdown File]
-                         │                              │
-                         ▼                              ▼
-                  [Privy Auth]                 [Grok for X.com]
-                  [Email via Resend]           [Claude + Firecrawl for other URLs]
-                                              [Scan Pipeline: Dedup → Score → Queue]
-                                                         │
-                                                    [Approve]
-                                                         │
-                                              ┌──────────┴──────────┐
-                                              ▼                     ▼
-                                     [Telegram Channel]        [X / Twitter]
-                                     (AI-crafted posts via Multi-Channel Distribution)
-```
+- Privy-authenticated dashboard (email allowlist support)
+- Dynamic feeds (`crypto`, `ai`, `oss`, plus custom)
+- Prompt CRUD + test execution
+- Automated scan runs with SSE progress updates
+- Forum scanning via discuss.watch
+- Intake scoring + dedup stats + prompt effectiveness stats
+- Scheduler with per-schedule health and retry-on-failure behavior
+- Summary sync bridge (`summaries` -> approved `scan_entries`)
+- Postgres-backed generated file storage and email notifications
 
 ## Quick Start
 
-### 1. Install Dependencies
+### 1. Install
 
 ```bash
 npm install
 ```
 
-### 2. Configure Environment
-
-Copy `.env.example` to `.env` and fill in your credentials:
+### 2. Configure
 
 ```bash
 cp .env.example .env
 ```
 
-Required variables:
-- `DATABASE_URL` - Postgres connection string
-- `ANTHROPIC_API_KEY` - For summarizing non-X.com URLs via Claude
-- `GROK_API_KEY` - For summarizing X.com/Twitter URLs via Grok
-- `FIRECRAWL_API_KEY` - For web scraping non-X.com content
-- `RESEND_API_KEY` - For sending notification emails
-- `NOTIFICATION_EMAIL` - Email to receive notifications and for dashboard login
-- `PRIVY_APP_ID` - Privy app ID for authentication
-- `PRIVY_APP_SECRET` - Privy app secret for authentication
+Required env vars:
 
-### 3. Build
+- `DATABASE_URL`
+- `ANTHROPIC_API_KEY`
+- `GROK_API_KEY`
+- `FIRECRAWL_API_KEY`
+- `RESEND_API_KEY`
+- `NOTIFICATION_EMAIL`
+- `PRIVY_APP_ID`
+- `PRIVY_APP_SECRET`
 
-```bash
-npm run build
-```
+### 3. Run
 
-### 4. Run
-
-**Start the web server** (includes scheduler):
-```bash
-npm start
-```
-
-**Run the weekly summary job via CLI** (with email notification):
-```bash
-npm run job:weekly
-```
-
-**Development mode**:
 ```bash
 npm run dev
 ```
 
-## Database Schema
+Production:
 
-The application expects a `summaries` table with related tables for messages and categories:
-
-```sql
--- Main summaries table
-CREATE TABLE summaries (
-  id SERIAL PRIMARY KEY,
-  message_id INTEGER REFERENCES messages(id),
-  category_id INTEGER REFERENCES categories(id),
-  title TEXT,
-  summary TEXT,
-  processing_status TEXT DEFAULT 'SUCCESS',
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Messages table (contains extracted URLs)
-CREATE TABLE messages (
-  id SERIAL PRIMARY KEY,
-  extracted_urls JSONB,  -- Array of URLs extracted from message
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Categories table
-CREATE TABLE categories (
-  id SERIAL PRIMARY KEY,
-  name TEXT NOT NULL
-);
-
--- Multiple schedule configurations (auto-created by app)
-CREATE TABLE schedules (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  name TEXT NOT NULL DEFAULT 'Untitled Schedule',
-  enabled BOOLEAN NOT NULL DEFAULT false,
-  day_of_week INTEGER NOT NULL DEFAULT 3,  -- 0=Sunday, 6=Saturday
-  hour INTEGER NOT NULL DEFAULT 9,
-  minute INTEGER NOT NULL DEFAULT 0,
-  lookback_days INTEGER NOT NULL DEFAULT 7,
-  grok_model TEXT,
-  anthropic_model TEXT,
-  timezone TEXT NOT NULL DEFAULT 'America/Los_Angeles',
-  wire TEXT,
-  schedule_type TEXT DEFAULT 'weekly-summary',
-  frequency_hours INTEGER,       -- Sub-daily interval (1-23) for scan/forum schedules
-  notify_emails TEXT,            -- Comma-separated emails for job notifications
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-
--- Generated files (auto-created by app)
-CREATE TABLE generated_files (
-  id TEXT PRIMARY KEY,
-  filename TEXT NOT NULL,
-  content TEXT NOT NULL,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-  date_range_start TIMESTAMP WITH TIME ZONE,
-  date_range_end TIMESTAMP WITH TIME ZONE
-);
-
--- Dynamic wire/feed management (auto-created by app)
-CREATE TABLE feeds (
-  key TEXT PRIMARY KEY,
-  display_name TEXT NOT NULL,
-  title_template TEXT,
-  sort_order INTEGER DEFAULT 0,
-  archived BOOLEAN DEFAULT false,
-  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-);
-
--- Scan pipeline tables (auto-created by app)
-CREATE TABLE scan_entries (
-  id SERIAL PRIMARY KEY,
-  name TEXT NOT NULL,
-  description TEXT,
-  source_url TEXT NOT NULL,
-  amount TEXT,
-  amount_numeric NUMERIC,
-  amount_currency TEXT,
-  deadline TEXT,
-  deadline_parsed DATE,
-  wire TEXT NOT NULL,
-  prompt_variant TEXT NOT NULL CHECK (prompt_variant IN ('A', 'B', 'C', 'N')),
-  scan_source TEXT NOT NULL DEFAULT 'x-scan' CHECK (scan_source IN ('x-scan', 'web-search', 'telegram', 'email', 'forum')),
-  scan_date DATE NOT NULL,
-  status TEXT NOT NULL DEFAULT 'raw'
-    CHECK (status IN ('raw','deduped','duplicate','scored','queued','enriched','published','archived','skipped','approved','declined')),
-  quality_score INTEGER,
-  quality_breakdown JSONB,
-  duplicate_of_id INTEGER REFERENCES scan_entries(id),
-  duplicate_reason TEXT,
-  prompt_id UUID REFERENCES scan_prompts(id),
-  submitted_by TEXT,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE seen_urls (
-  id SERIAL PRIMARY KEY,
-  url TEXT NOT NULL,
-  normalized_url TEXT NOT NULL,
-  first_seen_entry_id INTEGER NOT NULL REFERENCES scan_entries(id),
-  first_seen_date DATE NOT NULL,
-  wire TEXT NOT NULL,
-  UNIQUE(normalized_url, wire)
-);
-
-CREATE TABLE seen_names (
-  id SERIAL PRIMARY KEY,
-  name_original TEXT NOT NULL,
-  name_normalized TEXT NOT NULL,
-  name_tokens TEXT[],
-  entry_id INTEGER NOT NULL REFERENCES scan_entries(id),
-  wire TEXT NOT NULL,
-  first_seen DATE NOT NULL
-);
-
-CREATE TABLE intake_runs (
-  id SERIAL PRIMARY KEY,
-  run_date DATE NOT NULL,
-  wire TEXT,
-  total_ingested INTEGER DEFAULT 0,
-  duplicates_found INTEGER DEFAULT 0,
-  new_unique INTEGER DEFAULT 0,
-  avg_quality_score NUMERIC,
-  high_quality_count INTEGER DEFAULT 0,
-  summary JSONB,
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Distribution tracking (auto-created by app)
-CREATE TABLE distribution_logs (
-  id SERIAL PRIMARY KEY,
-  entry_id INTEGER NOT NULL REFERENCES scan_entries(id),
-  channel TEXT NOT NULL CHECK (channel IN ('telegram', 'x')),
-  wire TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'success', 'failed', 'skipped')),
-  post_text TEXT,
-  external_id TEXT,
-  external_url TEXT,
-  error_message TEXT,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Per-wire distribution channel settings (auto-created by app, seeded from env vars)
-CREATE TABLE distribution_config (
-  wire TEXT PRIMARY KEY,
-  enabled BOOLEAN NOT NULL DEFAULT false,
-  telegram_channel_id TEXT NOT NULL DEFAULT '',
-  x_api_key TEXT NOT NULL DEFAULT '',
-  x_api_secret TEXT NOT NULL DEFAULT '',
-  x_access_token TEXT NOT NULL DEFAULT '',
-  x_access_token_secret TEXT NOT NULL DEFAULT '',
-  x_handle TEXT NOT NULL DEFAULT '',
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Managed scan prompts (auto-created by app)
-CREATE TABLE scan_prompts (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  wire TEXT NOT NULL,
-  label TEXT NOT NULL,
-  prompt_text TEXT NOT NULL,
-  response_format TEXT,
-  variant TEXT CHECK (variant IN ('A', 'B', 'C')),
-  is_active BOOLEAN DEFAULT true,
-  sort_order INTEGER DEFAULT 0,
-  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-);
+```bash
+npm run build
+npm start
 ```
 
-## Railway Deployment
+### 4. Verify
 
-The app is configured for Railway deployment via `railway.json`:
+- Open `http://localhost:3000`
+- Login via Privy
+- Hit `GET /health`
+- Create at least one prompt (`/api/scan/prompts`)
+- Trigger `POST /api/scan/run`
 
-1. Connect your GitHub repo to Railway
-2. Set environment variables in Railway dashboard
-3. Railway will auto-detect and deploy
-4. Health check endpoint: `/health`
+## Scripts
 
-The scheduler runs within the main web service process - no separate cron service needed.
+- `npm run dev` - run with `ts-node`
+- `npm run build` - compile TypeScript
+- `npm start` - run compiled server
+- `npm run typecheck` - TS typecheck
+- `npm run lint` - alias for typecheck
+- `npm run test` - parser/intake tests
+- `npm run check` - lint + test
 
 ## Project Structure
 
-```
+```text
 src/
-├── config/
-│   └── index.ts           # Environment configuration and validation
-├── db/
-│   └── index.ts           # Postgres queries, schedules, feeds, scan tables, scan prompts
+├── index.ts
+├── server.ts
+├── config/index.ts
+├── db/index.ts
 ├── jobs/
-│   ├── weekly-summary.ts  # Weekly newsletter job orchestration
-│   ├── daily-intake.ts    # Scan intake pipeline orchestrator (parse → dedup → score → queue)
-│   ├── scan-execution.ts  # Automated scan execution (prompt fetch → Grok → intake)
-│   └── forum-scan.ts      # Forum scan orchestrator (discuss.watch → intake)
+│   ├── daily-intake.ts
+│   ├── forum-scan.ts
+│   ├── scan-execution.ts
+│   └── summary-sync.ts
 ├── services/
-│   ├── anthropic.ts       # Claude API integration with scraping
-│   ├── auth.ts            # Session tokens, download tokens, cleanup timers
-│   ├── crm-sync.ts        # Notion CRM sync - org matching and auto-creation
-│   ├── dedup.ts           # URL exact-match and fuzzy name deduplication
-│   ├── distribution.ts    # Distribution orchestrator (approve → Telegram + X)
-│   ├── email.ts           # Resend email service (login, notifications, alerts)
-│   ├── email-inbound.ts   # Resend Inbound webhook handler (URL extraction → intake)
-│   ├── forum.ts           # discuss.watch API client for forum scanning
-│   ├── grok.ts            # Grok Chat + Responses API for X.com content and scans
-│   ├── intake.ts          # Scan result parser, URL/name normalization
-│   ├── job-queue.ts       # In-memory job queue with SSE support
-│   ├── markdown.ts        # Output formatting with linked org names
-│   ├── models.ts          # Dynamic model fetching from AI providers
-│   ├── notion.ts          # Notion API client with rate limiting
-│   ├── org-cache.ts       # Local alias cache for org name matching
-│   ├── post-generator.ts  # AI post generation for distribution (Claude-powered)
-│   ├── processor.ts       # Entry processing with retry logic
-│   ├── quality-scorer.ts  # 0-100 quality scoring engine for scan entries
-│   ├── scan-stats.ts      # Prompt effectiveness and overlap metrics
-│   ├── scheduler.ts       # Cron-based job scheduling with health tracking
-│   ├── scraper.ts         # Firecrawl web scraping, URL resolution
-│   ├── storage.ts         # Postgres-backed file storage with in-memory cache
-│   ├── telegram.ts        # Telegram Bot webhook + channel posting for distribution
-│   ├── url-processor.ts   # Shared URL scrape + AI extraction → RawScanResult
-│   └── x-client.ts        # X (Twitter) API v2 posting client (OAuth 1.0a)
-├── utils/
-│   ├── async.ts           # Shared sleep() utility
-│   ├── html.ts            # Shared escapeHtml() utility
-│   └── url.ts             # Shared normalizeUrl() for URL deduplication
+│   ├── anthropic.ts
+│   ├── auth.ts
+│   ├── dedup.ts
+│   ├── email.ts
+│   ├── forum.ts
+│   ├── grok.ts
+│   ├── intake.ts
+│   ├── job-queue.ts
+│   ├── models.ts
+│   ├── processor.ts
+│   ├── quality-scorer.ts
+│   ├── scan-stats.ts
+│   ├── scheduler.ts
+│   ├── scraper.ts
+│   └── storage.ts
 ├── types/
-│   ├── index.ts           # Core TypeScript interfaces
-│   └── intake.ts          # Scan pipeline + distribution types (ScanEntry, DistributionLog, etc.)
-├── index.ts               # Application entry point
-└── server.ts              # Express server with all routes and dashboard UI
+│   ├── index.ts
+│   └── intake.ts
+├── utils/
+│   ├── async.ts
+│   ├── html.ts
+│   └── url.ts
+└── views/
+    ├── error.ts
+    ├── feed.ts
+    ├── login.ts
+    ├── queue.ts
+    ├── settings.ts
+    └── shared.ts
 ```
 
-## API Endpoints
+## Main Endpoints
 
-### Public Endpoints
+Public:
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Health check (returns `{ status: 'ok', timestamp }`) |
-| `/` | GET | Login page (redirects to dashboard if already authenticated) |
-| `/logout` | GET | Clear session and redirect to login |
-| `/api/auth/callback` | POST | Privy auth callback (verifies JWT, creates session) |
-| `/download` | GET | Legacy download landing (from email links) |
-| `/download/:token` | GET | Legacy file download |
-| `/resend-link` | POST | Resend file download link via email |
-| **Webhooks** | | |
-| `/webhook/telegram` | POST | Telegram bot webhook (secret token verified) |
-| `/webhook/email` | POST | Resend inbound email webhook (HMAC-SHA256 verified) |
+- `GET /health`
+- `GET /`
+- `POST /api/auth/callback`
+- `POST /resend-link`
+- `GET /download`
+- `GET /download/:token`
 
-### Authenticated Endpoints (require HttpOnly session cookie)
+Authenticated UI:
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/dashboard` | GET | Main dashboard UI |
-| `/queue` | GET | Scan queue review page |
-| `/file/:fileId` | GET | Download generated markdown file |
-| **Models & Files** | | |
-| `/api/models` | GET | Get available AI models from Grok and Anthropic |
-| `/api/files` | GET | List recent generated files |
-| `/api/run-job` | POST | Trigger summary job manually |
-| `/api/job/:jobId/progress` | GET | SSE endpoint for job progress updates |
-| **Feeds** | | |
-| `/api/wires` | GET | Get active feeds with entry counts |
-| `/api/feeds` | GET | List all feeds (pass `?includeArchived=true` for archived) |
-| `/api/feeds` | POST | Create a new feed |
-| `/api/feeds/:key` | PUT | Update feed display name, title template, or sort order |
-| `/api/feeds/:key` | DELETE | Archive a feed |
-| **Schedules** | | |
-| `/api/schedules` | GET | List all schedule configurations |
-| `/api/schedules` | POST | Create new schedule |
-| `/api/schedules/:id` | PUT | Update schedule configuration |
-| `/api/schedules/:id` | DELETE | Delete a schedule |
-| `/api/schedule` | GET/POST | Legacy single-schedule endpoints |
-| `/api/scheduler-status` | GET | Get scheduler health and job history |
-| `/api/test-alert` | POST | Send test email to verify configuration |
-| **CRM Sync** | | |
-| `/api/crm-sync` | POST | Run CRM org sync job |
-| `/api/crm-sync/status` | GET | Get CRM sync status (staging config, pending count) |
-| `/api/crm-sync/staging-orgs` | GET | List organizations in staging database |
-| `/api/crm-sync/staging-orgs/:id/approve` | POST | Approve a staging org |
-| `/api/crm-sync/staging-orgs/:id/reject` | POST | Reject a staging org |
-| **Scan Pipeline** | | |
-| `/api/scan/submit` | POST | Submit single scan results for intake processing |
-| `/api/scan/submit-batch` | POST | Submit batch scan results (multiple prompts at once) |
-| `/api/scan/queue` | GET | Get daily queue of quality entries (filter by wire, date, minScore) |
-| `/api/scan/entries` | GET | List scan entries with flexible status filtering |
-| `/api/scan/stats` | GET | Get intake stats for dashboard (entries by day/wire) |
-| `/api/scan/status-counts` | GET | Get entry counts by status |
-| `/api/scan/seen-urls` | GET | List seen URLs for dedup inspection |
-| `/api/scan/run` | POST | Trigger automated scan execution (all active prompts) |
-| `/api/forum/run` | POST | Trigger manual forum scan |
-| `/api/scan/entries/:id/action` | POST | Take action on a scan entry (approve, decline, reviewlater, restore) |
-| `/api/scan/prompt-stats` | GET | Get prompt effectiveness metrics and overlap stats |
-| **Scan Prompts** | | |
-| `/api/scan/prompts` | GET | List all scan prompts (filter by wire, active only) |
-| `/api/scan/prompts` | POST | Create a new scan prompt |
-| `/api/scan/prompts/:id` | PUT | Update a scan prompt |
-| `/api/scan/prompts/:id` | DELETE | Delete a scan prompt |
-| `/api/scan/prompts/:id/test` | POST | Test-execute a prompt against Grok and return results |
-| **Distribution** | | |
-| `/api/distribution-config` | GET | Get per-wire distribution config (credentials masked) |
-| `/api/distribution-config/:wire` | PUT | Update distribution config for a wire |
-| `/api/distribution-config/:wire/test` | POST | Test distribution channels for a wire |
-| `/api/scan/entries/:id/distribution` | GET | Get distribution logs for an approved entry |
-| `/api/scan/entries/:id/redistribute` | POST | Retry failed distribution for an approved entry |
+- `GET /feeds/:key`
+- `GET /dashboard`
+- `GET /queue`
+- `GET /schedules`
+- `GET /settings`
 
-## Dashboard Features
+Authenticated API:
 
-The web dashboard provides:
+- `GET /api/models`
+- `GET /api/wires`
+- `GET /api/feeds`
+- `POST /api/feeds`
+- `PUT /api/feeds/:key`
+- `DELETE /api/feeds/:key`
+- `GET /api/files`
+- `GET /api/schedules`
+- `POST /api/schedules`
+- `PUT /api/schedules/:id`
+- `DELETE /api/schedules/:id`
+- `GET /api/scheduler-status`
+- `POST /api/test-alert`
+- `GET /api/scan/prompts`
+- `POST /api/scan/prompts`
+- `PUT /api/scan/prompts/:id`
+- `DELETE /api/scan/prompts/:id`
+- `POST /api/scan/prompts/:id/test`
+- `POST /api/scan/run`
+- `POST /api/forum/run`
+- `POST /api/scan/submit`
+- `POST /api/scan/submit-batch`
+- `GET /api/scan/queue`
+- `GET /api/scan/entries`
+- `POST /api/scan/entries/:id/action`
+- `GET /api/scan/stats`
+- `GET /api/scan/status-counts`
+- `GET /api/scan/seen-urls`
+- `GET /api/scan/prompt-stats`
+- `POST /api/summary-sync`
+- `GET /api/job/:jobId/progress`
 
-### Generate Weekly Summary
-- Select custom date range
-- Choose Grok model for X.com content
-- Choose Claude model for other content
-- Real-time progress tracking via SSE
-- Elapsed time display
+## Scheduler Types
 
-### Generated Files
-- List of recent generated markdown files
-- Direct download links
+Supported schedule types:
 
-### Scheduled Runs
-- Enable/disable automatic scheduling
-- Configure day of week and time
-- Set timezone
-- Set lookback period (days)
-- Select default models for scheduled runs
-- View next scheduled run time
+- `scan-execution`
+- `forum-scan`
 
-### Scheduler Health
-- Scheduler status (Active/Disabled/Not Running)
-- Server start time
-- Last job run time
-- Last job result (Success/Failed with error details)
+Notes:
 
-### CRM Org Sync
-- View staging database configuration status
-- Set lookback period (days) for sync
-- Run manual sync to identify new organizations
-- View pending org count awaiting review
+- `frequencyHours` enables sub-daily runs (`1..23`).
+- Failed jobs send notification email and retry once after 5 minutes.
+- Schedules persist in Postgres and are reloaded on startup.
 
-## CRM Integration
+## Scan Quality Scoring
 
-The app integrates with Notion for organization tracking:
+`src/services/quality-scorer.ts` scores entries 0-100 using signals like:
 
-1. **Main Orgs Database**: Your existing CRM with known organizations
-2. **Staging Database**: New organizations discovered from entries, pending review
+- amount presence/size
+- deadline quality (rolling/upcoming/expired)
+- funding/actionability keywords
+- governance-noise and stale-award penalties
 
-### Sync Workflow
-1. Entries are scanned for organization names (from `entities.orgs` field)
-2. Each org is checked against the main CRM via local cache and Notion search
-3. New orgs are created in the staging database with status "Pending"
-4. Review pending orgs in Notion and set status to "Approved" or "Rejected"
-5. Use Notion automation to copy approved orgs to main CRM
+Default intake threshold is `40` (`queued` if >= 40, else `archived`).
 
-### Staging Database Schema
-| Property | Type | Description |
-|----------|------|-------------|
-| Name | title | Organization name |
-| Wire | select | crypto / ai / oss |
-| Source Type | select | Social / Blog / Forum / etc. |
-| First Seen | date | When first encountered |
-| Entry Title | text | Title of entry where org appeared |
-| Entry URL | url | Link to original source |
-| Status | select | Pending / Approved / Rejected |
+## Database Tables (Owned Here)
 
-## Scan Pipeline
+- `schedules`
+- `feeds`
+- `scan_entries`
+- `seen_urls`
+- `seen_names`
+- `intake_runs`
+- `scan_prompts`
+- `generated_files`
 
-The scan pipeline discovers new grant opportunities and surfaces high-quality entries for review.
+Also read by summary sync bridge:
 
-### Ingestion Channels
-
-- **X.com scan** (`x-scan`): Grok Responses API with `x_search` tool, runs on schedule via `scan-execution` cron
-- **Web search** (`web-search`): Grok Responses API with `web_search` tool, same prompt system
-- **Forum scan** (`forum`): discuss.watch API searches across 150+ Discourse forums for grant keywords
-- **Manual paste** (`x-scan`/`web-search`): Dashboard paste-in flow via `/api/scan/submit`
-- **Telegram bot** (`telegram`): Send a URL to the bot → scrapes + extracts → runs through intake pipeline
-- **Email inbound** (`email`): Forward emails with URLs to a Resend inbound address → webhook extracts URLs → scrape + extract → intake
-
-### Pipeline Flow
-
-```
-Grok Responses API (/v1/responses with x_search tool)
-        │
-        ▼
-  Parse Structured Output (name, description, deadline, link, amount)
-        │
-        ▼
-  Insert as scan_entries (status: raw)
-        │
-        ▼
-  Dedup Check
-  ├─ Layer 1: URL exact match (seen_urls table)
-  └─ Layer 2: Fuzzy name match (seen_names + token overlap)
-  │
-  ├─ Duplicate? → status: duplicate, link to original
-  └─ Unique? → status: deduped, register in seen tables
-        │
-        ▼
-  Quality Score (0-100)
-  ├─ Has amount: +25
-  ├─ Amount > $5K: +15
-  ├─ Has deadline: +15
-  ├─ Deadline within 60 days: +10
-  ├─ Is funding opportunity: +20
-  ├─ Is actionable: +15
-  ├─ Governance noise: -15
-  └─ Already awarded: -10
-  │
-  ├─ Score >= 40? → status: queued
-  └─ Score < 40? → status: archived
-        │
-        ▼
-  Daily Queue (dashboard view)
-```
-
-### Quality Score Thresholds
-
-- **80-100**: Top tier — real grant with dollar amount, deadline, and clear application path
-- **60-79**: Strong find — has most signals of a real opportunity
-- **40-59**: Moderate — worth reviewing but may be lower signal
-- **Below 40**: Archived — governance proposals, already-awarded items, vague mentions
-
-### Schedule Types
-
-- **`weekly-summary`**: Traditional weekly cron job for newsletter generation
-- **`scan-execution`**: Daily cron job that executes all active scan prompts and feeds results through the intake pipeline
-- **`forum-scan`**: Daily cron job that searches discuss.watch forums for grant keywords
-
-### Prompt Management
-
-Scan prompts are stored in the `scan_prompts` table and managed via the `/api/scan/prompts` CRUD API. Each prompt targets a specific wire, has a response format template, and can be tested individually before activation. Prompt effectiveness metrics (duplicate rate, avg quality score, overlap) are available via `/api/scan/prompt-stats`.
-
-## Multi-Channel Distribution
-
-When an entry is approved, AI-crafted posts are automatically published to configured Telegram channels and X (Twitter) accounts.
-
-### How It Works
-
-1. **Trigger**: Approving an entry in the dashboard fires a background distribution job
-2. **Config**: Per-wire channel settings (Telegram channel ID, X credentials) are read from the `distribution_config` DB table, managed via the dashboard UI or `/api/distribution-config` API
-3. **Generate**: A single Claude API call (`claude-sonnet-4-20250514`) creates both a tweet (<=270 chars) and a Telegram HTML message, tailored to the wire's grant focus
-4. **Publish**: Posts are dispatched to the wire's Telegram channel and X account in parallel
-5. **Track**: Each dispatch is logged in `distribution_logs` with status tracking and external URLs
-6. **Retry**: Failed distributions can be retried from the dashboard or via `POST /api/scan/entries/:id/redistribute`
-
-### Key Properties
-
-- **Fire-and-forget**: Distribution failures never block the approval
-- **Idempotent**: Won't double-post; checks for existing success logs before dispatching
-- **Per-wire**: Each wire (crypto, ai, oss) has its own X credentials and Telegram channel, configured via dashboard
-- **DB-managed config**: Distribution settings stored in `distribution_config` table; env vars only used as seed values on first run
-- **Graceful degradation**: If AI generation fails, a template-based fallback is used; if credentials are missing for a channel, it is skipped
-
-## How It Works
-
-1. **Query**: Pulls entries from Postgres for the configured date range, deduplicates by URL
-2. **Route**: X.com/Twitter URLs go to Grok API, other URLs go to Claude
-3. **Scrape**: For non-X.com URLs, Firecrawl scrapes the page content
-4. **Process**: Each URL is summarized with retry logic (3 attempts with exponential backoff)
-5. **Generate**: Markdown file organized by category with hyperlinked organization names
-6. **Store**: File saved to Postgres with unique ID (keeps last 10 files)
-7. **Notify**: Optional email sent with download link
-
-## Scheduled Jobs
-
-The scheduler:
-- Uses node-cron for precise scheduling
-- Persists configuration to database (survives restarts)
-- Sends success emails with download links
-- Sends failure notification emails with error details
-- Tracks last run status for dashboard display
-
-Default schedule: Wednesday at 9:00 AM Pacific, looking back 7 days.
+- `summaries`
+- `messages`
 
 ## Environment Variables
 
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `DATABASE_URL` | Postgres connection string | Yes |
-| `ANTHROPIC_API_KEY` | Anthropic API key for Claude | Yes |
-| `GROK_API_KEY` | X.ai Grok API key | Yes |
-| `FIRECRAWL_API_KEY` | Firecrawl API key for web scraping | Yes |
-| `RESEND_API_KEY` | Resend email API key | Yes |
-| `NOTIFICATION_EMAIL` | Email for notifications and login | Yes |
-| `PRIVY_APP_ID` | Privy app ID for authentication | Yes |
-| `PRIVY_APP_SECRET` | Privy app secret for authentication | Yes |
-| `APP_URL` | Public URL of the app (default: `http://localhost:3000`) | No |
-| `FROM_EMAIL` | Sender email (default: `noreply@thewireroom.xyz`) | No |
-| `PORT` | Server port (default: 3000) | No |
-| `START_DATE` | Override start date for CLI job (ISO format) | No |
-| `END_DATE` | Override end date for CLI job (ISO format) | No |
-| `ALLOWED_EMAILS` | Comma-separated extra emails allowed dashboard access | No |
-| `NOTION_API_KEY` | Notion integration API key | No* |
-| `NOTION_ORGS_DB_ID` | Main organizations database ID | No* |
-| `NOTION_STAGING_ORGS_DB_ID` | Staging database for new orgs | No* |
-| `NOTION_OPPS_DB_ID` | Opportunities database ID | No* |
-| `NOTION_CRM_PAGE_ID` | CRM page ID for Notion | No* |
-| `TELEGRAM_BOT_TOKEN` | Telegram bot token from @BotFather | No** |
-| `TELEGRAM_WEBHOOK_SECRET` | Secret for Telegram webhook verification | No** |
-| `TELEGRAM_ALLOWED_USER_IDS` | Comma-separated allowlist of Telegram user IDs | No** |
-| `TELEGRAM_DEFAULT_WIRE` | Default wire for Telegram submissions (default: `crypto`) | No** |
-| `INBOUND_EMAIL_ADDRESS` | Resend inbound email address | No*** |
-| `INBOUND_EMAIL_ALLOWED_SENDERS` | Comma-separated allowlist of sender emails | No*** |
-| `RESEND_WEBHOOK_SECRET` | Resend webhook signing secret (HMAC-SHA256) | No*** |
-| `FORUM_SCAN_ENABLED` | Set to `true` to enable forum scanning | No**** |
-| `DISCUSS_WATCH_API_URL` | discuss.watch API base URL | No**** |
-| `DISTRIBUTION_ENABLED` | Seed value for distribution on first run | No***** |
-| `X_{WIRE}_API_KEY` | X API key seed per wire (e.g., `X_CRYPTO_API_KEY`) | No***** |
-| `X_{WIRE}_API_SECRET` | X API secret seed per wire | No***** |
-| `X_{WIRE}_ACCESS_TOKEN` | X OAuth access token seed per wire | No***** |
-| `X_{WIRE}_ACCESS_TOKEN_SECRET` | X access token secret seed per wire | No***** |
-| `TELEGRAM_CHANNEL_{WIRE}` | Telegram channel ID seed per wire | No***** |
+Required:
 
-*Required for CRM integration features
-**Required for Telegram bot integration
-***Required for email ingestion
-****Required for forum scanning
-*****Distribution env vars are only used as initial seed values on first run. After that, distribution is managed via the dashboard UI or `/api/distribution-config` API.
+- `DATABASE_URL`
+- `ANTHROPIC_API_KEY`
+- `GROK_API_KEY`
+- `FIRECRAWL_API_KEY`
+- `RESEND_API_KEY`
+- `NOTIFICATION_EMAIL`
+- `PRIVY_APP_ID`
+- `PRIVY_APP_SECRET`
 
-## Authentication
+Optional:
 
-The app uses Privy for authentication:
+- `APP_URL`
+- `PORT`
+- `FROM_EMAIL`
+- `ALLOWED_EMAILS`
+- `DB_SSL_REJECT_UNAUTHORIZED`
+- `FORUM_SCAN_ENABLED`
+- `DISCUSS_WATCH_API_URL`
 
-1. User clicks "Sign In" at `/`, which opens the Privy login flow (email, social, etc.)
-2. On success, the frontend sends the Privy JWT to `POST /api/auth/callback`
-3. The server verifies the JWT, fetches the user's email from Privy, and checks it against the allowlist (`NOTIFICATION_EMAIL` + optional `ALLOWED_EMAILS` env var)
-4. If allowed, a 24-hour session is created and stored as an HttpOnly cookie
-5. All authenticated endpoints use the `requireAuth` middleware to validate the session cookie
+## Development Notes
 
-Sessions and tokens are stored in-memory (reset on server restart). Generated files are persisted to Postgres.
-
-## AI Models
-
-### Grok (X.com content)
-- Newsletter summaries: `grok-4-1-fast-reasoning` (Chat Completions API at `/v1/chat/completions`)
-- Scan execution: `grok-4-1-fast` (Responses API at `/v1/responses` with `x_search` tool)
-- Has access to live X.com/Twitter posts
-- Models fetched dynamically from X.ai API
-
-### Claude (other content)
-- Default: `claude-opus-4-5-20251101`
-- Uses Firecrawl for web scraping
-- Falls back to cached summary if scraping fails
-- Models fetched dynamically from Anthropic API
-
-## Error Handling
-
-- **Retry Logic**: 3 attempts with jittered exponential backoff (1s, 2s, 4s base delays) for newsletter processing; 2 attempts for scan execution and URL processing
-- **Batch Concurrency**: Entries processed 3 at a time via `Promise.all` chunks with 500ms delay between batches
-- **Scrape Fallback**: Uses cached summary if web scraping fails
-- **Failure Notifications**: Email sent on scheduled job failures
-- **URL Deduplication**: Removes duplicate URLs within date range
-
-### API Rate Limits
-
-| Endpoint | Limit | Window |
-|----------|-------|--------|
-| `/resend-link` | 2 per IP | 30 minutes |
-| `/api/run-job` | 3 global | 5 minutes |
-| `/api/scan/prompts/:id/test` | 5 global | 5 minutes |
-| `/api/scan/run` | 1 global | 15 minutes |
-| `/api/forum/run` | 1 global | 15 minutes |
-| `/api/scan/entries/:id/redistribute` | 5 global | 5 minutes |
-| `/api/distribution-config/:wire/test` | 5 global | 5 minutes |
-| `/webhook/telegram` | 10 per chat | 1 minute |
-| `/webhook/email` | 5 per sender | 15 minutes |
-
-## License
-
-MIT
+- TypeScript strict mode, CommonJS output.
+- In-memory stores are used for sessions/tokens/job-progress and are reset on restart.
+- The queue/status model is the publication contract with the frontend site.
