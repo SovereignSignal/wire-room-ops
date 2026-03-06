@@ -1131,19 +1131,26 @@ export async function ensureDistributionTables(): Promise<void> {
   try {
     await client.query('BEGIN');
 
-    // Recreate distribution tables with new schema if old ones exist
-    // Check if the old schema is present (old tables had different columns)
-    const oldSchemaCheck = await client.query(`
+    // Migrate from old distribution tables if they exist with wrong schema.
+    // New schema has a `config` JSONB column on distribution_config.
+    // If the table exists but lacks this column, it's the old abandoned schema.
+    const tableExists = await client.query(`
       SELECT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'distribution_config' AND column_name = 'id'
+        SELECT 1 FROM information_schema.tables WHERE table_name = 'distribution_config'
       )
     `);
-    if (oldSchemaCheck.rows[0].exists) {
-      // Old schema had an 'id' PK column; new schema uses composite (wire, channel) PK
-      await client.query(`DROP TABLE IF EXISTS distribution_logs`);
-      await client.query(`DROP TABLE IF EXISTS distribution_config`);
-      console.log('[DB] Dropped old distribution tables (schema migration)');
+    if (tableExists.rows[0].exists) {
+      const hasConfigCol = await client.query(`
+        SELECT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'distribution_config' AND column_name = 'config'
+        )
+      `);
+      if (!hasConfigCol.rows[0].exists) {
+        await client.query(`DROP TABLE IF EXISTS distribution_logs`);
+        await client.query(`DROP TABLE IF EXISTS distribution_config`);
+        console.log('[DB] Dropped old distribution tables (schema migration)');
+      }
     }
 
     // distribution_config — per-wire per-channel settings
