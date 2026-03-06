@@ -51,6 +51,10 @@ let executingJobs: Set<string> = new Set(); // Prevents overlapping cron runs
 let pendingRetryTimers: Map<string, NodeJS.Timeout> = new Map(); // Track retry timers for cleanup
 let schedulerStartTime: Date | null = null;
 
+function isQuotaExhaustedError(message: string): boolean {
+  return /resource has been exhausted|used all available credits|monthly spending limit/i.test(message);
+}
+
 export function getSchedules(): ScheduleConfig[] {
   return Array.from(schedules.values());
 }
@@ -223,6 +227,7 @@ function createJobExecutor(schedule: ScheduleConfig) {
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       const isNoEntries = errorMsg.includes('No entries found');
+      const isQuotaError = isQuotaExhaustedError(errorMsg);
 
       if (isNoEntries) {
         // "No entries found" is not a real failure — mark success, skip email and retry
@@ -245,8 +250,8 @@ function createJobExecutor(schedule: ScheduleConfig) {
           console.error(`[Scheduler] Failed to send failure notification:`, emailError);
         }
 
-        // Retry once after 5 minutes for transient failures
-        if (!status.retried) {
+        // Retry once after 5 minutes for transient failures (skip on quota exhaustion)
+        if (!status.retried && !isQuotaError) {
           status.retried = true;
           const scheduleId = schedule.id;
           console.log(`[Scheduler] Will retry "${schedule.name}" in 5 minutes...`);
@@ -262,6 +267,8 @@ function createJobExecutor(schedule: ScheduleConfig) {
           }, 5 * 60 * 1000);
           retryTimer.unref();
           pendingRetryTimers.set(scheduleId, retryTimer);
+        } else if (isQuotaError) {
+          console.warn(`[Scheduler] Skipping retry for "${schedule.name}" due to quota exhaustion`);
         }
       }
     } finally {
