@@ -277,18 +277,10 @@ function parseLenientNumberedList(text: string): RawScanResult[] {
 
 /**
  * Strategy 4: Parse X-post format from Grok Responses API with x_search.
- * Grok returns entries as blocks separated by blank lines:
+ * Grok often returns entries as blocks separated by blank lines:
  *
- * @Handle  Brief description
- * [multi-line tweet content]
- * https://x.com/handle/status/...
- * YYYY-MM-DD
- */
-/**
- * Strategy 4: Parse X-post format from Grok Responses API with x_search.
- * Grok returns entries as blocks separated by blank lines:
- *
- * @Handle \u2014 Brief description
+ * @Handle — Brief description
+ * [Handle Label] — Brief description
  * [multi-line tweet content]
  * https://x.com/handle/status/...
  * YYYY-MM-DD
@@ -299,16 +291,40 @@ function parseXPostFormat(text: string): RawScanResult[] {
   // Strip the "Model:" header line if present
   let content = text.replace(/^Model:.*\n/, '');
 
-  // Normalize markdown-linked handles: [@Handle](url) → @Handle
+  // Normalize markdown-linked handles: [@Handle](url) -> @Handle
   content = content.replace(/\[@(\w+)\]\([^)]*\)/g, '@$1');
 
-  // Split into blocks by @Handle headers
+  const parseHeader = (rawLine: string): { author: string; title: string } | null => {
+    const line = rawLine.trim().replace(/^\d+\.\s+/, '').replace(/^[-*]\s+/, '');
+
+    // @Handle — Title
+    const atHandle = line.match(/^@([A-Za-z0-9_]{1,40})\s*[\u2014\u2013\-]\s+(.+)/);
+    if (atHandle) {
+      return {
+        author: atHandle[1].trim(),
+        title: atHandle[2].trim(),
+      };
+    }
+
+    // [Handle Label] — Title
+    const bracketed = line.match(/^\[([^\]\n]{1,120})\]\s*[\u2014\u2013\-]\s+(.+)/);
+    if (bracketed) {
+      return {
+        author: stripMarkdownArtifacts(bracketed[1]).trim(),
+        title: bracketed[2].trim(),
+      };
+    }
+
+    return null;
+  };
+
+  // Split into blocks by recognized X-post headers
   const blocks: string[] = [];
   let currentBlock = '';
 
   for (const line of content.split('\n')) {
-    // New block starts with @Handle followed by em-dash, en-dash, or hyphen
-    if (/^@\w+\s*[\u2014\u2013\-]\s+/.test(line) && currentBlock.trim()) {
+    const header = parseHeader(line);
+    if (header && currentBlock.trim()) {
       blocks.push(currentBlock.trim());
       currentBlock = line + '\n';
     } else {
@@ -321,12 +337,10 @@ function parseXPostFormat(text: string): RawScanResult[] {
     const lines = block.split('\n').map(l => l.trim()).filter(Boolean);
     if (lines.length === 0) continue;
 
-    // First line should be @Handle \u2014 Description
-    const headerMatch = lines[0].match(/^@(\w+)\s*[\u2014\u2013\-]\s+(.+)/);
-    if (!headerMatch) continue;
-
-    const handle = headerMatch[1];
-    const title = headerMatch[2].trim();
+    const header = parseHeader(lines[0]);
+    if (!header) continue;
+    const author = header.author;
+    const title = header.title;
 
     // Collect description from body lines (skip header, URL, and date lines)
     let sourceUrl = '';
@@ -338,7 +352,7 @@ function parseXPostFormat(text: string): RawScanResult[] {
       // X.com URL (standalone or as markdown link)
       const urlMatch = line.match(/https?:\/\/(x\.com|twitter\.com)\/\S+/);
       if (urlMatch && line.replace(urlMatch[0], '').trim().length < 5) {
-        sourceUrl = urlMatch[0].replace(/[)\]]+$/, ''); // strip trailing ] or )
+        sourceUrl = urlMatch[0].replace(/[)\].,;:]+$/, '');
         continue;
       }
 
@@ -366,7 +380,7 @@ function parseXPostFormat(text: string): RawScanResult[] {
     }
 
     results.push({
-      name: handle + ': ' + title.substring(0, 100),
+      name: author + ': ' + title.substring(0, 100),
       description,
       amount,
       deadline,
