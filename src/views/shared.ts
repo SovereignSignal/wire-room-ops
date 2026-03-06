@@ -3,6 +3,15 @@ import { config } from '../config';
 
 export { escapeHtml, config };
 
+// Client-side escapeHtml for use in embedded <script> blocks.
+// Include this once in any view that needs HTML escaping in JS.
+export const CLIENT_ESCAPE_HTML = `
+    function escapeHtml(str) {
+      var div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }`;
+
 export function sharedHead(title: string): string {
   return `
   <title>${escapeHtml(title)} - Wire Ops</title>
@@ -519,6 +528,11 @@ export function renderPageShell(opts: PageShellOptions): string {
   </div>
   <script>
     (function() {
+      function escapeHtml(str) {
+        var div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+      }
       var hamburger = document.getElementById('hamburger-btn');
       var sidebar = document.getElementById('sidebar');
       var overlay = document.getElementById('sidebar-overlay');
@@ -539,7 +553,7 @@ export function renderPageShell(opts: PageShellOptions): string {
           var activePage = ${JSON.stringify(activePage)};
           feedsNav.innerHTML = feeds.map(function(f) {
             var isActive = activePage === 'feed:' + f.key;
-            return '<a href="/feeds/' + encodeURIComponent(f.key) + '" class="nav-item nav-feed' + (isActive ? ' nav-active' : '') + '">' + f.display_name + '</a>';
+            return '<a href="/feeds/' + encodeURIComponent(f.key) + '" class="nav-item nav-feed' + (isActive ? ' nav-active' : '') + '">' + escapeHtml(f.display_name || '') + '</a>';
           }).join('');
         }).catch(function() {
           feedsNav.innerHTML = '<span class="nav-loading">Failed to load</span>';

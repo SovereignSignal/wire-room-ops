@@ -1,7 +1,7 @@
 import express, { Request, Response } from 'express';
 import cookieParser from 'cookie-parser';
 import { config } from './config';
-import { validateMagicLink, createMagicLink, createDownloadToken, createSessionToken, validateSession, invalidateSession } from './services/auth';
+import { validateMagicLink, createMagicLink, createDownloadToken, createSessionToken, validateSession, invalidateSession, stopAuthCleanup } from './services/auth';
 import jwt from 'jsonwebtoken';
 import jwksClient from 'jwks-rsa';
 import { getFile, listFiles } from './services/storage';
@@ -137,9 +137,14 @@ function rateLimit(key: string, maxRequests: number, windowMs: number): boolean 
 }
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const FEED_KEY_REGEX = /^[a-z0-9_-]+$/;
 
 function isValidUuid(id: string): boolean {
   return UUID_REGEX.test(id);
+}
+
+function isValidFeedKey(key: string): boolean {
+  return FEED_KEY_REGEX.test(key);
 }
 
 // Health check
@@ -152,7 +157,7 @@ app.get('/', async (req: Request, res: Response) => {
   const session = req.cookies?.session as string;
   if (isDevMode || (session && validateSession(session))) {
     const returnTo = req.query.returnTo as string;
-    if (returnTo && returnTo.startsWith('/') && !returnTo.startsWith('//')) {
+    if (returnTo && /^\/[a-zA-Z0-9]/.test(returnTo)) {
       res.redirect(returnTo);
       return;
     }
@@ -294,7 +299,7 @@ app.get('/schedules', requireAuth, async (_req: Request, res: Response) => {
 });
 
 // Settings → redirect to schedules
-app.get('/settings', (_req: Request, res: Response) => {
+app.get('/settings', requireAuth, (_req: Request, res: Response) => {
   res.redirect('/schedules');
 });
 
@@ -403,7 +408,7 @@ app.post('/api/feeds', requireAuth, async (req: Request, res: Response) => {
 // API: Update feed
 app.put('/api/feeds/:key', requireAuth, async (req: Request, res: Response) => {
   const { key } = req.params;
-  if (!key || !/^[a-z0-9_-]+$/.test(key)) {
+  if (!key || !isValidFeedKey(key)) {
     res.status(400).json({ error: 'Invalid feed key' });
     return;
   }
@@ -437,7 +442,7 @@ app.put('/api/feeds/:key', requireAuth, async (req: Request, res: Response) => {
 // API: Archive (soft-delete) feed
 app.delete('/api/feeds/:key', requireAuth, async (req: Request, res: Response) => {
   const { key } = req.params;
-  if (!key || !/^[a-z0-9_-]+$/.test(key)) {
+  if (!key || !isValidFeedKey(key)) {
     res.status(400).json({ error: 'Invalid feed key' });
     return;
   }
@@ -522,7 +527,7 @@ app.get('/file/:fileId', async (req: Request, res: Response) => {
   }
   
   res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="${file.filename.replace(/"/g, '\\"')}"`);
+  res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.filename)}"`);
   res.send(file.content);
 });
 
@@ -607,7 +612,7 @@ app.get('/download/:token', async (req: Request, res: Response) => {
   }
   
   res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="${file.filename.replace(/"/g, '\\"')}"`);
+  res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.filename)}"`);
   res.send(file.content);
 });
 
@@ -1065,7 +1070,7 @@ app.post('/api/scan/prompts', requireAuth, async (req: Request, res: Response) =
 // API: Update scan prompt
 app.put('/api/scan/prompts/:id', requireAuth, async (req: Request, res: Response) => {
   const { id } = req.params;
-  if (!id || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+  if (!id || !isValidUuid(id)) {
     res.status(400).json({ error: 'Invalid prompt ID' });
     return;
   }
@@ -1113,7 +1118,7 @@ app.put('/api/scan/prompts/:id', requireAuth, async (req: Request, res: Response
 // API: Delete scan prompt
 app.delete('/api/scan/prompts/:id', requireAuth, async (req: Request, res: Response) => {
   const { id } = req.params;
-  if (!id || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+  if (!id || !isValidUuid(id)) {
     res.status(400).json({ error: 'Invalid prompt ID' });
     return;
   }
@@ -1134,7 +1139,7 @@ app.delete('/api/scan/prompts/:id', requireAuth, async (req: Request, res: Respo
 // API: Test-run a scan prompt against Grok
 app.post('/api/scan/prompts/:id/test', requireAuth, async (req: Request, res: Response) => {
   const { id } = req.params;
-  if (!id || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+  if (!id || !isValidUuid(id)) {
     res.status(400).json({ error: 'Invalid prompt ID' });
     return;
   }
@@ -1364,7 +1369,7 @@ app.get('/api/scan/entries', requireAuth, async (req: Request, res: Response) =>
       res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD.' });
       return;
     }
-    if (promptId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(promptId)) {
+    if (promptId && !isValidUuid(promptId)) {
       res.status(400).json({ error: 'Invalid promptId format.' });
       return;
     }
@@ -1405,7 +1410,7 @@ app.get('/api/scan/status-counts', requireAuth, async (req: Request, res: Respon
       res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD.' });
       return;
     }
-    if (promptId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(promptId)) {
+    if (promptId && !isValidUuid(promptId)) {
       res.status(400).json({ error: 'Invalid promptId format.' });
       return;
     }
@@ -1437,6 +1442,14 @@ app.get('/api/scan/prompt-stats', requireAuth, async (req: Request, res: Respons
   }
 });
 
+// Global error handler — catches unhandled errors from async route handlers
+app.use((err: Error, _req: Request, res: Response, _next: express.NextFunction) => {
+  console.error('[Server] Unhandled error:', err);
+  if (!res.headersSent) {
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 export async function startServer(): Promise<void> {
   // Initialize the scheduler (loads config from database)
   // Wrapped in try-catch so scheduler issues don't prevent server from starting
@@ -1463,6 +1476,8 @@ export async function startServer(): Promise<void> {
     console.log(`\n[Server] ${signal} received, shutting down gracefully...`);
     stopScheduler();
     stopSummarySync();
+    stopAuthCleanup();
+    jobQueue.stopPeriodicCleanup();
     server.close(async () => {
       await closePool();
       console.log('[Server] Shutdown complete');

@@ -1,5 +1,5 @@
 import { escapeHtml } from '../utils/html';
-import { renderPageShell, FeedNav } from './shared';
+import { renderPageShell, FeedNav, CLIENT_ESCAPE_HTML } from './shared';
 
 export function renderQueuePage(feeds?: FeedNav[]): string {
   const extraStyles = `
@@ -186,11 +186,7 @@ export function renderQueuePage(feeds?: FeedNav[]): string {
 
   const scriptBlock = `
   <script>
-    function escapeHtml(str) {
-      var div = document.createElement('div');
-      div.textContent = str;
-      return div.innerHTML;
-    }
+${CLIENT_ESCAPE_HTML}
 
     var queueWireSelect = document.getElementById('queueWire');
     var queuePromptSelect = document.getElementById('queuePrompt');

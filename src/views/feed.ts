@@ -1,5 +1,5 @@
 import { escapeHtml } from '../utils/html';
-import { renderPageShell, FeedNav } from './shared';
+import { renderPageShell, FeedNav, CLIENT_ESCAPE_HTML } from './shared';
 
 export function renderFeedPage(
   feedKey: string,
@@ -432,11 +432,7 @@ export function renderFeedPage(
     var FEED_KEY = ${JSON.stringify(feedKey)};
     var FORUM_ENABLED = ${forumEnabled ? 'true' : 'false'};
 
-    function escapeHtml(str) {
-      var div = document.createElement('div');
-      div.textContent = str;
-      return div.innerHTML;
-    }
+${CLIENT_ESCAPE_HTML}
     function scoreColor(score) {
       if (score == null) return 'var(--text-muted)';
       if (score >= 60) return 'var(--success)';
