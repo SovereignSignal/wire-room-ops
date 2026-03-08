@@ -1,7 +1,7 @@
 import { escapeHtml } from '../utils/html';
 import { renderPageShell, FeedNav, CLIENT_ESCAPE_HTML } from './shared';
 
-export function renderDistributionPage(feeds: FeedNav[]): string {
+export function renderDistributionPage(feeds: FeedNav[], selectedFeed?: FeedNav): string {
   const extraStyles = `
     /* Wire selector */
     .wire-select-bar {
@@ -189,19 +189,22 @@ export function renderDistributionPage(feeds: FeedNav[]): string {
     }
   `;
 
+  const selectedFeedKey = selectedFeed?.key || '';
   const feedOptions = feeds.map(f =>
     `<option value="${escapeHtml(f.key)}">${escapeHtml(f.displayName)}</option>`
   ).join('\n            ');
 
   const content = `
+    ${selectedFeed ? '' : `
     <div class="wire-select-bar">
       <select id="wireSelect">
         <option value="">Select a feed\u2026</option>
         ${feedOptions}
       </select>
     </div>
+    `}
 
-    <div id="dist-content" style="display: none;">
+    <div id="dist-content"${selectedFeed ? '' : ' style="display: none;"'}>
       <div class="card">
         <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
           <h2 style="margin: 0;">Channels</h2>
@@ -224,7 +227,7 @@ export function renderDistributionPage(feeds: FeedNav[]): string {
       </div>
     </div>
 
-    <div id="dist-placeholder" class="placeholder-msg">
+    <div id="dist-placeholder" class="placeholder-msg"${selectedFeed ? ' style="display: none;"' : ''}>
       Select a feed to manage distribution channels.
     </div>
 
@@ -250,11 +253,17 @@ export function renderDistributionPage(feeds: FeedNav[]): string {
   `;
 
   const pageHtml = renderPageShell({
-    title: 'Distribution',
-    activePage: 'distribution',
+    title: selectedFeed ? selectedFeed.displayName : 'Distribution',
+    activePage: selectedFeed ? `feed:${selectedFeed.key}:distribution` : 'queue',
+    description: selectedFeed ? `Channel configuration and newsletter generation for ${selectedFeed.displayName}.` : 'Manage distribution channels.',
     content,
     extraStyles,
     feeds,
+    feedContext: selectedFeed ? {
+      key: selectedFeed.key,
+      displayName: selectedFeed.displayName,
+      activeTab: 'distribution',
+    } : undefined,
   });
 
   const scriptBlock = `
@@ -264,27 +273,31 @@ ${CLIENT_ESCAPE_HTML}
     var wireSelect = document.getElementById('wireSelect');
     var distContent = document.getElementById('dist-content');
     var distPlaceholder = document.getElementById('dist-placeholder');
-
-    // Deep link support
-    var urlParams = new URLSearchParams(window.location.search);
-    var wireParam = urlParams.get('wire');
-    if (wireParam) {
-      wireSelect.value = wireParam;
+    var FIXED_WIRE = ${JSON.stringify(selectedFeedKey)};
+    function currentWire() {
+      if (FIXED_WIRE) return FIXED_WIRE;
+      return wireSelect ? wireSelect.value : '';
     }
 
-    wireSelect.addEventListener('change', function() {
-      if (wireSelect.value) {
-        distContent.style.display = '';
-        distPlaceholder.style.display = 'none';
-        loadDistConfigs();
-        // Update URL without reload
-        var newUrl = '/distribution?wire=' + encodeURIComponent(wireSelect.value);
-        history.replaceState(null, '', newUrl);
-      } else {
-        distContent.style.display = 'none';
-        distPlaceholder.style.display = '';
+    if (wireSelect) {
+      var urlParams = new URLSearchParams(window.location.search);
+      var wireParam = urlParams.get('wire');
+      if (wireParam) {
+        wireSelect.value = wireParam;
       }
-    });
+
+      wireSelect.addEventListener('change', function() {
+        if (currentWire()) {
+          distContent.style.display = '';
+          if (distPlaceholder) distPlaceholder.style.display = 'none';
+          loadDistConfigs();
+          history.replaceState(null, '', '/distribution?wire=' + encodeURIComponent(currentWire()));
+        } else {
+          distContent.style.display = 'none';
+          if (distPlaceholder) distPlaceholder.style.display = '';
+        }
+      });
+    }
 
     // ---- Distribution ----
     var distChannelsEl = document.getElementById('dist-channels');
@@ -318,9 +331,9 @@ ${CLIENT_ESCAPE_HTML}
     };
 
     async function loadDistConfigs() {
-      if (!wireSelect.value) return;
+      if (!currentWire()) return;
       try {
-        var resp = await fetch('/api/distribution/config?wire=' + encodeURIComponent(wireSelect.value));
+        var resp = await fetch('/api/distribution/config?wire=' + encodeURIComponent(currentWire()));
         if (!resp.ok) throw new Error('Failed');
         allDistConfigs = await resp.json();
         renderDistChannels();
@@ -369,13 +382,13 @@ ${CLIENT_ESCAPE_HTML}
     });
 
     function openDistConfig(channel) {
-      if (!wireSelect.value) return;
+      if (!currentWire()) return;
       var cfg = getDistConfig(channel);
       var fields = CHANNEL_FIELDS[channel] || [];
       var labels = { telegram: 'Telegram', x: 'X / Twitter', newsletter: 'Newsletter' };
 
       document.getElementById('dist-config-title').textContent = 'Configure ' + labels[channel];
-      distConfigWireEl.value = wireSelect.value;
+      distConfigWireEl.value = currentWire();
       distConfigChannelEl.value = channel;
       distConfigEnabledEl.checked = cfg ? cfg.enabled : false;
 
@@ -400,7 +413,7 @@ ${CLIENT_ESCAPE_HTML}
     distConfigOverlay.addEventListener('click', function(e) { if (e.target === distConfigOverlay) closeDistConfig(); });
 
     document.getElementById('save-dist-config').addEventListener('click', async function() {
-      if (!wireSelect.value) return;
+      if (!currentWire()) return;
       var channel = distConfigChannelEl.value;
       var enabled = distConfigEnabledEl.checked;
       var configData = {};
@@ -417,7 +430,7 @@ ${CLIENT_ESCAPE_HTML}
       saveBtn.textContent = 'Saving\\u2026';
 
       try {
-        var resp = await fetch('/api/distribution/config/' + encodeURIComponent(wireSelect.value) + '/' + channel, {
+        var resp = await fetch('/api/distribution/config/' + encodeURIComponent(currentWire()) + '/' + channel, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ enabled: enabled, config: configData })
@@ -438,14 +451,14 @@ ${CLIENT_ESCAPE_HTML}
 
     // Distribute button
     distributeBtn.addEventListener('click', async function() {
-      if (!wireSelect.value) return;
+      if (!currentWire()) return;
       distributeBtn.disabled = true;
       distributeBtn.textContent = 'Distributing\\u2026';
       distResult.classList.remove('visible');
       newsletterOutput.classList.remove('visible');
 
       try {
-        var resp = await fetch('/api/distribution/run/' + encodeURIComponent(wireSelect.value), { method: 'POST' });
+        var resp = await fetch('/api/distribution/run/' + encodeURIComponent(currentWire()), { method: 'POST' });
         var data = await resp.json();
         if (!resp.ok) throw new Error(data.error || 'Failed');
 
@@ -468,14 +481,14 @@ ${CLIENT_ESCAPE_HTML}
 
     // Newsletter button
     newsletterBtn.addEventListener('click', async function() {
-      if (!wireSelect.value) return;
+      if (!currentWire()) return;
       newsletterBtn.disabled = true;
       newsletterBtn.textContent = 'Generating\\u2026';
       newsletterOutput.classList.remove('visible');
       distResult.classList.remove('visible');
 
       try {
-        var resp = await fetch('/api/distribution/newsletter/' + encodeURIComponent(wireSelect.value));
+        var resp = await fetch('/api/distribution/newsletter/' + encodeURIComponent(currentWire()));
         var data = await resp.json();
         if (!resp.ok) throw new Error(data.error || 'Failed');
 
@@ -500,9 +513,9 @@ ${CLIENT_ESCAPE_HTML}
     });
 
     // Init: if wire pre-selected, load
-    if (wireSelect.value) {
+    if (currentWire()) {
       distContent.style.display = '';
-      distPlaceholder.style.display = 'none';
+      if (distPlaceholder) distPlaceholder.style.display = 'none';
       loadDistConfigs();
     }
   </script>

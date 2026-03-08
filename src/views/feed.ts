@@ -7,6 +7,35 @@ export function renderFeedPage(
   feeds: FeedNav[]
 ): string {
   const extraStyles = `
+    .overview-hero {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: flex-start;
+    }
+    .hero-copy {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .hero-copy h2 {
+      margin: 0;
+    }
+    .hero-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .overview-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+      gap: 24px;
+      align-items: start;
+    }
+    .stack-card {
+      margin-bottom: 0;
+    }
     /* Source cards */
     .source-cards {
       display: flex;
@@ -32,38 +61,6 @@ export function renderFeedPage(
       font-size: 12px;
       color: var(--text-secondary);
       font-family: var(--font-mono);
-    }
-
-    /* Cross-link cards */
-    .cross-links {
-      display: flex;
-      gap: 12px;
-      margin-bottom: 24px;
-      flex-wrap: wrap;
-    }
-    .cross-link {
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-lg);
-      padding: 16px 20px;
-      flex: 1;
-      min-width: 200px;
-      text-decoration: none;
-      transition: border-color 0.15s, background 0.15s;
-    }
-    .cross-link:hover {
-      border-color: var(--accent);
-      background: rgba(212,160,23,0.04);
-    }
-    .cross-link .cl-title {
-      font-size: 14px;
-      font-weight: 600;
-      color: var(--accent);
-      margin-bottom: 4px;
-    }
-    .cross-link .cl-desc {
-      font-size: 12px;
-      color: var(--text-secondary);
     }
 
     /* Recent results */
@@ -101,9 +98,31 @@ export function renderFeedPage(
       border: 1px solid var(--border);
     }
     .result-box.visible { display: block; }
+    @media (max-width: 960px) {
+      .overview-hero {
+        flex-direction: column;
+      }
+      .hero-actions {
+        justify-content: flex-start;
+      }
+      .overview-grid {
+        grid-template-columns: 1fr;
+      }
+    }
   `;
 
   const content = `
+    <div class="card overview-hero">
+      <div class="hero-copy">
+        <h2>What Needs Attention</h2>
+        <p class="form-description">Track this feed’s pending queue, prompt coverage, and recent intake from one place.</p>
+      </div>
+      <div class="hero-actions">
+        <a href="/queue?wire=${encodeURIComponent(feedKey)}&status=queued" class="button">Open Pending Queue</a>
+        <a href="/queue?wire=${encodeURIComponent(feedKey)}&status=approved" class="button secondary">View Approved</a>
+      </div>
+    </div>
+
     <!-- Stats row -->
     <div class="status-grid" style="margin-bottom: 24px;">
       <div class="status-item">
@@ -127,65 +146,58 @@ export function renderFeedPage(
     <!-- Source summary cards -->
     <div class="source-cards" id="source-cards"></div>
 
-    <!-- Cross-links to Prompts and Distribution -->
-    <div class="cross-links">
-      <a href="/prompts?wire=${encodeURIComponent(feedKey)}" class="cross-link">
-        <div class="cl-title">Manage Prompts &rarr;</div>
-        <div class="cl-desc">Add, edit, and test scan prompts for this feed</div>
-      </a>
-      <a href="/distribution?wire=${encodeURIComponent(feedKey)}" class="cross-link">
-        <div class="cl-title">Distribution &rarr;</div>
-        <div class="cl-desc">Configure channels and distribute approved entries</div>
-      </a>
-    </div>
-
-    <!-- Paste Intake (collapsible) -->
-    <details class="card">
-      <summary><h2>Paste Intake</h2></summary>
-      <div style="margin-top: 16px;">
-        <p class="form-description" style="margin-bottom: 16px;">Paste structured Grok scan output to ingest, deduplicate, and score entries.</p>
-        <div class="run-form">
-          <div class="form-row">
-            <div class="form-group">
-              <label for="scanMode">Mode</label>
-              <select id="scanMode">
-                <option value="single">Single Prompt</option>
-                <option value="batch">Batch (All Prompts)</option>
-              </select>
+    <div class="overview-grid">
+      <!-- Paste Intake (collapsible) -->
+      <details class="card stack-card" open>
+        <summary><h2>Manual Intake</h2></summary>
+        <div style="margin-top: 16px;">
+          <p class="form-description" style="margin-bottom: 16px;">Paste structured Grok scan output to ingest, deduplicate, and score entries for ${escapeHtml(feedDisplayName)}.</p>
+          <div class="run-form">
+            <div class="form-row">
+              <div class="form-group">
+                <label for="scanMode">Mode</label>
+                <select id="scanMode">
+                  <option value="single">Single Prompt</option>
+                  <option value="batch">Batch (All Prompts)</option>
+                </select>
+              </div>
+              <div class="form-group" id="scanVariantGroup">
+                <label for="scanVariant">Prompt Variant</label>
+                <select id="scanVariant">
+                  <option value="A">A - Action</option>
+                  <option value="B">B - Landscape</option>
+                  <option value="C">C - Open Sweep</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="scanDate">Scan Date</label>
+                <input type="date" id="scanDate" value="${new Date().toISOString().split('T')[0]}">
+              </div>
             </div>
-            <div class="form-group" id="scanVariantGroup">
-              <label for="scanVariant">Prompt Variant</label>
-              <select id="scanVariant">
-                <option value="A">A - Action</option>
-                <option value="B">B - Landscape</option>
-                <option value="C">C - Open Sweep</option>
-              </select>
+            <div class="form-group" style="margin-top: 12px;">
+              <label for="scanRawText">Raw Scan Output</label>
+              <textarea id="scanRawText" rows="8" placeholder="Paste structured Grok output here…" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); font-size: 13px; font-family: var(--font-mono); background: var(--bg); color: var(--text); resize: vertical;"></textarea>
             </div>
-            <div class="form-group">
-              <label for="scanDate">Scan Date</label>
-              <input type="date" id="scanDate" value="${new Date().toISOString().split('T')[0]}">
+            <div style="margin-top: 12px;">
+              <button type="button" id="process-scan" class="button">Process Intake</button>
             </div>
           </div>
-          <div class="form-group" style="margin-top: 12px;">
-            <label for="scanRawText">Raw Scan Output</label>
-            <textarea id="scanRawText" rows="8" placeholder="Paste structured Grok output here..." style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); font-size: 13px; font-family: var(--font-mono); background: var(--bg); color: var(--text); resize: vertical;"></textarea>
-          </div>
-          <div style="margin-top: 12px;">
-            <button type="button" id="process-scan" class="button">Process Scan</button>
-          </div>
+          <div class="result-box" id="paste-result" aria-live="polite"></div>
         </div>
-        <div class="result-box" id="paste-result"></div>
-      </div>
-    </details>
+      </details>
 
-    <!-- Recent Results -->
-    <div class="card" style="margin-top: 8px;">
-      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
-        <h2 style="margin: 0;">Recent Results</h2>
-        <a href="/queue?wire=${encodeURIComponent(feedKey)}" style="font-size: 13px; font-weight: 600;">View Queue &rarr;</a>
-      </div>
-      <div id="recent-results">
-        <p style="color: var(--text-muted);">Loading\u2026</p>
+      <!-- Recent Results -->
+      <div class="card stack-card">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; gap: 12px;">
+          <div>
+            <h2 style="margin: 0 0 6px;">Recent Queue Items</h2>
+            <p class="form-description">The latest high-signal items waiting for review in this feed.</p>
+          </div>
+          <a href="/queue?wire=${encodeURIComponent(feedKey)}&status=queued" class="button secondary" style="white-space: nowrap;">Open Queue</a>
+        </div>
+        <div id="recent-results">
+          <p style="color: var(--text-muted);">Loading\u2026</p>
+        </div>
       </div>
     </div>
   `;
@@ -193,9 +205,15 @@ export function renderFeedPage(
   const pageHtml = renderPageShell({
     title: feedDisplayName,
     activePage: `feed:${feedKey}`,
+    description: `Overview, intake, and queue health for ${feedDisplayName}.`,
     content,
     extraStyles,
     feeds,
+    feedContext: {
+      key: feedKey,
+      displayName: feedDisplayName,
+      activeTab: 'overview',
+    },
   });
 
   const scriptBlock = `

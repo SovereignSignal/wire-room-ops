@@ -154,9 +154,10 @@ function getDefaultGrokModels(): ModelInfo[] {
 
 function getDefaultAnthropicModels(): ModelInfo[] {
   return [
-    { id: 'claude-opus-4-5-20251101', displayName: 'Claude Opus 4.5', created: new Date(), provider: 'anthropic' },
-    { id: 'claude-sonnet-4-5-20250929', displayName: 'Claude Sonnet 4.5', created: new Date(), provider: 'anthropic' },
-    { id: 'claude-haiku-4-5-20251001', displayName: 'Claude Haiku 4.5', created: new Date(), provider: 'anthropic' },
+    { id: 'claude-opus-4-1-20250805', displayName: 'Claude Opus 4.1', created: new Date(), provider: 'anthropic' },
+    { id: 'claude-opus-4-20250514', displayName: 'Claude Opus 4', created: new Date(), provider: 'anthropic' },
+    { id: 'claude-sonnet-4-20250514', displayName: 'Claude Sonnet 4', created: new Date(), provider: 'anthropic' },
+    { id: 'claude-haiku-3-5-20241022', displayName: 'Claude Haiku 3.5', created: new Date(), provider: 'anthropic' },
   ];
 }
 
