@@ -41,139 +41,344 @@ export function renderSettingsPage(feeds?: FeedNav[]): string {
       font-weight: 500;
     }
     .model-row { margin-top: 8px; }
+    .setup-grid {
+      display: grid;
+      gap: 24px;
+    }
+    .card-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    .card-header h2 {
+      margin: 0 0 6px;
+    }
+    .card-header-copy {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .feed-table-key {
+      color: var(--text-secondary);
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+    .feed-status-pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      font-family: var(--font-mono);
+    }
+    .feed-status-pill.active {
+      background: rgba(74, 222, 128, 0.15);
+      color: var(--success);
+    }
+    .feed-status-pill.archived {
+      background: rgba(122, 138, 154, 0.15);
+      color: var(--text-muted);
+    }
+    .feed-management-intro {
+      margin: 0 0 16px;
+      color: var(--text-secondary);
+      max-width: 72ch;
+    }
+    .feed-management-section {
+      display: grid;
+      gap: 12px;
+      margin-top: 18px;
+    }
+    .feed-management-section:first-of-type {
+      margin-top: 0;
+    }
+    .feed-management-section-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 0;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      font-family: var(--font-mono);
+      color: var(--text-secondary);
+    }
+    .feed-management-count {
+      color: var(--text-muted);
+      font-weight: 600;
+    }
+    .feed-management-list {
+      display: grid;
+      gap: 12px;
+    }
+    .feed-management-card {
+      display: grid;
+      gap: 12px;
+      padding: 16px;
+      border: 1px solid var(--border);
+      background: var(--input);
+      border-radius: var(--radius-lg);
+    }
+    .feed-management-card.is-archived {
+      opacity: 0.8;
+    }
+    .feed-management-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .feed-management-title {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }
+    .feed-management-title h3 {
+      margin: 0;
+      font-size: 18px;
+    }
+    .feed-management-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 16px;
+      color: var(--text-secondary);
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+    .feed-management-meta strong {
+      color: var(--text);
+      font-weight: 600;
+    }
+    .feed-management-template {
+      color: var(--text-secondary);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .feed-management-template strong {
+      color: var(--text);
+      font-weight: 600;
+    }
+    .action-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .action-button {
+      background: var(--border);
+      border: none;
+      color: var(--text-secondary);
+      padding: 6px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .action-button:hover { color: var(--accent); }
+    .action-button.danger:hover { color: var(--error); }
+    .action-button.link-button {
+      display: inline-flex;
+      align-items: center;
+      text-decoration: none;
+    }
+    .field-hint {
+      margin: 6px 0 0;
+      color: var(--text-muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    .field-note {
+      margin: 0 0 12px;
+      color: var(--text-secondary);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    @media (max-width: 960px) {
+      .card-header {
+        flex-direction: column;
+      }
+      .feed-management-top {
+        flex-direction: column;
+      }
+    }
   `;
 
   const content = `
-    <!-- Scheduled Runs -->
-    <div class="card">
-      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
-        <h2 style="margin: 0;">Scheduled Runs <span class="badge" id="schedule-count-badge">--</span></h2>
-        <button type="button" id="add-schedule" class="button" style="padding: 8px 16px; font-size: 13px;">+ Add Schedule</button>
-      </div>
-      <div id="schedules-list"></div>
+    <div class="setup-grid">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-header-copy">
+            <h2>Manage Feeds <span class="badge" id="feed-count-badge">--</span></h2>
+            <p class="form-description">Feeds define the workspaces operators navigate, review, and distribute from.</p>
+          </div>
+          <button type="button" id="add-feed" class="button" style="padding: 8px 16px; font-size: 13px;">+ Add Feed</button>
+        </div>
+        <div id="setup-message" class="message" style="display: none;" aria-live="polite"></div>
+        <div id="feeds-list"></div>
 
-      <div id="schedule-form" class="run-form" style="display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border);">
-        <input type="hidden" id="scheduleId" value="">
-        <div class="form-row">
+        <div id="feed-form" class="run-form" style="display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border);">
+          <input type="hidden" id="feedEditKey" value="">
+          <div class="form-row">
+            <div class="form-group" style="flex: 1;">
+              <label for="feedDisplayName">Feed Name</label>
+              <input type="text" id="feedDisplayName" placeholder="e.g. AI" autocomplete="off" style="width: 100%;">
+              <p class="field-hint">This is what operators see in navigation, headings, and dropdowns. The internal route key is generated automatically.</p>
+            </div>
+            <div class="form-group">
+              <label for="feedSortOrder">Sort Order</label>
+              <input type="number" id="feedSortOrder" min="0" step="1" value="0" style="width: 90px;">
+            </div>
+          </div>
+          <p id="feedKeyMeta" class="field-note" style="display: none;"></p>
           <div class="form-group">
-            <label for="scheduleName">Name</label>
-            <input type="text" id="scheduleName" value="New Schedule" style="width: 150px;">
+            <label for="feedTitleTemplate">Title Template (optional)</label>
+            <input type="text" id="feedTitleTemplate" placeholder="Optional output title template…" autocomplete="off" style="width: 100%;">
           </div>
-          <div class="form-group">
-            <label for="scheduleType">Type</label>
-            <select id="scheduleType">
-              <option value="scan-execution">Scan Execution</option>
-              <option value="forum-scan">Forum Scan</option>
-            </select>
-          </div>
-          <div class="form-group" id="scheduleFrequencyGroup" style="display: none;">
-            <label for="scheduleFrequency">Frequency</label>
-            <select id="scheduleFrequency">
-              <option value="">Once daily</option>
-              <option value="2">Every 2h</option>
-              <option value="3">Every 3h</option>
-              <option value="4">Every 4h</option>
-              <option value="6">Every 6h</option>
-              <option value="8">Every 8h</option>
-              <option value="12">Every 12h</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label for="scheduleEnabled">Status</label>
-            <select id="scheduleEnabled">
-              <option value="false">Disabled</option>
-              <option value="true">Enabled</option>
-            </select>
-          </div>
-          <div class="form-group" id="scheduleDayOfWeekGroup">
-            <label for="scheduleDayOfWeek">Day of Week</label>
-            <select id="scheduleDayOfWeek">
-              <option value="0">Sunday</option>
-              <option value="1">Monday</option>
-              <option value="2">Tuesday</option>
-              <option value="3">Wednesday</option>
-              <option value="4">Thursday</option>
-              <option value="5">Friday</option>
-              <option value="6">Saturday</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label for="scheduleTime">Time</label>
-            <input type="time" id="scheduleTime" value="09:00">
-            <p id="time-hint" style="display: none; color: var(--accent); font-size: 11px; margin: 4px 0 0;">Only the minute is used when frequency is set</p>
-          </div>
-          <div class="form-group">
-            <label for="scheduleLookback">Lookback Days</label>
-            <input type="number" id="scheduleLookback" min="1" max="30" value="7" style="width: 80px;">
-          </div>
-          <div class="form-group">
-            <label for="scheduleTimezone">Timezone</label>
-            <select id="scheduleTimezone">
-              <option value="America/Los_Angeles">Pacific (LA)</option>
-              <option value="America/Denver">Mountain (Denver)</option>
-              <option value="America/Chicago">Central (Chicago)</option>
-              <option value="America/New_York">Eastern (NY)</option>
-              <option value="UTC">UTC</option>
-              <option value="Europe/London">London</option>
-              <option value="Europe/Paris">Paris</option>
-              <option value="Asia/Tokyo">Tokyo</option>
-              <option value="Asia/Singapore">Singapore</option>
-            </select>
-          </div>
-        </div>
-        <div class="form-row model-row">
-          <div class="form-group">
-            <label for="scheduleWire">Feed</label>
-            <select id="scheduleWire">
-              <option value="">Loading feeds\u2026</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label for="scheduleGrokModel">Grok Model</label>
-            <select id="scheduleGrokModel">
-              <option value="">Loading\u2026</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label for="scheduleAnthropicModel">Claude Model</label>
-            <select id="scheduleAnthropicModel">
-              <option value="">Loading\u2026</option>
-            </select>
-          </div>
-          <button type="button" id="save-schedule" class="button">Save</button>
-          <button type="button" id="cancel-schedule" class="button secondary">Cancel</button>
-        </div>
-        <div class="form-row" id="scheduleNotifyRow" style="display: none; margin-top: 12px;">
-          <div class="form-group" style="flex: 1;">
-            <label for="scheduleNotifyEmails">Notify Emails (comma-separated, empty = default)</label>
-            <input type="text" id="scheduleNotifyEmails" placeholder="user@example.com, other@..." style="width: 100%;">
+          <div class="action-row">
+            <button type="button" id="save-feed" class="button">Save Feed</button>
+            <button type="button" id="cancel-feed" class="button secondary">Cancel</button>
           </div>
         </div>
       </div>
 
-      <div style="margin-top: 16px;">
-        <button type="button" id="test-alert" class="button secondary">Test Alert Email</button>
-      </div>
+      <!-- Scheduled Runs -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-header-copy">
+            <h2>Scheduled Runs <span class="badge" id="schedule-count-badge">--</span></h2>
+            <p class="form-description">Control scan automation, notification routing, and scheduler health.</p>
+          </div>
+          <button type="button" id="add-schedule" class="button" style="padding: 8px 16px; font-size: 13px;">+ Add Schedule</button>
+        </div>
+        <div id="schedules-list"></div>
 
-      <div class="scheduler-health">
-        <h3>Scheduler Health <button id="refresh-status" class="refresh-btn">Refresh</button></h3>
-        <div class="status-grid">
-          <div class="status-item">
-            <div class="label">Scheduler Status</div>
-            <div id="scheduler-running" class="value muted">Loading\u2026</div>
+        <div id="schedule-form" class="run-form" style="display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border);">
+          <input type="hidden" id="scheduleId" value="">
+          <div class="form-row">
+            <div class="form-group">
+              <label for="scheduleName">Name</label>
+              <input type="text" id="scheduleName" value="New Schedule" style="width: 150px;">
+            </div>
+            <div class="form-group">
+              <label for="scheduleType">Type</label>
+              <select id="scheduleType">
+                <option value="scan-execution">Scan Execution</option>
+                <option value="forum-scan">Forum Scan</option>
+              </select>
+            </div>
+            <div class="form-group" id="scheduleFrequencyGroup" style="display: none;">
+              <label for="scheduleFrequency">Frequency</label>
+              <select id="scheduleFrequency">
+                <option value="">Once daily</option>
+                <option value="2">Every 2h</option>
+                <option value="3">Every 3h</option>
+                <option value="4">Every 4h</option>
+                <option value="6">Every 6h</option>
+                <option value="8">Every 8h</option>
+                <option value="12">Every 12h</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="scheduleEnabled">Status</label>
+              <select id="scheduleEnabled">
+                <option value="false">Disabled</option>
+                <option value="true">Enabled</option>
+              </select>
+            </div>
+            <div class="form-group" id="scheduleDayOfWeekGroup">
+              <label for="scheduleDayOfWeek">Day of Week</label>
+              <select id="scheduleDayOfWeek">
+                <option value="0">Sunday</option>
+                <option value="1">Monday</option>
+                <option value="2">Tuesday</option>
+                <option value="3">Wednesday</option>
+                <option value="4">Thursday</option>
+                <option value="5">Friday</option>
+                <option value="6">Saturday</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="scheduleTime">Time</label>
+              <input type="time" id="scheduleTime" value="09:00">
+              <p id="time-hint" style="display: none; color: var(--accent); font-size: 11px; margin: 4px 0 0;">Only the minute is used when frequency is set</p>
+            </div>
+            <div class="form-group">
+              <label for="scheduleLookback">Lookback Days</label>
+              <input type="number" id="scheduleLookback" min="1" max="30" value="7" style="width: 80px;">
+            </div>
+            <div class="form-group">
+              <label for="scheduleTimezone">Timezone</label>
+              <select id="scheduleTimezone">
+                <option value="America/Los_Angeles">Pacific (LA)</option>
+                <option value="America/Denver">Mountain (Denver)</option>
+                <option value="America/Chicago">Central (Chicago)</option>
+                <option value="America/New_York">Eastern (NY)</option>
+                <option value="UTC">UTC</option>
+                <option value="Europe/London">London</option>
+                <option value="Europe/Paris">Paris</option>
+                <option value="Asia/Tokyo">Tokyo</option>
+                <option value="Asia/Singapore">Singapore</option>
+              </select>
+            </div>
           </div>
-          <div class="status-item">
-            <div class="label">Server Started</div>
-            <div id="scheduler-started" class="value muted">Loading\u2026</div>
+          <div class="form-row model-row">
+            <div class="form-group">
+              <label for="scheduleWire">Feed</label>
+              <select id="scheduleWire">
+                <option value="">Loading feeds\u2026</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="scheduleGrokModel">Grok Model</label>
+              <select id="scheduleGrokModel">
+                <option value="">Loading\u2026</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="scheduleAnthropicModel">Claude Model</label>
+              <select id="scheduleAnthropicModel">
+                <option value="">Loading\u2026</option>
+              </select>
+            </div>
+            <button type="button" id="save-schedule" class="button">Save</button>
+            <button type="button" id="cancel-schedule" class="button secondary">Cancel</button>
           </div>
-          <div class="status-item">
-            <div class="label">Last Job Run</div>
-            <div id="last-job-run" class="value muted">Loading\u2026</div>
+          <div class="form-row" id="scheduleNotifyRow" style="display: none; margin-top: 12px;">
+            <div class="form-group" style="flex: 1;">
+              <label for="scheduleNotifyEmails">Notify Emails (comma-separated, empty = default)</label>
+              <input type="text" id="scheduleNotifyEmails" placeholder="user@example.com, other@..." style="width: 100%;">
+            </div>
           </div>
-          <div class="status-item">
-            <div class="label">Last Job Result</div>
-            <div id="last-job-status" class="value muted">Loading\u2026</div>
-            <div id="last-job-error" class="error-msg" style="display: none;"></div>
+        </div>
+
+        <div style="margin-top: 16px;">
+          <button type="button" id="test-alert" class="button secondary">Test Alert Email</button>
+        </div>
+
+        <div class="scheduler-health">
+          <h3>Scheduler Health <button id="refresh-status" class="refresh-btn">Refresh</button></h3>
+          <div class="status-grid">
+            <div class="status-item">
+              <div class="label">Scheduler Status</div>
+              <div id="scheduler-running" class="value muted">Loading\u2026</div>
+            </div>
+            <div class="status-item">
+              <div class="label">Server Started</div>
+              <div id="scheduler-started" class="value muted">Loading\u2026</div>
+            </div>
+            <div class="status-item">
+              <div class="label">Last Job Run</div>
+              <div id="last-job-run" class="value muted">Loading\u2026</div>
+            </div>
+            <div class="status-item">
+              <div class="label">Last Job Result</div>
+              <div id="last-job-status" class="value muted">Loading\u2026</div>
+              <div id="last-job-error" class="error-msg" style="display: none;"></div>
+            </div>
           </div>
         </div>
       </div>
@@ -181,8 +386,9 @@ export function renderSettingsPage(feeds?: FeedNav[]): string {
   `;
 
   const pageHtml = renderPageShell({
-    title: 'Schedules',
-    activePage: 'schedules',
+    title: 'Setup',
+    activePage: 'setup',
+    description: 'Manage feeds, schedules, notifications, and scheduler health.',
     content,
     extraStyles,
     feeds,
@@ -191,6 +397,20 @@ export function renderSettingsPage(feeds?: FeedNav[]): string {
   const scriptBlock = `
   <script>
 ${CLIENT_ESCAPE_HTML}
+
+    // ============= Feed Management =============
+    var feedsListEl = document.getElementById('feeds-list');
+    var feedFormEl = document.getElementById('feed-form');
+    var feedCountBadge = document.getElementById('feed-count-badge');
+    var setupMessageEl = document.getElementById('setup-message');
+    var addFeedBtn = document.getElementById('add-feed');
+    var feedEditKeyEl = document.getElementById('feedEditKey');
+    var feedDisplayNameEl = document.getElementById('feedDisplayName');
+    var feedSortOrderEl = document.getElementById('feedSortOrder');
+    var feedTitleTemplateEl = document.getElementById('feedTitleTemplate');
+    var feedKeyMetaEl = document.getElementById('feedKeyMeta');
+    var saveFeedBtn = document.getElementById('save-feed');
+    var cancelFeedBtn = document.getElementById('cancel-feed');
 
     // ============= Schedule Management =============
     var schedulesListEl = document.getElementById('schedules-list');
@@ -226,17 +446,139 @@ ${CLIENT_ESCAPE_HTML}
     scheduleTypeSelect.addEventListener('change', toggleScheduleTypeFields);
     scheduleFrequencySelect.addEventListener('change', toggleScheduleTypeFields);
 
+    var allFeeds = [];
     var cachedWires = [];
     var cachedModels = { grok: [], anthropic: [] };
 
+    function showSetupMessage(type, text) {
+      setupMessageEl.textContent = text;
+      setupMessageEl.className = 'message ' + type;
+      setupMessageEl.style.display = 'block';
+    }
+
+    function clearSetupMessage() {
+      setupMessageEl.style.display = 'none';
+      setupMessageEl.textContent = '';
+    }
+
+    function renderFeedsList(feeds) {
+      if (!feeds.length) {
+        feedCountBadge.textContent = '0';
+        feedsListEl.innerHTML = '<p style="color: var(--text-muted);">No feeds configured yet. Add one to create a workspace.</p>';
+        return;
+      }
+
+      var sortedFeeds = feeds.slice().sort(function(a, b) {
+        if (a.archived !== b.archived) return a.archived ? 1 : -1;
+        return (a.sortOrder || 0) - (b.sortOrder || 0) || a.displayName.localeCompare(b.displayName);
+      });
+      var activeFeeds = sortedFeeds.filter(function(feed) { return !feed.archived; });
+      var archivedFeeds = sortedFeeds.filter(function(feed) { return feed.archived; });
+
+      feedCountBadge.textContent = activeFeeds.length + ' active' + (archivedFeeds.length ? ' / ' + archivedFeeds.length + ' archived' : '');
+
+      function renderFeedSection(title, sectionFeeds, emptyText) {
+        var sectionHtml = '<section class="feed-management-section">';
+        sectionHtml += '<h3 class="feed-management-section-title"><span>' + title + '</span><span class="feed-management-count">' + sectionFeeds.length + '</span></h3>';
+
+        if (!sectionFeeds.length) {
+          sectionHtml += '<p style="color: var(--text-muted); margin: 0;">' + emptyText + '</p>';
+          sectionHtml += '</section>';
+          return sectionHtml;
+        }
+
+        sectionHtml += '<div class="feed-management-list">';
+        sectionFeeds.forEach(function(feed) {
+        sectionHtml += '<article class="feed-management-card' + (feed.archived ? ' is-archived' : '') + '">';
+        sectionHtml += '<div class="feed-management-top">';
+        sectionHtml += '<div class="feed-management-title">';
+        sectionHtml += '<h3>' + escapeHtml(feed.displayName) + '</h3>';
+        sectionHtml += '</div>';
+        sectionHtml += '<span class="feed-status-pill ' + (feed.archived ? 'archived' : 'active') + '">' + (feed.archived ? 'Archived' : 'Active') + '</span>';
+        sectionHtml += '</div>';
+          sectionHtml += '<div class="feed-management-meta">';
+          sectionHtml += '<span><strong>Entries:</strong> ' + (feed.entryCount || 0) + '</span>';
+          sectionHtml += '<span><strong>Order:</strong> ' + (feed.sortOrder || 0) + '</span>';
+          sectionHtml += '</div>';
+          sectionHtml += '<div class="feed-management-template"><strong>Title template:</strong> ' + escapeHtml(feed.titleTemplate || 'Default feed title') + '</div>';
+          sectionHtml += '<div class="action-row">';
+          sectionHtml += '<button class="action-button edit-feed" data-feed-key="' + escapeHtml(feed.key) + '">Edit Feed</button>';
+          if (!feed.archived) {
+            sectionHtml += '<button class="action-button danger archive-feed" data-feed-key="' + escapeHtml(feed.key) + '" data-feed-name="' + escapeHtml(feed.displayName) + '">Archive Feed</button>';
+          } else {
+            sectionHtml += '<button class="action-button reactivate-feed" data-feed-key="' + escapeHtml(feed.key) + '" data-feed-name="' + escapeHtml(feed.displayName) + '">Reactivate Feed</button>';
+          }
+          sectionHtml += '</div>';
+          sectionHtml += '</article>';
+        });
+        sectionHtml += '</div>';
+        sectionHtml += '</section>';
+        return sectionHtml;
+      }
+
+      var html = '';
+      html += '<p class="feed-management-intro">Existing feeds live here. Use <strong>Edit Feed</strong> to update the name, order, and title template. Use <strong>Archive Feed</strong> to remove it from the active workspace list, or <strong>Reactivate Feed</strong> to bring an archived feed back.</p>';
+      html += renderFeedSection('Current Feeds', activeFeeds, 'No active feeds configured yet.');
+      if (archivedFeeds.length) {
+        html += renderFeedSection('Archived Feeds', archivedFeeds, 'No archived feeds.');
+      }
+      feedsListEl.innerHTML = html;
+
+      document.querySelectorAll('.edit-feed').forEach(function(btn) {
+        btn.addEventListener('click', function() { showFeedForm(btn.dataset.feedKey); });
+      });
+      document.querySelectorAll('.archive-feed').forEach(function(btn) {
+        btn.addEventListener('click', function() { archiveFeedItem(btn.dataset.feedKey, btn.dataset.feedName); });
+      });
+      document.querySelectorAll('.reactivate-feed').forEach(function(btn) {
+        btn.addEventListener('click', function() { reactivateFeedItem(btn.dataset.feedKey, btn.dataset.feedName); });
+      });
+    }
+
+    function showFeedForm(feedKey) {
+      clearSetupMessage();
+      feedFormEl.style.display = 'block';
+      var feed = allFeeds.find(function(item) { return item.key === feedKey; });
+
+      if (feed) {
+        feedEditKeyEl.value = feed.key;
+        feedDisplayNameEl.value = feed.displayName || '';
+        feedSortOrderEl.value = typeof feed.sortOrder === 'number' ? feed.sortOrder : 0;
+        feedTitleTemplateEl.value = feed.titleTemplate || '';
+        feedKeyMetaEl.textContent = 'Internal key: ' + feed.key;
+        feedKeyMetaEl.style.display = 'block';
+      } else {
+        feedEditKeyEl.value = '';
+        feedDisplayNameEl.value = '';
+        feedSortOrderEl.value = '0';
+        feedTitleTemplateEl.value = '';
+        feedKeyMetaEl.textContent = '';
+        feedKeyMetaEl.style.display = 'none';
+      }
+
+      feedFormEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setTimeout(function() { feedDisplayNameEl.focus(); }, 50);
+    }
+
+    function hideFeedForm() {
+      feedFormEl.style.display = 'none';
+      feedEditKeyEl.value = '';
+      feedKeyMetaEl.textContent = '';
+      feedKeyMetaEl.style.display = 'none';
+    }
+
     async function loadSchedules() {
       try {
-        var feedsP = fetch('/api/feeds');
+        var feedsP = fetch('/api/feeds?includeArchived=true');
         var modelsP = fetch('/api/models');
         var schedulesP = fetch('/api/schedules');
         var results = await Promise.all([feedsP, modelsP, schedulesP]);
 
-        if (results[0].ok) cachedWires = await results[0].json();
+        if (results[0].ok) {
+          allFeeds = await results[0].json();
+          cachedWires = allFeeds.filter(function(feed) { return !feed.archived; });
+          renderFeedsList(allFeeds);
+        }
         if (results[1].ok) cachedModels = await results[1].json();
 
         if (!results[2].ok) throw new Error('Failed to fetch schedules');
@@ -248,6 +590,7 @@ ${CLIENT_ESCAPE_HTML}
       } catch (error) {
         console.error('Failed to load schedules:', error);
         schedulesListEl.innerHTML = '<p style="color: var(--error);">Failed to load schedules</p>';
+        feedsListEl.innerHTML = '<p style="color: var(--error);">Failed to load feeds</p>';
       }
     }
 
@@ -385,6 +728,96 @@ ${CLIENT_ESCAPE_HTML}
         alert('Failed to delete schedule');
       }
     }
+
+    async function archiveFeedItem(feedKey, feedName) {
+      if (!confirm('Archive feed "' + feedName + '"? It will leave the active workspace list but remain available here in Setup.')) return;
+      clearSetupMessage();
+      try {
+        var response = await fetch('/api/feeds/' + encodeURIComponent(feedKey), { method: 'DELETE' });
+        var payload = await response.json().catch(function() { return {}; });
+        if (!response.ok) throw new Error(payload.error || 'Failed to archive feed');
+        showSetupMessage('success', 'Archived "' + feedName + '".');
+        hideFeedForm();
+        loadSchedules();
+      } catch (error) {
+        console.error('Failed to archive feed:', error);
+        showSetupMessage('error', error.message || 'Failed to archive feed.');
+      }
+    }
+
+    async function reactivateFeedItem(feedKey, feedName) {
+      clearSetupMessage();
+      try {
+        var response = await fetch('/api/feeds/' + encodeURIComponent(feedKey), {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ archived: false })
+        });
+        var payload = await response.json().catch(function() { return {}; });
+        if (!response.ok) throw new Error(payload.error || 'Failed to reactivate feed');
+        showSetupMessage('success', 'Reactivated "' + feedName + '".');
+        loadSchedules();
+      } catch (error) {
+        console.error('Failed to reactivate feed:', error);
+        showSetupMessage('error', error.message || 'Failed to reactivate feed.');
+      }
+    }
+
+    addFeedBtn.addEventListener('click', function() { showFeedForm(''); });
+    cancelFeedBtn.addEventListener('click', hideFeedForm);
+    saveFeedBtn.addEventListener('click', async function() {
+      var editKey = feedEditKeyEl.value;
+      var displayName = feedDisplayNameEl.value.trim();
+      var sortOrder = parseInt(feedSortOrderEl.value || '0', 10);
+      var titleTemplate = feedTitleTemplateEl.value.trim();
+
+      if (!displayName) {
+        showSetupMessage('error', 'Feed name is required.');
+        return;
+      }
+
+      clearSetupMessage();
+      saveFeedBtn.disabled = true;
+      saveFeedBtn.textContent = 'Saving\\u2026';
+
+      try {
+        var response;
+        if (editKey) {
+          response = await fetch('/api/feeds/' + encodeURIComponent(editKey), {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              displayName: displayName,
+              titleTemplate: titleTemplate,
+              sortOrder: isNaN(sortOrder) ? 0 : sortOrder,
+            })
+          });
+        } else {
+          response = await fetch('/api/feeds', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              displayName: displayName,
+              titleTemplate: titleTemplate,
+              sortOrder: isNaN(sortOrder) ? 0 : sortOrder,
+            })
+          });
+        }
+
+        var payload = await response.json().catch(function() { return {}; });
+        if (!response.ok) throw new Error(payload.error || 'Failed to save feed');
+
+        hideFeedForm();
+        showSetupMessage('success', editKey ? 'Feed updated.' : 'Feed created.');
+        loadSchedules();
+      } catch (error) {
+        console.error('Failed to save feed:', error);
+        showSetupMessage('error', error.message || 'Failed to save feed.');
+      } finally {
+        saveFeedBtn.disabled = false;
+        saveFeedBtn.textContent = 'Save Feed';
+      }
+    });
 
     addScheduleBtn.addEventListener('click', function() { showScheduleForm(null); });
     cancelScheduleBtn.addEventListener('click', hideScheduleForm);

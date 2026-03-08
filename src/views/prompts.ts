@@ -1,7 +1,7 @@
 import { escapeHtml } from '../utils/html';
 import { renderPageShell, FeedNav, CLIENT_ESCAPE_HTML } from './shared';
 
-export function renderPromptsPage(feeds: FeedNav[], forumEnabled: boolean): string {
+export function renderPromptsPage(feeds: FeedNav[], forumEnabled: boolean, selectedFeed?: FeedNav): string {
   const extraStyles = `
     /* Wire selector */
     .wire-select-bar {
@@ -202,6 +202,164 @@ export function renderPromptsPage(feeds: FeedNav[], forumEnabled: boolean): stri
       font-size: 18px;
       color: var(--text);
     }
+    .prompt-lab {
+      margin-top: 20px;
+      padding-top: 18px;
+      border-top: 1px solid var(--border);
+      display: grid;
+      gap: 14px;
+    }
+    .prompt-lab-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .prompt-lab-header h4 {
+      margin: 0;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-family: var(--font-mono);
+      color: var(--text);
+    }
+    .prompt-lab-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .prompt-lab-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .lab-panel {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 14px;
+      min-height: 220px;
+      display: grid;
+      align-content: start;
+      gap: 10px;
+    }
+    .lab-panel h5 {
+      margin: 0;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-family: var(--font-mono);
+      color: var(--text-secondary);
+    }
+    .lab-placeholder {
+      color: var(--text-muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .lab-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      font-family: var(--font-mono);
+    }
+    .lab-metric {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+    }
+    .lab-metric strong {
+      color: var(--text);
+      font-weight: 600;
+    }
+    .lab-parsed-list {
+      display: grid;
+      gap: 10px;
+    }
+    .lab-result-card {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 10px 12px;
+      background: var(--bg-card);
+      display: grid;
+      gap: 6px;
+    }
+    .lab-result-card strong {
+      color: var(--text);
+    }
+    .lab-result-meta {
+      color: var(--text-secondary);
+      font-size: 12px;
+      font-family: var(--font-mono);
+    }
+    .lab-raw-output {
+      margin: 0;
+      max-height: 280px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 12px;
+      line-height: 1.55;
+      color: var(--text-secondary);
+      font-family: var(--font-mono);
+    }
+    .review-score {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 52px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      font-weight: 700;
+      font-family: var(--font-mono);
+      background: rgba(212,160,23,0.12);
+      color: var(--accent);
+    }
+    .review-summary {
+      color: var(--text-secondary);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .review-list {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--text-secondary);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+    .review-list li + li {
+      margin-top: 6px;
+    }
+    .review-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .review-actions button {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      padding: 6px 12px;
+      border-radius: var(--radius-md);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .review-actions button:hover {
+      color: var(--accent);
+      border-color: var(--accent);
+    }
+    @media (max-width: 960px) {
+      .prompt-lab-grid {
+        grid-template-columns: 1fr;
+      }
+    }
 
     /* Progress bar (Run Scan / Forum) */
     .progress-container {
@@ -245,19 +403,22 @@ export function renderPromptsPage(feeds: FeedNav[], forumEnabled: boolean): stri
     }
   `;
 
+  const selectedFeedKey = selectedFeed?.key || '';
   const feedOptions = feeds.map(f =>
     `<option value="${escapeHtml(f.key)}">${escapeHtml(f.displayName)}</option>`
   ).join('\n            ');
 
   const content = `
+    ${selectedFeed ? '' : `
     <div class="wire-select-bar">
       <select id="wireSelect">
         <option value="">Select a feed\u2026</option>
         ${feedOptions}
       </select>
     </div>
+    `}
 
-    <div id="prompts-content" style="display: none;">
+    <div id="prompts-content"${selectedFeed ? '' : ' style="display: none;"'}>
       <!-- Source summary cards -->
       <div class="source-cards" id="source-cards"></div>
 
@@ -330,7 +491,7 @@ export function renderPromptsPage(feeds: FeedNav[], forumEnabled: boolean): stri
       </details>
     </div>
 
-    <div id="prompts-placeholder" class="placeholder-msg">
+    <div id="prompts-placeholder" class="placeholder-msg"${selectedFeed ? ' style="display: none;"' : ''}>
       Select a feed to manage scan prompts.
     </div>
 
@@ -361,6 +522,29 @@ export function renderPromptsPage(feeds: FeedNav[], forumEnabled: boolean): stri
             <label for="promptResponseFormat">Response Format (optional)</label>
             <textarea id="promptResponseFormat" rows="3" placeholder="Optional structured output format..." style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); font-size: 13px; font-family: var(--font-mono); background: var(--bg); color: var(--text); resize: vertical;"></textarea>
           </div>
+          <div class="prompt-lab">
+            <div class="prompt-lab-header">
+              <div>
+                <h4>Prompt Lab</h4>
+                <p class="form-description" style="margin: 6px 0 0;">Run the draft prompt to inspect actual yield, then ask Claude to critique and tighten it for higher-signal results.</p>
+              </div>
+              <div class="prompt-lab-actions">
+                <button type="button" id="test-draft-prompt" class="button secondary">Run Test</button>
+                <button type="button" id="review-draft-prompt" class="button secondary">Review with Claude</button>
+              </div>
+            </div>
+            <div id="prompt-lab-status" class="form-description" aria-live="polite">Testing runs your current draft without saving it.</div>
+            <div class="prompt-lab-grid">
+              <section class="lab-panel">
+                <h5>Test Yield</h5>
+                <div id="prompt-test-results" class="lab-placeholder">Run Test to inspect the raw model output, parse count, and extracted opportunities.</div>
+              </section>
+              <section class="lab-panel">
+                <h5>Claude Review</h5>
+                <div id="prompt-review-results" class="lab-placeholder">Review with Claude to get feedback on signal quality, parseability, and a revised prompt draft.</div>
+              </section>
+            </div>
+          </div>
           <div class="form-row" style="justify-content: flex-end; gap: 8px;">
             <button type="button" id="cancel-prompt" class="button secondary">Cancel</button>
             <button type="button" id="save-prompt" class="button">Save</button>
@@ -371,42 +555,53 @@ export function renderPromptsPage(feeds: FeedNav[], forumEnabled: boolean): stri
   `;
 
   const pageHtml = renderPageShell({
-    title: 'Prompts',
-    activePage: 'prompts',
+    title: selectedFeed ? selectedFeed.displayName : 'Prompts',
+    activePage: selectedFeed ? `feed:${selectedFeed.key}:prompts` : 'queue',
+    description: selectedFeed ? `Prompts, scans, and forum runs for ${selectedFeed.displayName}.` : 'Manage scan prompts.',
     content,
     extraStyles,
     feeds,
+    feedContext: selectedFeed ? {
+      key: selectedFeed.key,
+      displayName: selectedFeed.displayName,
+      activeTab: 'prompts',
+    } : undefined,
   });
 
   const scriptBlock = `
   <script>
     var FORUM_ENABLED = ${forumEnabled ? 'true' : 'false'};
+    var FIXED_WIRE = ${JSON.stringify(selectedFeedKey)};
 
 ${CLIENT_ESCAPE_HTML}
 
     var wireSelect = document.getElementById('wireSelect');
     var promptsContent = document.getElementById('prompts-content');
     var promptsPlaceholder = document.getElementById('prompts-placeholder');
-
-    // Deep link support
-    var urlParams = new URLSearchParams(window.location.search);
-    var wireParam = urlParams.get('wire');
-    if (wireParam) {
-      wireSelect.value = wireParam;
+    function currentWire() {
+      if (FIXED_WIRE) return FIXED_WIRE;
+      return wireSelect ? wireSelect.value : '';
     }
 
-    wireSelect.addEventListener('change', function() {
-      if (wireSelect.value) {
-        promptsContent.style.display = '';
-        promptsPlaceholder.style.display = 'none';
-        loadPrompts();
-        var newUrl = '/prompts?wire=' + encodeURIComponent(wireSelect.value);
-        history.replaceState(null, '', newUrl);
-      } else {
-        promptsContent.style.display = 'none';
-        promptsPlaceholder.style.display = '';
+    if (wireSelect) {
+      var urlParams = new URLSearchParams(window.location.search);
+      var wireParam = urlParams.get('wire');
+      if (wireParam) {
+        wireSelect.value = wireParam;
       }
-    });
+
+      wireSelect.addEventListener('change', function() {
+        if (currentWire()) {
+          promptsContent.style.display = '';
+          if (promptsPlaceholder) promptsPlaceholder.style.display = 'none';
+          loadPrompts();
+          history.replaceState(null, '', '/prompts?wire=' + encodeURIComponent(currentWire()));
+        } else {
+          promptsContent.style.display = 'none';
+          if (promptsPlaceholder) promptsPlaceholder.style.display = '';
+        }
+      });
+    }
 
     function scoreColor(score) {
       if (score == null) return 'var(--text-muted)';
@@ -419,9 +614,9 @@ ${CLIENT_ESCAPE_HTML}
     var allPrompts = [];
 
     async function loadPrompts() {
-      if (!wireSelect.value) return;
+      if (!currentWire()) return;
       try {
-        var resp = await fetch('/api/scan/prompts?wire=' + encodeURIComponent(wireSelect.value));
+        var resp = await fetch('/api/scan/prompts?wire=' + encodeURIComponent(currentWire()));
         if (!resp.ok) throw new Error('Failed');
         allPrompts = await resp.json();
         renderSourceCards();
@@ -483,8 +678,9 @@ ${CLIENT_ESCAPE_HTML}
         html += '<div class="prompt-text">' + escapeHtml((p.promptText || '').substring(0, 120)) + '</div>';
         html += '<div class="prompt-actions">';
         html += '<button data-action="edit" data-id="' + p.id + '">Edit</button>';
-        html += '<button data-action="toggle" data-id="' + p.id + '" data-active="' + p.isActive + '">' + (p.isActive ? 'Pause' : 'Activate') + '</button>';
         html += '<button data-action="test" data-id="' + p.id + '">Test</button>';
+        html += '<button data-action="review" data-id="' + p.id + '">Review</button>';
+        html += '<button data-action="toggle" data-id="' + p.id + '" data-active="' + p.isActive + '">' + (p.isActive ? 'Pause' : 'Activate') + '</button>';
         html += '<button data-action="delete" data-id="' + p.id + '" class="danger">Delete</button>';
         html += '</div>';
         html += '</div>';
@@ -500,9 +696,12 @@ ${CLIENT_ESCAPE_HTML}
       var id = btn.dataset.id;
 
       if (action === 'edit') editPrompt(id);
+      else if (action === 'review') openPromptLab(id, 'review');
       else if (action === 'toggle') togglePrompt(id, btn.dataset.active === 'true');
-      else if (action === 'test') testPrompt(id, btn);
+      else if (action === 'test') openPromptLab(id, 'test');
       else if (action === 'delete') deletePrompt(id);
+      else if (action === 'apply-review-prompt') applyReviewedPrompt();
+      else if (action === 'apply-review-format') applyReviewedFormat();
     });
 
     async function togglePrompt(id, currentlyActive) {
@@ -530,27 +729,6 @@ ${CLIENT_ESCAPE_HTML}
       }
     }
 
-    async function testPrompt(id, btn) {
-      var origText = btn.textContent;
-      btn.disabled = true;
-      btn.textContent = 'Testing\\u2026';
-      try {
-        var resp = await fetch('/api/scan/prompts/' + id + '/test', { method: 'POST' });
-        var data = await resp.json();
-        if (data.success) {
-          btn.textContent = 'OK!';
-          btn.style.color = 'var(--success)';
-          setTimeout(function() { btn.textContent = origText; btn.style.color = ''; btn.disabled = false; }, 2000);
-        } else {
-          throw new Error(data.error || 'Test failed');
-        }
-      } catch(e) {
-        alert('Test failed: ' + e.message);
-        btn.textContent = origText;
-        btn.disabled = false;
-      }
-    }
-
     // ---- Prompt form (add/edit) ----
     var promptOverlay = document.getElementById('prompt-form-overlay');
     var promptEditIdEl = document.getElementById('promptEditId');
@@ -558,8 +736,15 @@ ${CLIENT_ESCAPE_HTML}
     var promptToolTypeEl = document.getElementById('promptToolType');
     var promptTextEl = document.getElementById('promptText');
     var promptResponseFormatEl = document.getElementById('promptResponseFormat');
+    var promptLabStatusEl = document.getElementById('prompt-lab-status');
+    var promptTestResultsEl = document.getElementById('prompt-test-results');
+    var promptReviewResultsEl = document.getElementById('prompt-review-results');
+    var testDraftPromptBtn = document.getElementById('test-draft-prompt');
+    var reviewDraftPromptBtn = document.getElementById('review-draft-prompt');
     var savePromptBtn = document.getElementById('save-prompt');
     var cancelPromptBtn = document.getElementById('cancel-prompt');
+    var lastLabTestResult = null;
+    var lastPromptReview = null;
 
     function openPromptForm(toolType, prompt) {
       if (prompt) {
@@ -577,11 +762,13 @@ ${CLIENT_ESCAPE_HTML}
         promptTextEl.value = '';
         promptResponseFormatEl.value = '';
       }
+      resetPromptLab();
       promptOverlay.classList.add('visible');
     }
 
     function closePromptForm() {
       promptOverlay.classList.remove('visible');
+      resetPromptLab();
     }
 
     function editPrompt(id) {
@@ -589,13 +776,211 @@ ${CLIENT_ESCAPE_HTML}
       if (p) openPromptForm(p.toolType, p);
     }
 
+    function resetPromptLab(statusText) {
+      lastLabTestResult = null;
+      lastPromptReview = null;
+      promptLabStatusEl.textContent = statusText || 'Testing runs your current draft without saving it.';
+      promptTestResultsEl.className = 'lab-placeholder';
+      promptTestResultsEl.innerHTML = 'Run Test to inspect the raw model output, parse count, and extracted opportunities.';
+      promptReviewResultsEl.className = 'lab-placeholder';
+      promptReviewResultsEl.innerHTML = 'Review with Claude to get feedback on signal quality, parseability, and a revised prompt draft.';
+    }
+
+    function getDraftPromptPayload() {
+      return {
+        wire: currentWire(),
+        label: promptLabelEl.value.trim(),
+        toolType: promptToolTypeEl.value,
+        promptText: promptTextEl.value.trim(),
+        responseFormat: promptResponseFormatEl.value.trim() || undefined
+      };
+    }
+
+    function renderParsedResults(results) {
+      if (!results || !results.length) {
+        return '<p class="lab-placeholder" style="margin: 0;">The current output did not parse into opportunities. Tighten the response format or make the fields more explicit.</p>';
+      }
+
+      var html = '<div class="lab-parsed-list">';
+      results.slice(0, 6).forEach(function(item, index) {
+        html += '<article class="lab-result-card">';
+        html += '<strong>' + escapeHtml(item.name || ('Result ' + (index + 1))) + '</strong>';
+        html += '<div style="color: var(--text-secondary); font-size: 13px; line-height: 1.5;">' + escapeHtml(item.description || 'No description') + '</div>';
+        html += '<div class="lab-result-meta">';
+        html += 'Amount: ' + escapeHtml(item.amount || '—') + ' | ';
+        html += 'Deadline: ' + escapeHtml(item.deadline || '—') + ' | ';
+        html += 'URL: ' + escapeHtml(item.sourceUrl || '—');
+        html += '</div>';
+        html += '</article>';
+      });
+      html += '</div>';
+      return html;
+    }
+
+    function renderPromptTestResults(data) {
+      var html = '<div class="lab-meta">';
+      html += '<span class="lab-metric"><strong>Model</strong> ' + escapeHtml(data.model || 'Unknown') + '</span>';
+      html += '<span class="lab-metric"><strong>Tokens</strong> ' + escapeHtml(String(data.tokensUsed || '—')) + '</span>';
+      html += '<span class="lab-metric"><strong>Parsed</strong> ' + escapeHtml(String(data.parsedCount || 0)) + '</span>';
+      html += '</div>';
+      html += '<div>' + renderParsedResults(data.parsedResults || []) + '</div>';
+      html += '<div><h5 style="margin: 0 0 8px;">Raw Output</h5><pre class="lab-raw-output">' + escapeHtml(data.content || '') + '</pre></div>';
+      promptTestResultsEl.className = '';
+      promptTestResultsEl.innerHTML = html;
+    }
+
+    function renderReviewList(title, items) {
+      var html = '<div>';
+      html += '<h5 style="margin: 0 0 8px;">' + escapeHtml(title) + '</h5>';
+      if (!items || !items.length) {
+        html += '<p class="lab-placeholder" style="margin: 0;">No notes.</p>';
+      } else {
+        html += '<ul class="review-list">';
+        items.forEach(function(item) {
+          html += '<li>' + escapeHtml(item) + '</li>';
+        });
+        html += '</ul>';
+      }
+      html += '</div>';
+      return html;
+    }
+
+    function reviewScoreColor(score) {
+      if (score >= 80) return 'var(--success)';
+      if (score >= 60) return 'var(--accent)';
+      return 'var(--error)';
+    }
+
+    function renderPromptReview(data) {
+      var html = '<div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">';
+      html += '<span class="review-score" style="color: ' + reviewScoreColor(data.overallScore || 0) + '; border: 1px solid currentColor; background: transparent;">' + escapeHtml(String(data.overallScore || 0)) + '</span>';
+      html += '<span class="lab-metric"><strong>Model</strong> ' + escapeHtml(data.model || 'Claude') + '</span>';
+      html += '</div>';
+      html += '<p class="review-summary">' + escapeHtml(data.summary || '') + '</p>';
+      html += renderReviewList('Strengths', data.strengths || []);
+      html += renderReviewList('Risks', data.risks || []);
+      html += renderReviewList('Suggestions', data.suggestions || []);
+      html += renderReviewList('Expected Improvements', data.expectedImprovements || []);
+      html += '<div class="review-actions">';
+      html += '<button type="button" data-action="apply-review-prompt">Apply Revised Prompt</button>';
+      if (data.revisedResponseFormat) {
+        html += '<button type="button" data-action="apply-review-format">Apply Revised Format</button>';
+      }
+      html += '</div>';
+      promptReviewResultsEl.className = '';
+      promptReviewResultsEl.innerHTML = html;
+    }
+
+    function applyReviewedPrompt() {
+      if (!lastPromptReview || !lastPromptReview.revisedPromptText) return;
+      promptTextEl.value = lastPromptReview.revisedPromptText;
+      promptLabStatusEl.textContent = 'Applied Claude\\u2019s revised prompt to the editor. Re-run the lab before saving.';
+      lastLabTestResult = null;
+      promptTestResultsEl.className = 'lab-placeholder';
+      promptTestResultsEl.innerHTML = 'Draft changed. Re-run Test to inspect the updated yield.';
+    }
+
+    function applyReviewedFormat() {
+      if (!lastPromptReview) return;
+      promptResponseFormatEl.value = lastPromptReview.revisedResponseFormat || '';
+      promptLabStatusEl.textContent = 'Applied Claude\\u2019s revised response format. Re-run the lab before saving.';
+      lastLabTestResult = null;
+      promptTestResultsEl.className = 'lab-placeholder';
+      promptTestResultsEl.innerHTML = 'Draft changed. Re-run Test to inspect the updated yield.';
+    }
+
+    async function runDraftPromptTest() {
+      var payload = getDraftPromptPayload();
+      if (!payload.promptText) {
+        alert('Prompt text is required before testing.');
+        return;
+      }
+
+      testDraftPromptBtn.disabled = true;
+      testDraftPromptBtn.textContent = 'Testing\\u2026';
+      promptLabStatusEl.textContent = 'Running the current draft through the selected scan tool...';
+
+      try {
+        var resp = await fetch('/api/scan/prompts/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        var data = await resp.json().catch(function() { return {}; });
+        if (!resp.ok) throw new Error(data.error || 'Prompt test failed');
+        lastLabTestResult = data;
+        renderPromptTestResults(data);
+        promptLabStatusEl.textContent = 'Test completed. Review the parsed yield, then ask Claude to critique the prompt.';
+      } catch (e) {
+        promptLabStatusEl.textContent = 'Test failed.';
+        promptTestResultsEl.className = 'lab-placeholder';
+        promptTestResultsEl.innerHTML = '<span style="color: var(--error);">Test failed: ' + escapeHtml(e.message || 'Unknown error') + '</span>';
+      } finally {
+        testDraftPromptBtn.disabled = false;
+        testDraftPromptBtn.textContent = 'Run Test';
+      }
+    }
+
+    async function runDraftPromptReview() {
+      var payload = getDraftPromptPayload();
+      if (!payload.promptText) {
+        alert('Prompt text is required before review.');
+        return;
+      }
+
+      if (lastLabTestResult) {
+        payload.testOutput = lastLabTestResult.content;
+        payload.parsedResults = lastLabTestResult.parsedResults;
+      }
+
+      reviewDraftPromptBtn.disabled = true;
+      reviewDraftPromptBtn.textContent = 'Reviewing\\u2026';
+      promptLabStatusEl.textContent = 'Claude is reviewing the draft prompt for signal quality and parseability...';
+
+      try {
+        var resp = await fetch('/api/scan/prompts/review', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        var data = await resp.json().catch(function() { return {}; });
+        if (!resp.ok) throw new Error(data.error || 'Prompt review failed');
+        lastPromptReview = data;
+        renderPromptReview(data);
+        promptLabStatusEl.textContent = 'Claude review complete. Apply the revised draft if it improves the prompt.';
+      } catch (e) {
+        promptLabStatusEl.textContent = 'Review failed.';
+        promptReviewResultsEl.className = 'lab-placeholder';
+        promptReviewResultsEl.innerHTML = '<span style="color: var(--error);">Review failed: ' + escapeHtml(e.message || 'Unknown error') + '</span>';
+      } finally {
+        reviewDraftPromptBtn.disabled = false;
+        reviewDraftPromptBtn.textContent = 'Review with Claude';
+      }
+    }
+
+    async function openPromptLab(id, mode) {
+      var p = allPrompts.find(function(pr) { return pr.id === id; });
+      if (!p) return;
+      openPromptForm(p.toolType, p);
+      await runDraftPromptTest();
+      if (mode === 'review') {
+        await runDraftPromptReview();
+      }
+    }
+
     document.getElementById('add-prompt-x').addEventListener('click', function() { openPromptForm('x_search', null); });
     document.getElementById('add-prompt-web').addEventListener('click', function() { openPromptForm('web_search', null); });
     cancelPromptBtn.addEventListener('click', closePromptForm);
     promptOverlay.addEventListener('click', function(e) { if (e.target === promptOverlay) closePromptForm(); });
+    testDraftPromptBtn.addEventListener('click', runDraftPromptTest);
+    reviewDraftPromptBtn.addEventListener('click', runDraftPromptReview);
+    [promptLabelEl, promptToolTypeEl, promptTextEl, promptResponseFormatEl].forEach(function(el) {
+      el.addEventListener('input', function() { resetPromptLab('Draft changed. Re-run Test or Claude review before saving.'); });
+      el.addEventListener('change', function() { resetPromptLab('Draft changed. Re-run Test or Claude review before saving.'); });
+    });
 
     savePromptBtn.addEventListener('click', async function() {
-      if (!wireSelect.value) return;
+      if (!currentWire()) return;
       var id = promptEditIdEl.value;
       var label = promptLabelEl.value.trim();
       var toolType = promptToolTypeEl.value;
@@ -610,7 +995,7 @@ ${CLIENT_ESCAPE_HTML}
 
       try {
         var body = {
-          wire: wireSelect.value,
+          wire: currentWire(),
           label: label,
           toolType: toolType,
           promptText: promptText,
@@ -656,7 +1041,7 @@ ${CLIENT_ESCAPE_HTML}
     var scanResult = document.getElementById('scan-result');
 
     runScanBtn.addEventListener('click', async function() {
-      if (!wireSelect.value) return;
+      if (!currentWire()) return;
       runScanBtn.disabled = true;
       runScanBtn.textContent = 'Starting\\u2026';
       scanProgress.classList.add('visible');
@@ -668,7 +1053,7 @@ ${CLIENT_ESCAPE_HTML}
         var resp = await fetch('/api/scan/run', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ wire: wireSelect.value })
+          body: JSON.stringify({ wire: currentWire() })
         });
         if (!resp.ok) {
           var data = await resp.json();
@@ -744,7 +1129,7 @@ ${CLIENT_ESCAPE_HTML}
     var forumResult = document.getElementById('forum-result');
 
     runForumBtn.addEventListener('click', async function() {
-      if (!wireSelect.value) return;
+      if (!currentWire()) return;
       runForumBtn.disabled = true;
       runForumBtn.textContent = 'Starting\\u2026';
       forumProgress.classList.add('visible');
@@ -756,7 +1141,7 @@ ${CLIENT_ESCAPE_HTML}
         var resp = await fetch('/api/forum/run', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ wire: wireSelect.value })
+          body: JSON.stringify({ wire: currentWire() })
         });
         if (!resp.ok) {
           var data = await resp.json();
@@ -829,10 +1214,10 @@ ${CLIENT_ESCAPE_HTML}
     }
 
     async function loadPromptStats() {
-      if (!wireSelect.value) return;
+      if (!currentWire()) return;
       var days = statsDaysInput.value || '7';
       try {
-        var resp = await fetch('/api/scan/prompt-stats?days=' + days + '&wire=' + encodeURIComponent(wireSelect.value));
+        var resp = await fetch('/api/scan/prompt-stats?days=' + days + '&wire=' + encodeURIComponent(currentWire()));
         if (!resp.ok) throw new Error('Failed to load stats');
         var data = await resp.json();
 
@@ -870,9 +1255,9 @@ ${CLIENT_ESCAPE_HTML}
     loadStatsBtn.addEventListener('click', loadPromptStats);
 
     // Init: if wire pre-selected, load
-    if (wireSelect.value) {
+    if (currentWire()) {
       promptsContent.style.display = '';
-      promptsPlaceholder.style.display = 'none';
+      if (promptsPlaceholder) promptsPlaceholder.style.display = 'none';
       loadPrompts();
     }
   </script>

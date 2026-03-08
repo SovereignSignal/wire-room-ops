@@ -328,38 +328,64 @@ export interface FeedNav {
   displayName: string;
 }
 
+export interface FeedContext {
+  key: string;
+  displayName: string;
+  activeTab: 'overview' | 'prompts' | 'distribution';
+}
+
 export interface PageShellOptions {
   title: string;
-  activePage: 'queue' | 'distribution' | 'prompts' | 'schedules' | string;  // string for 'feed:<key>'
+  activePage: 'queue' | 'setup' | string;  // string for 'feed:<key>' and subpages
   content: string;
+  description?: string;
   extraHead?: string;
   extraStyles?: string;
   feeds?: FeedNav[];
+  feedContext?: FeedContext;
 }
 
 export function renderPageShell(opts: PageShellOptions): string {
-  const { title, activePage, content, extraHead, extraStyles, feeds } = opts;
+  const { title, activePage, content, description, extraHead, extraStyles, feeds, feedContext } = opts;
 
   function navItem(label: string, href: string, page: string): string {
     const isActive = activePage === page;
     const activeClass = isActive ? ' nav-active' : '';
-    return `<a href="${href}" class="nav-item${activeClass}">${escapeHtml(label)}</a>`;
+    const activeAttrs = isActive ? ' aria-current="page"' : '';
+    return `<a href="${href}" class="nav-item${activeClass}"${activeAttrs}>${escapeHtml(label)}</a>`;
   }
 
-  // Build feeds section — server-rendered if feeds array provided, JS fallback otherwise
   function feedsSection(): string {
     const feedLinks = (feeds || []).map(f => {
-      const isActive = activePage === `feed:${f.key}`;
+      const isActive = activePage === `feed:${f.key}` || activePage.startsWith(`feed:${f.key}:`);
       const activeClass = isActive ? ' nav-active' : '';
-      return `<a href="/feeds/${encodeURIComponent(f.key)}" class="nav-item nav-feed${activeClass}">${escapeHtml(f.displayName)}</a>`;
+      const activeAttrs = isActive ? ' aria-current="page"' : '';
+      return `<a href="/feeds/${encodeURIComponent(f.key)}" class="nav-item nav-feed${activeClass}"${activeAttrs}>${escapeHtml(f.displayName)}</a>`;
     }).join('\n        ');
 
     return `
         <div class="nav-section-label">Feeds</div>
         <div id="feeds-nav">
           ${feedLinks || '<span class="nav-loading">Loading...</span>'}
-        </div>
-        <a href="/feeds/new" class="nav-item nav-add-feed">+ Add Feed</a>`;
+        </div>`;
+  }
+
+  function feedTabs(): string {
+    if (!feedContext) return '';
+
+    const base = `/feeds/${encodeURIComponent(feedContext.key)}`;
+    const tabs = [
+      { label: 'Overview', href: base, tab: 'overview' },
+      { label: 'Prompts', href: `${base}/prompts`, tab: 'prompts' },
+      { label: 'Distribution', href: `${base}/distribution`, tab: 'distribution' },
+    ];
+
+    const items = tabs.map(tab => {
+      const isActive = tab.tab === feedContext.activeTab;
+      return `<a href="${tab.href}" class="feed-tab${isActive ? ' active' : ''}"${isActive ? ' aria-current="page"' : ''}>${escapeHtml(tab.label)}</a>`;
+    }).join('');
+
+    return `<nav class="feed-tabs" aria-label="Feed sections">${items}</nav>`;
   }
 
   return `
@@ -374,6 +400,7 @@ export function renderPageShell(opts: PageShellOptions): string {
       padding: 0;
       min-height: 100vh;
       overflow: hidden;
+      overflow-x: hidden;
     }
     body::before {
       content: '';
@@ -403,7 +430,7 @@ export function renderPageShell(opts: PageShellOptions): string {
       z-index: 1;
     }
     .sidebar {
-      width: 220px;
+      width: 236px;
       flex-shrink: 0;
       background: var(--bg-card);
       border-right: 1px solid var(--border);
@@ -460,14 +487,6 @@ export function renderPageShell(opts: PageShellOptions): string {
       padding-left: 28px;
       font-size: 13px;
     }
-    .nav-add-feed {
-      padding-left: 28px;
-      font-size: 13px;
-      color: var(--text-muted) !important;
-    }
-    .nav-add-feed:hover {
-      color: var(--accent) !important;
-    }
     .nav-loading {
       display: block;
       padding: 8px 28px;
@@ -509,11 +528,61 @@ export function renderPageShell(opts: PageShellOptions): string {
       max-width: 960px;
       margin: 0 auto;
     }
-    .page-title {
-      font-size: 22px;
-      font-weight: 700;
+    .page-header {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
       margin: 0 0 24px;
+    }
+    .page-overline {
+      font-size: 11px;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-family: var(--font-mono);
+      font-weight: 600;
+    }
+    .page-title {
+      font-size: 24px;
+      font-weight: 700;
+      margin: 0;
       color: var(--text);
+      text-wrap: balance;
+    }
+    .page-description {
+      margin: 0;
+      max-width: 760px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+    .feed-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 4px;
+    }
+    .feed-tab {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8px 14px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 600;
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
+    }
+    .feed-tab:hover {
+      color: var(--text);
+      border-color: var(--accent);
+      background: rgba(212,160,23,0.05);
+    }
+    .feed-tab.active {
+      color: var(--accent);
+      border-color: var(--accent);
+      background: rgba(212,160,23,0.08);
     }
 
     /* Mobile hamburger */
@@ -554,6 +623,14 @@ export function renderPageShell(opts: PageShellOptions): string {
       .sidebar.open { left: 0; }
       .sidebar-overlay.open { display: block; }
       .main-content { padding: 56px 16px 24px; }
+      .feed-tabs {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        padding-bottom: 4px;
+      }
+      .feed-tab {
+        flex: 0 0 auto;
+      }
     }
     ${extraStyles || ''}
   </style>
@@ -569,12 +646,12 @@ export function renderPageShell(opts: PageShellOptions): string {
         <h1>&#x1F4E1; <span class="logo-wire">Wire</span> <span class="logo-ops">Ops</span></h1>
       </div>
       <div class="sidebar-nav">
+        <div class="nav-section-label">Work</div>
         ${navItem('Queue', '/queue', 'queue')}
-        ${navItem('Distribution', '/distribution', 'distribution')}
         ${feedsSection()}
-        ${navItem('Prompts', '/prompts', 'prompts')}
         <div class="nav-spacer"></div>
-        ${navItem('Schedules', '/schedules', 'schedules')}
+        <div class="nav-section-label">Setup</div>
+        ${navItem('Setup', '/schedules', 'setup')}
       </div>
       <div class="sidebar-footer">
         <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">&#9789;</button>
@@ -583,7 +660,12 @@ export function renderPageShell(opts: PageShellOptions): string {
     </nav>
     <main class="main-content" id="main-content">
       <div class="main-inner">
-        <h1 class="page-title">${escapeHtml(title)}</h1>
+        <header class="page-header">
+          ${feedContext ? `<div class="page-overline">Feed Workspace</div>` : ''}
+          <h1 class="page-title">${escapeHtml(title)}</h1>
+          ${description ? `<p class="page-description">${escapeHtml(description)}</p>` : ''}
+          ${feedTabs()}
+        </header>
         ${content}
       </div>
     </main>
@@ -636,8 +718,9 @@ export function renderPageShell(opts: PageShellOptions): string {
         fetch('/api/feeds').then(function(r) { return r.json(); }).then(function(feeds) {
           var activePage = ${JSON.stringify(activePage)};
           feedsNav.innerHTML = feeds.map(function(f) {
-            var isActive = activePage === 'feed:' + f.key;
-            return '<a href="/feeds/' + encodeURIComponent(f.key) + '" class="nav-item nav-feed' + (isActive ? ' nav-active' : '') + '">' + escapeHtml(f.display_name || '') + '</a>';
+            var isActive = activePage === 'feed:' + f.key || activePage.indexOf('feed:' + f.key + ':') === 0;
+            var label = f.displayName || f.display_name || f.key;
+            return '<a href="/feeds/' + encodeURIComponent(f.key) + '" class="nav-item nav-feed' + (isActive ? ' nav-active' : '') + '"' + (isActive ? ' aria-current="page"' : '') + '>' + escapeHtml(label) + '</a>';
           }).join('');
         }).catch(function() {
           feedsNav.innerHTML = '<span class="nav-loading">Failed to load</span>';

@@ -2,6 +2,8 @@ import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config';
 import { DatabaseEntry } from '../types';
 import { scrapeUrl, isScrapableUrl, truncateContent } from './scraper';
+import type { RawScanResult, ToolType } from '../types/intake';
+import { getAnthropicModels } from './models';
 
 // Prompt when we have scraped content
 const SCRAPED_CONTENT_PROMPT = `Summarize this web page for The Wire Room newsletter.
@@ -71,7 +73,207 @@ function getClient(): Anthropic {
 }
 
 // Default model if none specified
-const DEFAULT_ANTHROPIC_MODEL = 'claude-opus-4-5-20251101';
+const DEFAULT_ANTHROPIC_MODEL = 'claude-opus-4-1-20250805';
+const PROMPT_REVIEW_MODEL_CANDIDATES = [
+  'claude-opus-4-1-20250805',
+  'claude-opus-4-1',
+  'claude-opus-4-20250514',
+  'claude-opus-4',
+  'claude-sonnet-4-20250514',
+  'claude-sonnet-4',
+  'claude-opus-4-5-20251101',
+];
+
+export interface PromptReviewResult {
+  model: string;
+  summary: string;
+  overallScore: number;
+  strengths: string[];
+  risks: string[];
+  suggestions: string[];
+  revisedPromptText: string;
+  revisedResponseFormat: string | null;
+  expectedImprovements: string[];
+}
+
+function extractTextContent(message: Anthropic.Messages.Message): string {
+  return message.content
+    .filter((block): block is Anthropic.TextBlock => block.type === 'text')
+    .map(block => block.text)
+    .join('\n')
+    .trim();
+}
+
+function extractJsonObject(text: string): Record<string, unknown> | null {
+  const trimmed = text.trim();
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fenced ? fenced[1].trim() : trimmed;
+  const start = candidate.indexOf('{');
+  const end = candidate.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) return null;
+
+  try {
+    return JSON.parse(candidate.slice(start, end + 1)) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map(item => typeof item === 'string' ? item.trim() : '')
+    .filter(Boolean);
+}
+
+function normalizeReviewResult(raw: Record<string, unknown>, model: string): PromptReviewResult {
+  return {
+    model,
+    summary: typeof raw.summary === 'string' && raw.summary.trim()
+      ? raw.summary.trim()
+      : 'Claude did not provide a summary.',
+    overallScore: Math.max(0, Math.min(100, Number(raw.overallScore) || 0)),
+    strengths: normalizeStringList(raw.strengths),
+    risks: normalizeStringList(raw.risks),
+    suggestions: normalizeStringList(raw.suggestions),
+    revisedPromptText: typeof raw.revisedPromptText === 'string' ? raw.revisedPromptText.trim() : '',
+    revisedResponseFormat: typeof raw.revisedResponseFormat === 'string'
+      ? (raw.revisedResponseFormat.trim() || null)
+      : null,
+    expectedImprovements: normalizeStringList(raw.expectedImprovements),
+  };
+}
+
+async function resolvePreferredAnthropicModel(explicitModel?: string): Promise<string[]> {
+  const ordered = explicitModel
+    ? [explicitModel, ...PROMPT_REVIEW_MODEL_CANDIDATES.filter(model => model !== explicitModel)]
+    : [...PROMPT_REVIEW_MODEL_CANDIDATES];
+
+  try {
+    const available = await getAnthropicModels();
+    if (!available.length) return ordered;
+
+    const availableIds = available.map(model => model.id);
+    const preferredAvailable = ordered.filter(model => availableIds.includes(model));
+    const fallbackAvailable = availableIds.filter(model => !preferredAvailable.includes(model));
+    return [...preferredAvailable, ...fallbackAvailable];
+  } catch {
+    return ordered;
+  }
+}
+
+async function createMessageWithFallback(
+  content: string,
+  options?: { model?: string; maxTokens?: number }
+): Promise<{ model: string; text: string }> {
+  const anthropic = getClient();
+  const candidateModels = await resolvePreferredAnthropicModel(options?.model);
+  const maxTokens = options?.maxTokens || 1200;
+  let lastError: unknown;
+
+  for (const model of candidateModels) {
+    try {
+      const message = await anthropic.messages.create({
+        model,
+        max_tokens: maxTokens,
+        messages: [{ role: 'user', content }],
+      });
+
+      const text = extractTextContent(message);
+      if (!text) {
+        throw new Error('Anthropic API returned no text content');
+      }
+
+      return { model: message.model || model, text };
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (
+        message.includes('model') ||
+        message.includes('not found') ||
+        message.includes('invalid_request_error')
+      ) {
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('Anthropic API call failed');
+}
+
+function buildPromptReviewRequest(params: {
+  wire?: string;
+  label?: string;
+  toolType: ToolType;
+  promptText: string;
+  responseFormat?: string | null;
+  testOutput?: string | null;
+  parsedResults?: RawScanResult[];
+}): string {
+  const parsedPreview = (params.parsedResults || [])
+    .slice(0, 8)
+    .map((result, index) => ({
+      index: index + 1,
+      name: result.name,
+      amount: result.amount,
+      deadline: result.deadline,
+      sourceUrl: result.sourceUrl,
+      description: result.description,
+    }));
+
+  return `You are reviewing a Wire Room scan prompt used to discover high-signal funding opportunities.
+
+Your job:
+1. Evaluate whether the prompt is likely to return actionable, current, high-quality opportunities.
+2. Evaluate whether the output is easy to parse into structured entries with fields like name, description, amount, deadline, and source URL.
+3. If test output is provided, judge the actual yield, not just the prompt wording.
+4. Recommend a sharper version of the prompt and response format.
+
+Evaluation criteria:
+- High signal over noise
+- Actionable opportunities over general news
+- Strong inclusion and exclusion guidance
+- Good fit for the selected tool
+- Parseable, structured output
+- Avoid duplicate-prone vague searches
+- Avoid under-specified prompts that miss deadlines, amounts, or application details
+
+Selected feed: ${params.wire || 'unknown'}
+Prompt label: ${params.label || 'Untitled'}
+Tool type: ${params.toolType}
+
+Current prompt text:
+${params.promptText}
+
+Current response format:
+${params.responseFormat || '(none)'}
+
+Latest test output:
+${params.testOutput || '(no test output supplied)'}
+
+Parsed results preview:
+${parsedPreview.length ? JSON.stringify(parsedPreview, null, 2) : '[]'}
+
+Return strict JSON with exactly these keys:
+{
+  "summary": "one short paragraph",
+  "overallScore": 0,
+  "strengths": ["..."],
+  "risks": ["..."],
+  "suggestions": ["..."],
+  "revisedPromptText": "full improved prompt text",
+  "revisedResponseFormat": "full improved response format or empty string if not needed",
+  "expectedImprovements": ["..."]
+}
+
+Rules:
+- Keep overallScore between 0 and 100.
+- revisedPromptText must be production-ready, not commentary.
+- Suggestions must be concrete and specific to this prompt.
+- If the current response format is good, you may keep it with minor edits.
+- Do not wrap the JSON in markdown fences.`;
+}
 
 export async function summarizeWithOpus(entry: DatabaseEntry, model?: string): Promise<string> {
   let prompt: string;
@@ -103,26 +305,12 @@ export async function summarizeWithOpus(entry: DatabaseEntry, model?: string): P
       .replace('{existing_summary}', entry.quick_summary);
   }
 
-  const anthropic = getClient();
-
-  const message = await anthropic.messages.create({
+  const { text } = await createMessageWithFallback(prompt, {
     model: model || DEFAULT_ANTHROPIC_MODEL,
-    max_tokens: 500,
-    messages: [
-      {
-        role: 'user',
-        content: prompt,
-      },
-    ],
+    maxTokens: 500,
   });
 
-  const textContent = message.content.find(block => block.type === 'text');
-
-  if (!textContent || textContent.type !== 'text') {
-    throw new Error('Anthropic API returned no text content');
-  }
-
-  let result = textContent.text.trim();
+  let result = text;
 
   // Add a note if we couldn't scrape the content
   if (!scrapedSuccessfully) {
@@ -130,4 +318,28 @@ export async function summarizeWithOpus(entry: DatabaseEntry, model?: string): P
   }
 
   return result;
+}
+
+export async function reviewScanPrompt(params: {
+  wire?: string;
+  label?: string;
+  toolType: ToolType;
+  promptText: string;
+  responseFormat?: string | null;
+  testOutput?: string | null;
+  parsedResults?: RawScanResult[];
+  model?: string;
+}): Promise<PromptReviewResult> {
+  const request = buildPromptReviewRequest(params);
+  const { model, text } = await createMessageWithFallback(request, {
+    model: params.model,
+    maxTokens: 1800,
+  });
+
+  const parsed = extractJsonObject(text);
+  if (!parsed) {
+    throw new Error('Claude review returned an invalid response');
+  }
+
+  return normalizeReviewResult(parsed, model);
 }

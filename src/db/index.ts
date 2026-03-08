@@ -401,14 +401,35 @@ export interface WireInfo {
   entryCount: number;
 }
 
+function isMissingRelationError(error: unknown, relation: string): boolean {
+  const message = error instanceof Error
+    ? error.message
+    : typeof error === 'object' && error && 'data' in error
+      ? String((error as { data?: { error?: string } }).data?.error || '')
+      : '';
+
+  return (error as { code?: string } | null)?.code === '42P01'
+    || message.includes(`relation "${relation}" does not exist`);
+}
+
 export async function getEntryCountsByWire(): Promise<Record<string, number>> {
   const pool = getPool();
-  const result = await pool.query(`
-    SELECT s.wire, COUNT(DISTINCT s.id) as entry_count
-    FROM summaries s
-    WHERE s.processing_status = 'SUCCESS' AND s.wire IS NOT NULL
-    GROUP BY s.wire
-  `);
+  let result;
+
+  try {
+    result = await pool.query(`
+      SELECT s.wire, COUNT(DISTINCT s.id) as entry_count
+      FROM summaries s
+      WHERE s.processing_status = 'SUCCESS' AND s.wire IS NOT NULL
+      GROUP BY s.wire
+    `);
+  } catch (error) {
+    if (isMissingRelationError(error, 'summaries')) {
+      return {};
+    }
+    throw error;
+  }
+
   const counts: Record<string, number> = {};
   for (const row of result.rows) {
     counts[row.wire] = parseInt(row.entry_count, 10) || 0;
@@ -565,7 +586,7 @@ export async function createFeed(params: { key: string; displayName: string; tit
   return parseFeedRow(result.rows[0]);
 }
 
-export async function updateFeed(key: string, updates: { displayName?: string; titleTemplate?: string; sortOrder?: number }): Promise<FeedRecord | null> {
+export async function updateFeed(key: string, updates: { displayName?: string; titleTemplate?: string; sortOrder?: number; archived?: boolean }): Promise<FeedRecord | null> {
   const pool = getPool();
 
   const setClauses: string[] = [];
@@ -575,6 +596,7 @@ export async function updateFeed(key: string, updates: { displayName?: string; t
   if (updates.displayName !== undefined) { setClauses.push(`display_name = $${paramIndex++}`); values.push(updates.displayName); }
   if (updates.titleTemplate !== undefined) { setClauses.push(`title_template = $${paramIndex++}`); values.push(updates.titleTemplate || null); }
   if (updates.sortOrder !== undefined) { setClauses.push(`sort_order = $${paramIndex++}`); values.push(updates.sortOrder); }
+  if (updates.archived !== undefined) { setClauses.push(`archived = $${paramIndex++}`); values.push(updates.archived); }
 
   if (setClauses.length === 0) return getFeedByKey(key);
 
@@ -1347,6 +1369,33 @@ export async function getDistributionStatusBulk(
     if (!statusMap[row.entry_id]) statusMap[row.entry_id] = {};
     statusMap[row.entry_id][row.channel] = row.status;
   }
+  return statusMap;
+}
+
+export async function getDistributionStatusForEntries(
+  entryIds: number[]
+): Promise<Record<number, Record<string, DistributionStatus>>> {
+  if (entryIds.length === 0) {
+    return {};
+  }
+
+  const pool = getPool();
+  const result = await pool.query(`
+    SELECT DISTINCT ON (entry_id, channel)
+      entry_id, channel, status
+    FROM distribution_logs
+    WHERE entry_id = ANY($1)
+    ORDER BY entry_id, channel, created_at DESC
+  `, [entryIds]);
+
+  const statusMap: Record<number, Record<string, DistributionStatus>> = {};
+  for (const row of result.rows) {
+    if (!statusMap[row.entry_id]) {
+      statusMap[row.entry_id] = {};
+    }
+    statusMap[row.entry_id][row.channel] = row.status;
+  }
+
   return statusMap;
 }
 

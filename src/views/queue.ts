@@ -2,198 +2,542 @@ import { escapeHtml } from '../utils/html';
 import { renderPageShell, FeedNav, CLIENT_ESCAPE_HTML } from './shared';
 
 export function renderQueuePage(feeds?: FeedNav[]): string {
+  const feedOptions = (feeds || []).map(feed =>
+    `<option value="${escapeHtml(feed.key)}">${escapeHtml(feed.displayName)}</option>`
+  ).join('');
+
   const extraStyles = `
-    .status-grid {
-      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-    }
-    .status-item { text-align: center; }
-    .status-item .value { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; font-family: var(--font-mono); font-feature-settings: 'tnum'; }
-    .queue-tab-bar {
-      display: flex;
-      gap: 0;
-      border-bottom: 2px solid var(--border);
-      margin-bottom: 16px;
-    }
-    .queue-tab-bar button {
-      background: none;
-      border: none;
-      border-bottom: 2px solid transparent;
-      margin-bottom: -2px;
-      padding: 10px 16px;
-      color: var(--text-secondary);
-      font-size: 14px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: color 0.2s, border-color 0.2s;
-      font-family: var(--font-sans);
-    }
-    .queue-tab-bar button:hover { color: var(--text-secondary); }
-    .queue-tab-bar button:focus-visible {
-      outline: 2px solid var(--accent);
-      outline-offset: 2px;
-    }
-    .queue-tab-bar button.active { color: var(--accent); border-bottom-color: var(--accent); }
-    details summary { cursor: pointer; color: var(--text-secondary); font-size: 14px; }
-    details summary:hover { color: var(--accent); }
-    details[open] summary { color: var(--accent); }
-    .entry-grid {
+    .queue-summary {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
       gap: 12px;
     }
-    @media (max-width: 768px) {
-      .entry-grid { grid-template-columns: 1fr; }
-    }
-    .entry-card {
+    .summary-card {
       background: var(--bg);
       border: 1px solid var(--border);
       border-radius: var(--radius-lg);
-      padding: 16px;
+      padding: 14px 16px;
+    }
+    .summary-card .label {
+      font-size: 10px;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-family: var(--font-mono);
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+    .summary-card .value {
+      font-size: 24px;
+      font-weight: 700;
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+    }
+    .summary-card .value.pending { color: var(--accent); }
+    .summary-card .value.approved { color: var(--success); }
+    .summary-card .value.declined { color: var(--error); }
+    .summary-card .value.muted { color: var(--text-secondary); }
+    .filter-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr)) auto auto;
+      gap: 12px;
+      align-items: end;
+      margin-bottom: 16px;
+    }
+    .filter-grid .form-group {
+      min-width: 0;
+    }
+    .status-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .status-tab {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--bg);
+      color: var(--text-secondary);
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      transition: border-color 0.15s, color 0.15s, background 0.15s;
+      touch-action: manipulation;
+    }
+    .status-tab:hover {
+      border-color: var(--accent);
+      color: var(--text);
+    }
+    .status-tab.active {
+      border-color: var(--accent);
+      background: rgba(212,160,23,0.08);
+      color: var(--accent);
+    }
+    .status-tab .count {
+      min-width: 18px;
+      text-align: center;
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+    }
+    .workspace-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
+      gap: 20px;
+      align-items: start;
+    }
+    .results-panel,
+    .detail-panel {
+      margin-bottom: 0;
+    }
+    .results-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    .results-header h2,
+    .detail-title {
+      margin: 0 0 6px;
+    }
+    .pagination-controls {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .pagination-label {
+      color: var(--text-secondary);
+      font-size: 12px;
+      font-family: var(--font-mono);
+    }
+    .entry-list {
       display: flex;
       flex-direction: column;
-      gap: 8px;
-      min-width: 0;
-      overflow: hidden;
-      transition: border-color 0.15s;
+      gap: 10px;
     }
-    .entry-card:hover { border-color: var(--accent); opacity: 0.95; }
-    .entry-card .entry-header {
+    .entry-row {
+      width: 100%;
+      text-align: left;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      border-radius: var(--radius-lg);
+      padding: 14px 16px;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+      touch-action: manipulation;
+    }
+    .entry-row:hover {
+      border-color: var(--accent);
+      background: rgba(212,160,23,0.03);
+    }
+    .entry-row.active {
+      border-color: var(--accent);
+      background: rgba(212,160,23,0.06);
+    }
+    .entry-row-header {
       display: flex;
       justify-content: space-between;
       align-items: flex-start;
-      gap: 8px;
+      gap: 12px;
+      margin-bottom: 8px;
     }
-    .entry-card .entry-name {
-      font-size: 13px;
+    .entry-row-name {
+      font-size: 14px;
       font-weight: 600;
-      color: var(--text);
-      line-height: 1.35;
-      display: -webkit-box;
-      -webkit-line-clamp: 2;
-      -webkit-box-orient: vertical;
-      overflow: hidden;
-      flex: 1;
+      line-height: 1.4;
+      min-width: 0;
+      overflow-wrap: anywhere;
     }
-    .entry-card .entry-score {
+    .entry-row-score {
+      flex: 0 0 auto;
+      font-family: var(--font-mono);
       font-size: 14px;
       font-weight: 700;
-      font-family: var(--font-mono);
-      flex-shrink: 0;
     }
-    .entry-card .entry-desc {
-      font-size: 12px;
+    .entry-row-desc {
       color: var(--text-secondary);
-      line-height: 1.4;
+      font-size: 12px;
+      line-height: 1.5;
+      margin: 0 0 10px;
+      overflow-wrap: anywhere;
       display: -webkit-box;
-      -webkit-line-clamp: 2;
+      -webkit-line-clamp: 3;
       -webkit-box-orient: vertical;
       overflow: hidden;
     }
-    .entry-card .entry-meta {
+    .entry-meta,
+    .detail-badges {
       display: flex;
       flex-wrap: wrap;
       gap: 6px;
       align-items: center;
     }
-    .entry-card .meta-tag {
-      padding: 2px 8px;
-      border-radius: 4px;
-      font-size: 11px;
-      font-weight: 500;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      max-width: 160px;
-    }
-    .entry-card .entry-actions {
-      display: flex;
-      gap: 6px;
-      margin-top: auto;
-      padding-top: 4px;
-    }
-    .entry-card .entry-actions button {
-      flex: 1;
-      padding: 6px 0;
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 8px;
+      border-radius: 999px;
       font-size: 11px;
       font-weight: 600;
-      transition: opacity 0.15s;
+      background: var(--bg-card);
+      color: var(--text-secondary);
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
-    .entry-card .entry-actions button:hover { opacity: 0.85; }
-    .entry-card .entry-actions button:disabled { opacity: 0.4; cursor: not-allowed; }
-    .dist-pills {
+    .pill.amount {
+      background: var(--badge-amount-bg);
+      color: var(--success);
+    }
+    .pill.status-approved {
+      background: rgba(74, 222, 128, 0.15);
+      color: var(--success);
+    }
+    .pill.status-declined {
+      background: rgba(239, 68, 68, 0.15);
+      color: var(--error);
+    }
+    .pill.status-skipped,
+    .pill.status-duplicate {
+      background: rgba(122, 138, 154, 0.15);
+      color: var(--text-secondary);
+    }
+    .pill.status-queued {
+      background: rgba(212,160,23,0.12);
+      color: var(--accent);
+    }
+    .detail-shell {
+      position: relative;
+    }
+    .detail-backdrop {
+      display: none;
+    }
+    .detail-panel {
+      position: sticky;
+      top: 0;
+      min-height: 420px;
+      max-height: calc(100vh - 96px);
+      overflow: auto;
+    }
+    .detail-panel.empty {
       display: flex;
-      gap: 4px;
       align-items: center;
+      justify-content: center;
+      color: var(--text-muted);
+      text-align: center;
     }
-    .dist-pill {
-      padding: 2px 6px;
-      border-radius: 4px;
-      font-size: 10px;
-      font-weight: 700;
+    .detail-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: flex-start;
+      margin-bottom: 12px;
+    }
+    .detail-description {
+      margin: 0 0 16px;
+      color: var(--text-secondary);
+      line-height: 1.6;
+      overflow-wrap: anywhere;
+    }
+    .detail-section {
+      padding-top: 16px;
+      margin-top: 16px;
+      border-top: 1px solid var(--border);
+    }
+    .detail-section h3 {
+      margin: 0 0 12px;
+      font-size: 11px;
+      font-family: var(--font-mono);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-secondary);
+    }
+    .detail-meta {
+      display: grid;
+      gap: 10px;
+    }
+    .detail-meta-row {
+      display: grid;
+      grid-template-columns: 110px minmax(0, 1fr);
+      gap: 12px;
+      align-items: start;
+    }
+    .detail-meta-row .meta-label {
+      color: var(--text-secondary);
+      font-size: 12px;
       font-family: var(--font-mono);
     }
-    .dist-pill.success { background: rgba(74,222,128,0.15); color: var(--success); }
-    .dist-pill.failed { background: rgba(239,68,68,0.15); color: var(--error); cursor: pointer; }
-    .dist-pill.none { background: rgba(122,138,154,0.1); color: var(--text-muted); }
-    .main-inner { max-width: 1100px; }
+    .detail-meta-row .meta-value {
+      color: var(--text);
+      font-size: 13px;
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+    .detail-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .detail-secondary-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+    .detail-close {
+      display: none;
+      background: var(--border);
+      border: none;
+      border-radius: 999px;
+      width: 32px;
+      height: 32px;
+      color: var(--text-secondary);
+      cursor: pointer;
+      font-size: 18px;
+      line-height: 1;
+    }
+    .detail-empty-title {
+      font-size: 16px;
+      margin: 0 0 8px;
+      color: var(--text);
+    }
+    .queue-feedback {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      z-index: 1600;
+      pointer-events: none;
+    }
+    .toast {
+      min-width: 260px;
+      max-width: 360px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 12px 14px;
+      box-shadow: 0 14px 30px rgba(0, 0, 0, 0.25);
+      pointer-events: auto;
+    }
+    .toast.success {
+      border-color: rgba(74, 222, 128, 0.4);
+    }
+    .toast.error {
+      border-color: rgba(239, 68, 68, 0.4);
+    }
+    .toast-title {
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .toast-body {
+      color: var(--text-secondary);
+      font-size: 12px;
+      line-height: 1.5;
+      margin-bottom: 10px;
+    }
+    .toast-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .toast-action {
+      background: var(--border);
+      border: none;
+      color: var(--text);
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    .diagnostics-card {
+      margin-top: 24px;
+    }
+    .diagnostics-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    .diagnostics-header h2 {
+      margin: 0 0 6px;
+    }
+    .diagnostics-body[hidden] {
+      display: none;
+    }
+    .diagnostics-summary {
+      margin: 0 0 12px;
+      color: var(--text-secondary);
+      font-size: 13px;
+    }
+    .table-scroll {
+      overflow-x: auto;
+    }
+    .queue-empty {
+      padding: 32px 0;
+      color: var(--text-muted);
+      text-align: center;
+    }
+    @media (max-width: 1100px) {
+      .filter-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr)) auto auto;
+      }
+    }
+    @media (max-width: 960px) {
+      .workspace-grid {
+        grid-template-columns: 1fr;
+      }
+      .detail-backdrop.mobile-open {
+        display: block;
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.45);
+        z-index: 1000;
+      }
+      .detail-panel {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        top: auto;
+        max-height: 82vh;
+        min-height: 260px;
+        border-radius: 16px 16px 0 0;
+        transform: translateY(105%);
+        transition: transform 0.2s ease;
+        z-index: 1001;
+      }
+      .detail-panel.mobile-open {
+        transform: translateY(0);
+      }
+      .detail-close {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+    }
+    @media (max-width: 720px) {
+      .filter-grid {
+        grid-template-columns: 1fr;
+      }
+      .results-header,
+      .diagnostics-header {
+        flex-direction: column;
+      }
+      .detail-meta-row {
+        grid-template-columns: 1fr;
+        gap: 4px;
+      }
+      .queue-feedback {
+        left: 16px;
+        right: 16px;
+      }
+      .toast {
+        min-width: 0;
+        max-width: none;
+      }
+    }
+    .main-inner { max-width: 1200px; }
   `;
 
   const content = `
+    <div id="queue-feedback" class="queue-feedback" aria-live="polite" aria-atomic="true"></div>
+
     <div class="card">
-      <h2>Scan Queue</h2>
-      <p class="form-description" style="margin-bottom: 16px;"><strong>Approve</strong> = queue for newsletter. <strong>Review Later</strong> = come back to this. <strong>Decline</strong> = not relevant.</p>
+      <div style="margin-bottom: 16px;">
+        <h2 style="margin: 0 0 8px;">Review Workspace</h2>
+        <p class="form-description">Triage entries quickly, keep your current view shareable, and move diagnostics out of the critical review path.</p>
+      </div>
+      <div id="queue-summary" class="queue-summary">
+        <p class="form-description">Loading summary…</p>
+      </div>
+    </div>
 
-      <div id="stat-tiles" class="status-grid" style="margin-bottom: 16px;"></div>
-
-      <div class="form-row" style="margin-bottom: 16px;">
+    <div class="card">
+      <div class="filter-grid">
         <div class="form-group">
-          <label for="queueWire">Feed Filter</label>
-          <select id="queueWire">
+          <label for="queueWire">Feed</label>
+          <select id="queueWire" name="wire" autocomplete="off">
             <option value="">All Feeds</option>
+            ${feedOptions}
           </select>
         </div>
         <div class="form-group">
           <label for="queuePrompt">Prompt</label>
-          <select id="queuePrompt">
+          <select id="queuePrompt" name="promptId" autocomplete="off">
             <option value="">All Prompts</option>
           </select>
         </div>
         <div class="form-group">
           <label for="queueDate">Date</label>
-          <select id="queueDate">
-            <option value="">All Time</option>
-          </select>
+          <input type="date" id="queueDate" name="date" autocomplete="off">
         </div>
-        <button type="button" id="load-queue" class="button secondary">Refresh</button>
+        <button type="button" id="reset-filters" class="button secondary">Reset</button>
+        <button type="button" id="copy-view-link" class="button secondary">Copy View Link</button>
       </div>
 
-      <div class="queue-tab-bar" id="tab-bar">
-        <button class="active" data-tab="queued">Pending Review <span id="tab-count-queued"></span></button>
-        <button data-tab="approved">Approved <span id="tab-count-approved"></span></button>
-        <button data-tab="declined">Declined <span id="tab-count-declined"></span></button>
-        <button data-tab="duplicate">Duplicates <span id="tab-count-duplicate"></span></button>
-        <button data-tab="skipped">Review Later <span id="tab-count-skipped"></span></button>
+      <div class="status-tabs" id="queue-tabs" role="tablist" aria-label="Queue status views">
+        <button type="button" class="status-tab" data-status="queued" aria-pressed="false">Pending Review <span class="count" id="tab-count-queued">0</span></button>
+        <button type="button" class="status-tab" data-status="approved" aria-pressed="false">Approved <span class="count" id="tab-count-approved">0</span></button>
+        <button type="button" class="status-tab" data-status="declined" aria-pressed="false">Declined <span class="count" id="tab-count-declined">0</span></button>
+        <button type="button" class="status-tab" data-status="duplicate" aria-pressed="false">Duplicates <span class="count" id="tab-count-duplicate">0</span></button>
+        <button type="button" class="status-tab" data-status="skipped" aria-pressed="false">Review Later <span class="count" id="tab-count-skipped">0</span></button>
       </div>
+    </div>
 
-      <div id="queue-results">
-        <p style="color: var(--text-muted);">Loading\u2026</p>
-      </div>
-
-      <details id="seeded-urls-details" style="margin-top: 24px;">
-        <summary id="seeded-urls-summary">Seeded URLs (loading\u2026)</summary>
-        <div id="seeded-urls-content" style="margin-top: 12px;">
-          <p style="color: var(--text-muted);">Click to load\u2026</p>
+    <div class="workspace-grid">
+      <div class="card results-panel">
+        <div class="results-header">
+          <div>
+            <h2 style="margin: 0 0 6px;">Queue Items</h2>
+            <p id="queue-results-caption" class="form-description">Loading entries…</p>
+          </div>
+          <div class="pagination-controls">
+            <button type="button" id="prev-page" class="button secondary">Previous</button>
+            <span id="page-label" class="pagination-label">Page 1</span>
+            <button type="button" id="next-page" class="button secondary">Next</button>
+          </div>
         </div>
-      </details>
+        <div id="queue-list" class="entry-list" aria-live="polite"></div>
+      </div>
+
+      <div class="detail-shell">
+        <div class="detail-backdrop" id="detail-backdrop"></div>
+        <aside id="queue-detail" class="card detail-panel empty" aria-live="polite"></aside>
+      </div>
+    </div>
+
+    <div class="card diagnostics-card">
+      <div class="diagnostics-header">
+        <div>
+          <h2>Diagnostics</h2>
+          <p class="form-description">Seeded URLs from existing wire content live here so review stays focused on decision-making.</p>
+        </div>
+        <button type="button" id="toggle-diagnostics" class="button secondary">Show Seeded URLs</button>
+      </div>
+      <div id="diagnostics-body" class="diagnostics-body" hidden>
+        <p id="seeded-urls-summary" class="diagnostics-summary">Loading diagnostics…</p>
+        <div id="seeded-urls-content"></div>
+      </div>
     </div>
   `;
 
   const pageHtml = renderPageShell({
-    title: 'Daily Queue',
+    title: 'Queue',
     activePage: 'queue',
+    description: 'Review pending opportunities, maintain a stable workflow, and share the exact state of your queue via URL.',
     content,
     extraStyles,
     feeds,
@@ -203,21 +547,120 @@ export function renderQueuePage(feeds?: FeedNav[]): string {
   <script>
 ${CLIENT_ESCAPE_HTML}
 
+    var TAB_CONFIG = {
+      queued: { label: 'Pending Review', statuses: 'queued,scored', empty: 'No entries are waiting for review in this view.' },
+      approved: { label: 'Approved', statuses: 'approved', empty: 'No approved entries match this view.' },
+      declined: { label: 'Declined', statuses: 'declined,archived', empty: 'No declined entries match this view.' },
+      duplicate: { label: 'Duplicates', statuses: 'duplicate', empty: 'No duplicates match this view.' },
+      skipped: { label: 'Review Later', statuses: 'skipped', empty: 'No deferred entries match this view.' }
+    };
+    var PAGE_SIZE = 25;
+    var allPrompts = [];
+    var currentEntries = [];
+    var currentTotal = 0;
+    var diagnosticsLoaded = false;
+    var diagnosticsOpen = false;
+    var mobileDetailOpen = false;
+    var queueState = readStateFromUrl();
+
     var queueWireSelect = document.getElementById('queueWire');
     var queuePromptSelect = document.getElementById('queuePrompt');
-    var queueDateSelect = document.getElementById('queueDate');
-    var queueResultsEl = document.getElementById('queue-results');
-    var loadQueueBtn = document.getElementById('load-queue');
-    var activeTab = 'queued';
-    var allPrompts = [];
-    var distStatusMap = {};
+    var queueDateInput = document.getElementById('queueDate');
+    var queueListEl = document.getElementById('queue-list');
+    var queueSummaryEl = document.getElementById('queue-summary');
+    var queueDetailEl = document.getElementById('queue-detail');
+    var queueCaptionEl = document.getElementById('queue-results-caption');
+    var prevPageBtn = document.getElementById('prev-page');
+    var nextPageBtn = document.getElementById('next-page');
+    var pageLabelEl = document.getElementById('page-label');
+    var queueTabsEl = document.getElementById('queue-tabs');
+    var feedbackEl = document.getElementById('queue-feedback');
+    var detailBackdropEl = document.getElementById('detail-backdrop');
+    var copyViewLinkBtn = document.getElementById('copy-view-link');
+    var resetFiltersBtn = document.getElementById('reset-filters');
+    var diagnosticsBodyEl = document.getElementById('diagnostics-body');
+    var toggleDiagnosticsBtn = document.getElementById('toggle-diagnostics');
+    var seededSummaryEl = document.getElementById('seeded-urls-summary');
+    var seededContentEl = document.getElementById('seeded-urls-content');
 
-    // Add "Today" option client-side using local date
-    var todayStr = new Date().toLocaleDateString('sv-SE');
-    var todayOpt = document.createElement('option');
-    todayOpt.value = todayStr;
-    todayOpt.textContent = 'Today';
-    queueDateSelect.appendChild(todayOpt);
+    function isMobileViewport() {
+      return window.matchMedia('(max-width: 960px)').matches;
+    }
+
+    function normalizeStatus(status) {
+      return TAB_CONFIG[status] ? status : 'queued';
+    }
+
+    function readStateFromUrl() {
+      var params = new URLSearchParams(window.location.search);
+      var status = normalizeStatus(params.get('status') || 'queued');
+      var page = parseInt(params.get('page') || '1', 10);
+      var entry = parseInt(params.get('entry') || '', 10);
+      var date = params.get('date') || '';
+
+      return {
+        wire: params.get('wire') || '',
+        promptId: params.get('promptId') || '',
+        date: /^\\d{4}-\\d{2}-\\d{2}$/.test(date) ? date : '',
+        status: status,
+        page: Number.isFinite(page) && page > 0 ? page : 1,
+        entry: Number.isFinite(entry) ? entry : null,
+      };
+    }
+
+    function syncStateToUrl(replace) {
+      var params = new URLSearchParams();
+      params.set('status', queueState.status);
+      params.set('page', String(queueState.page));
+      if (queueState.wire) params.set('wire', queueState.wire);
+      if (queueState.promptId) params.set('promptId', queueState.promptId);
+      if (queueState.date) params.set('date', queueState.date);
+      if (queueState.entry) params.set('entry', String(queueState.entry));
+      var nextUrl = '/queue?' + params.toString();
+      if (replace) {
+        window.history.replaceState({}, '', nextUrl);
+      } else {
+        window.history.pushState({}, '', nextUrl);
+      }
+    }
+
+    function applyStateToControls() {
+      queueWireSelect.value = queueState.wire;
+      renderPromptOptions();
+      queuePromptSelect.value = queueState.promptId;
+      queueDateInput.value = queueState.date;
+      updateTabButtons();
+    }
+
+    function updateTabButtons() {
+      queueTabsEl.querySelectorAll('[data-status]').forEach(function(button) {
+        var isActive = button.dataset.status === queueState.status;
+        button.classList.toggle('active', isActive);
+        button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+      });
+    }
+
+    function getPromptLabel(promptId) {
+      var match = allPrompts.find(function(prompt) { return prompt.id === promptId; });
+      return match ? match.label : '';
+    }
+
+    function renderPromptOptions() {
+      var filteredPrompts = queueState.wire
+        ? allPrompts.filter(function(prompt) { return prompt.wire === queueState.wire; })
+        : allPrompts;
+
+      var options = '<option value="">All Prompts</option>';
+      filteredPrompts.forEach(function(prompt) {
+        var label = queueState.wire ? prompt.label : prompt.label + ' (' + prompt.wire + ')';
+        options += '<option value="' + escapeHtml(prompt.id) + '">' + escapeHtml(label) + '</option>';
+      });
+      queuePromptSelect.innerHTML = options;
+
+      if (queueState.promptId && !filteredPrompts.some(function(prompt) { return prompt.id === queueState.promptId; })) {
+        queueState.promptId = '';
+      }
+    }
 
     function scoreColor(score) {
       if (score == null) return 'var(--text-muted)';
@@ -230,339 +673,523 @@ ${CLIENT_ESCAPE_HTML}
       var badges = {
         'x-scan': { label: 'X', bg: 'var(--badge-x-bg)', color: 'var(--badge-x-fg)' },
         'web-search': { label: 'Web', bg: 'var(--badge-web-bg)', color: 'var(--badge-web-fg)' },
-        'telegram': { label: 'TG', bg: 'var(--badge-tg-bg)', color: 'var(--badge-tg-fg)' },
-        'email': { label: 'Email', bg: 'var(--badge-email-bg)', color: 'var(--badge-email-fg)' },
-        'forum': { label: 'Forum', bg: 'var(--badge-forum-bg)', color: 'var(--badge-forum-fg)' }
+        telegram: { label: 'TG', bg: 'var(--badge-tg-bg)', color: 'var(--badge-tg-fg)' },
+        email: { label: 'Email', bg: 'var(--badge-email-bg)', color: 'var(--badge-email-fg)' },
+        forum: { label: 'Forum', bg: 'var(--badge-forum-bg)', color: 'var(--badge-forum-fg)' }
       };
-      var b = badges[scanSource] || { label: scanSource || '?', bg: 'var(--border)', color: 'var(--text-secondary)' };
-      return '<span style="background:' + b.bg + '; color:' + b.color + '; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:600;">' + escapeHtml(b.label) + '</span>';
+      var badge = badges[scanSource] || { label: scanSource || '?', bg: 'var(--border)', color: 'var(--text-secondary)' };
+      return '<span class="pill" style="background:' + badge.bg + '; color:' + badge.color + ';">' + escapeHtml(badge.label) + '</span>';
     }
 
     function promptBadge(promptId) {
       var label = getPromptLabel(promptId);
       if (!label) return '';
-      return '<span style="background:var(--badge-prompt-bg); color:var(--badge-prompt-fg); padding:2px 6px; border-radius:4px; font-size:11px; font-weight:600;" title="Prompt: ' + escapeHtml(label) + '">' + escapeHtml(label) + '</span>';
+      return '<span class="pill" style="background: var(--badge-prompt-bg); color: var(--badge-prompt-fg);">' + escapeHtml(label) + '</span>';
     }
 
-    function getPromptLabel(promptId) {
-      if (!promptId) return '';
-      for (var i = 0; i < allPrompts.length; i++) {
-        if (allPrompts[i].id === promptId) return allPrompts[i].label;
+    function statusBadge(status) {
+      var mapping = {
+        queued: 'Pending Review',
+        scored: 'Pending Review',
+        approved: 'Approved',
+        declined: 'Declined',
+        archived: 'Declined',
+        duplicate: 'Duplicate',
+        skipped: 'Review Later'
+      };
+      var normalized = status === 'archived' ? 'declined' : (status === 'scored' ? 'queued' : status);
+      return '<span class="pill status-' + escapeHtml(normalized || 'queued') + '">' + escapeHtml(mapping[status] || status || 'Unknown') + '</span>';
+    }
+
+    function renderDistributionPills(entry) {
+      var statusMap = entry.distributionStatus || {};
+      var channels = ['telegram', 'x', 'newsletter'];
+      var labels = { telegram: 'TG', x: 'X', newsletter: 'NL' };
+      return channels.map(function(channel) {
+        var status = statusMap[channel] || 'none';
+        var className = status === 'success' ? 'status-approved' : (status === 'failed' ? 'status-declined' : '');
+        var label = labels[channel] + ': ' + (status === 'none' ? '—' : status);
+        return '<span class="pill ' + className + '">' + escapeHtml(label) + '</span>';
+      }).join('');
+    }
+
+    function renderSummaryCards(counts) {
+      var queued = (counts.queued || 0) + (counts.scored || 0);
+      var approved = counts.approved || 0;
+      var declined = (counts.declined || 0) + (counts.archived || 0);
+      var duplicate = counts.duplicate || 0;
+      var skipped = counts.skipped || 0;
+
+      queueSummaryEl.innerHTML =
+        '<div class="summary-card"><div class="label">Pending</div><div class="value pending">' + queued + '</div></div>' +
+        '<div class="summary-card"><div class="label">Approved</div><div class="value approved">' + approved + '</div></div>' +
+        '<div class="summary-card"><div class="label">Declined</div><div class="value declined">' + declined + '</div></div>' +
+        '<div class="summary-card"><div class="label">Duplicates</div><div class="value muted">' + duplicate + '</div></div>' +
+        '<div class="summary-card"><div class="label">Review Later</div><div class="value muted">' + skipped + '</div></div>';
+
+      document.getElementById('tab-count-queued').textContent = String(queued);
+      document.getElementById('tab-count-approved').textContent = String(approved);
+      document.getElementById('tab-count-declined').textContent = String(declined);
+      document.getElementById('tab-count-duplicate').textContent = String(duplicate);
+      document.getElementById('tab-count-skipped').textContent = String(skipped);
+    }
+
+    function renderQueueList() {
+      if (currentEntries.length === 0) {
+        queueListEl.innerHTML = '<div class="queue-empty">' + escapeHtml(TAB_CONFIG[queueState.status].empty) + '</div>';
+        return;
       }
-      return '';
+
+      var html = currentEntries.map(function(entry) {
+        var isActive = queueState.entry === entry.id;
+        var description = (entry.description || '').trim();
+        var shortDescription = description.length > 160 ? description.substring(0, 157) + '…' : description;
+
+        return '<button type="button" class="entry-row' + (isActive ? ' active' : '') + '" data-entry-id="' + entry.id + '">' +
+          '<div class="entry-row-header">' +
+            '<div class="entry-row-name">' + escapeHtml(entry.name || 'Untitled') + '</div>' +
+            (entry.quality_score != null ? '<div class="entry-row-score" style="color:' + scoreColor(entry.quality_score) + ';">' + entry.quality_score + '</div>' : '') +
+          '</div>' +
+          (shortDescription ? '<p class="entry-row-desc">' + escapeHtml(shortDescription) + '</p>' : '') +
+          '<div class="entry-meta">' +
+            statusBadge(entry.status) +
+            (entry.amount ? '<span class="pill amount">' + escapeHtml(entry.amount) + '</span>' : '') +
+            (entry.deadline ? '<span class="pill">' + escapeHtml(entry.deadline) + '</span>' : '') +
+            '<span class="pill">' + escapeHtml(entry.wire || '') + '</span>' +
+            sourceBadge(entry.scan_source) +
+            promptBadge(entry.prompt_id) +
+            (queueState.status === 'approved' ? renderDistributionPills(entry) : '') +
+          '</div>' +
+        '</button>';
+      }).join('');
+
+      queueListEl.innerHTML = html;
+    }
+
+    function formatDate(value) {
+      if (!value) return '—';
+      var date = new Date(value);
+      if (isNaN(date.getTime())) return value;
+      return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' }).format(date);
+    }
+
+    function entryActions(entry) {
+      var actions = [];
+      if (entry.status === 'queued' || entry.status === 'scored') {
+        actions.push('<button type="button" class="button" data-queue-action="approve" data-entry-id="' + entry.id + '">Approve</button>');
+        actions.push('<button type="button" class="button secondary" data-queue-action="reviewlater" data-entry-id="' + entry.id + '">Review Later</button>');
+        actions.push('<button type="button" class="button secondary" data-queue-action="decline" data-entry-id="' + entry.id + '">Decline</button>');
+      } else if (entry.status === 'approved' || entry.status === 'skipped' || entry.status === 'declined' || entry.status === 'archived') {
+        actions.push('<button type="button" class="button secondary" data-queue-action="restore" data-entry-id="' + entry.id + '">Move Back To Queue</button>');
+      }
+      return actions.join('');
+    }
+
+    function renderDetail() {
+      var selectedEntry = currentEntries.find(function(entry) { return entry.id === queueState.entry; });
+      if (!selectedEntry) {
+        queueDetailEl.className = 'card detail-panel empty';
+        queueDetailEl.innerHTML =
+          '<div>' +
+            '<p class="detail-empty-title">Select an entry</p>' +
+            '<p class="form-description">Choose an item from the left to inspect the full description, metadata, and available actions.</p>' +
+          '</div>';
+        closeMobileDetail();
+        return;
+      }
+
+      queueDetailEl.className = 'card detail-panel' + (mobileDetailOpen ? ' mobile-open' : '');
+
+      var metaRows = [
+        { label: 'Feed', value: escapeHtml(selectedEntry.wire || '—') },
+        { label: 'Source', value: escapeHtml(selectedEntry.scan_source || '—') },
+        { label: 'Prompt', value: escapeHtml(getPromptLabel(selectedEntry.prompt_id) || '—') },
+        { label: 'Amount', value: escapeHtml(selectedEntry.amount || '—') },
+        { label: 'Deadline', value: escapeHtml(selectedEntry.deadline || '—') },
+        { label: 'Scan Date', value: escapeHtml(selectedEntry.scan_date || formatDate(selectedEntry.created_at)) },
+        { label: 'Created', value: escapeHtml(formatDate(selectedEntry.created_at)) }
+      ];
+      if (selectedEntry.duplicate_reason) {
+        metaRows.push({ label: 'Duplicate Reason', value: escapeHtml(selectedEntry.duplicate_reason) });
+      }
+
+      var metaHtml = metaRows.map(function(row) {
+        return '<div class="detail-meta-row"><div class="meta-label">' + row.label + '</div><div class="meta-value">' + row.value + '</div></div>';
+      }).join('');
+
+      var distributionSection = queueState.status === 'approved'
+        ? '<div class="detail-section"><h3>Distribution</h3><div class="detail-badges">' + renderDistributionPills(selectedEntry) + '</div></div>'
+        : '';
+
+      queueDetailEl.innerHTML =
+        '<div class="detail-head">' +
+          '<div>' +
+            '<div class="detail-badges" style="margin-bottom: 10px;">' +
+              statusBadge(selectedEntry.status) +
+              (selectedEntry.quality_score != null ? '<span class="pill" style="color:' + scoreColor(selectedEntry.quality_score) + ';">Score ' + selectedEntry.quality_score + '</span>' : '') +
+            '</div>' +
+            '<h2 class="detail-title">' + escapeHtml(selectedEntry.name || 'Untitled') + '</h2>' +
+          '</div>' +
+          '<button type="button" class="detail-close" id="close-detail" aria-label="Close entry details">&times;</button>' +
+        '</div>' +
+        (selectedEntry.description ? '<p class="detail-description">' + escapeHtml(selectedEntry.description) + '</p>' : '<p class="detail-description">No description provided.</p>') +
+        '<div class="detail-actions">' + entryActions(selectedEntry) + '</div>' +
+        '<div class="detail-secondary-actions">' +
+          (selectedEntry.source_url ? '<a href="' + escapeHtml(selectedEntry.source_url) + '" target="_blank" rel="noopener" class="button secondary">Open Source</a>' : '') +
+          '<button type="button" class="button secondary" id="copy-source-link" data-source-link="' + escapeHtml(selectedEntry.source_url || '') + '">Copy Source Link</button>' +
+        '</div>' +
+        '<div class="detail-section"><h3>Metadata</h3><div class="detail-meta">' + metaHtml + '</div></div>' +
+        distributionSection;
+
+      var closeBtn = document.getElementById('close-detail');
+      if (closeBtn) {
+        closeBtn.addEventListener('click', closeMobileDetail);
+      }
+      var copyBtn = document.getElementById('copy-source-link');
+      if (copyBtn) {
+        copyBtn.addEventListener('click', function() {
+          var sourceLink = copyBtn.dataset.sourceLink;
+          if (!sourceLink) return;
+          navigator.clipboard.writeText(sourceLink).then(function() {
+            showToast({ type: 'success', title: 'Copied source link', body: 'The source URL is on your clipboard.' });
+          });
+        });
+      }
+    }
+
+    function updatePagination() {
+      var totalPages = Math.max(1, Math.ceil(currentTotal / PAGE_SIZE));
+      pageLabelEl.textContent = 'Page ' + queueState.page + ' of ' + totalPages;
+      prevPageBtn.disabled = queueState.page <= 1;
+      nextPageBtn.disabled = queueState.page >= totalPages;
+    }
+
+    function updateResultsCaption() {
+      var totalPages = Math.max(1, Math.ceil(currentTotal / PAGE_SIZE));
+      queueCaptionEl.textContent = TAB_CONFIG[queueState.status].label + ' • ' + currentTotal + ' total result' + (currentTotal === 1 ? '' : 's') + ' • page ' + queueState.page + ' of ' + totalPages;
     }
 
     async function loadPrompts() {
       try {
         var resp = await fetch('/api/scan/prompts');
-        if (!resp.ok) throw new Error('Failed to fetch prompts');
+        if (!resp.ok) throw new Error('Failed to load prompts');
         allPrompts = await resp.json();
-        updatePromptDropdown();
-      } catch (err) {
-        console.error('Failed to load prompts:', err);
+        renderPromptOptions();
+      } catch (error) {
+        console.error('Failed to load prompts:', error);
       }
     }
 
-    function updatePromptDropdown() {
-      var wire = queueWireSelect.value;
-      var filtered = wire ? allPrompts.filter(function(p) { return p.wire === wire; }) : allPrompts;
-      var options = '<option value="">All Prompts</option>';
-      filtered.forEach(function(p) {
-        var label = wire ? p.label : p.label + ' (' + p.wire + ')';
-        options += '<option value="' + escapeHtml(p.id) + '">' + escapeHtml(label) + '</option>';
-      });
-      queuePromptSelect.innerHTML = options;
-    }
+    async function loadSummary() {
+      var params = new URLSearchParams();
+      if (queueState.wire) params.set('wire', queueState.wire);
+      if (queueState.promptId) params.set('promptId', queueState.promptId);
+      if (queueState.date) params.set('date', queueState.date);
 
-    // Tab bar click
-    document.getElementById('tab-bar').addEventListener('click', function(e) {
-      var btn = e.target.closest('button[data-tab]');
-      if (!btn) return;
-      activeTab = btn.dataset.tab;
-      document.querySelectorAll('#tab-bar button').forEach(function(b) { b.classList.remove('active'); });
-      btn.classList.add('active');
-      loadEntries();
-    });
-
-    // Entry action (approve/reviewlater/decline/restore)
-    document.addEventListener('click', function(e) {
-      var btn = e.target.closest('.queue-action-btn');
-      if (!btn) return;
-      var entryId = parseInt(btn.dataset.entryId, 10);
-      var action = btn.dataset.action;
-      if (isNaN(entryId) || !action) return;
-      btn.disabled = true;
-      fetch('/api/scan/entries/' + entryId + '/action', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: action })
-      }).then(function(r) {
-        if (!r.ok) throw new Error('Failed');
-        loadStatusCounts();
-        loadEntries();
-      }).catch(function(err) {
-        console.error('Action failed:', err);
-        btn.disabled = false;
-      });
-    });
-
-    function statusesForTab(tab) {
-      if (tab === 'queued') return 'queued,scored';
-      if (tab === 'approved') return 'approved';
-      if (tab === 'declined') return 'declined,archived';
-      if (tab === 'duplicate') return 'duplicate';
-      if (tab === 'skipped') return 'skipped';
-      return tab;
-    }
-
-    async function loadStatusCounts() {
       try {
-        var params = new URLSearchParams();
-        if (queueWireSelect.value) params.set('wire', queueWireSelect.value);
-        if (queuePromptSelect.value) params.set('promptId', queuePromptSelect.value);
-        if (queueDateSelect.value) params.set('date', queueDateSelect.value);
-
         var resp = await fetch('/api/scan/status-counts?' + params.toString());
-        if (!resp.ok) return;
+        if (!resp.ok) throw new Error('Failed to load summary');
         var data = await resp.json();
-        var c = data.counts || {};
-        var queued = (c.queued || 0) + (c.scored || 0);
-        var approved = c.approved || 0;
-        var declined = (c.declined || 0) + (c.archived || 0);
-        var dup = c.duplicate || 0;
-        var skipped = c.skipped || 0;
-
-        document.getElementById('tab-count-queued').textContent = '(' + queued + ')';
-        document.getElementById('tab-count-approved').textContent = '(' + approved + ')';
-        document.getElementById('tab-count-declined').textContent = '(' + declined + ')';
-        document.getElementById('tab-count-duplicate').textContent = '(' + dup + ')';
-        document.getElementById('tab-count-skipped').textContent = '(' + skipped + ')';
-
-        var tilesHtml = '';
-        tilesHtml += '<div class="status-item"><div class="label">Pending</div><div class="value" style="color: var(--accent);">' + queued + '</div></div>';
-        tilesHtml += '<div class="status-item"><div class="label">Approved</div><div class="value" style="color: var(--success);">' + approved + '</div></div>';
-        tilesHtml += '<div class="status-item"><div class="label">Declined</div><div class="value" style="color: var(--error);">' + declined + '</div></div>';
-        tilesHtml += '<div class="status-item"><div class="label">Duplicates</div><div class="value" style="color: var(--text-secondary);">' + dup + '</div></div>';
-        tilesHtml += '<div class="status-item"><div class="label">Review Later</div><div class="value" style="color: var(--text-secondary);">' + skipped + '</div></div>';
-        tilesHtml += '<div class="status-item"><div class="label">Seeded URLs</div><div class="value" style="color: var(--text-muted);">' + (data.seededUrls || 0) + '</div></div>';
-        document.getElementById('stat-tiles').innerHTML = tilesHtml;
-
-        document.getElementById('seeded-urls-summary').textContent = 'Seeded URLs (' + (data.seededUrls || 0) + ' from existing wire content)';
-      } catch (err) {
-        console.error('Failed to load status counts:', err);
+        renderSummaryCards(data.counts || {});
+        seededSummaryEl.textContent = (data.seededUrls || 0) + ' seeded URL' + ((data.seededUrls || 0) === 1 ? '' : 's') + ' currently match this diagnostics view.';
+      } catch (error) {
+        console.error('Failed to load status counts:', error);
       }
+    }
+
+    function selectEntry(entryId, replace) {
+      queueState.entry = entryId;
+      syncStateToUrl(!!replace);
+      if (isMobileViewport()) {
+        mobileDetailOpen = true;
+        queueDetailEl.classList.add('mobile-open');
+        detailBackdropEl.classList.add('mobile-open');
+      }
+      renderQueueList();
+      renderDetail();
+    }
+
+    function closeMobileDetail() {
+      mobileDetailOpen = false;
+      queueDetailEl.classList.remove('mobile-open');
+      detailBackdropEl.classList.remove('mobile-open');
     }
 
     async function loadEntries() {
-      var params = new URLSearchParams();
-      params.set('status', statusesForTab(activeTab));
-      if (queueWireSelect.value) params.set('wire', queueWireSelect.value);
-      if (queuePromptSelect.value) params.set('promptId', queuePromptSelect.value);
-      if (queueDateSelect.value) params.set('date', queueDateSelect.value);
-      params.set('limit', '100');
+      queueListEl.innerHTML = '<div class="queue-empty">Loading entries…</div>';
+      queueCaptionEl.textContent = 'Loading entries…';
 
-      // Load distribution status for approved tab
-      if (activeTab === 'approved' && queueWireSelect.value) {
-        try {
-          var dResp = await fetch('/api/distribution/status/' + encodeURIComponent(queueWireSelect.value));
-          if (dResp.ok) distStatusMap = await dResp.json();
-        } catch(e) { distStatusMap = {}; }
-      }
+      var params = new URLSearchParams();
+      params.set('status', TAB_CONFIG[queueState.status].statuses);
+      params.set('limit', String(PAGE_SIZE));
+      params.set('offset', String((queueState.page - 1) * PAGE_SIZE));
+      params.set('includeDistributionStatus', '1');
+      if (queueState.wire) params.set('wire', queueState.wire);
+      if (queueState.promptId) params.set('promptId', queueState.promptId);
+      if (queueState.date) params.set('date', queueState.date);
 
       try {
         var resp = await fetch('/api/scan/entries?' + params.toString());
         if (!resp.ok) throw new Error('Failed to load entries');
         var data = await resp.json();
+        currentEntries = data.entries || [];
+        currentTotal = data.total || 0;
 
-        if (data.entries.length === 0) {
-          queueResultsEl.innerHTML = '<p style="color: var(--text-muted);">No entries in this tab.</p>';
-          return;
+        var totalPages = Math.max(1, Math.ceil(currentTotal / PAGE_SIZE));
+        if (queueState.page > totalPages) {
+          queueState.page = totalPages;
+          syncStateToUrl(true);
+          return loadEntries();
         }
 
-        var isDup = activeTab === 'duplicate';
-        var isApproved = activeTab === 'approved';
-        var showRestore = activeTab === 'skipped' || activeTab === 'declined';
-        var showActions = activeTab === 'queued';
-        var html = '<div class="entry-grid">';
-        data.entries.forEach(function(e) {
-          var sc = scoreColor(e.quality_score);
-          var desc = (e.description || '').length > 120 ? e.description.substring(0, 120) + '...' : (e.description || '');
+        if (currentEntries.length === 0) {
+          queueState.entry = null;
+          syncStateToUrl(true);
+        } else if (!currentEntries.some(function(entry) { return entry.id === queueState.entry; })) {
+          queueState.entry = currentEntries[0].id;
+          syncStateToUrl(true);
+        }
 
-          html += '<div class="entry-card">';
-
-          html += '<div class="entry-header">';
-          html += '<div class="entry-name">' + escapeHtml(e.name || '') + '</div>';
-          if (!isDup && e.quality_score != null) {
-            html += '<div class="entry-score" style="color:' + sc + ';">' + e.quality_score + '</div>';
-          }
-          html += '</div>';
-
-          if (desc) {
-            html += '<div class="entry-desc">' + escapeHtml(desc) + '</div>';
-          }
-
-          html += '<div class="entry-meta">';
-          if (e.amount && e.amount !== '-') {
-            var amt = e.amount.length > 20 ? e.amount.substring(0, 20) : e.amount;
-            html += '<span class="meta-tag" style="background:var(--badge-amount-bg); color:var(--success);">' + escapeHtml(amt) + '</span>';
-          }
-          if (e.deadline && e.deadline !== '-') {
-            var dl = e.deadline.length > 20 ? e.deadline.substring(0, 20) : e.deadline;
-            html += '<span class="meta-tag" style="background:var(--bg-card); color:var(--text-secondary);">' + escapeHtml(dl) + '</span>';
-          }
-          html += '<code style="background:var(--bg-card); padding:2px 6px; border-radius:4px; font-size:11px;">' + escapeHtml(e.wire || '') + '</code>';
-          html += sourceBadge(e.scan_source);
-          html += promptBadge(e.prompt_id);
-          if (e.source_url) {
-            html += '<a href="' + escapeHtml(e.source_url) + '" target="_blank" rel="noopener" class="download-link" style="font-size:11px;">Link</a>';
-          }
-
-          // Distribution status pills (approved tab only)
-          if (isApproved) {
-            var ds = distStatusMap[e.id] || {};
-            html += '<span class="dist-pills">';
-            html += distPill('TG', ds.telegram, e.id);
-            html += distPill('X', ds.x, e.id);
-            html += distPill('NL', ds.newsletter, e.id);
-            html += '</span>';
-          }
-          html += '</div>';
-
-          if (isDup && e.duplicate_reason) {
-            html += '<div style="font-size:11px; color:var(--text-muted);">' + escapeHtml(e.duplicate_reason) + '</div>';
-          }
-
-          if (showActions) {
-            html += '<div class="entry-actions">';
-            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="approve" class="queue-action-btn" style="background:var(--btn-approve-bg); color:var(--btn-approve-fg);">Approve</button>';
-            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="reviewlater" class="queue-action-btn" style="background:var(--border); color:var(--text-secondary);">Later</button>';
-            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="decline" class="queue-action-btn" style="background:var(--btn-decline-bg); color:var(--btn-decline-fg);">Decline</button>';
-            html += '</div>';
-          }
-          if (showRestore) {
-            html += '<div class="entry-actions">';
-            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="restore" class="queue-action-btn" style="background:var(--btn-restore-bg); color:var(--btn-restore-fg);">Restore</button>';
-            html += '</div>';
-          }
-
-          html += '</div>';
-        });
-        html += '</div>';
-        html += '<p style="color:var(--text-muted); font-size:12px; margin-top:12px;">' + data.total + ' total entries</p>';
-        queueResultsEl.innerHTML = html;
-      } catch (err) {
-        queueResultsEl.innerHTML = '<p style="color: var(--error);">Failed to load: ' + escapeHtml(err.message) + '</p>';
+        renderQueueList();
+        renderDetail();
+        updatePagination();
+        updateResultsCaption();
+      } catch (error) {
+        queueListEl.innerHTML = '<div class="queue-empty" style="color: var(--error);">Failed to load entries.</div>';
+        queueCaptionEl.textContent = 'Unable to load queue data.';
+        console.error('Failed to load entries:', error);
       }
     }
 
-    function distPill(label, status, entryId) {
-      if (status === 'success') return '<span class="dist-pill success">' + label + '</span>';
-      if (status === 'failed') return '<span class="dist-pill failed" data-retry-entry="' + entryId + '" title="Click to retry">' + label + '</span>';
-      return '<span class="dist-pill none">' + label + '</span>';
-    }
-
-    // Retry distribution on failed pill click
-    document.addEventListener('click', function(e) {
-      var pill = e.target.closest('[data-retry-entry]');
-      if (!pill) return;
-      var entryId = pill.dataset.retryEntry;
-      pill.textContent = '\\u2026';
-      fetch('/api/scan/entries/' + entryId + '/redistribute', { method: 'POST' })
-        .then(function(r) { return r.json(); })
-        .then(function() { loadEntries(); })
-        .catch(function() { pill.style.color = 'var(--error)'; });
-    });
-
-    // Seeded URLs lazy load
-    var seededLoaded = false;
-    document.getElementById('seeded-urls-details').addEventListener('toggle', function() {
-      if (this.open && !seededLoaded) {
-        seededLoaded = true;
-        loadSeededUrls();
+    function renderSeededUrls(urls, total) {
+      if (!urls.length) {
+        seededContentEl.innerHTML = '<p class="form-description">No seeded URLs match the current feed filter.</p>';
+        return;
       }
-    });
+
+      var rows = urls.map(function(item) {
+        var shortened = item.url.length > 80 ? item.url.substring(0, 77) + '…' : item.url;
+        return '<tr>' +
+          '<td style="font-size: 12px; word-break: break-all;"><a class="download-link" href="' + escapeHtml(item.url) + '" target="_blank" rel="noopener">' + escapeHtml(shortened) + '</a></td>' +
+          '<td><span class="pill">' + escapeHtml(item.wire || '') + '</span></td>' +
+          '<td>' + escapeHtml(item.first_seen_date || '—') + '</td>' +
+        '</tr>';
+      }).join('');
+
+      var note = total > urls.length
+        ? '<p class="form-description" style="margin-top: 12px;">Showing ' + urls.length + ' of ' + total + ' seeded URLs.</p>'
+        : '';
+
+      seededContentEl.innerHTML =
+        '<div class="table-scroll"><table><thead><tr><th>URL</th><th>Feed</th><th>First Seen</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + note;
+    }
 
     async function loadSeededUrls() {
-      var el = document.getElementById('seeded-urls-content');
+      if (!diagnosticsOpen) return;
+
+      seededContentEl.innerHTML = '<p class="form-description">Loading diagnostics…</p>';
+      var params = new URLSearchParams();
+      params.set('limit', '50');
+      if (queueState.wire) params.set('wire', queueState.wire);
+
       try {
-        var params = new URLSearchParams();
-        if (queueWireSelect.value) params.set('wire', queueWireSelect.value);
-        params.set('limit', '100');
         var resp = await fetch('/api/scan/seen-urls?' + params.toString());
         if (!resp.ok) throw new Error('Failed');
         var data = await resp.json();
-        if (data.urls.length === 0) {
-          el.innerHTML = '<p style="color: var(--text-muted);">No seeded URLs found.</p>';
-          return;
-        }
-        var html = '<table><thead><tr><th>URL</th><th>Wire</th><th>First Seen</th></tr></thead><tbody>';
-        data.urls.forEach(function(u) {
-          html += '<tr>';
-          html += '<td style="font-size: 12px; word-break: break-all;"><a href="' + escapeHtml(u.url) + '" target="_blank" class="download-link">' + escapeHtml(u.url.length > 60 ? u.url.substring(0, 60) + '...' : u.url) + '</a></td>';
-          html += '<td><code style="background: var(--bg); padding: 2px 6px; border-radius: 4px;">' + escapeHtml(u.wire || '') + '</code></td>';
-          html += '<td style="font-size: 12px;">' + escapeHtml(u.first_seen_date || '-') + '</td>';
-          html += '</tr>';
-        });
-        html += '</tbody></table>';
-        if (data.total > data.urls.length) {
-          html += '<p style="color: var(--text-muted); font-size: 12px; margin-top: 8px;">Showing ' + data.urls.length + ' of ' + data.total + '</p>';
-        }
-        el.innerHTML = html;
-      } catch (err) {
-        el.innerHTML = '<p style="color: var(--error);">Failed to load seeded URLs</p>';
-      }
-    }
-
-    async function loadFeeds() {
-      try {
-        var response = await fetch('/api/feeds');
-        if (!response.ok) throw new Error('Failed to fetch feeds');
-        var feeds = await response.json();
-        var options = '<option value="">All Feeds</option>';
-        feeds.forEach(function(f) {
-          options += '<option value="' + escapeHtml(f.key) + '">' + escapeHtml(f.displayName) + '</option>';
-        });
-        queueWireSelect.innerHTML = options;
+        diagnosticsLoaded = true;
+        renderSeededUrls(data.urls || [], data.total || 0);
       } catch (error) {
-        console.error('Failed to load feeds:', error);
+        seededContentEl.innerHTML = '<p class="form-description" style="color: var(--error);">Failed to load seeded URLs.</p>';
       }
     }
 
-    loadQueueBtn.addEventListener('click', function() {
-      seededLoaded = false;
-      loadStatusCounts();
-      loadEntries();
+    function showToast(options) {
+      var toast = document.createElement('div');
+      toast.className = 'toast ' + (options.type || 'success');
+      var actionsHtml = '';
+      if (options.undo) {
+        actionsHtml += '<button type="button" class="toast-action" data-toast-undo="true">Undo</button>';
+      }
+      actionsHtml += '<button type="button" class="toast-action" data-toast-close="true">Dismiss</button>';
+      toast.innerHTML =
+        '<div class="toast-title">' + escapeHtml(options.title) + '</div>' +
+        '<div class="toast-body">' + escapeHtml(options.body || '') + '</div>' +
+        '<div class="toast-actions">' + actionsHtml + '</div>';
+
+      feedbackEl.appendChild(toast);
+
+      var undoBtn = toast.querySelector('[data-toast-undo]');
+      if (undoBtn) {
+        undoBtn.addEventListener('click', function() {
+          options.undo();
+          toast.remove();
+        });
+      }
+      var closeBtn = toast.querySelector('[data-toast-close]');
+      if (closeBtn) {
+        closeBtn.addEventListener('click', function() {
+          toast.remove();
+        });
+      }
+
+      setTimeout(function() {
+        toast.remove();
+      }, options.persistent ? 9000 : 5000);
+    }
+
+    async function performEntryAction(entryId, action, silentUndo) {
+      try {
+        var resp = await fetch('/api/scan/entries/' + entryId + '/action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: action })
+        });
+        var data = await resp.json().catch(function() { return {}; });
+        if (!resp.ok) throw new Error(data.error || 'Failed to update entry');
+
+        if (!silentUndo) {
+          if (action === 'restore') {
+            showToast({
+              type: 'success',
+              title: 'Returned to queue',
+              body: 'The entry is back in Pending Review.'
+            });
+          } else {
+            var labels = { approve: 'Approved', reviewlater: 'Moved to Review Later', decline: 'Declined' };
+            showToast({
+              type: 'success',
+              title: labels[action] || 'Updated',
+              body: 'Undo returns the entry to Pending Review.',
+              undo: function() {
+                performEntryAction(entryId, 'restore', true);
+              }
+            });
+          }
+        }
+
+        await Promise.all([loadSummary(), loadEntries()]);
+        if (diagnosticsOpen) {
+          loadSeededUrls();
+        }
+      } catch (error) {
+        console.error('Failed to update entry:', error);
+        showToast({
+          type: 'error',
+          title: 'Action failed',
+          body: error.message || 'Unable to update this entry right now.',
+          persistent: true
+        });
+      }
+    }
+
+    async function refreshQueue(replace) {
+      syncStateToUrl(!!replace);
+      applyStateToControls();
+      await Promise.all([loadSummary(), loadEntries()]);
+      if (diagnosticsOpen) {
+        loadSeededUrls();
+      }
+    }
+
+    queueTabsEl.addEventListener('click', function(event) {
+      var button = event.target.closest('[data-status]');
+      if (!button) return;
+      queueState.status = normalizeStatus(button.dataset.status || 'queued');
+      queueState.page = 1;
+      queueState.entry = null;
+      refreshQueue(false);
     });
+
     queueWireSelect.addEventListener('change', function() {
-      seededLoaded = false;
-      updatePromptDropdown();
-      loadStatusCounts();
-      loadEntries();
-      if (document.getElementById('seeded-urls-details').open) {
-        seededLoaded = true;
+      queueState.wire = queueWireSelect.value;
+      queueState.page = 1;
+      queueState.entry = null;
+      queueState.promptId = '';
+      diagnosticsLoaded = false;
+      refreshQueue(false);
+    });
+
+    queuePromptSelect.addEventListener('change', function() {
+      queueState.promptId = queuePromptSelect.value;
+      queueState.page = 1;
+      queueState.entry = null;
+      refreshQueue(false);
+    });
+
+    queueDateInput.addEventListener('change', function() {
+      queueState.date = queueDateInput.value;
+      queueState.page = 1;
+      queueState.entry = null;
+      refreshQueue(false);
+    });
+
+    resetFiltersBtn.addEventListener('click', function() {
+      queueState = { wire: '', promptId: '', date: '', status: 'queued', page: 1, entry: null };
+      diagnosticsLoaded = false;
+      closeMobileDetail();
+      refreshQueue(false);
+    });
+
+    copyViewLinkBtn.addEventListener('click', function() {
+      navigator.clipboard.writeText(window.location.href).then(function() {
+        showToast({
+          type: 'success',
+          title: 'Copied view link',
+          body: 'This URL reopens the current queue view.'
+        });
+      });
+    });
+
+    prevPageBtn.addEventListener('click', function() {
+      if (queueState.page <= 1) return;
+      queueState.page -= 1;
+      queueState.entry = null;
+      refreshQueue(false);
+    });
+
+    nextPageBtn.addEventListener('click', function() {
+      var totalPages = Math.max(1, Math.ceil(currentTotal / PAGE_SIZE));
+      if (queueState.page >= totalPages) return;
+      queueState.page += 1;
+      queueState.entry = null;
+      refreshQueue(false);
+    });
+
+    queueListEl.addEventListener('click', function(event) {
+      var button = event.target.closest('[data-entry-id]');
+      if (!button) return;
+      selectEntry(parseInt(button.dataset.entryId, 10), false);
+    });
+
+    queueDetailEl.addEventListener('click', function(event) {
+      var actionButton = event.target.closest('[data-queue-action]');
+      if (!actionButton) return;
+      var entryId = parseInt(actionButton.dataset.entryId, 10);
+      var action = actionButton.dataset.queueAction;
+      if (!entryId || !action) return;
+      performEntryAction(entryId, action, false);
+    });
+
+    detailBackdropEl.addEventListener('click', closeMobileDetail);
+
+    toggleDiagnosticsBtn.addEventListener('click', function() {
+      diagnosticsOpen = !diagnosticsOpen;
+      diagnosticsBodyEl.hidden = !diagnosticsOpen;
+      toggleDiagnosticsBtn.textContent = diagnosticsOpen ? 'Hide Seeded URLs' : 'Show Seeded URLs';
+      if (diagnosticsOpen && !diagnosticsLoaded) {
         loadSeededUrls();
       }
     });
-    queuePromptSelect.addEventListener('change', function() {
-      loadStatusCounts();
-      loadEntries();
-    });
-    queueDateSelect.addEventListener('change', function() {
-      loadStatusCounts();
-      loadEntries();
+
+    window.addEventListener('popstate', function() {
+      queueState = readStateFromUrl();
+      closeMobileDetail();
+      refreshQueue(true);
     });
 
-    // Auto-load on page open, pre-select wire from URL param if present
-    loadFeeds().then(function() {
-      var urlParams = new URLSearchParams(window.location.search);
-      var wireParam = urlParams.get('wire');
-      if (wireParam) {
-        queueWireSelect.value = wireParam;
-      }
-      return loadPrompts();
-    }).then(function() {
-      loadStatusCounts();
-      loadEntries();
+    loadPrompts().then(function() {
+      applyStateToControls();
+      return refreshQueue(true);
     });
   </script>
 </body>
