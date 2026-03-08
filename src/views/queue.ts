@@ -56,7 +56,7 @@ export function renderQueuePage(feeds?: FeedNav[]): string {
       overflow: hidden;
       transition: border-color 0.15s;
     }
-    .entry-card:hover { border-color: #2a3a4d; }
+    .entry-card:hover { border-color: var(--accent); opacity: 0.95; }
     .entry-card .entry-header {
       display: flex;
       justify-content: space-between;
@@ -228,11 +228,11 @@ ${CLIENT_ESCAPE_HTML}
 
     function sourceBadge(scanSource) {
       var badges = {
-        'x-scan': { label: 'X', bg: '#1a3a5c', color: '#5b9bd5' },
-        'web-search': { label: 'Web', bg: '#1a3c2c', color: '#81c784' },
-        'telegram': { label: 'TG', bg: '#1a3c3c', color: '#26c6da' },
-        'email': { label: 'Email', bg: '#3c2a1a', color: '#ff9800' },
-        'forum': { label: 'Forum', bg: '#1a2c3c', color: '#64b5f6' }
+        'x-scan': { label: 'X', bg: 'var(--badge-x-bg)', color: 'var(--badge-x-fg)' },
+        'web-search': { label: 'Web', bg: 'var(--badge-web-bg)', color: 'var(--badge-web-fg)' },
+        'telegram': { label: 'TG', bg: 'var(--badge-tg-bg)', color: 'var(--badge-tg-fg)' },
+        'email': { label: 'Email', bg: 'var(--badge-email-bg)', color: 'var(--badge-email-fg)' },
+        'forum': { label: 'Forum', bg: 'var(--badge-forum-bg)', color: 'var(--badge-forum-fg)' }
       };
       var b = badges[scanSource] || { label: scanSource || '?', bg: 'var(--border)', color: 'var(--text-secondary)' };
       return '<span style="background:' + b.bg + '; color:' + b.color + '; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:600;">' + escapeHtml(b.label) + '</span>';
@@ -241,7 +241,7 @@ ${CLIENT_ESCAPE_HTML}
     function promptBadge(promptId) {
       var label = getPromptLabel(promptId);
       if (!label) return '';
-      return '<span style="background:#2c1a3c; color:#ce93d8; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:600;" title="Prompt: ' + escapeHtml(label) + '">' + escapeHtml(label) + '</span>';
+      return '<span style="background:var(--badge-prompt-bg); color:var(--badge-prompt-fg); padding:2px 6px; border-radius:4px; font-size:11px; font-weight:600;" title="Prompt: ' + escapeHtml(label) + '">' + escapeHtml(label) + '</span>';
     }
 
     function getPromptLabel(promptId) {
@@ -404,7 +404,7 @@ ${CLIENT_ESCAPE_HTML}
           html += '<div class="entry-meta">';
           if (e.amount && e.amount !== '-') {
             var amt = e.amount.length > 20 ? e.amount.substring(0, 20) : e.amount;
-            html += '<span class="meta-tag" style="background:#1a2c1a; color:var(--success);">' + escapeHtml(amt) + '</span>';
+            html += '<span class="meta-tag" style="background:var(--badge-amount-bg); color:var(--success);">' + escapeHtml(amt) + '</span>';
           }
           if (e.deadline && e.deadline !== '-') {
             var dl = e.deadline.length > 20 ? e.deadline.substring(0, 20) : e.deadline;
@@ -434,14 +434,14 @@ ${CLIENT_ESCAPE_HTML}
 
           if (showActions) {
             html += '<div class="entry-actions">';
-            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="approve" class="queue-action-btn" style="background:#1b5e20; color:var(--success);">Approve</button>';
+            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="approve" class="queue-action-btn" style="background:var(--btn-approve-bg); color:var(--btn-approve-fg);">Approve</button>';
             html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="reviewlater" class="queue-action-btn" style="background:var(--border); color:var(--text-secondary);">Later</button>';
-            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="decline" class="queue-action-btn" style="background:#4a1515; color:var(--error);">Decline</button>';
+            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="decline" class="queue-action-btn" style="background:var(--btn-decline-bg); color:var(--btn-decline-fg);">Decline</button>';
             html += '</div>';
           }
           if (showRestore) {
             html += '<div class="entry-actions">';
-            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="restore" class="queue-action-btn" style="background:#1a3a5c; color:#5b9bd5;">Restore</button>';
+            html += '<button data-entry-id="' + parseInt(e.id) + '" data-action="restore" class="queue-action-btn" style="background:var(--btn-restore-bg); color:var(--btn-restore-fg);">Restore</button>';
             html += '</div>';
           }
 

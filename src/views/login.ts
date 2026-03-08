@@ -6,9 +6,11 @@ export function renderLoginPage(): string {
 <html lang="en">
 <head>
   ${sharedHead('Sign In')}
+  <script>(function(){var t=localStorage.getItem('theme');if(t)document.documentElement.setAttribute('data-theme',t)})()</script>
   <style>
     ${sharedBaseStyles()}
     ${sharedCenteredPageStyles()}
+    :root[data-theme="light"] body { color-scheme: light; }
     .container { max-width: 400px; text-align: center; }
     .logo { margin: 0 0 8px; font-size: 28px; font-weight: 700; }
     .logo-grant { color: var(--accent); }
@@ -100,14 +102,16 @@ export function renderLoginPage(): string {
     }
 
     const root = createRoot(document.getElementById('privy-root'));
+    var savedTheme = localStorage.getItem('theme');
+    var privyTheme = savedTheme === 'light' ? 'light' : 'dark';
     root.render(
       React.createElement(PrivyProvider, {
         appId: ${JSON.stringify(config.privy.appId)},
         config: {
           loginMethods: ['email', 'wallet', 'google'],
           appearance: {
-            theme: 'dark',
-            accentColor: '#d4a017',
+            theme: privyTheme,
+            accentColor: savedTheme === 'light' ? '#b8860b' : '#d4a017',
           },
         },
       }, React.createElement(LoginApp))

@@ -17,8 +17,9 @@ export function sharedHead(title: string): string {
   <title>${escapeHtml(title)} - Wire Ops</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="dark light">
   <meta name="theme-color" content="#080c14">
+  <script>(function(){var t=localStorage.getItem('theme');if(t)document.documentElement.setAttribute('data-theme',t)})()</script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -47,6 +48,41 @@ export function sharedBaseStyles(): string {
       --radius-xl: 6px;
       --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
       --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+      --badge-x-bg: #1a3a5c; --badge-x-fg: #5b9bd5;
+      --badge-web-bg: #1a3c2c; --badge-web-fg: #81c784;
+      --badge-tg-bg: #1a3c3c; --badge-tg-fg: #26c6da;
+      --badge-email-bg: #3c2a1a; --badge-email-fg: #ff9800;
+      --badge-forum-bg: #1a2c3c; --badge-forum-fg: #64b5f6;
+      --badge-prompt-bg: #2c1a3c; --badge-prompt-fg: #ce93d8;
+      --badge-amount-bg: #1a2c1a;
+      --btn-approve-bg: #1b5e20; --btn-approve-fg: var(--success);
+      --btn-decline-bg: #4a1515; --btn-decline-fg: var(--error);
+      --btn-restore-bg: #1a3a5c; --btn-restore-fg: #5b9bd5;
+    }
+    :root[data-theme="light"] {
+      --bg: #f5f6f8;
+      --bg-card: #ffffff;
+      --border: #d8dce2;
+      --input: #f0f1f3;
+      --text: #1a1d23;
+      --text-secondary: #5a6270;
+      --text-muted: #8a92a0;
+      --accent: #b8860b;
+      --accent-hover: #d4a017;
+      --accent-fg: #ffffff;
+      --success: #16a34a;
+      --error: #dc2626;
+      --warning: #b8860b;
+      --badge-x-bg: #dbeafe; --badge-x-fg: #1e40af;
+      --badge-web-bg: #dcfce7; --badge-web-fg: #166534;
+      --badge-tg-bg: #cffafe; --badge-tg-fg: #155e75;
+      --badge-email-bg: #ffedd5; --badge-email-fg: #9a3412;
+      --badge-forum-bg: #dbeafe; --badge-forum-fg: #1e40af;
+      --badge-prompt-bg: #f3e8ff; --badge-prompt-fg: #7e22ce;
+      --badge-amount-bg: #dcfce7;
+      --btn-approve-bg: #dcfce7; --btn-approve-fg: #166534;
+      --btn-decline-bg: #fee2e2; --btn-decline-fg: #991b1b;
+      --btn-restore-bg: #dbeafe; --btn-restore-fg: #1e40af;
     }
     *, *::before, *::after { box-sizing: border-box; }
     body {
@@ -56,6 +92,7 @@ export function sharedBaseStyles(): string {
       margin: 0;
       color-scheme: dark;
     }
+    :root[data-theme="light"] body { color-scheme: light; }
     a { color: var(--accent); }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {
@@ -178,7 +215,7 @@ export function sharedDashboardStyles(): string {
       background: var(--border);
       color: var(--text);
     }
-    .button.secondary:hover { background: #1a2a3d; }
+    .button.secondary:hover { background: var(--border); }
     table { width: 100%; border-collapse: collapse; }
     th, td { padding: 12px; text-align: left; border-bottom: 1px solid var(--border); }
     th { font-weight: 500; color: var(--text-secondary); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; font-family: var(--font-mono); }
@@ -204,6 +241,8 @@ export function sharedDashboardStyles(): string {
       min-width: 120px;
       color-scheme: dark;
     }
+    :root[data-theme="light"] .form-group input,
+    :root[data-theme="light"] .form-group select { color-scheme: light; }
     .form-group input:focus-visible,
     .form-group select:focus-visible {
       outline: 2px solid var(--accent);
@@ -291,7 +330,7 @@ export interface FeedNav {
 
 export interface PageShellOptions {
   title: string;
-  activePage: 'queue' | 'schedules' | string;  // string for 'feed:<key>'
+  activePage: 'queue' | 'distribution' | 'prompts' | 'schedules' | string;  // string for 'feed:<key>'
   content: string;
   extraHead?: string;
   extraStyles?: string;
@@ -349,6 +388,12 @@ export function renderPageShell(opts: PageShellOptions): string {
       mask-image: linear-gradient(180deg, transparent 0%, black 10%, black 90%, transparent 100%);
       -webkit-mask-image: linear-gradient(180deg, transparent 0%, black 10%, black 90%, transparent 100%);
     }
+    :root[data-theme="light"] body::before {
+      background: repeating-linear-gradient(
+        180deg, transparent 0px, transparent 48px,
+        rgba(200, 205, 215, 0.25) 48px, rgba(200, 205, 215, 0.25) 49px
+      );
+    }
 
     /* Sidebar layout */
     .shell-layout {
@@ -395,7 +440,7 @@ export function renderPageShell(opts: PageShellOptions): string {
     }
     .nav-item:hover {
       color: var(--text);
-      background: rgba(255,255,255,0.03);
+      background: rgba(128,128,128,0.06);
     }
     .nav-active {
       color: var(--accent) !important;
@@ -440,6 +485,20 @@ export function renderPageShell(opts: PageShellOptions): string {
       font-size: 13px;
     }
     .sidebar-footer a:hover { color: var(--text-secondary); }
+    .theme-toggle {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      padding: 6px 10px;
+      border-radius: var(--radius-md);
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      margin-bottom: 10px;
+      display: block;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .theme-toggle:hover { color: var(--accent); border-color: var(--accent); }
 
     .main-content {
       flex: 1;
@@ -511,11 +570,14 @@ export function renderPageShell(opts: PageShellOptions): string {
       </div>
       <div class="sidebar-nav">
         ${navItem('Queue', '/queue', 'queue')}
+        ${navItem('Distribution', '/distribution', 'distribution')}
         ${feedsSection()}
+        ${navItem('Prompts', '/prompts', 'prompts')}
         <div class="nav-spacer"></div>
         ${navItem('Schedules', '/schedules', 'schedules')}
       </div>
       <div class="sidebar-footer">
+        <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">&#9789;</button>
         <a href="/logout">Logout</a>
       </div>
     </nav>
@@ -533,6 +595,28 @@ export function renderPageShell(opts: PageShellOptions): string {
         div.textContent = str;
         return div.innerHTML;
       }
+      // Theme toggle
+      var themeBtn = document.getElementById('theme-toggle');
+      function updateThemeIcon() {
+        var isLight = document.documentElement.getAttribute('data-theme') === 'light';
+        themeBtn.textContent = isLight ? '\\u2600' : '\\u263D';
+        themeBtn.title = isLight ? 'Switch to dark mode' : 'Switch to light mode';
+      }
+      if (themeBtn) {
+        updateThemeIcon();
+        themeBtn.addEventListener('click', function() {
+          var isLight = document.documentElement.getAttribute('data-theme') === 'light';
+          if (isLight) {
+            document.documentElement.removeAttribute('data-theme');
+            localStorage.removeItem('theme');
+          } else {
+            document.documentElement.setAttribute('data-theme', 'light');
+            localStorage.setItem('theme', 'light');
+          }
+          updateThemeIcon();
+        });
+      }
+
       var hamburger = document.getElementById('hamburger-btn');
       var sidebar = document.getElementById('sidebar');
       var overlay = document.getElementById('sidebar-overlay');

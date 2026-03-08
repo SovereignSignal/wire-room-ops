@@ -25,6 +25,8 @@ import { renderLoginPage } from './views/login';
 import { renderSettingsPage } from './views/settings';
 import { renderQueuePage } from './views/queue';
 import { renderFeedPage } from './views/feed';
+import { renderDistributionPage } from './views/distribution';
+import { renderPromptsPage } from './views/prompts';
 import { renderErrorPage, renderLegacyDownloadPage, renderExpiredLinkPage, renderResendSuccessPage } from './views/error';
 
 const app = express();
@@ -296,8 +298,7 @@ app.get('/feeds/:key', requireAuth, async (req: Request, res: Response) => {
     }
     const allFeeds = await getAllFeeds();
     const feedNavs = allFeeds.map(f => ({ key: f.key, displayName: f.displayName }));
-    const forumEnabled = config.forum.enabled;
-    res.send(renderFeedPage(feedKey, feed.displayName, feedNavs, forumEnabled));
+    res.send(renderFeedPage(feedKey, feed.displayName, feedNavs));
   } catch (error) {
     console.error('Failed to render feed page:', error);
     res.status(500).send(renderErrorPage('Failed to load feed page'));
@@ -329,6 +330,21 @@ app.get('/schedules', requireAuth, async (_req: Request, res: Response) => {
   const allFeeds = await getAllFeeds();
   const feedNavs = allFeeds.map(f => ({ key: f.key, displayName: f.displayName }));
   res.send(renderSettingsPage(feedNavs));
+});
+
+// Distribution page — top-level multi-wire distribution management
+app.get('/distribution', requireAuth, async (_req: Request, res: Response) => {
+  const allFeeds = await getAllFeeds();
+  const feedNavs = allFeeds.map(f => ({ key: f.key, displayName: f.displayName }));
+  res.send(renderDistributionPage(feedNavs));
+});
+
+// Prompts page — top-level multi-wire prompt management
+app.get('/prompts', requireAuth, async (_req: Request, res: Response) => {
+  const allFeeds = await getAllFeeds();
+  const feedNavs = allFeeds.map(f => ({ key: f.key, displayName: f.displayName }));
+  const forumEnabled = config.forum.enabled;
+  res.send(renderPromptsPage(feedNavs, forumEnabled));
 });
 
 // Settings → redirect to schedules

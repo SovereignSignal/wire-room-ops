@@ -272,7 +272,7 @@ ${CLIENT_ESCAPE_HTML}
         var tz = s.timezone || 'America/Los_Angeles';
         var tzShort = tz.split('/').pop().replace('_', ' ');
         var isScan = s.scheduleType === 'scan-execution' || s.scheduleType === 'forum-scan';
-        var typeLabel = s.scheduleType === 'forum-scan' ? '<span style="color: #64b5f6;">Forum</span>' : isScan ? '<span style="color: #9c27b0;">Scan</span>' : 'Summary';
+        var typeLabel = s.scheduleType === 'forum-scan' ? '<span style="color: var(--badge-forum-fg);">Forum</span>' : isScan ? '<span style="color: var(--badge-prompt-fg);">Scan</span>' : 'Summary';
         var nextRun = '-';
         if (s.nextRun) {
           try {
