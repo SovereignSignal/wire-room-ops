@@ -1,12 +1,19 @@
 import { ReactNode } from 'react';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ThemeToggle } from './ThemeToggle';
+import { LogOut } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 
 interface DashboardLayoutProps {
   children: ReactNode;
   activeTab: string;
   onTabChange: (tab: string) => void;
   queueCount: number;
+}
+
+async function handleLogout() {
+  await fetch('/logout', { method: 'GET', credentials: 'include' });
+  window.location.href = '/';
 }
 
 export function DashboardLayout({ 
@@ -43,6 +50,16 @@ export function DashboardLayout({
                 SYS v1.0.4 • LAT 42.3°N
               </div>
               <ThemeToggle />
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleLogout}
+                className="gap-1.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10 font-display text-[10px] tracking-wider border border-transparent hover:border-destructive/30 transition-colors"
+                title="Log out"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                LOGOUT
+              </Button>
             </div>
           </div>
         </div>
