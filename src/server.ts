@@ -6,7 +6,7 @@ import { validateMagicLink, createMagicLink, createDownloadToken, createSessionT
 import jwt from 'jsonwebtoken';
 import jwksClient from 'jwks-rsa';
 import { getFile, listFiles } from './services/storage';
-import { getAvailableWires, closePool, getAllFeeds, getFeedByKey, createFeed, updateFeed, archiveFeed, getEntryCountsByWire, getAllScanPrompts, getScanPromptById, createScanPrompt, updateScanPrompt, deleteScanPrompt, getStatusCounts, getEntriesByStatus, getSeenUrlStats, getSeenUrlsList } from './db';
+import { getAvailableWires, closePool, getAllFeeds, ensureFeedsTable, getFeedByKey, createFeed, updateFeed, archiveFeed, getEntryCountsByWire, getAllScanPrompts, getScanPromptById, createScanPrompt, updateScanPrompt, deleteScanPrompt, getStatusCounts, getEntriesByStatus, getSeenUrlStats, getSeenUrlsList } from './db';
 import { sendScanDigestEmail, sendResendLinkEmail } from './services/email';
 import { StoredFile } from './types';
 import { jobQueue } from './services/job-queue';
@@ -2091,6 +2091,13 @@ export async function startServer(): Promise<void> {
     await ensureSessionsTable();
   } catch (error) {
     console.error('Sessions table initialization failed (non-fatal):', error);
+  }
+
+  // Ensure feeds table exists and is seeded with known wires
+  try {
+    await ensureFeedsTable();
+  } catch (error) {
+    console.error('Feeds table initialization failed (non-fatal):', error);
   }
 
   // Initialize the scheduler (loads config from database)
