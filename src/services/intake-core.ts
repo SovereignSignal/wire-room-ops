@@ -10,7 +10,7 @@
  */
 
 import { getPool, getAllFeeds } from '../db';
-import { checkDuplicate } from '../services/dedup';
+import { checkDuplicate, registerSeen } from '../services/dedup';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Public types
@@ -253,6 +253,11 @@ export async function processIntakeMessage(
         submittedBy: msg.senderId,
         scanSource,
       });
+      try {
+        await registerSeen(getPool(), { id, sourceUrl: primaryUrl, name, wire, scanDate });
+      } catch (regError) {
+        console.error('[IntakeCore] registerSeen failed (non-fatal):', regError);
+      }
       return {
         status: 'inserted',
         entryId: id,
@@ -310,6 +315,11 @@ export async function completeWireSelection(
 
   try {
     const id = await insertEntry({ ...entry, wire });
+    try {
+      await registerSeen(getPool(), { id, sourceUrl: entry.sourceUrl, name: entry.name, wire, scanDate: entry.scanDate });
+    } catch (regError) {
+      console.error('[IntakeCore] registerSeen failed (non-fatal):', regError);
+    }
     return {
       status: 'inserted',
       entryId: id,
@@ -418,6 +428,11 @@ export async function processBatchMessage(
         submittedBy: msg.senderId,
         scanSource,
       });
+      try {
+        await registerSeen(getPool(), { id, sourceUrl: entry.sourceUrl, name: entry.name, wire, scanDate });
+      } catch (regError) {
+        // non-fatal
+      }
       result.inserted++;
       result.entries.push({ name: entry.name, wire, id });
     } catch (err) {
