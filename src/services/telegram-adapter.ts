@@ -6,7 +6,7 @@
  */
 
 import { config } from '../config';
-import { processIntakeMessage, completeWireSelection, cleanupPendingEntries } from './intake-core';
+import { processIntakeMessage, completeWireSelection, cleanupPendingEntries, isBatchMessage, processBatchMessage } from './intake-core';
 import type { IntakeResult } from './intake-core';
 
 const TELEGRAM_API = 'https://api.telegram.org';
@@ -159,15 +159,31 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     || (message.forward_from_chat as { title?: string } | undefined)?.title
     || undefined;
 
-  const result = await processIntakeMessage(
-    {
-      text,
-      senderId: `telegram:${userId}`,
-      channelMessageId: String(message.message_id),
-      forwardedFrom,
-    },
-    'telegram-intake',
-  );
+  const intakeMsg = {
+    text,
+    senderId: `telegram:${userId}`,
+    channelMessageId: String(message.message_id),
+    forwardedFrom,
+  };
+
+  // Batch mode: numbered list (Grok scan output)
+  if (isBatchMessage(text)) {
+    console.log(`[TelegramAdapter] Batch message detected from user ${userId}`);
+    await sendMessage(message.chat.id, '⏳ Processing batch… hold tight.');
+    const batch = await processBatchMessage(intakeMsg, 'telegram');
+    const lines = [`✅ Batch complete: ${batch.inserted} added, ${batch.failed} failed.\n`];
+    for (const e of batch.entries) {
+      if (e.id) {
+        lines.push(`• #${e.id} [${e.wire}] ${e.name}`);
+      } else {
+        lines.push(`• ❌ ${e.name} — ${e.error}`);
+      }
+    }
+    await sendMessage(message.chat.id, lines.join('\n').slice(0, 4000));
+    return;
+  }
+
+  const result = await processIntakeMessage(intakeMsg, 'telegram');
 
   if (result.status === 'needs_wire' && result.pendingKey && result.availableWires) {
     console.log(`[TelegramAdapter] Pending wire selection for key ${result.pendingKey}`);

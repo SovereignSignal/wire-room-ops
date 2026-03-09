@@ -299,6 +299,100 @@ export async function completeWireSelection(
   }
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// Batch intake (numbered list format from Grok scans)
+// ────────────────────────────────────────────────────────────────────────────
+
+export interface BatchIntakeResult {
+  inserted: number;
+  failed: number;
+  entries: Array<{ name: string; wire: string; id?: number; error?: string }>;
+}
+
+/**
+ * Detect whether a message is a numbered batch list.
+ * Matches messages starting with "1. **" or "1. " with multiple entries.
+ */
+export function isBatchMessage(text: string): boolean {
+  return /^\s*1\.\s+\*\*/.test(text) || /^\s*1\.\s+\S/.test(text) && /\n\s*2\.\s+/.test(text);
+}
+
+/**
+ * Parse a numbered batch list into individual entries.
+ * Handles the Grok output format:
+ *   N. **Name** — Description
+ *   Deadline: X
+ *   Link: <url>
+ */
+function parseBatchEntries(text: string): Array<{ name: string; description: string; sourceUrl: string; deadline?: string }> {
+  // Split on numbered item boundaries: \n1. or \n2. etc (allows leading whitespace)
+  const chunks = text.split(/\n(?=\s*\d+\.\s+)/).filter(c => c.trim() && /^\s*\d+\./.test(c));
+
+  return chunks.map(chunk => {
+    // Extract name from **bold** or leading text
+    const nameMatch = chunk.match(/^\s*\d+\.\s+\*\*([^*]+)\*\*/) || chunk.match(/^\s*\d+\.\s+([^\n—–-]+)/);
+    const rawName = nameMatch ? nameMatch[1].trim() : chunk.split('\n')[0].replace(/^\d+\.\s*/, '').trim();
+    const name = rawName.replace(/\s*—.*$/, '').trim().slice(0, 120);
+
+    // Extract URL from Link: line or any https:// in chunk
+    const linkMatch = chunk.match(/Link:\s*<?(\bhttps?:\/\/[^\s>]+)/i);
+    const urlMatch = chunk.match(/\bhttps?:\/\/[^\s<>)]+/);
+    const sourceUrl = (linkMatch?.[1] || urlMatch?.[0] || '').trim() || `https://manual/${Date.now()}`;
+
+    // Extract deadline
+    const deadlineMatch = chunk.match(/Deadline:\s*([^\n]+)/i);
+    const deadline = deadlineMatch ? deadlineMatch[1].trim() : undefined;
+
+    // Build clean description: name — description text, append deadline if present
+    const descMatch = chunk.match(/\*\*[^*]+\*\*\s*[—–-]\s*([\s\S]+?)(?:\n(?:Deadline|Link):|\s*$)/);
+    let description = descMatch ? descMatch[1].trim() : chunk.replace(/^\d+\.\s*/, '').trim();
+    if (deadline && deadline.toLowerCase() !== 'none listed') {
+      description += `\nDeadline: ${deadline}`;
+    }
+
+    return { name, description, sourceUrl, deadline };
+  }).filter(e => e.name.length > 2);
+}
+
+/**
+ * Process a batch message (numbered list) — inserts one entry per item.
+ */
+export async function processBatchMessage(
+  msg: IntakeMessage,
+  scanSource = 'telegram',
+): Promise<BatchIntakeResult> {
+  const text = msg.text.trim();
+  const wires = await getActiveWires();
+  const scanDate = new Date().toISOString().slice(0, 10);
+  const entries = parseBatchEntries(text);
+
+  const result: BatchIntakeResult = { inserted: 0, failed: 0, entries: [] };
+
+  for (const entry of entries) {
+    // Detect wire from combined name + description
+    const combined = `${entry.name} ${entry.description}`;
+    const wire = detectWire(combined, wires) || wires[0] || 'crypto';
+    try {
+      const id = await insertEntry({
+        name: entry.name,
+        description: entry.description,
+        sourceUrl: entry.sourceUrl,
+        wire,
+        scanDate,
+        submittedBy: msg.senderId,
+        scanSource,
+      });
+      result.inserted++;
+      result.entries.push({ name: entry.name, wire, id });
+    } catch (err) {
+      result.failed++;
+      result.entries.push({ name: entry.name, wire, error: err instanceof Error ? err.message : 'Insert failed' });
+    }
+  }
+
+  return result;
+}
+
 /**
  * Cleanup expired pending entries (older than 1 hour).
  */
