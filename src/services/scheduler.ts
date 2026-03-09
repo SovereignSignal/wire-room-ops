@@ -3,7 +3,7 @@ import { runScanExecution } from '../jobs/scan-execution';
 import { runForumScan } from '../jobs/forum-scan';
 import { config } from '../config';
 import { sendTestAlertEmail, sendScheduledJobFailureEmail, sendDailyDigestEmail } from './email';
-import { runDailyDigest } from '../jobs/daily-digest';
+import { runDailyDigest, getTopPendingFinds } from '../jobs/daily-digest';
 import { ensureScheduleTable, getAllSchedules, getScheduleById, createSchedule, updateSchedule, deleteSchedule as dbDeleteSchedule, StoredScheduleConfig, ensureFeedsTable, ensureScanTables, ensureScanPromptsTable, ensureDistributionTables, getPool } from '../db';
 
 export interface ScheduleConfig {
@@ -214,6 +214,7 @@ function createJobExecutor(schedule: ScheduleConfig) {
         console.log(`[Scheduler] Running daily digest...`);
 
         const digest = await runDailyDigest(pool);
+        const topFinds = digest.totalPendingReview > 0 ? await getTopPendingFinds(pool, 5) : [];
 
         if (digest.hasActivity) {
           try {
@@ -221,7 +222,7 @@ function createJobExecutor(schedule: ScheduleConfig) {
             const recipients = currentScheduleData.notifyEmails
               ? currentScheduleData.notifyEmails.split(',').map(e => e.trim()).filter(Boolean)
               : undefined;
-            await sendDailyDigestEmail(digest, dashboardUrl, recipients);
+            await sendDailyDigestEmail(digest, dashboardUrl, recipients, topFinds);
             console.log(`[Scheduler] Daily digest email sent (${digest.totalNewUnique} new, ${digest.totalPendingReview} pending)`);
           } catch (emailErr) {
             console.error(`[Scheduler] Failed to send daily digest email:`, emailErr);
