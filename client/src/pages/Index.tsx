@@ -3,8 +3,8 @@ import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { OverviewTab } from '@/components/dashboard/OverviewTab';
 import { QueueTab } from '@/components/dashboard/QueueTab';
 import { PublishedTab } from '@/components/dashboard/PublishedTab';
-import { ReviewTab } from '@/components/dashboard/ReviewTab';
 import { SourcesTab } from '@/components/dashboard/SourcesTab';
+// ReviewTab removed — approve/decline now inline in QueueTab
 import { Starfield } from '@/components/dashboard/Starfield';
 import { EntryDetailsSheet } from '@/components/dashboard/EntryDetailsSheet';
 import { fetchEntries, updateEntryStatus, fetchStats, fetchFeeds } from '@/api';
@@ -15,7 +15,6 @@ const Index = () => {
   const [activeTab, setActiveTab] = useState('overview');
   const [queueEntries, setQueueEntries] = useState<ScanEntry[]>([]);
   const [approvedEntries, setApprovedEntries] = useState<ScanEntry[]>([]);
-  const [flaggedEntries, setFlaggedEntries] = useState<ScanEntry[]>([]);
   const [stats, setStats] = useState<VerticalStats[]>([]);
   const [verticals, setVerticals] = useState<string[]>([]);
   const [selectedEntry, setSelectedEntry] = useState<ScanEntry | null>(null);
@@ -27,12 +26,11 @@ const Index = () => {
       const results = await Promise.allSettled([
         fetchEntries({ status: 'queued' }),
         fetchEntries({ status: 'approved' }),
-        fetchEntries({ status: 'flagged' }),
         fetchStats(),
         fetchFeeds(),
       ]);
 
-      const [queuedR, approvedR, flaggedR, statsR, feedsR] = results;
+      const [queuedR, approvedR, statsR, feedsR] = results;
 
       // Check if ALL failed (likely auth issue)
       const allFailed = results.every(r => r.status === 'rejected');
@@ -48,9 +46,6 @@ const Index = () => {
 
       if (approvedR.status === 'fulfilled') setApprovedEntries(approvedR.value);
       else console.warn('Failed to load approved entries:', approvedR.reason);
-
-      if (flaggedR.status === 'fulfilled') setFlaggedEntries(flaggedR.value);
-      else console.warn('Failed to load flagged entries:', flaggedR.reason);
 
       if (feedsR.status === 'fulfilled') {
         setVerticals(feedsR.value.map((f: { key: string }) => f.key));
@@ -103,20 +98,6 @@ const Index = () => {
     }
   };
 
-  const handleReviewDecision = async (id: string, decision: 'approved' | 'archived') => {
-    try {
-      await updateEntryStatus(id, decision);
-      toast({
-        title: `Item ${decision}`,
-        description: 'Decision logged successfully',
-      });
-      await loadData();
-    } catch (err) {
-      console.error('Failed to update status:', err);
-      toast({ title: 'Error', description: 'Failed to log decision' });
-    }
-  };
-
   if (loading) {
     return (
       <>
@@ -140,13 +121,12 @@ const Index = () => {
         activeTab={activeTab}
         onTabChange={setActiveTab}
         queueCount={queueEntries.length}
-        reviewCount={flaggedEntries.length}
       >
         {activeTab === 'overview' && (
           <OverviewTab
             queueEntries={queueEntries}
             publishedEntries={approvedEntries}
-            reviewEntries={flaggedEntries}
+            reviewEntries={[]}
             stats={stats}
           />
         )}
@@ -156,19 +136,13 @@ const Index = () => {
             verticals={verticals}
             onUpdateStatus={handleUpdateStatus}
             onViewDetails={setSelectedEntry}
+            onSingleAction={(id, status) => handleUpdateStatus([id], status)}
           />
         )}
         {activeTab === 'published' && (
           <PublishedTab
             entries={approvedEntries}
             verticals={verticals}
-            onViewDetails={setSelectedEntry}
-          />
-        )}
-        {activeTab === 'review' && (
-          <ReviewTab
-            entries={flaggedEntries}
-            onDecision={handleReviewDecision}
             onViewDetails={setSelectedEntry}
           />
         )}

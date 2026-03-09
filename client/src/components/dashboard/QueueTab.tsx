@@ -5,16 +5,18 @@ import { VerticalTag } from './VerticalTag';
 import { ActionBar } from './ActionBar';
 import { FilterBar } from './FilterBar';
 import { Checkbox } from '@/components/ui/checkbox';
-import { ExternalLink } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { ExternalLink, CheckCircle, Archive } from 'lucide-react';
 
 interface QueueTabProps {
   entries: ScanEntry[];
   verticals: string[];
   onUpdateStatus: (ids: string[], status: ScanEntry['status']) => void;
   onViewDetails: (entry: ScanEntry) => void;
+  onSingleAction?: (id: string, status: ScanEntry['status']) => void;
 }
 
-export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails }: QueueTabProps) {
+export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, onSingleAction }: QueueTabProps) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [filters, setFilters] = useState<FilterState>({
     wire: null,
@@ -86,6 +88,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails }: 
               <th className="w-24">Value</th>
               <th className="w-28">Deadline</th>
               <th className="w-20">Source</th>
+              <th className="w-40">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -128,11 +131,32 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails }: 
                     <ExternalLink className="w-3.5 h-3.5" />
                   </a>
                 </td>
+                <td onClick={(e) => e.stopPropagation()}>
+                  <div className="flex items-center gap-1.5">
+                    <Button
+                      size="sm"
+                      onClick={() => (onSingleAction ?? ((id, s) => onUpdateStatus([id], s)))(entry.id, 'approved')}
+                      className="gap-1 bg-status-success/20 text-status-success border border-status-success/30 hover:bg-status-success/30 font-display text-[10px] tracking-wider h-7 px-2"
+                    >
+                      <CheckCircle className="w-3 h-3" />
+                      APPROVE
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => (onSingleAction ?? ((id, s) => onUpdateStatus([id], s)))(entry.id, 'archived')}
+                      className="gap-1 font-display text-[10px] tracking-wider h-7 px-2"
+                    >
+                      <Archive className="w-3 h-3" />
+                      DECLINE
+                    </Button>
+                  </div>
+                </td>
               </tr>
             ))}
             {filteredEntries.length === 0 && (
               <tr>
-                <td colSpan={7} className="text-center py-12 text-muted-foreground font-display text-sm tracking-wider">
+                <td colSpan={8} className="text-center py-12 text-muted-foreground font-display text-sm tracking-wider">
                   NO ITEMS MATCH FILTERS
                 </td>
               </tr>

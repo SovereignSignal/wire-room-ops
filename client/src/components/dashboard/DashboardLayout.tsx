@@ -7,7 +7,6 @@ interface DashboardLayoutProps {
   activeTab: string;
   onTabChange: (tab: string) => void;
   queueCount: number;
-  reviewCount: number;
 }
 
 export function DashboardLayout({ 
@@ -15,7 +14,6 @@ export function DashboardLayout({
   activeTab, 
   onTabChange,
   queueCount,
-  reviewCount 
 }: DashboardLayoutProps) {
   return (
     <div className="min-h-screen">
@@ -80,18 +78,6 @@ export function DashboardLayout({
               >
                 <span className="text-sm">✅</span>
                 PUBLISHED
-              </TabsTrigger>
-              <TabsTrigger 
-                value="review" 
-                className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-2 px-4 font-display text-xs tracking-wider"
-              >
-                <span className="text-sm">⚠️</span>
-                REVIEW
-                {reviewCount > 0 && (
-                  <span className="ml-1 px-2 py-0.5 text-[10px] rounded bg-status-warning/20 text-status-warning font-mono border border-status-warning/30">
-                    {reviewCount}
-                  </span>
-                )}
               </TabsTrigger>
               <TabsTrigger 
                 value="sources" 
