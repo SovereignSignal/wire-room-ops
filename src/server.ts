@@ -1521,6 +1521,47 @@ app.post('/api/scan/entries/:id/action', requireAuth, async (req: Request, res: 
   }
 });
 
+// API: Update entry wire/vertical
+app.patch('/api/scan/entries/:id/wire', requireAuth, async (req: Request, res: Response) => {
+  const entryId = parseInt(req.params.id, 10);
+  if (isNaN(entryId)) {
+    res.status(400).json({ error: 'Invalid entry ID' });
+    return;
+  }
+
+  const { wire } = req.body;
+  if (!wire || typeof wire !== 'string') {
+    res.status(400).json({ error: 'Missing or invalid wire' });
+    return;
+  }
+
+  try {
+    // Validate against active wires from DB
+    const activeWires = await getAvailableWires();
+    const validWireKeys = activeWires.map((w: any) => w.key || w);
+    if (!validWireKeys.includes(wire)) {
+      res.status(400).json({ error: `Invalid wire "${wire}". Must be one of: ${validWireKeys.join(', ')}` });
+      return;
+    }
+
+    const pool = getPool();
+    const result = await pool.query(
+      `UPDATE scan_entries SET wire = $1, updated_at = NOW() WHERE id = $2 RETURNING id, wire`,
+      [wire, entryId]
+    );
+
+    if (result.rows.length === 0) {
+      res.status(404).json({ error: 'Entry not found' });
+      return;
+    }
+
+    res.json({ success: true, wire: result.rows[0].wire });
+  } catch (error) {
+    console.error('Failed to update entry wire:', error);
+    res.status(500).json({ error: 'Failed to update wire' });
+  }
+});
+
 // API: Scan entries by status (for queue tabs)
 app.get('/api/scan/entries', requireAuth, async (req: Request, res: Response) => {
   try {

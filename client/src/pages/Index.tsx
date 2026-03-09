@@ -138,6 +138,9 @@ const Index = () => {
             onUpdateStatus={handleUpdateStatus}
             onViewDetails={setSelectedEntry}
             onSingleAction={(id, status) => handleUpdateStatus([id], status)}
+            onEntryUpdated={(id, updates) => {
+              setQueueEntries(prev => prev.map(e => e.id === id ? { ...e, ...updates } : e));
+            }}
           />
         )}
         {activeTab === 'published' && (
