@@ -232,3 +232,7 @@ To deploy Wire Room Ops for a different vertical (e.g. consulting leads, researc
 - `GET /api/distribution/config`
 - `POST /api/distribution/run/:wire`
 - `GET /api/distribution/newsletter/:wire`
+
+## Session Persistence
+
+Sessions are stored in the PostgreSQL `sessions` table (DB-backed). They survive Railway deploys — no more forced re-login after every deployment. Session expiry is 7 days. Cookie `maxAge` matches.

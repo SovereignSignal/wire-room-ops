@@ -24,29 +24,61 @@ const Index = () => {
 
   const loadData = useCallback(async () => {
     try {
-      const [queued, approved, flagged, statsData, feeds] = await Promise.all([
+      const results = await Promise.allSettled([
         fetchEntries({ status: 'queued' }),
         fetchEntries({ status: 'approved' }),
         fetchEntries({ status: 'flagged' }),
         fetchStats(),
         fetchFeeds(),
       ]);
-      setQueueEntries(queued);
-      setApprovedEntries(approved);
-      setFlaggedEntries(flagged);
-      setVerticals(feeds.map((f: { key: string }) => f.key));
 
-      // Map intake stats to VerticalStats format
-      const verticalStats: VerticalStats[] = (statsData.intake || []).map((r: any) => ({
-        wire: r.wire,
-        last_scan: r.last_scan || new Date().toISOString(),
-        items_this_week: Number(r.items_this_week) || 0,
-        duplicate_rate: r.items_this_week > 0
-          ? Math.round((Number(r.duplicates_found) / (Number(r.items_this_week) + Number(r.duplicates_found))) * 100)
-          : 0,
-        avg_quality_score: Number(r.avg_quality_score) || 0,
-      }));
-      setStats(verticalStats);
+      const [queuedR, approvedR, flaggedR, statsR, feedsR] = results;
+
+      // Check if ALL failed (likely auth issue)
+      const allFailed = results.every(r => r.status === 'rejected');
+      if (allFailed) {
+        // Likely session expired — redirect to login
+        window.location.href = '/';
+        return;
+      }
+
+      // Apply successful results, log failures
+      if (queuedR.status === 'fulfilled') setQueueEntries(queuedR.value);
+      else console.warn('Failed to load queued entries:', queuedR.reason);
+
+      if (approvedR.status === 'fulfilled') setApprovedEntries(approvedR.value);
+      else console.warn('Failed to load approved entries:', approvedR.reason);
+
+      if (flaggedR.status === 'fulfilled') setFlaggedEntries(flaggedR.value);
+      else console.warn('Failed to load flagged entries:', flaggedR.reason);
+
+      if (feedsR.status === 'fulfilled') {
+        setVerticals(feedsR.value.map((f: { key: string }) => f.key));
+      } else {
+        console.warn('Failed to load feeds:', feedsR.reason);
+      }
+
+      if (statsR.status === 'fulfilled') {
+        const statsData = statsR.value;
+        const verticalStats: VerticalStats[] = (statsData.intake || []).map((r: any) => ({
+          wire: r.wire,
+          last_scan: r.last_scan || new Date().toISOString(),
+          items_this_week: Number(r.items_this_week) || 0,
+          duplicate_rate: r.items_this_week > 0
+            ? Math.round((Number(r.duplicates_found) / (Number(r.items_this_week) + Number(r.duplicates_found))) * 100)
+            : 0,
+          avg_quality_score: Number(r.avg_quality_score) || 0,
+        }));
+        setStats(verticalStats);
+      } else {
+        console.warn('Failed to load stats:', statsR.reason);
+      }
+
+      // Show toast only if some (but not all) failed
+      const failedCount = results.filter(r => r.status === 'rejected').length;
+      if (failedCount > 0) {
+        toast({ title: 'Warning', description: `${failedCount} data source(s) failed to load` });
+      }
     } catch (err) {
       console.error('Failed to load data:', err);
       toast({ title: 'Error', description: 'Failed to load dashboard data' });

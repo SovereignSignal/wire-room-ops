@@ -2,7 +2,7 @@ import path from 'path';
 import express, { Request, Response } from 'express';
 import cookieParser from 'cookie-parser';
 import { config } from './config';
-import { validateMagicLink, createMagicLink, createDownloadToken, createSessionToken, validateSession, invalidateSession, stopAuthCleanup } from './services/auth';
+import { validateMagicLink, createMagicLink, createDownloadToken, createSessionToken, validateSession, invalidateSession, stopAuthCleanup, ensureSessionsTable } from './services/auth';
 import jwt from 'jsonwebtoken';
 import jwksClient from 'jwks-rsa';
 import { getFile, listFiles } from './services/storage';
@@ -61,10 +61,10 @@ app.use(cookieParser());
 const isDevMode = process.env.DEV_MODE === 'true' || !config.privy.appId || config.privy.appId.includes('placeholder');
 
 // Auth middleware - checks session from HttpOnly cookie only
-function requireAuth(req: Request, res: Response, next: Function): void {
+async function requireAuth(req: Request, res: Response, next: Function): Promise<void> {
   if (isDevMode) return next();
   const session = req.cookies?.session as string;
-  if (!session || !validateSession(session)) {
+  if (!session || !(await validateSession(session))) {
     res.status(401).json({ error: 'Unauthorized' });
     return;
   }
@@ -228,7 +228,7 @@ app.get('/ready', async (_req: Request, res: Response) => {
 // Landing page - login check then serve React SPA or login page
 app.get('/', async (req: Request, res: Response) => {
   const session = req.cookies?.session as string;
-  if (isDevMode || (session && validateSession(session))) {
+  if (isDevMode || (session && await validateSession(session))) {
     // Authenticated — serve React SPA
     const indexPath = path.join(__dirname, '../dist/client/index.html');
     res.sendFile(indexPath, (err) => {
@@ -242,10 +242,10 @@ app.get('/', async (req: Request, res: Response) => {
   res.send(renderLoginPage());
 });
 
-app.get('/logout', (req: Request, res: Response) => {
+app.get('/logout', async (req: Request, res: Response) => {
   const sessionToken = req.cookies?.session as string;
   if (sessionToken) {
-    invalidateSession(sessionToken);
+    await invalidateSession(sessionToken);
   }
   res.clearCookie('session', { httpOnly: true, sameSite: 'lax' });
   res.redirect('/');
@@ -306,12 +306,12 @@ app.post('/api/auth/callback', async (req: Request, res: Response) => {
     }
 
     console.log(`[Auth] Login granted for ${linkedEmail}`);
-    const sessionToken = createSessionToken(linkedEmail);
+    const sessionToken = await createSessionToken(linkedEmail);
     res.cookie('session', sessionToken, {
       httpOnly: true,
       secure: config.app.url.startsWith('https'),
       sameSite: 'lax',
-      maxAge: 24 * 60 * 60 * 1000,
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days to match DB session expiry
     });
     res.json({ ok: true });
   } catch (error) {
@@ -529,7 +529,7 @@ app.get('/file/:fileId', async (req: Request, res: Response) => {
   const session = req.cookies?.session as string;
   const fileId = req.params.fileId;
 
-  if (!session || !validateSession(session)) {
+  if (!session || !(await validateSession(session))) {
     res.redirect('/');
     return;
   }
@@ -551,7 +551,7 @@ app.get('/file/:fileId', async (req: Request, res: Response) => {
 app.post('/resend-link', async (req: Request, res: Response) => {
   // Check auth first; fall back to IP rate limiting for expired-session users
   const session = req.cookies?.session as string;
-  const isAuthed = session && validateSession(session);
+  const isAuthed = session && await validateSession(session);
 
   if (!isAuthed) {
     const clientIp = req.ip || 'unknown';
@@ -1813,6 +1813,13 @@ app.use((err: Error, _req: Request, res: Response, _next: express.NextFunction) 
 });
 
 export async function startServer(): Promise<void> {
+  // Ensure sessions table exists (DB-backed sessions survive deploys)
+  try {
+    await ensureSessionsTable();
+  } catch (error) {
+    console.error('Sessions table initialization failed (non-fatal):', error);
+  }
+
   // Initialize the scheduler (loads config from database)
   // Wrapped in try-catch so scheduler issues don't prevent server from starting
   try {

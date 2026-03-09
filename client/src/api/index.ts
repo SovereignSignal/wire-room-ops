@@ -2,11 +2,21 @@ import { ScanEntry } from '@/types';
 
 const BASE = "/api";
 
+async function authFetch(url: string, init?: RequestInit): Promise<Response> {
+  const res = await fetch(url, init);
+  if (res.status === 401) {
+    // Session expired — redirect to login
+    window.location.href = '/';
+    throw new Error('Session expired');
+  }
+  return res;
+}
+
 export async function fetchEntries(params: { status?: string; wire?: string } = {}): Promise<ScanEntry[]> {
   const q = new URLSearchParams(
     Object.fromEntries(Object.entries(params).filter(([, v]) => v != null))
   ).toString();
-  const res = await fetch(`${BASE}/scan/entries${q ? "?" + q : ""}`);
+  const res = await authFetch(`${BASE}/scan/entries${q ? "?" + q : ""}`);
   if (!res.ok) throw new Error(`Failed to fetch entries: ${res.status}`);
   const data = await res.json();
   // Existing API returns { entries, total, count }
@@ -29,7 +39,7 @@ const STATUS_TO_ACTION: Record<string, string> = {
 
 export async function updateEntryStatus(id: number | string, status: string) {
   const action = STATUS_TO_ACTION[status] || status;
-  const res = await fetch(`${BASE}/scan/entries/${id}/action`, {
+  const res = await authFetch(`${BASE}/scan/entries/${id}/action`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action }),
@@ -39,13 +49,13 @@ export async function updateEntryStatus(id: number | string, status: string) {
 }
 
 export async function fetchStats() {
-  const res = await fetch(`${BASE}/dashboard/stats`);
+  const res = await authFetch(`${BASE}/dashboard/stats`);
   if (!res.ok) throw new Error(`Failed to fetch stats: ${res.status}`);
   return res.json();
 }
 
 export async function fetchFeeds(): Promise<{ key: string; displayName: string }[]> {
-  const res = await fetch(`${BASE}/feeds`);
+  const res = await authFetch(`${BASE}/feeds`);
   if (!res.ok) throw new Error(`Failed to fetch feeds: ${res.status}`);
   return res.json();
 }
