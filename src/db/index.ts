@@ -168,7 +168,7 @@ export interface StoredScheduleConfig {
   anthropicModel?: string;
   timezone: string;
   wire?: string;
-  scheduleType?: 'scan-execution' | 'forum-scan';
+  scheduleType?: 'scan-execution' | 'forum-scan' | 'daily-digest';
   frequencyHours?: number;
   notifyEmails?: string;
   createdAt?: Date;
@@ -208,13 +208,13 @@ export async function ensureScheduleTable(): Promise<void> {
     UPDATE schedules
     SET schedule_type = 'scan-execution'
     WHERE schedule_type IS NULL
-      OR schedule_type NOT IN ('scan-execution', 'forum-scan')
+      OR schedule_type NOT IN ('scan-execution', 'forum-scan', 'daily-digest')
   `);
   await pool.query(`ALTER TABLE schedules DROP CONSTRAINT IF EXISTS schedules_schedule_type_check`);
   await pool.query(`
     ALTER TABLE schedules
     ADD CONSTRAINT schedules_schedule_type_check
-    CHECK (schedule_type IN ('scan-execution', 'forum-scan'))
+    CHECK (schedule_type IN ('scan-execution', 'forum-scan', 'daily-digest'))
   `);
 
   // Migrate data from old schedule_config table if it exists
@@ -254,7 +254,9 @@ export async function ensureScheduleTable(): Promise<void> {
 }
 
 function parseScheduleRow(row: any): StoredScheduleConfig {
-  const normalizedScheduleType = row.schedule_type === 'forum-scan' ? 'forum-scan' : 'scan-execution';
+  const normalizedScheduleType: 'scan-execution' | 'forum-scan' | 'daily-digest' =
+    row.schedule_type === 'forum-scan' ? 'forum-scan' :
+    row.schedule_type === 'daily-digest' ? 'daily-digest' : 'scan-execution';
 
   return {
     id: row.id,
