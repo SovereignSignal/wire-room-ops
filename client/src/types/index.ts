@@ -40,6 +40,16 @@ export interface VerticalStats {
   items_this_week: number;
   duplicate_rate: number;
   avg_quality_score: number;
+  high_quality_count: number;
+  scans_run: number;
+}
+
+export interface WireCounts {
+  wire: string;
+  queued: number;
+  approved: number;
+  archived: number;
+  raw: number;
 }
 
 export interface FilterState {
