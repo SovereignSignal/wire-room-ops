@@ -21,7 +21,7 @@ import { runScanExecution } from './jobs/scan-execution';
 import { runForumScan } from './jobs/forum-scan';
 import { syncSummariesToScanEntries, startSummarySync, stopSummarySync } from './jobs/summary-sync';
 import { getPromptEffectivenessStats } from './services/scan-stats';
-import { distributeEntries, retryDistribution, generateNewsletterMarkdown, sendTestMessage } from './services/distribution';
+import { distributeEntries, distributeEntry, retryDistribution, generateNewsletterMarkdown, sendTestMessage } from './services/distribution';
 import { parseStructuredOutput } from './services/intake';
 import { reviewScanPrompt } from './services/anthropic';
 import type { RawScanResult, ToolType } from './types/intake';
@@ -1504,12 +1504,12 @@ app.post('/api/scan/entries/:id/action', requireAuth, async (req: Request, res: 
       return;
     }
 
-    // Fire-and-forget distribution when an entry is approved
+    // Fire-and-forget distribution when an entry is approved — single entry only
     if (action === 'approve') {
       const wire = result.rows[0].wire;
       setImmediate(() => {
-        distributeEntries(wire).catch(err => {
-          console.error(`[Distribution] Auto-distribute after approve failed for wire ${wire}:`, err);
+        distributeEntry(entryId, wire).catch(err => {
+          console.error(`[Distribution] Auto-distribute after approve failed for entry ${entryId}:`, err);
         });
       });
     }

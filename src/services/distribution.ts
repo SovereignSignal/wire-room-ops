@@ -348,6 +348,63 @@ async function dispatchToChannel(
 /**
  * Retry distribution for a single entry (delete failed logs, re-run only failed channels).
  */
+/**
+ * Distribute a single approved entry immediately to all enabled channels for its wire.
+ * Used when an entry is approved via the dashboard — only sends that one entry,
+ * not the entire backlog of approved-but-undistributed entries.
+ */
+export async function distributeEntry(entryId: number, wire: string): Promise<DistributeResult> {
+  const configs = await getDistributionConfigs(wire);
+  const enabledConfigs = configs.filter(c => c.enabled && c.channel !== 'newsletter');
+  const managedChannels = await getEnabledDistributionChannelsForWire(wire);
+
+  if (enabledConfigs.length === 0 && managedChannels.length === 0) {
+    return { wire, totalEntries: 0, distributed: 0, failed: 0, skipped: 0, details: [] };
+  }
+
+  const pool = getPool();
+  const entryResult = await pool.query(
+    `SELECT * FROM scan_entries WHERE id = $1 AND status = 'approved'`,
+    [entryId]
+  );
+
+  if (entryResult.rows.length === 0) {
+    return { wire, totalEntries: 0, distributed: 0, failed: 0, skipped: 0, details: [] };
+  }
+
+  const entry = entryResult.rows[0];
+  const telegramBotToken = config.telegram.botToken;
+  const posts = await generatePosts({
+    name: entry.name,
+    description: entry.description || '',
+    amount: entry.amount,
+    deadline: entry.deadline,
+    sourceUrl: entry.source_url,
+  }, wire);
+
+  const detail: DistributeResult['details'][0] = { entryId: entry.id, name: entry.name, channels: {} };
+  const result: DistributeResult = { wire, totalEntries: 1, distributed: 0, failed: 0, skipped: 0, details: [detail] };
+
+  for (const cfg of enabledConfigs) {
+    const channelResult = await dispatchToChannel(cfg, entry, posts, telegramBotToken);
+    detail.channels[cfg.channel] = channelResult;
+    if (channelResult === 'success') result.distributed++;
+    if (channelResult === 'failed') result.failed++;
+    if (channelResult === 'skipped') result.skipped++;
+  }
+
+  for (const mc of managedChannels) {
+    const channelResult = await dispatchToManagedChannel(mc, entry, posts);
+    const channelKey = `${mc.channel}:${mc.id.slice(0, 8)}`;
+    detail.channels[channelKey] = channelResult;
+    if (channelResult === 'success') result.distributed++;
+    if (channelResult === 'failed') result.failed++;
+    if (channelResult === 'skipped') result.skipped++;
+  }
+
+  return result;
+}
+
 export async function retryDistribution(entryId: number, wire: string): Promise<DistributeResult> {
   // Identify which channels already succeeded — only retry the rest
   const existingLogs = await getDistributionLogs(entryId);
