@@ -80,6 +80,13 @@ export function DashboardLayout({
                 PUBLISHED
               </TabsTrigger>
               <TabsTrigger 
+                value="distribution" 
+                className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-2 px-4 font-display text-xs tracking-wider"
+              >
+                <span className="text-sm">📢</span>
+                DISTRIBUTION
+              </TabsTrigger>
+              <TabsTrigger 
                 value="sources" 
                 className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-2 px-4 font-display text-xs tracking-wider"
               >

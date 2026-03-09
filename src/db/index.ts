@@ -1180,7 +1180,7 @@ export async function ensureDistributionTables(): Promise<void> {
     // distribution_config — per-wire per-channel settings
     await client.query(`CREATE TABLE IF NOT EXISTS distribution_config (
       wire TEXT NOT NULL,
-      channel TEXT NOT NULL CHECK (channel IN ('telegram', 'x', 'newsletter')),
+      channel TEXT NOT NULL CHECK (channel IN ('telegram', 'discord', 'slack', 'x', 'newsletter')),
       enabled BOOLEAN NOT NULL DEFAULT false,
       config JSONB NOT NULL DEFAULT '{}',
       created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -1188,11 +1188,50 @@ export async function ensureDistributionTables(): Promise<void> {
       PRIMARY KEY (wire, channel)
     )`);
 
+    // Expand channel CHECK constraint (idempotent migration for existing tables)
+    await client.query(`ALTER TABLE distribution_config DROP CONSTRAINT IF EXISTS distribution_config_channel_check`);
+    await client.query(`ALTER TABLE distribution_config ADD CONSTRAINT distribution_config_channel_check CHECK (channel IN ('telegram', 'discord', 'slack', 'x', 'newsletter'))`);
+
+    // distribution_channels — managed channel configs with credentials stored in DB
+    await client.query(`CREATE TABLE IF NOT EXISTS distribution_channels (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      wire TEXT NOT NULL,
+      channel TEXT NOT NULL CHECK (channel IN ('telegram', 'discord', 'slack', 'x', 'newsletter')),
+      name TEXT NOT NULL DEFAULT '',
+      enabled BOOLEAN NOT NULL DEFAULT false,
+      target_id TEXT NOT NULL DEFAULT '',
+      credentials JSONB NOT NULL DEFAULT '{}',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+
+    // Indexes for distribution_channels
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_dist_channels_wire ON distribution_channels(wire)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_dist_channels_wire_channel ON distribution_channels(wire, channel)`);
+
+    // updated_at trigger for distribution_channels
+    await client.query(`
+      CREATE OR REPLACE FUNCTION update_distribution_channels_updated_at()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        NEW.updated_at = NOW();
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql
+    `);
+    await client.query(`DROP TRIGGER IF EXISTS distribution_channels_updated_at ON distribution_channels`);
+    await client.query(`
+      CREATE TRIGGER distribution_channels_updated_at
+        BEFORE UPDATE ON distribution_channels
+        FOR EACH ROW
+        EXECUTE FUNCTION update_distribution_channels_updated_at()
+    `);
+
     // distribution_logs — per-entry per-channel delivery records
     await client.query(`CREATE TABLE IF NOT EXISTS distribution_logs (
       id SERIAL PRIMARY KEY,
       entry_id INTEGER NOT NULL REFERENCES scan_entries(id),
-      channel TEXT NOT NULL CHECK (channel IN ('telegram', 'x', 'newsletter')),
+      channel TEXT NOT NULL CHECK (channel IN ('telegram', 'discord', 'slack', 'x', 'newsletter')),
       wire TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'success', 'failed', 'skipped')),
       post_text TEXT,
@@ -1200,6 +1239,10 @@ export async function ensureDistributionTables(): Promise<void> {
       error_message TEXT,
       created_at TIMESTAMPTZ DEFAULT NOW()
     )`);
+
+    // Expand distribution_logs channel CHECK constraint
+    await client.query(`ALTER TABLE distribution_logs DROP CONSTRAINT IF EXISTS distribution_logs_channel_check`);
+    await client.query(`ALTER TABLE distribution_logs ADD CONSTRAINT distribution_logs_channel_check CHECK (channel IN ('telegram', 'discord', 'slack', 'x', 'newsletter'))`);
 
     // Indexes
     await client.query(`CREATE INDEX IF NOT EXISTS idx_dist_logs_entry ON distribution_logs(entry_id)`);
@@ -1408,4 +1451,118 @@ export async function deleteFailedDistributionLogs(entryId: number): Promise<num
     [entryId]
   );
   return result.rowCount ?? 0;
+}
+
+// --- Distribution Channels (managed via dashboard UI) ---
+
+export interface DistributionChannelRecord {
+  id: string;
+  wire: string;
+  channel: string;
+  name: string;
+  enabled: boolean;
+  targetId: string;
+  credentials: Record<string, string>;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+function parseDistributionChannelRow(row: any): DistributionChannelRecord {
+  return {
+    id: row.id,
+    wire: row.wire,
+    channel: row.channel,
+    name: row.name || '',
+    enabled: row.enabled,
+    targetId: row.target_id || '',
+    credentials: row.credentials || {},
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function getDistributionChannels(wire?: string): Promise<DistributionChannelRecord[]> {
+  const pool = getPool();
+  if (wire) {
+    const result = await pool.query(
+      `SELECT * FROM distribution_channels WHERE wire = $1 ORDER BY channel, name`,
+      [wire]
+    );
+    return result.rows.map(parseDistributionChannelRow);
+  }
+  const result = await pool.query(`SELECT * FROM distribution_channels ORDER BY wire, channel, name`);
+  return result.rows.map(parseDistributionChannelRow);
+}
+
+export async function getDistributionChannelById(id: string): Promise<DistributionChannelRecord | null> {
+  const pool = getPool();
+  const result = await pool.query(`SELECT * FROM distribution_channels WHERE id = $1`, [id]);
+  return result.rows.length > 0 ? parseDistributionChannelRow(result.rows[0]) : null;
+}
+
+export async function createDistributionChannel(data: {
+  wire: string;
+  channel: string;
+  name: string;
+  enabled: boolean;
+  targetId: string;
+  credentials: Record<string, string>;
+}): Promise<DistributionChannelRecord> {
+  const pool = getPool();
+  const result = await pool.query(`
+    INSERT INTO distribution_channels (wire, channel, name, enabled, target_id, credentials)
+    VALUES ($1, $2, $3, $4, $5, $6)
+    RETURNING *
+  `, [data.wire, data.channel, data.name, data.enabled, data.targetId, JSON.stringify(data.credentials)]);
+  return parseDistributionChannelRow(result.rows[0]);
+}
+
+export async function updateDistributionChannel(
+  id: string,
+  data: Partial<{
+    wire: string;
+    channel: string;
+    name: string;
+    enabled: boolean;
+    targetId: string;
+    credentials: Record<string, string>;
+  }>
+): Promise<DistributionChannelRecord | null> {
+  const pool = getPool();
+  const setClauses: string[] = [];
+  const values: any[] = [];
+  let paramIndex = 1;
+
+  if (data.wire !== undefined) { setClauses.push(`wire = $${paramIndex++}`); values.push(data.wire); }
+  if (data.channel !== undefined) { setClauses.push(`channel = $${paramIndex++}`); values.push(data.channel); }
+  if (data.name !== undefined) { setClauses.push(`name = $${paramIndex++}`); values.push(data.name); }
+  if (data.enabled !== undefined) { setClauses.push(`enabled = $${paramIndex++}`); values.push(data.enabled); }
+  if (data.targetId !== undefined) { setClauses.push(`target_id = $${paramIndex++}`); values.push(data.targetId); }
+  if (data.credentials !== undefined) { setClauses.push(`credentials = $${paramIndex++}`); values.push(JSON.stringify(data.credentials)); }
+
+  if (setClauses.length === 0) return getDistributionChannelById(id);
+
+  values.push(id);
+  const result = await pool.query(`
+    UPDATE distribution_channels SET ${setClauses.join(', ')}
+    WHERE id = $${paramIndex}
+    RETURNING *
+  `, values);
+
+  return result.rows.length > 0 ? parseDistributionChannelRow(result.rows[0]) : null;
+}
+
+export async function deleteDistributionChannel(id: string): Promise<boolean> {
+  const pool = getPool();
+  const result = await pool.query(`DELETE FROM distribution_channels WHERE id = $1`, [id]);
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function getEnabledDistributionChannelsForWire(wire: string): Promise<DistributionChannelRecord[]> {
+  const pool = getPool();
+  const result = await pool.query(
+    `SELECT * FROM distribution_channels WHERE wire = $1 AND enabled = true ORDER BY channel, name`,
+    [wire]
+  );
+  return result.rows.map(parseDistributionChannelRow);
 }

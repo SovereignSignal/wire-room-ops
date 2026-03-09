@@ -176,7 +176,7 @@ export interface SeenName {
 
 // --- Distribution types ---
 
-export type DistributionChannel = 'telegram' | 'x' | 'newsletter';
+export type DistributionChannel = 'telegram' | 'discord' | 'slack' | 'x' | 'newsletter';
 export type DistributionStatus = 'pending' | 'success' | 'failed' | 'skipped';
 
 export interface DistributionConfig {
