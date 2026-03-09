@@ -116,3 +116,28 @@ export async function runDailyDigest(pool: Pool): Promise<DailyDigestResult> {
     client.release();
   }
 }
+
+import type { TopFindEntry } from '../services/email';
+
+/**
+ * Fetch the top N pending entries by quality score for inclusion in the digest email.
+ */
+export async function getTopPendingFinds(pool: Pool, limit = 5): Promise<TopFindEntry[]> {
+  const client = await pool.connect();
+  try {
+    const result = await client.query<{
+      name: string; wire: string; quality_score: number;
+      amount: string | null; deadline: string | null; source_url: string | null;
+    }>(`
+      SELECT name, wire, quality_score, amount, deadline, source_url
+      FROM scan_entries
+      WHERE status = 'queued'
+        AND (deadline_parsed IS NULL OR deadline_parsed >= CURRENT_DATE)
+      ORDER BY quality_score DESC, created_at DESC
+      LIMIT $1
+    `, [limit]);
+    return result.rows;
+  } finally {
+    client.release();
+  }
+}

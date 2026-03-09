@@ -1,5 +1,6 @@
 import { Resend } from 'resend';
 import { config } from '../config';
+import { getBrand } from '../config/brand';
 import { ProcessingStats } from '../types';
 import { escapeHtml } from '../utils/html';
 import type { ScanExecutionResult } from '../jobs/scan-execution';
@@ -667,103 +668,135 @@ The Wire Room
   console.log(`[Email] Scan digest email sent successfully`);
 }
 
+export interface TopFindEntry {
+  name: string;
+  wire: string;
+  quality_score: number;
+  amount: string | null;
+  deadline: string | null;
+  source_url: string | null;
+}
+
 export async function sendDailyDigestEmail(
   digest: import('../jobs/daily-digest').DailyDigestResult,
   dashboardUrl: string,
-  recipients?: string[]
+  recipients?: string[],
+  topFinds?: TopFindEntry[]
 ): Promise<void> {
   const client = getResend();
+  const brand = getBrand();
   const reviewUrl = `${dashboardUrl.replace(/\/$/, '')}/queue`;
 
-  const wireRows = digest.wires.map(w => {
-    const pendingColor = w.pendingReview > 10 ? '#ef5350' : w.pendingReview > 0 ? '#f5a623' : '#4caf50';
-    return `<tr>
-      <td style="padding:10px 8px;border-bottom:1px solid #2a2a2a;color:#ffffff;font-size:14px;text-transform:capitalize;">${escapeHtml(w.wire)}</td>
-      <td style="padding:10px 8px;border-bottom:1px solid #2a2a2a;color:#cccccc;font-size:14px;text-align:center;">${w.scansRun}</td>
-      <td style="padding:10px 8px;border-bottom:1px solid #2a2a2a;color:#cccccc;font-size:14px;text-align:center;">${w.newUnique}</td>
-      <td style="padding:10px 8px;border-bottom:1px solid #2a2a2a;color:#cccccc;font-size:14px;text-align:center;">${w.recentlyApproved}</td>
-      <td style="padding:10px 8px;border-bottom:1px solid #2a2a2a;text-align:center;">
-        <span style="display:inline-block;background-color:${pendingColor};color:#0d0d0d;padding:2px 10px;border-radius:10px;font-size:13px;font-weight:700;">${w.pendingReview}</span>
-      </td>
-    </tr>`;
-  }).join('');
+  // Wire breakdown rows
+  const wireRows = digest.wires.map(w =>
+    `<tr>
+      <td style="padding:8px 10px;border-bottom:1px solid #e5e7eb;font-size:14px;text-transform:capitalize;">${escapeHtml(w.wire)}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid #e5e7eb;font-size:14px;text-align:center;">${w.scansRun}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid #e5e7eb;font-size:14px;text-align:center;">${w.newUnique}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid #e5e7eb;font-size:14px;text-align:center;">${w.recentlyApproved}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid #e5e7eb;font-size:14px;text-align:center;font-weight:${w.pendingReview > 0 ? '700' : '400'};">${w.pendingReview}</td>
+    </tr>`
+  ).join('');
 
   const wireText = digest.wires.map(w =>
-    `  ${w.wire.padEnd(10)} scans:${w.scansRun} new:${w.newUnique} approved:${w.recentlyApproved} pending:${w.pendingReview}`
+    `  ${w.wire.padEnd(10)} scans:${w.scansRun}  new:${w.newUnique}  approved:${w.recentlyApproved}  pending:${w.pendingReview}`
   ).join('\n');
 
+  // Top pending finds
+  let topFindsHtml = '';
+  let topFindsText = '';
+  if (topFinds && topFinds.length > 0) {
+    const rows = topFinds.slice(0, 5).map(e => {
+      const nameCell = e.source_url
+        ? `<a href="${escapeHtml(e.source_url)}" style="color:${escapeHtml(brand.color)};text-decoration:none;">${escapeHtml(e.name)}</a>`
+        : escapeHtml(e.name);
+      return `<tr>
+        <td style="padding:7px 10px;border-bottom:1px solid #e5e7eb;font-size:13px;text-align:center;font-weight:700;">${e.quality_score}</td>
+        <td style="padding:7px 10px;border-bottom:1px solid #e5e7eb;font-size:13px;">${nameCell}</td>
+        <td style="padding:7px 10px;border-bottom:1px solid #e5e7eb;font-size:13px;">${e.amount ? escapeHtml(e.amount) : '—'}</td>
+        <td style="padding:7px 10px;border-bottom:1px solid #e5e7eb;font-size:13px;">${e.deadline ? escapeHtml(e.deadline) : '—'}</td>
+        <td style="padding:7px 10px;border-bottom:1px solid #e5e7eb;font-size:12px;text-transform:capitalize;">${escapeHtml(e.wire)}</td>
+      </tr>`;
+    }).join('');
+    topFindsHtml = `
+      <h3 style="margin:24px 0 10px;font-size:14px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#6b7280;">Top Pending</h3>
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #e5e7eb;border-radius:6px;overflow:hidden;">
+        <tr>
+          <th style="padding:8px 10px;font-size:11px;font-weight:600;text-transform:uppercase;color:#6b7280;border-bottom:2px solid #e5e7eb;background:#f9fafb;text-align:center;">Score</th>
+          <th style="padding:8px 10px;font-size:11px;font-weight:600;text-transform:uppercase;color:#6b7280;border-bottom:2px solid #e5e7eb;background:#f9fafb;text-align:left;">Name</th>
+          <th style="padding:8px 10px;font-size:11px;font-weight:600;text-transform:uppercase;color:#6b7280;border-bottom:2px solid #e5e7eb;background:#f9fafb;text-align:left;">Amount</th>
+          <th style="padding:8px 10px;font-size:11px;font-weight:600;text-transform:uppercase;color:#6b7280;border-bottom:2px solid #e5e7eb;background:#f9fafb;text-align:left;">Deadline</th>
+          <th style="padding:8px 10px;font-size:11px;font-weight:600;text-transform:uppercase;color:#6b7280;border-bottom:2px solid #e5e7eb;background:#f9fafb;text-align:left;">Wire</th>
+        </tr>
+        ${rows}
+      </table>`;
+    topFindsText = '\nTOP PENDING\n-----------\n' + topFinds.slice(0, 5).map(e =>
+      `  [${e.quality_score}] ${e.name} | ${e.amount || '—'} | ${e.deadline || '—'} | ${e.wire}`
+    ).join('\n');
+  }
+
+  // HTML — neutral, no forced dark/light theme
   const htmlContent = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
-<body style="margin:0;padding:0;background-color:#0d0d0d;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
-<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:#0d0d0d;">
-  <tr><td align="center" style="padding:40px 20px;">
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:560px;background-color:#1a1a1a;border:1px solid #2a2a2a;border-radius:16px;">
-      <tr><td style="padding:40px;">
-        <h1 style="margin:0 0 4px;font-size:22px;font-weight:700;text-align:center;">
-          <span style="color:#ffffff;">The</span> <span style="color:#f5a623;">Wire</span> <span style="color:#ffffff;">Room</span>
-        </h1>
-        <p style="margin:0 0 28px;color:#999999;font-size:13px;text-align:center;">Daily Digest — ${escapeHtml(digest.date)}</p>
-        <h2 style="margin:0 0 6px;color:#ffffff;font-size:18px;font-weight:600;">Pipeline Summary</h2>
-        <p style="margin:0 0 20px;color:#999999;font-size:14px;">
-          ${digest.totalNewUnique} new unique finds across all wires.
-          ${digest.totalPendingReview > 0
-            ? `<strong style="color:#f5a623;">${digest.totalPendingReview} items pending your review.</strong>`
-            : '<span style="color:#4caf50;">Queue is clear.</span>'}
-        </p>
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-bottom:24px;">
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.5;">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+  <tr><td align="center" style="padding:32px 16px;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:580px;">
+      <tr><td style="padding-bottom:20px;border-bottom:2px solid ${escapeHtml(brand.color)};">
+        <p style="margin:0;font-size:20px;font-weight:700;">${escapeHtml(brand.name)}</p>
+        <p style="margin:4px 0 0;font-size:13px;color:#6b7280;">${escapeHtml(brand.tagline)} — Daily Digest — ${escapeHtml(digest.date)}</p>
+      </td></tr>
+      <tr><td style="padding:20px 0 8px;">
+        <p style="margin:0;">${digest.totalNewUnique} new finds today. ${digest.totalPendingReview > 0 ? `<strong>${digest.totalPendingReview} pending review.</strong>` : 'Queue is clear.'}</p>
+      </td></tr>
+      <tr><td style="padding-top:16px;">
+        <h3 style="margin:0 0 10px;font-size:14px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#6b7280;">By Wire</h3>
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #e5e7eb;border-radius:6px;overflow:hidden;">
           <tr>
-            <th style="padding:8px;text-align:left;color:#f5a623;font-size:12px;font-weight:600;text-transform:uppercase;border-bottom:2px solid #2a2a2a;">Wire</th>
-            <th style="padding:8px;text-align:center;color:#f5a623;font-size:12px;font-weight:600;text-transform:uppercase;border-bottom:2px solid #2a2a2a;">Scans</th>
-            <th style="padding:8px;text-align:center;color:#f5a623;font-size:12px;font-weight:600;text-transform:uppercase;border-bottom:2px solid #2a2a2a;">New</th>
-            <th style="padding:8px;text-align:center;color:#f5a623;font-size:12px;font-weight:600;text-transform:uppercase;border-bottom:2px solid #2a2a2a;">Approved</th>
-            <th style="padding:8px;text-align:center;color:#f5a623;font-size:12px;font-weight:600;text-transform:uppercase;border-bottom:2px solid #2a2a2a;">Pending</th>
+            <th style="padding:8px 10px;font-size:11px;font-weight:600;text-transform:uppercase;color:#6b7280;border-bottom:2px solid #e5e7eb;background:#f9fafb;text-align:left;">Wire</th>
+            <th style="padding:8px 10px;font-size:11px;font-weight:600;text-transform:uppercase;color:#6b7280;border-bottom:2px solid #e5e7eb;background:#f9fafb;text-align:center;">Scans</th>
+            <th style="padding:8px 10px;font-size:11px;font-weight:600;text-transform:uppercase;color:#6b7280;border-bottom:2px solid #e5e7eb;background:#f9fafb;text-align:center;">New</th>
+            <th style="padding:8px 10px;font-size:11px;font-weight:600;text-transform:uppercase;color:#6b7280;border-bottom:2px solid #e5e7eb;background:#f9fafb;text-align:center;">Approved</th>
+            <th style="padding:8px 10px;font-size:11px;font-weight:600;text-transform:uppercase;color:#6b7280;border-bottom:2px solid #e5e7eb;background:#f9fafb;text-align:center;">Pending</th>
           </tr>
           ${wireRows}
         </table>
-        ${digest.totalPendingReview > 0 ? `
-        <table role="presentation" cellspacing="0" cellpadding="0" width="100%"><tr><td align="center">
-          <a href="${escapeHtml(reviewUrl)}" target="_blank" style="display:inline-block;padding:14px 32px;background-color:#f5a623;color:#0d0d0d;font-size:15px;font-weight:600;text-decoration:none;border-radius:8px;">
-            Review Queue (${digest.totalPendingReview})
-          </a>
-        </td></tr></table>` : `
-        <table role="presentation" cellspacing="0" cellpadding="0" width="100%"><tr><td align="center">
-          <a href="${escapeHtml(dashboardUrl)}" target="_blank" style="display:inline-block;padding:14px 32px;background-color:#2a2a2a;color:#cccccc;font-size:15px;font-weight:600;text-decoration:none;border-radius:8px;">
-            Open Dashboard
-          </a>
-        </td></tr></table>`}
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top:28px;border-top:1px solid #2a2a2a;">
-          <tr><td style="padding-top:20px;text-align:center;">
-            <p style="margin:0;color:#666666;font-size:12px;">One email per day. Individual scan notifications are disabled.</p>
-          </td></tr>
-        </table>
+      </td></tr>
+      ${topFindsHtml ? `<tr><td>${topFindsHtml}</td></tr>` : ''}
+      <tr><td style="padding:24px 0 0;text-align:center;">
+        ${digest.totalPendingReview > 0
+          ? `<a href="${escapeHtml(reviewUrl)}" style="display:inline-block;padding:12px 28px;background-color:${escapeHtml(brand.color)};color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;border-radius:6px;">Review Queue (${digest.totalPendingReview})</a>`
+          : `<a href="${escapeHtml(dashboardUrl)}" style="display:inline-block;padding:12px 28px;border:1px solid #d1d5db;color:#374151;font-size:14px;font-weight:600;text-decoration:none;border-radius:6px;">Open Dashboard</a>`}
+      </td></tr>
+      <tr><td style="padding-top:28px;margin-top:28px;border-top:1px solid #e5e7eb;">
+        <p style="margin:0;font-size:12px;color:#9ca3af;text-align:center;">${escapeHtml(brand.name)} — one digest per day</p>
       </td></tr>
     </table>
-    <p style="margin:20px 0 0;color:#666666;font-size:11px;">The Wire Room</p>
   </td></tr>
 </table>
 </body></html>`;
 
-  const textContent = `The Wire Room — Daily Digest ${digest.date}
+  const textContent = `${brand.name} — Daily Digest ${digest.date}
 
-${digest.totalNewUnique} new unique finds. ${digest.totalPendingReview} pending review.
+${digest.totalNewUnique} new finds. ${digest.totalPendingReview > 0 ? `${digest.totalPendingReview} pending review.` : 'Queue is clear.'}
 
-WIRE BREAKDOWN
---------------
+BY WIRE
+-------
 ${wireText}
-
-${digest.totalPendingReview > 0 ? `Review queue: ${reviewUrl}` : 'Queue is clear.'}
+${topFindsText}
+${digest.totalPendingReview > 0 ? `\nReview: ${reviewUrl}` : `\nDashboard: ${dashboardUrl}`}
 
 ---
-One email per day. Individual scan notifications disabled.
-The Wire Room`;
+${brand.name} | ${brand.url}`;
 
   const pendingLabel = digest.totalPendingReview > 0 ? ` | ${digest.totalPendingReview} pending` : '';
   const to = recipients && recipients.length > 0 ? recipients : config.email.notificationEmail;
 
   await client.emails.send({
-    from: config.email.fromEmail,
+    from: `${brand.fromName} <${config.email.fromEmail}>`,
     to,
-    subject: `Wire Room Digest — ${digest.date} | ${digest.totalNewUnique} new${pendingLabel}`,
+    subject: `${brand.name} Digest — ${digest.date} | ${digest.totalNewUnique} new${pendingLabel}`,
     html: htmlContent,
     text: textContent,
   });
