@@ -1,12 +1,16 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config';
+import { getBrand } from '../config/brand';
 import { DatabaseEntry } from '../types';
 import { scrapeUrl, isScrapableUrl, truncateContent } from './scraper';
 import type { RawScanResult, ToolType } from '../types/intake';
 import { getAnthropicModels } from './models';
 
-// Prompt when we have scraped content
-const SCRAPED_CONTENT_PROMPT = `Summarize this web page for The Wire Room newsletter.
+// Prompt builders — read brand at call time so env var overrides work without restart
+
+function buildScrapedContentPrompt(): string {
+  const brand = getBrand();
+  return `Summarize this web page for the ${brand.name} newsletter.
 
 URL: {url}
 
@@ -24,7 +28,7 @@ REQUIREMENTS:
 - Lead with a strong action verb (announced, launched, opened, unveiled, allocated, distributed, published, released)
 - Include ALL specific numbers from the content: funding amounts, token quantities, number of recipients/applicants, ROI metrics, percentages, dates
 - Include deadlines, eligibility requirements, and how to apply when mentioned
-- Provide enough context that a reader understands the significance for grant seekers
+- Provide enough context that a reader understands the significance for ${brand.audience}
 - No bullet points - write in flowing paragraphs
 - Exclude: committee member names, lengthy historical background, detailed mechanism explanations
 - Do not use: crucial, significantly, innovative, exciting, revolutionary, game-changing, foster, comprehensive
@@ -34,9 +38,11 @@ GOOD EXAMPLE:
 
 BAD EXAMPLE (too vague):
 **Cornaro Labs** published a report on EU crypto funding. The report covers funded projects and how to apply. More details in the linked analysis.`;
+}
 
-// Fallback prompt when scraping fails
-const FALLBACK_PROMPT = `Refine this summary for The Wire Room newsletter.
+function buildFallbackPrompt(): string {
+  const brand = getBrand();
+  return `Refine this summary for the ${brand.name} newsletter.
 
 URL: {url}
 Existing summary: {existing_summary}
@@ -50,7 +56,7 @@ REQUIREMENTS:
 - Lead with a strong action verb (announced, launched, opened, unveiled, allocated, distributed, published, released)
 - Include ALL specific numbers mentioned: funding amounts, token quantities, deadlines, dates
 - Include deadlines, eligibility requirements, and how to apply when available
-- Provide useful context for grant seekers
+- Provide useful context for ${brand.audience}
 - No bullet points - write in flowing paragraphs
 - Work with the information provided - do not say "unable to access"
 - Do not use: crucial, significantly, innovative, exciting, revolutionary, game-changing, foster, comprehensive
@@ -60,6 +66,7 @@ GOOD EXAMPLE:
 
 BAD EXAMPLE (too vague):
 **Stellar** announced new grants are available. Developers can apply for funding. Check the website for details.`;
+}
 
 let client: Anthropic | null = null;
 
@@ -222,7 +229,8 @@ function buildPromptReviewRequest(params: {
       description: result.description,
     }));
 
-  return `You are reviewing a Wire Room scan prompt used to discover high-signal funding opportunities.
+  const brand = getBrand();
+  return `You are reviewing a ${brand.name} scan prompt used to discover high-signal ${brand.contentType}.
 
 Your job:
 1. Evaluate whether the prompt is likely to return actionable, current, high-quality opportunities.
@@ -287,20 +295,20 @@ export async function summarizeWithOpus(entry: DatabaseEntry, model?: string): P
     if (scrapeResult.success) {
       console.log(`    Scraped ${scrapeResult.content.length} chars`);
       const truncatedContent = truncateContent(scrapeResult.content);
-      prompt = SCRAPED_CONTENT_PROMPT
+      prompt = buildScrapedContentPrompt()
         .replace('{url}', entry.url)
         .replace('{scraped_content}', truncatedContent)
         .replace('{existing_summary}', entry.quick_summary);
       scrapedSuccessfully = true;
     } else {
       console.log(`    Scrape failed: ${scrapeResult.error}`);
-      prompt = FALLBACK_PROMPT
+      prompt = buildFallbackPrompt()
         .replace('{url}', entry.url)
         .replace('{existing_summary}', entry.quick_summary);
     }
   } else {
     console.log(`    Skipping scrape for non-scrapable URL: ${entry.url}`);
-    prompt = FALLBACK_PROMPT
+    prompt = buildFallbackPrompt()
       .replace('{url}', entry.url)
       .replace('{existing_summary}', entry.quick_summary);
   }

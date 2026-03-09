@@ -1,8 +1,11 @@
 import { config } from '../config';
+import { getBrand } from '../config/brand';
 import { DatabaseEntry } from '../types';
 import type { ToolType } from '../types/intake';
 
-const GROK_PROMPT = `You have access to X.com posts. Access and summarize this X.com/Twitter post for The Wire Room newsletter.
+function buildGrokPrompt(): string {
+  const brand = getBrand();
+  return `You have access to X.com posts. Access and summarize this X.com/Twitter post for the ${brand.name} newsletter.
 
 URL: {url}
 
@@ -17,7 +20,7 @@ REQUIREMENTS:
 - Lead with a strong action verb (announced, launched, opened, unveiled, allocated, distributed, published, released)
 - Include ALL specific numbers: funding amounts, token quantities, number of recipients, ROI metrics, dates
 - Include deadlines, eligibility requirements, and how to apply when mentioned
-- Provide enough context that a reader understands WHY this matters for grant seekers
+- Provide enough context that a reader understands WHY this matters for ${brand.audience}
 - No bullet points - write in flowing paragraphs
 - No flowery language, but DO include substantive details
 - Do not use: crucial, significantly, innovative, exciting, revolutionary, game-changing, foster, comprehensive
@@ -27,6 +30,7 @@ GOOD EXAMPLE:
 
 BAD EXAMPLE (too vague):
 **Optimism** released a grants report showing positive results. Several projects received funding and showed growth. More details available in the post.`;
+}
 
 interface GrokResponse {
   choices: Array<{
@@ -40,7 +44,7 @@ interface GrokResponse {
 const DEFAULT_GROK_MODEL = 'grok-4-1-fast-reasoning';
 
 export async function summarizeWithGrok(entry: DatabaseEntry, model?: string): Promise<string> {
-  const prompt = GROK_PROMPT
+  const prompt = buildGrokPrompt()
     .replace('{existing_summary}', entry.quick_summary)
     .replace('{url}', entry.url);
 

@@ -23,10 +23,28 @@ import { parseAmount, parseDeadline } from './intake';
 // ============================================================
 
 /**
- * Types that represent real, actionable funding opportunities.
- * These get the full "is funding opportunity" bonus.
+ * Parse a comma-separated or JSON array string from an env var into a Set.
+ * Returns null if the env var is not set.
  */
-const FUNDING_TYPES = new Set([
+function parseEnvSet(envKey: string): Set<string> | null {
+  const raw = process.env[envKey];
+  if (!raw) return null;
+
+  const trimmed = raw.trim();
+  // Try JSON array first
+  if (trimmed.startsWith('[')) {
+    try {
+      const arr = JSON.parse(trimmed) as unknown[];
+      return new Set(arr.filter((v): v is string => typeof v === 'string').map(s => s.toLowerCase()));
+    } catch {
+      // Fall through to comma-separated
+    }
+  }
+  return new Set(trimmed.split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
+}
+
+// Default sets (used when env var is absent)
+const DEFAULT_FUNDING_TYPES = new Set([
   'grant',
   'grants',
   'grant program',
@@ -44,11 +62,7 @@ const FUNDING_TYPES = new Set([
   'subsidy',
 ]);
 
-/**
- * Types that are actionable (someone can participate) but aren't
- * pure funding. They get a partial bonus.
- */
-const ACTIONABLE_TYPES = new Set([
+const DEFAULT_ACTIONABLE_TYPES = new Set([
   'hackathon',
   'bounty',
   'bounty program',
@@ -62,6 +76,22 @@ const ACTIONABLE_TYPES = new Set([
   'retro funding',
   'retroactive funding',
 ]);
+
+/**
+ * Types that represent real, actionable funding opportunities.
+ * Override via QUALITY_FUNDING_TYPES env var (JSON array or comma-separated).
+ */
+function getFundingTypes(): Set<string> {
+  return parseEnvSet('QUALITY_FUNDING_TYPES') || DEFAULT_FUNDING_TYPES;
+}
+
+/**
+ * Types that are actionable (someone can participate) but aren't
+ * pure funding. Override via QUALITY_ACTIONABLE_TYPES env var.
+ */
+function getActionableTypes(): Set<string> {
+  return parseEnvSet('QUALITY_ACTIONABLE_TYPES') || DEFAULT_ACTIONABLE_TYPES;
+}
 
 /**
  * Types that are informational/not actionable.
@@ -266,8 +296,9 @@ function containsWord(text: string, phrase: string): boolean {
 
 function classifyAsFunding(name: string, desc: string): boolean {
   const combined = `${name} ${desc}`;
+  const fundingTypes = getFundingTypes();
 
-  for (const type of FUNDING_TYPES) {
+  for (const type of fundingTypes) {
     if (containsWord(combined, type)) return true;
   }
 
@@ -282,14 +313,16 @@ function classifyAsFunding(name: string, desc: string): boolean {
 
 function classifyAsActionable(name: string, desc: string): boolean {
   const combined = `${name} ${desc}`;
+  const fundingTypes = getFundingTypes();
+  const actionableTypes = getActionableTypes();
 
   // If it's a funding type, it's automatically actionable
-  for (const type of FUNDING_TYPES) {
+  for (const type of fundingTypes) {
     if (containsWord(combined, type)) return true;
   }
 
   // Check actionable types
-  for (const type of ACTIONABLE_TYPES) {
+  for (const type of actionableTypes) {
     if (containsWord(combined, type)) return true;
   }
 

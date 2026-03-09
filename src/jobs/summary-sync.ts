@@ -10,19 +10,41 @@
  */
 
 import type { Pool } from 'pg';
+import { getActiveWires } from '../services/intake-core';
 
-// Wire inference keywords
-const AI_KEYWORDS = ['ai ', 'artificial intelligence', 'machine learning', 'llm', 'gpt', 'openai', 'anthropic', 'deepmind', 'neural', 'transformer'];
-const OSS_KEYWORDS = ['open source', 'open-source', 'oss ', 'github', 'linux', 'apache', 'mozilla', 'free software', 'foss'];
+// Wire inference keyword lists — loaded from env or built-in defaults
+const DEFAULT_AI_KEYWORDS = ['ai ', 'artificial intelligence', 'machine learning', 'llm', 'gpt', 'openai', 'anthropic', 'deepmind', 'neural', 'transformer'];
+const DEFAULT_OSS_KEYWORDS = ['open source', 'open-source', 'oss ', 'github', 'linux', 'apache', 'mozilla', 'free software', 'foss'];
 
-function inferWire(title: string, summary: string, existingWire?: string | null): string {
-  if (existingWire && ['crypto', 'ai', 'oss'].includes(existingWire)) {
+function getWireKeywords(wire: string): string[] {
+  const envKey = `INTAKE_WIRE_KEYWORDS_${wire.toUpperCase()}`;
+  const envVal = process.env[envKey];
+  if (envVal) return envVal.split(',').map(k => k.trim().toLowerCase()).filter(Boolean);
+
+  // Built-in defaults for known wires
+  if (wire === 'ai') return DEFAULT_AI_KEYWORDS;
+  if (wire === 'oss') return DEFAULT_OSS_KEYWORDS;
+  return [];
+}
+
+async function inferWire(title: string, summary: string, existingWire?: string | null): Promise<string> {
+  const wires = await getActiveWires();
+
+  // If existing wire is valid, keep it
+  if (existingWire && wires.includes(existingWire)) {
     return existingWire;
   }
+
   const text = `${title} ${summary}`.toLowerCase();
-  if (AI_KEYWORDS.some(kw => text.includes(kw))) return 'ai';
-  if (OSS_KEYWORDS.some(kw => text.includes(kw))) return 'oss';
-  return 'crypto';
+
+  // Score each wire by keyword matches
+  for (const wire of wires) {
+    const keywords = getWireKeywords(wire);
+    if (keywords.some(kw => text.includes(kw))) return wire;
+  }
+
+  // Default to first wire alphabetically
+  return wires[0] || 'crypto';
 }
 
 export interface SyncResult {
@@ -103,7 +125,7 @@ export async function syncSummariesToScanEntries(
       const amount = amounts.length > 0 ? amounts[0] : null;
       const deadline = deadlines.length > 0 ? deadlines[0] : null;
 
-      const wire = inferWire(row.title, row.description || '', row.wire);
+      const wire = await inferWire(row.title, row.description || '', row.wire);
 
       // Insert as approved scan_entry
       await pool.query(`

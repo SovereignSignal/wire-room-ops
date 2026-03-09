@@ -12,8 +12,8 @@ import { config } from '../config';
 import type { RawScanResult } from '../types/intake';
 import { sleep } from '../utils/async';
 
-// Grant-focused search keywords
-const GRANT_KEYWORDS = [
+// Default search keywords (used when FORUM_SEARCH_TERMS env var is not set)
+const DEFAULT_SEARCH_TERMS = [
   'grant program',
   'funding round',
   'ecosystem fund',
@@ -25,6 +25,14 @@ const GRANT_KEYWORDS = [
   'developer grants',
   'retroactive funding',
 ];
+
+function getSearchTerms(): string[] {
+  const envVal = process.env.FORUM_SEARCH_TERMS;
+  if (envVal) {
+    return envVal.split(',').map(t => t.trim()).filter(Boolean);
+  }
+  return DEFAULT_SEARCH_TERMS;
+}
 
 // Rate limit: ~14 req/min = 4.2s between requests
 const REQUEST_DELAY_MS = 4300;
@@ -87,7 +95,7 @@ export async function searchForumDiscussions(
   options: ForumSearchOptions = {}
 ): Promise<RawScanResult[]> {
   const baseUrl = config.forum.discussWatchBaseUrl;
-  const keywords = options.keywords || GRANT_KEYWORDS;
+  const keywords = options.keywords || getSearchTerms();
   const maxResults = options.maxResults || MAX_RESULTS_PER_RUN;
   const progress = options.onProgress || (() => {});
 

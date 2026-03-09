@@ -8,6 +8,7 @@
  */
 
 import { config } from '../config';
+import { getBrand } from '../config/brand';
 
 const PERPLEXITY_BASE_URL = 'https://api.perplexity.ai';
 
@@ -45,7 +46,7 @@ export async function executePerplexityScan(
       messages: [
         {
           role: 'system',
-          content: 'You are a research assistant scanning the web for grant funding opportunities. Return only factual, sourced results. For each result include the organization, description, amount if known, deadline if known, and URL.',
+          content: `You are a research assistant scanning the web for ${getBrand().contentType}. Return only factual, sourced results. For each result include the organization, description, amount if known, deadline if known, and URL.`,
         },
         {
           role: 'user',

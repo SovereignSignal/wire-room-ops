@@ -5,6 +5,7 @@ import { config } from '../config';
 import { sendTestAlertEmail, sendScheduledJobFailureEmail, sendDailyDigestEmail } from './email';
 import { runDailyDigest, getTopPendingFinds } from '../jobs/daily-digest';
 import { ensureScheduleTable, getAllSchedules, getScheduleById, createSchedule, updateSchedule, deleteSchedule as dbDeleteSchedule, StoredScheduleConfig, ensureFeedsTable, ensureScanTables, ensureScanPromptsTable, ensureDistributionTables, getPool } from '../db';
+import { getActiveWires } from './intake-core';
 
 export interface ScheduleConfig {
   id: string;
@@ -135,12 +136,18 @@ export async function syncScanSchedulesFromDigest(digestSchedule: ScheduleConfig
   const timezone = digestSchedule.timezone;
   const digestEnabled = digestSchedule.enabled;
 
-  // Lead offsets in minutes before digest
-  const wires = [
-    { wire: 'crypto', leadMinutes: 270 },  // 4.5h before
-    { wire: 'ai',     leadMinutes: 210 },  // 3.5h before
-    { wire: 'oss',    leadMinutes: 150 },  // 2.5h before
-  ];
+  // Load active wires dynamically from DB/env
+  const activeWireKeys = await getActiveWires();
+
+  // Spread lead times evenly: first wire = 270 min before, last = 150 min before
+  // Formula for N wires: leadMinutes[i] = 270 - i * (120 / max(N-1, 1))
+  const maxLead = 270;
+  const minLead = 150;
+  const step = activeWireKeys.length > 1 ? (maxLead - minLead) / (activeWireKeys.length - 1) : 0;
+  const wires = activeWireKeys.map((wire, i) => ({
+    wire,
+    leadMinutes: Math.round(maxLead - i * step),
+  }));
 
   // Helper: subtract minutes from an hour:minute, wrapping around midnight
   function subtractMinutes(h: number, m: number, lead: number) {
@@ -155,8 +162,8 @@ export async function syncScanSchedulesFromDigest(digestSchedule: ScheduleConfig
     return { hour: Math.floor(wrapped / 60), minute: wrapped % 60 };
   }
 
-  // Afternoon second-pass offsets after digest (stagger by 90 min each)
-  const afternoonOffsets = [270, 360, 450]; // 4.5h, 6h, 7.5h after digest
+  // Afternoon second-pass offsets after digest: stagger by 90 min each starting at 270 min
+  const afternoonOffsets = wires.map((_, i) => 270 + i * 90);
 
   console.log(`[Scheduler] Syncing scan schedules from digest at ${digestHour}:${String(digestMinute).padStart(2,'0')} ${timezone}`);
 

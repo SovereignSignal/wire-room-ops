@@ -27,7 +27,7 @@ import { reviewScanPrompt } from './services/anthropic';
 import type { RawScanResult, ToolType } from './types/intake';
 import { renderLoginPage } from './views/login';
 import { renderErrorPage, renderLegacyDownloadPage, renderExpiredLinkPage, renderResendSuccessPage } from './views/error';
-import { handleTelegramIntakeUpdate, registerIntakeWebhook, cleanupPendingEntries } from './services/telegram-intake';
+import { handleTelegramUpdate, registerIntakeWebhook, cleanupPendingEntries } from './services/telegram-adapter';
 
 const app = express();
 const privyJwks = jwksClient({
@@ -1444,7 +1444,7 @@ app.post('/api/telegram/intake-webhook', async (req: Request, res: Response) => 
   }
 
   // Fire and forget — respond immediately
-  handleTelegramIntakeUpdate(req.body).catch(err => {
+  handleTelegramUpdate(req.body).catch(err => {
     console.error('[TelegramIntake] Handler error:', err);
   });
 

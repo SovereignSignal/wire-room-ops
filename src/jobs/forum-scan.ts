@@ -17,6 +17,7 @@ import type {
 } from '../types/intake';
 import { searchForumDiscussions } from '../services/forum';
 import { runDailyIntake } from './daily-intake';
+import { getActiveWires } from '../services/intake-core';
 
 export interface ForumScanOptions {
   wire?: string;
@@ -72,8 +73,9 @@ export async function runForumScan(
   progress(`Found ${results.length} forum discussions, running intake...`, 65);
 
   // 2. Build submission for intake pipeline
+  const defaultWire = (await getActiveWires())[0] || 'crypto';
   const submission: ScanSubmission = {
-    wire: options.wire || 'crypto',
+    wire: options.wire || defaultWire,
     promptVariant: 'N',
     scanDate: today,
     source: 'forum',
