@@ -69,3 +69,9 @@ export async function fetchFeeds(): Promise<{ key: string; displayName: string }
   if (!res.ok) throw new Error(`Failed to fetch feeds: ${res.status}`);
   return res.json();
 }
+
+export async function fetchWires(): Promise<{ key: string; displayName: string; color?: string }[]> {
+  const res = await authFetch(`${BASE}/wires`);
+  if (!res.ok) return []; // fail open — return empty so UI degrades gracefully
+  return res.json();
+}

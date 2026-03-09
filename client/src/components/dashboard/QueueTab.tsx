@@ -7,15 +7,15 @@ import { FilterBar } from './FilterBar';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Button } from '@/components/ui/button';
 import { ExternalLink, CheckCircle, Archive, ChevronDown } from 'lucide-react';
-import { updateEntryWire } from '@/api';
+import { updateEntryWire, fetchWires } from '@/api';
 
-const WIRE_OPTIONS = ['crypto', 'ai', 'oss'] as const;
-
+// Fallback colors for known wires; unknown wires get a neutral style
 const wireColors: Record<string, string> = {
   crypto: 'bg-violet-500/20 text-violet-400 border-violet-500/40 hover:bg-violet-500/30',
   ai: 'bg-emerald-400/20 text-emerald-400 border-emerald-400/40 hover:bg-emerald-400/30',
   oss: 'bg-amber-400/20 text-amber-400 border-amber-400/40 hover:bg-amber-400/30',
 };
+const DEFAULT_WIRE_COLOR = 'bg-sky-500/20 text-sky-400 border-sky-500/40 hover:bg-sky-500/30';
 
 const wireFilterColors: Record<string, string> = {
   crypto: 'bg-violet-500/20 text-violet-400 border-violet-500/50',
@@ -23,7 +23,9 @@ const wireFilterColors: Record<string, string> = {
   oss: 'bg-amber-400/20 text-amber-400 border-amber-400/50',
 };
 
-function WireSelector({ wire, entryId, onWireChange }: { wire: string; entryId: string; onWireChange: (id: string, wire: string) => void }) {
+function WireSelector({ wire, entryId, onWireChange, availableWires = [] }: { wire: string; entryId: string; onWireChange: (id: string, wire: string) => void; availableWires?: { key: string; displayName: string }[] }) {
+  // Fall back to just showing current wire if no list loaded yet
+  const options = availableWires.length > 0 ? availableWires.map(w => w.key) : [wire];
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -49,7 +51,7 @@ function WireSelector({ wire, entryId, onWireChange }: { wire: string; entryId: 
       </button>
       {open && (
         <div className="absolute z-50 mt-1 left-0 bg-card border border-border rounded-md shadow-lg py-1 min-w-[90px]">
-          {WIRE_OPTIONS.map(w => (
+          {options.map(w => (
             <button
               key={w}
               onClick={(e) => {
@@ -84,6 +86,13 @@ interface QueueTabProps {
 export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, onSingleAction, onEntryUpdated }: QueueTabProps) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [wireFilter, setWireFilter] = useState<string | null>(null);
+  const [availableWires, setAvailableWires] = useState<{ key: string; displayName: string }[]>([]);
+
+  useEffect(() => {
+    fetchWires().then(wires => {
+      if (wires.length > 0) setAvailableWires(wires);
+    }).catch(() => {/* fail silently — hardcoded fallback still visible in entries */});
+  }, []);
   const [filters, setFilters] = useState<FilterState>({
     wire: null,
     scoreMin: null,
@@ -159,17 +168,17 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
         >
           All
         </button>
-        {WIRE_OPTIONS.map(w => (
+        {availableWires.map(({ key: w, displayName }) => (
           <button
             key={w}
             onClick={() => setWireFilter(wireFilter === w ? null : w)}
             className={`px-3 py-1.5 rounded text-[10px] font-display font-medium uppercase tracking-wider border transition-colors ${
               wireFilter === w
-                ? wireFilterColors[w]
+                ? (wireFilterColors[w] || 'bg-sky-500/20 text-sky-400 border-sky-500/50')
                 : 'bg-muted/30 text-muted-foreground border-border hover:text-foreground hover:bg-muted/50'
             }`}
           >
-            {w}
+            {displayName || w}
           </button>
         ))}
       </div>
@@ -217,7 +226,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                   </div>
                 </td>
                 <td onClick={(e) => e.stopPropagation()}>
-                  <WireSelector wire={entry.wire} entryId={entry.id} onWireChange={handleWireChange} />
+                  <WireSelector wire={entry.wire} entryId={entry.id} onWireChange={handleWireChange} availableWires={availableWires} />
                 </td>
                 <td>
                   <ScoreBadge score={entry.quality_score} />
