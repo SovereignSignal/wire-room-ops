@@ -180,14 +180,16 @@ async function insertEntry(entry: {
   scanDate: string;
   submittedBy: string;
   scanSource: string;
+  status?: string;
 }): Promise<number> {
   const pool = getPool();
+  const status = entry.status ?? 'queued'; // Manually curated entries go straight to queued
   const res = await pool.query(
     `INSERT INTO scan_entries
      (name, description, source_url, wire, prompt_variant, scan_source, scan_date, status, submitted_by)
-     VALUES ($1, $2, $3, $4, 'N', $5, $6, 'raw', $7)
+     VALUES ($1, $2, $3, $4, 'N', $5, $6, $7, $8)
      RETURNING id`,
-    [entry.name, entry.description, entry.sourceUrl, entry.wire, entry.scanSource, entry.scanDate, entry.submittedBy]
+    [entry.name, entry.description, entry.sourceUrl, entry.wire, entry.scanSource, entry.scanDate, status, entry.submittedBy]
   );
   return res.rows[0].id;
 }
