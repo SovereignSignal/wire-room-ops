@@ -4,10 +4,11 @@
  * Newsletter generation is a separate read-only operation.
  */
 
-import { getDistributionConfigs, getUndistributedEntries, logDistribution, deleteFailedDistributionLogs, getDistributionLogs, getPool } from '../db';
+import { getDistributionConfigs, getUndistributedEntries, logDistribution, deleteFailedDistributionLogs, getDistributionLogs, getPool, getEnabledDistributionChannelsForWire, DistributionChannelRecord } from '../db';
 import { config } from '../config';
 import { generatePosts } from './post-generator';
 import { sendChannelMessage } from './telegram-channel';
+import { sendDiscordMessage } from './discord-channel';
 import { postTweet, XCredentials } from './x-client';
 import { sleep } from '../utils/async';
 import type { DistributionConfig, DistributionChannel } from '../types/intake';
@@ -32,7 +33,10 @@ export async function distributeEntries(wire: string): Promise<DistributeResult>
   const configs = await getDistributionConfigs(wire);
   const enabledConfigs = configs.filter(c => c.enabled && c.channel !== 'newsletter');
 
-  if (enabledConfigs.length === 0) {
+  // Also load managed channels from distribution_channels table
+  const managedChannels = await getEnabledDistributionChannelsForWire(wire);
+
+  if (enabledConfigs.length === 0 && managedChannels.length === 0) {
     return { wire, totalEntries: 0, distributed: 0, failed: 0, skipped: 0, details: [] };
   }
 
@@ -68,6 +72,7 @@ export async function distributeEntries(wire: string): Promise<DistributeResult>
 
       let anySuccess = false;
 
+      // Dispatch to legacy distribution_config channels
       for (const cfg of enabledConfigs) {
         const channelResult = await dispatchToChannel(cfg, entry, posts, telegramBotToken);
         detail.channels[cfg.channel] = channelResult;
@@ -76,12 +81,21 @@ export async function distributeEntries(wire: string): Promise<DistributeResult>
         if (channelResult === 'skipped') result.skipped++;
       }
 
+      // Dispatch to managed distribution_channels
+      for (const mc of managedChannels) {
+        const channelResult = await dispatchToManagedChannel(mc, entry, posts);
+        const channelKey = `${mc.channel}:${mc.id.slice(0, 8)}`;
+        detail.channels[channelKey] = channelResult;
+        if (channelResult === 'success') anySuccess = true;
+        if (channelResult === 'failed') result.failed++;
+        if (channelResult === 'skipped') result.skipped++;
+      }
+
       if (anySuccess) result.distributed++;
     } catch (error) {
       console.error(`[Distribution] Failed to distribute entry ${entry.id}:`, error);
-      // Log failures for each enabled channel
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       for (const cfg of enabledConfigs) {
-        const errorMsg = error instanceof Error ? error.message : 'Unknown error';
         await logDistribution({
           entryId: entry.id,
           channel: cfg.channel,
@@ -90,6 +104,17 @@ export async function distributeEntries(wire: string): Promise<DistributeResult>
           errorMessage: errorMsg,
         });
         detail.channels[cfg.channel] = 'failed';
+        result.failed++;
+      }
+      for (const mc of managedChannels) {
+        await logDistribution({
+          entryId: entry.id,
+          channel: mc.channel as DistributionChannel,
+          wire,
+          status: 'failed',
+          errorMessage: errorMsg,
+        });
+        detail.channels[`${mc.channel}:${mc.id.slice(0, 8)}`] = 'failed';
         result.failed++;
       }
     }
@@ -103,6 +128,153 @@ export async function distributeEntries(wire: string): Promise<DistributeResult>
   }
 
   return result;
+}
+
+async function dispatchToManagedChannel(
+  mc: DistributionChannelRecord,
+  entry: any,
+  posts: { tweet: string; telegram: string },
+): Promise<'success' | 'failed' | 'skipped'> {
+  const channel = mc.channel as DistributionChannel;
+  const creds = mc.credentials || {};
+  const targetId = mc.targetId;
+
+  if (channel === 'telegram') {
+    const token = creds.bot_token || config.telegram.botToken;
+    if (!token || !targetId) {
+      await logDistribution({
+        entryId: entry.id,
+        channel: 'telegram',
+        wire: mc.wire,
+        status: 'skipped',
+        errorMessage: !token ? 'bot_token not set' : 'target_id not configured',
+      });
+      return 'skipped';
+    }
+
+    const result = await sendChannelMessage(token, targetId, posts.telegram);
+    await logDistribution({
+      entryId: entry.id,
+      channel: 'telegram',
+      wire: mc.wire,
+      status: result ? 'success' : 'failed',
+      postText: posts.telegram,
+      externalId: result ? String(result.messageId) : undefined,
+      errorMessage: result ? undefined : 'Telegram API call failed',
+    });
+    return result ? 'success' : 'failed';
+  }
+
+  if (channel === 'discord') {
+    const token = creds.bot_token;
+    if (!token || !targetId) {
+      await logDistribution({
+        entryId: entry.id,
+        channel: 'discord',
+        wire: mc.wire,
+        status: 'skipped',
+        errorMessage: !token ? 'bot_token not set' : 'target_id (channel ID) not configured',
+      });
+      return 'skipped';
+    }
+
+    const result = await sendDiscordMessage(token, targetId, posts.telegram);
+    await logDistribution({
+      entryId: entry.id,
+      channel: 'discord',
+      wire: mc.wire,
+      status: result ? 'success' : 'failed',
+      postText: posts.telegram,
+      externalId: result ? result.messageId : undefined,
+      errorMessage: result ? undefined : 'Discord API call failed',
+    });
+    return result ? 'success' : 'failed';
+  }
+
+  if (channel === 'slack') {
+    const webhookUrl = creds.webhook_url;
+    if (!webhookUrl) {
+      await logDistribution({
+        entryId: entry.id,
+        channel: 'slack',
+        wire: mc.wire,
+        status: 'skipped',
+        errorMessage: 'webhook_url not set',
+      });
+      return 'skipped';
+    }
+
+    try {
+      const resp = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: posts.telegram }),
+      });
+
+      const ok = resp.ok;
+      await logDistribution({
+        entryId: entry.id,
+        channel: 'slack',
+        wire: mc.wire,
+        status: ok ? 'success' : 'failed',
+        postText: posts.telegram,
+        errorMessage: ok ? undefined : `Slack webhook returned ${resp.status}`,
+      });
+      return ok ? 'success' : 'failed';
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      await logDistribution({
+        entryId: entry.id,
+        channel: 'slack',
+        wire: mc.wire,
+        status: 'failed',
+        errorMessage: errorMsg,
+      });
+      return 'failed';
+    }
+  }
+
+  return 'skipped';
+}
+
+/**
+ * Send a test message to a managed distribution channel.
+ */
+export async function sendTestMessage(mc: DistributionChannelRecord): Promise<{ success: boolean; error?: string }> {
+  const creds = mc.credentials || {};
+  const targetId = mc.targetId;
+  const testText = `🛰️ Wire Room Test Message\n\nThis is a test from Wire Room Ops.\nChannel: ${mc.name || mc.channel}\nWire: ${mc.wire}\nTimestamp: ${new Date().toISOString()}`;
+
+  if (mc.channel === 'telegram') {
+    const token = creds.bot_token || config.telegram.botToken;
+    if (!token || !targetId) return { success: false, error: !token ? 'bot_token not set' : 'target_id not configured' };
+    const result = await sendChannelMessage(token, targetId, testText);
+    return result ? { success: true } : { success: false, error: 'Telegram API call failed' };
+  }
+
+  if (mc.channel === 'discord') {
+    const token = creds.bot_token;
+    if (!token || !targetId) return { success: false, error: !token ? 'bot_token not set' : 'target_id (channel ID) not configured' };
+    const result = await sendDiscordMessage(token, targetId, testText);
+    return result ? { success: true } : { success: false, error: 'Discord API call failed' };
+  }
+
+  if (mc.channel === 'slack') {
+    const webhookUrl = creds.webhook_url;
+    if (!webhookUrl) return { success: false, error: 'webhook_url not set' };
+    try {
+      const resp = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: testText }),
+      });
+      return resp.ok ? { success: true } : { success: false, error: `Slack webhook returned ${resp.status}` };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  return { success: false, error: `Unsupported channel type: ${mc.channel}` };
 }
 
 async function dispatchToChannel(

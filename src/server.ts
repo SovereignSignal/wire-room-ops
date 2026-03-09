@@ -14,14 +14,14 @@ import { getAllModels } from './services/models';
 import { getSchedule, getSchedules, setSchedule, addSchedule, removeSchedule, formatScheduleDescription, getNextRunTime, initScheduler, stopScheduler, ScheduleConfig, sendTestAlert, getSchedulerStatus } from './services/scheduler';
 import { buildSubmission, buildBatchSubmission } from './services/intake';
 import { runDailyIntake, getDailyQueue, getIntakeStats } from './jobs/daily-intake';
-import { getPool, getDistributionConfigs, upsertDistributionConfig, getDistributionLogs, getDistributionStatusBulk, getDistributionStatusForEntries } from './db';
+import { getPool, getDistributionConfigs, upsertDistributionConfig, getDistributionLogs, getDistributionStatusBulk, getDistributionStatusForEntries, getDistributionChannels, getDistributionChannelById, createDistributionChannel, updateDistributionChannel, deleteDistributionChannel } from './db';
 import { executeScanPrompt } from './services/grok';
 import { withRetry } from './services/processor';
 import { runScanExecution } from './jobs/scan-execution';
 import { runForumScan } from './jobs/forum-scan';
 import { syncSummariesToScanEntries, startSummarySync, stopSummarySync } from './jobs/summary-sync';
 import { getPromptEffectivenessStats } from './services/scan-stats';
-import { distributeEntries, retryDistribution, generateNewsletterMarkdown } from './services/distribution';
+import { distributeEntries, retryDistribution, generateNewsletterMarkdown, sendTestMessage } from './services/distribution';
 import { parseStructuredOutput } from './services/intake';
 import { reviewScanPrompt } from './services/anthropic';
 import type { RawScanResult, ToolType } from './types/intake';
@@ -1806,6 +1806,209 @@ app.post('/api/scan/entries/:id/redistribute', requireAuth, async (req: Request,
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';
     console.error('[Distribution] Redistribute failed:', error);
     res.status(500).json({ error: errorMsg });
+  }
+});
+
+// --- Distribution Channels CRUD API (managed via dashboard UI) ---
+
+// GET /api/distribution/channels — list all managed channels
+app.get('/api/distribution/channels', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const wire = req.query.wire as string | undefined;
+    const channels = await getDistributionChannels(wire);
+
+    // Mask credentials in response
+    const masked = channels.map(c => ({
+      id: c.id,
+      wire: c.wire,
+      channel: c.channel,
+      name: c.name,
+      enabled: c.enabled,
+      target_id: c.targetId,
+      credentials: maskCredentials(c.credentials),
+      created_at: c.createdAt,
+      updated_at: c.updatedAt,
+    }));
+
+    res.json(masked);
+  } catch (error) {
+    console.error('Failed to fetch distribution channels:', error);
+    res.status(500).json({ error: 'Failed to fetch distribution channels' });
+  }
+});
+
+function maskCredentials(creds: Record<string, string>): Record<string, string> {
+  const masked: Record<string, string> = {};
+  for (const [k, v] of Object.entries(creds)) {
+    if (['bot_token', 'webhook_url', 'api_key'].includes(k) && v) {
+      masked[k] = v.length > 8 ? '****' + v.slice(-4) : '****';
+    } else {
+      masked[k] = v;
+    }
+  }
+  return masked;
+}
+
+// POST /api/distribution/channels — create new managed channel
+app.post('/api/distribution/channels', requireAuth, async (req: Request, res: Response) => {
+  const { wire, channel, name, enabled, target_id, credentials } = req.body;
+
+  if (!wire || typeof wire !== 'string') {
+    res.status(400).json({ error: 'wire is required' });
+    return;
+  }
+  if (!channel || !['telegram', 'discord', 'slack'].includes(channel)) {
+    res.status(400).json({ error: 'channel must be telegram, discord, or slack' });
+    return;
+  }
+  if (!name || typeof name !== 'string') {
+    res.status(400).json({ error: 'name is required' });
+    return;
+  }
+  if (!target_id && channel !== 'slack') {
+    res.status(400).json({ error: 'target_id is required for this channel type' });
+    return;
+  }
+  if (!credentials || typeof credentials !== 'object') {
+    res.status(400).json({ error: 'credentials is required' });
+    return;
+  }
+
+  try {
+    const result = await createDistributionChannel({
+      wire,
+      channel,
+      name,
+      enabled: enabled ?? true,
+      targetId: target_id || '',
+      credentials,
+    });
+
+    res.json({
+      id: result.id,
+      wire: result.wire,
+      channel: result.channel,
+      name: result.name,
+      enabled: result.enabled,
+      target_id: result.targetId,
+      credentials: maskCredentials(result.credentials),
+      created_at: result.createdAt,
+      updated_at: result.updatedAt,
+    });
+  } catch (error) {
+    console.error('Failed to create distribution channel:', error);
+    res.status(500).json({ error: 'Failed to create distribution channel' });
+  }
+});
+
+// PUT /api/distribution/channels/:id — update managed channel
+app.put('/api/distribution/channels/:id', requireAuth, async (req: Request, res: Response) => {
+  const { id } = req.params;
+  if (!id || !isValidUuid(id)) {
+    res.status(400).json({ error: 'Invalid channel ID' });
+    return;
+  }
+
+  const { wire, channel, name, enabled, target_id, credentials } = req.body;
+
+  // If credentials provided, merge with existing (so partial updates don't wipe secrets)
+  let mergedCredentials = credentials;
+  if (credentials && typeof credentials === 'object') {
+    const existing = await getDistributionChannelById(id);
+    if (existing) {
+      // Only merge if the incoming creds have masked values (****) — skip those
+      const cleanCreds: Record<string, string> = {};
+      for (const [k, v] of Object.entries(credentials as Record<string, string>)) {
+        if (v && !v.startsWith('****')) {
+          cleanCreds[k] = v;
+        }
+      }
+      mergedCredentials = { ...existing.credentials, ...cleanCreds };
+    }
+  }
+
+  const updates: any = {};
+  if (wire !== undefined) updates.wire = wire;
+  if (channel !== undefined) updates.channel = channel;
+  if (name !== undefined) updates.name = name;
+  if (enabled !== undefined) updates.enabled = enabled;
+  if (target_id !== undefined) updates.targetId = target_id;
+  if (mergedCredentials !== undefined) updates.credentials = mergedCredentials;
+
+  try {
+    const result = await updateDistributionChannel(id, updates);
+    if (!result) {
+      res.status(404).json({ error: 'Channel not found' });
+      return;
+    }
+
+    res.json({
+      id: result.id,
+      wire: result.wire,
+      channel: result.channel,
+      name: result.name,
+      enabled: result.enabled,
+      target_id: result.targetId,
+      credentials: maskCredentials(result.credentials),
+      created_at: result.createdAt,
+      updated_at: result.updatedAt,
+    });
+  } catch (error) {
+    console.error('Failed to update distribution channel:', error);
+    res.status(500).json({ error: 'Failed to update distribution channel' });
+  }
+});
+
+// DELETE /api/distribution/channels/:id — delete managed channel
+app.delete('/api/distribution/channels/:id', requireAuth, async (req: Request, res: Response) => {
+  const { id } = req.params;
+  if (!id || !isValidUuid(id)) {
+    res.status(400).json({ error: 'Invalid channel ID' });
+    return;
+  }
+
+  try {
+    const deleted = await deleteDistributionChannel(id);
+    if (!deleted) {
+      res.status(404).json({ error: 'Channel not found' });
+      return;
+    }
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Failed to delete distribution channel:', error);
+    res.status(500).json({ error: 'Failed to delete distribution channel' });
+  }
+});
+
+// POST /api/distribution/channels/:id/test — send test message
+app.post('/api/distribution/channels/:id/test', requireAuth, async (req: Request, res: Response) => {
+  const { id } = req.params;
+  if (!id || !isValidUuid(id)) {
+    res.status(400).json({ error: 'Invalid channel ID' });
+    return;
+  }
+
+  if (!rateLimit('dist-channel-test', 5, 5 * 60 * 1000)) {
+    res.status(429).json({ error: 'Too many test requests. Max 5 per 5 minutes.' });
+    return;
+  }
+
+  try {
+    const channel = await getDistributionChannelById(id);
+    if (!channel) {
+      res.status(404).json({ error: 'Channel not found' });
+      return;
+    }
+
+    const result = await sendTestMessage(channel);
+    if (result.success) {
+      res.json({ success: true, message: 'Test message sent successfully' });
+    } else {
+      res.status(400).json({ success: false, error: result.error });
+    }
+  } catch (error) {
+    console.error('Failed to send test message:', error);
+    res.status(500).json({ error: 'Failed to send test message' });
   }
 });
 

@@ -4,6 +4,7 @@ import { OverviewTab } from '@/components/dashboard/OverviewTab';
 import { QueueTab } from '@/components/dashboard/QueueTab';
 import { PublishedTab } from '@/components/dashboard/PublishedTab';
 import { SourcesTab } from '@/components/dashboard/SourcesTab';
+import { DistributionTab } from '@/components/dashboard/DistributionTab';
 // ReviewTab removed — approve/decline now inline in QueueTab
 import { Starfield } from '@/components/dashboard/Starfield';
 import { EntryDetailsSheet } from '@/components/dashboard/EntryDetailsSheet';
@@ -145,6 +146,9 @@ const Index = () => {
             verticals={verticals}
             onViewDetails={setSelectedEntry}
           />
+        )}
+        {activeTab === 'distribution' && (
+          <DistributionTab verticals={verticals} />
         )}
         {activeTab === 'sources' && (
           <SourcesTab stats={stats} />
