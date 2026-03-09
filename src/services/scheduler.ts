@@ -2,7 +2,8 @@ import cron, { ScheduledTask } from 'node-cron';
 import { runScanExecution } from '../jobs/scan-execution';
 import { runForumScan } from '../jobs/forum-scan';
 import { config } from '../config';
-import { sendTestAlertEmail, sendScheduledJobFailureEmail, sendScanDigestEmail } from './email';
+import { sendTestAlertEmail, sendScheduledJobFailureEmail, sendDailyDigestEmail } from './email';
+import { runDailyDigest } from '../jobs/daily-digest';
 import { ensureScheduleTable, getAllSchedules, getScheduleById, createSchedule, updateSchedule, deleteSchedule as dbDeleteSchedule, StoredScheduleConfig, ensureFeedsTable, ensureScanTables, ensureScanPromptsTable, ensureDistributionTables, getPool } from '../db';
 
 export interface ScheduleConfig {
@@ -17,7 +18,7 @@ export interface ScheduleConfig {
   anthropicModel?: string;
   timezone: string;
   wire?: string; // Optional wire/feed filter
-  scheduleType?: 'scan-execution' | 'forum-scan';
+  scheduleType?: 'scan-execution' | 'forum-scan' | 'daily-digest';
   frequencyHours?: number; // Sub-daily interval (1-23) for scan-execution
   notifyEmails?: string; // Comma-separated email recipients
 }
@@ -183,20 +184,8 @@ function createJobExecutor(schedule: ScheduleConfig) {
         status.error = null;
         console.log(`[Scheduler] Scan "${currentScheduleData.name}" completed: ${scanResult.promptsExecuted} prompts, ${scanResult.totalResults} results, ${scanResult.intakeSummary.newUnique} unique`);
 
-        // Send daily digest email
-        if (scanResult.totalResults > 0) {
-          try {
-            const dashboardUrl = config.app.url;
-            const recipients = currentScheduleData.notifyEmails
-              ? currentScheduleData.notifyEmails.split(',').map(e => e.trim()).filter(Boolean)
-              : undefined;
-            await sendScanDigestEmail(scanResult, dashboardUrl, recipients);
-            console.log(`[Scheduler] Scan digest email sent`);
-          } catch (emailErr) {
-            console.error(`[Scheduler] Failed to send digest email:`, emailErr);
-            // Don't fail the job - email is non-critical
-          }
-        }
+        // Per-scan email notifications are disabled.
+        // A single daily digest is sent by the 'daily-digest' schedule type instead.
 
       } else if (currentScheduleData.scheduleType === 'forum-scan') {
         // ---- Forum Scan Job ----
@@ -218,6 +207,33 @@ function createJobExecutor(schedule: ScheduleConfig) {
         status.status = 'success';
         status.error = null;
         console.log(`[Scheduler] Forum scan "${currentScheduleData.name}" completed: ${forumResult.totalResults} results, ${forumResult.intakeSummary.newUnique} unique`);
+
+      } else if (currentScheduleData.scheduleType === 'daily-digest') {
+        // ---- Daily Digest Job ----
+        const pool = getPool();
+        console.log(`[Scheduler] Running daily digest...`);
+
+        const digest = await runDailyDigest(pool);
+
+        if (digest.hasActivity) {
+          try {
+            const dashboardUrl = config.app.url;
+            const recipients = currentScheduleData.notifyEmails
+              ? currentScheduleData.notifyEmails.split(',').map(e => e.trim()).filter(Boolean)
+              : undefined;
+            await sendDailyDigestEmail(digest, dashboardUrl, recipients);
+            console.log(`[Scheduler] Daily digest email sent (${digest.totalNewUnique} new, ${digest.totalPendingReview} pending)`);
+          } catch (emailErr) {
+            console.error(`[Scheduler] Failed to send daily digest email:`, emailErr);
+          }
+        } else {
+          console.log(`[Scheduler] Daily digest: no activity today, skipping email`);
+        }
+
+        status.status = 'success';
+        status.error = null;
+        console.log(`[Scheduler] Daily digest completed`);
+
       } else {
         console.warn(`[Scheduler] Unsupported schedule type "${currentScheduleData.scheduleType}" — skipping`);
       }
