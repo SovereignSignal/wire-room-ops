@@ -48,6 +48,16 @@ export async function updateEntryStatus(id: number | string, status: string) {
   return res.json();
 }
 
+export async function updateEntryWire(id: number | string, wire: string) {
+  const res = await authFetch(`${BASE}/scan/entries/${id}/wire`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ wire }),
+  });
+  if (!res.ok) throw new Error(`Failed to update wire: ${res.status}`);
+  return res.json();
+}
+
 export async function fetchStats() {
   const res = await authFetch(`${BASE}/dashboard/stats`);
   if (!res.ok) throw new Error(`Failed to fetch stats: ${res.status}`);

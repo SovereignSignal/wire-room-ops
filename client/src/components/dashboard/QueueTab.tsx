@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { ScanEntry, FilterState } from '@/types';
 import { ScoreBadge } from './ScoreBadge';
 import { VerticalTag } from './VerticalTag';
@@ -6,7 +6,71 @@ import { ActionBar } from './ActionBar';
 import { FilterBar } from './FilterBar';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Button } from '@/components/ui/button';
-import { ExternalLink, CheckCircle, Archive } from 'lucide-react';
+import { ExternalLink, CheckCircle, Archive, ChevronDown } from 'lucide-react';
+import { updateEntryWire } from '@/api';
+
+const WIRE_OPTIONS = ['crypto', 'ai', 'oss'] as const;
+
+const wireColors: Record<string, string> = {
+  crypto: 'bg-violet-500/20 text-violet-400 border-violet-500/40 hover:bg-violet-500/30',
+  ai: 'bg-emerald-400/20 text-emerald-400 border-emerald-400/40 hover:bg-emerald-400/30',
+  oss: 'bg-amber-400/20 text-amber-400 border-amber-400/40 hover:bg-amber-400/30',
+};
+
+const wireFilterColors: Record<string, string> = {
+  crypto: 'bg-violet-500/20 text-violet-400 border-violet-500/50',
+  ai: 'bg-emerald-400/20 text-emerald-400 border-emerald-400/50',
+  oss: 'bg-amber-400/20 text-amber-400 border-amber-400/50',
+};
+
+function WireSelector({ wire, entryId, onWireChange }: { wire: string; entryId: string; onWireChange: (id: string, wire: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [open]);
+
+  const colorClass = wireColors[wire.toLowerCase()] || 'bg-muted text-muted-foreground border-border hover:bg-muted/80';
+
+  return (
+    <div ref={ref} className="relative inline-block">
+      <button
+        onClick={(e) => { e.stopPropagation(); setOpen(!open); }}
+        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-display font-medium border uppercase tracking-wider transition-colors cursor-pointer ${colorClass}`}
+      >
+        {wire}
+        <ChevronDown className="w-2.5 h-2.5 opacity-60" />
+      </button>
+      {open && (
+        <div className="absolute z-50 mt-1 left-0 bg-card border border-border rounded-md shadow-lg py-1 min-w-[90px]">
+          {WIRE_OPTIONS.map(w => (
+            <button
+              key={w}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (w !== wire) onWireChange(entryId, w);
+                setOpen(false);
+              }}
+              className={`w-full text-left px-3 py-1.5 text-[10px] font-display uppercase tracking-wider transition-colors ${
+                w === wire 
+                  ? 'bg-primary/10 text-primary' 
+                  : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+              }`}
+            >
+              {w}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 interface QueueTabProps {
   entries: ScanEntry[];
@@ -14,10 +78,12 @@ interface QueueTabProps {
   onUpdateStatus: (ids: string[], status: ScanEntry['status']) => void;
   onViewDetails: (entry: ScanEntry) => void;
   onSingleAction?: (id: string, status: ScanEntry['status']) => void;
+  onEntryUpdated?: (id: string, updates: Partial<ScanEntry>) => void;
 }
 
-export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, onSingleAction }: QueueTabProps) {
+export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, onSingleAction, onEntryUpdated }: QueueTabProps) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [wireFilter, setWireFilter] = useState<string | null>(null);
   const [filters, setFilters] = useState<FilterState>({
     wire: null,
     scoreMin: null,
@@ -25,8 +91,20 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
     dateStatus: 'all',
   });
 
+  const handleWireChange = async (entryId: string, newWire: string) => {
+    try {
+      await updateEntryWire(entryId, newWire);
+      onEntryUpdated?.(entryId, { wire: newWire });
+    } catch (err) {
+      console.error('Failed to update wire:', err);
+    }
+  };
+
   const filteredEntries = useMemo(() => {
     return entries.filter(entry => {
+      // Quick wire filter (button group)
+      if (wireFilter && entry.wire !== wireFilter) return false;
+      // Advanced filters
       if (filters.wire && entry.wire !== filters.wire) return false;
       if (filters.scoreMin !== null && entry.quality_score < filters.scoreMin) return false;
       if (filters.scoreMax !== null && entry.quality_score > filters.scoreMax) return false;
@@ -42,7 +120,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
       
       return true;
     });
-  }, [entries, filters]);
+  }, [entries, filters, wireFilter]);
 
   const toggleSelect = (id: string) => {
     const newSet = new Set(selectedIds);
@@ -69,6 +147,33 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
 
   return (
     <div className="space-y-4">
+      {/* Quick wire filter buttons */}
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => setWireFilter(null)}
+          className={`px-3 py-1.5 rounded text-[10px] font-display font-medium uppercase tracking-wider border transition-colors ${
+            wireFilter === null
+              ? 'bg-primary/20 text-primary border-primary/50'
+              : 'bg-muted/30 text-muted-foreground border-border hover:text-foreground hover:bg-muted/50'
+          }`}
+        >
+          All
+        </button>
+        {WIRE_OPTIONS.map(w => (
+          <button
+            key={w}
+            onClick={() => setWireFilter(wireFilter === w ? null : w)}
+            className={`px-3 py-1.5 rounded text-[10px] font-display font-medium uppercase tracking-wider border transition-colors ${
+              wireFilter === w
+                ? wireFilterColors[w]
+                : 'bg-muted/30 text-muted-foreground border-border hover:text-foreground hover:bg-muted/50'
+            }`}
+          >
+            {w}
+          </button>
+        ))}
+      </div>
+
       <FilterBar filters={filters} onFilterChange={setFilters} verticals={verticals} />
       
       <div className="glow-card overflow-hidden">
@@ -111,8 +216,8 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                     {entry.description}
                   </div>
                 </td>
-                <td>
-                  <VerticalTag vertical={entry.wire} />
+                <td onClick={(e) => e.stopPropagation()}>
+                  <WireSelector wire={entry.wire} entryId={entry.id} onWireChange={handleWireChange} />
                 </td>
                 <td>
                   <ScoreBadge score={entry.quality_score} />
