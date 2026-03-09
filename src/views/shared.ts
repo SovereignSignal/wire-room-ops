@@ -18,36 +18,39 @@ export function sharedHead(title: string): string {
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="theme-color" content="#080c14">
+  <meta name="theme-color" content="#0b0a15">
   <script>(function(){var t=localStorage.getItem('theme');if(t)document.documentElement.setAttribute('data-theme',t)})()</script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   `;
 }
 
 export function sharedBaseStyles(): string {
   return `
     :root {
-      --bg: #080c14;
-      --bg-card: #0f1a2a;
-      --border: #1a2a3d;
-      --input: #0a1220;
-      --text: #e0e4e8;
-      --text-secondary: #7a8a9a;
-      --text-muted: #4a5a6a;
-      --accent: #d4a017;
-      --accent-hover: #e8b01e;
-      --accent-fg: #080c14;
+      /* Deep space / satellite array palette — matches client Lovable theme */
+      --bg: hsl(245, 35%, 6%);
+      --bg-card: hsl(245, 30%, 9%);
+      --border: hsl(245, 30%, 16%);
+      --input: hsl(245, 25%, 14%);
+      --text: hsl(200, 60%, 94%);
+      --text-secondary: hsl(220, 15%, 50%);
+      --text-muted: hsl(220, 10%, 35%);
+      /* Signal cyan accent */
+      --accent: hsl(185, 100%, 50%);
+      --accent-hover: hsl(185, 100%, 60%);
+      --accent-fg: hsl(245, 35%, 6%);
       --success: #4ade80;
       --error: #ef4444;
-      --warning: #d4a017;
+      --warning: hsl(45, 100%, 55%);
       --radius-sm: 0px;
       --radius-md: 2px;
       --radius-lg: 4px;
       --radius-xl: 6px;
       --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
       --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+      --font-display: 'Orbitron', sans-serif;
       --badge-x-bg: #1a3a5c; --badge-x-fg: #5b9bd5;
       --badge-web-bg: #1a3c2c; --badge-web-fg: #81c784;
       --badge-tg-bg: #1a3c3c; --badge-tg-fg: #26c6da;
@@ -136,7 +139,7 @@ export function sharedCenteredPageStyles(): string {
       text-decoration: none;
       transition: background 0.2s;
     }
-    .button:hover { background: var(--accent-hover); box-shadow: 0 0 4px rgba(212,160,23,0.3), 0 0 16px rgba(212,160,23,0.15); }
+    .button:hover { background: var(--accent-hover); box-shadow: 0 0 4px rgba(0,234,255,0.3), 0 0 16px rgba(0,234,255,0.15); }
     .button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   `;
 }
@@ -202,7 +205,7 @@ export function sharedDashboardStyles(): string {
       text-decoration: none;
       transition: background 0.2s;
     }
-    .button:hover { background: var(--accent-hover); box-shadow: 0 0 4px rgba(212,160,23,0.3), 0 0 16px rgba(212,160,23,0.15); }
+    .button:hover { background: var(--accent-hover); box-shadow: 0 0 4px rgba(0,234,255,0.3), 0 0 16px rgba(0,234,255,0.15); }
     .button:focus-visible {
       outline: 2px solid var(--accent);
       outline-offset: 2px;
@@ -472,7 +475,7 @@ export function renderPageShell(opts: PageShellOptions): string {
     .nav-active {
       color: var(--accent) !important;
       border-left-color: var(--accent);
-      background: rgba(212,160,23,0.06);
+      background: rgba(0,234,255,0.06);
     }
     .nav-section-label {
       padding: 16px 20px 6px;
@@ -577,12 +580,12 @@ export function renderPageShell(opts: PageShellOptions): string {
     .feed-tab:hover {
       color: var(--text);
       border-color: var(--accent);
-      background: rgba(212,160,23,0.05);
+      background: rgba(0,234,255,0.05);
     }
     .feed-tab.active {
       color: var(--accent);
       border-color: var(--accent);
-      background: rgba(212,160,23,0.08);
+      background: rgba(0,234,255,0.08);
     }
 
     /* Mobile hamburger */
