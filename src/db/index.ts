@@ -645,7 +645,7 @@ export async function ensureScanTables(): Promise<void> {
     deadline TEXT,
     deadline_parsed DATE,
     wire TEXT NOT NULL,
-    prompt_variant TEXT NOT NULL CHECK (prompt_variant IN ('A', 'B', 'C', 'N')),
+    prompt_variant TEXT NOT NULL CHECK (prompt_variant IN ('A', 'B', 'C', 'N', 'W', 'P')),
     scan_source TEXT NOT NULL DEFAULT 'x-scan',
     scan_date DATE NOT NULL,
     status TEXT NOT NULL DEFAULT 'raw'
@@ -749,7 +749,7 @@ export async function ensureScanTables(): Promise<void> {
   `);
   await client.query(`
     ALTER TABLE scan_entries ADD CONSTRAINT scan_entries_prompt_variant_check
-      CHECK (prompt_variant IN ('A', 'B', 'C', 'N'))
+      CHECK (prompt_variant IN ('A', 'B', 'C', 'N', 'W', 'P'))
   `);
   await client.query(`
     ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS submitted_by TEXT
