@@ -56,7 +56,22 @@ const pendingEntries = new Map<string, PendingEntry>();
 
 const DEFAULT_WIRE_KEYWORDS: Record<string, string[]> = {
   crypto: ['grant', 'protocol', 'defi', 'ethereum', 'solana', 'arbitrum', 'optimism', 'dao', 'web3', 'blockchain', 'uniswap', 'aave', 'crypto', 'token', 'staking'],
-  ai: ['llm', 'openai', 'anthropic', 'gpt', 'machine learning', 'artificial intelligence', 'foundation model', 'deep learning', 'neural', 'transformer'],
+  ai: [
+    // Specific orgs / products (high signal)
+    'openai', 'anthropic', 'google deepmind', 'deepmind', 'hugging face', 'huggingface',
+    'meta ai', 'stability ai', 'mistral', 'cohere',
+    // Core AI/ML terminology
+    'artificial intelligence', 'machine learning', 'deep learning', 'neural network',
+    'neural', 'llm', 'gpt', 'foundation model', 'transformer', 'large language model',
+    'large language', 'generative ai', 'computer vision', 'nlp',
+    'natural language processing', 'reinforcement learning',
+    // AI safety / alignment / governance
+    'ai safety', 'ai alignment', 'ai governance', 'ai ethics', 'ai risk',
+    'alignment research', 'agi',
+    // Broad but distinctive AI terms
+    'ai', 'ml', 'ai research', 'ai fellowship', 'ai workforce',
+    'ai impact', 'ai challenge', 'ai grant',
+  ],
   oss: ['open source', 'github', 'apache', 'linux', 'cncf', 'mozilla', 'open-source', 'foss', 'libre'],
 };
 
@@ -154,9 +169,21 @@ function extractUrls(text: string): string[] {
 // ────────────────────────────────────────────────────────────────────────────
 
 function buildName(text: string, url: string | null): string {
-  const firstLine = text.split('\n')[0].trim();
+  let firstLine = text.split('\n')[0].trim();
+
+  // If the first line is very short (< 20 chars) and there's more text,
+  // it may be a mid-word line break — join with the next line
+  if (firstLine.length < 20 && firstLine.length > 0) {
+    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+    if (lines.length > 1) {
+      firstLine = lines.slice(0, 2).join(' ').trim();
+    }
+  }
+
   if (firstLine && firstLine !== url) {
-    return firstLine.slice(0, 120);
+    // Strip numbered list prefix (e.g. "14. " or "3. ")
+    const cleaned = firstLine.replace(/^\d+\.\s+/, '').trim();
+    return cleaned.slice(0, 120);
   }
   if (url) {
     try {
@@ -359,13 +386,33 @@ export function isBatchMessage(text: string): boolean {
  */
 function parseBatchEntries(text: string): Array<{ name: string; description: string; sourceUrl: string; deadline?: string }> {
   // Split on numbered item boundaries: \n1. or \n2. etc (allows leading whitespace)
+  // Also handle the first entry which may not have a preceding newline
   const chunks = text.split(/\n(?=\s*\d+\.\s+)/).filter(c => c.trim() && /^\s*\d+\./.test(c));
 
   return chunks.map(chunk => {
-    // Extract name from **bold** or leading text
-    const nameMatch = chunk.match(/^\s*\d+\.\s+\*\*([^*]+)\*\*/) || chunk.match(/^\s*\d+\.\s+([^\n—–-]+)/);
-    const rawName = nameMatch ? nameMatch[1].trim() : chunk.split('\n')[0].replace(/^\d+\.\s*/, '').trim();
-    const name = rawName.replace(/\s*—.*$/, '').trim().slice(0, 120);
+    // Strip the numbered prefix first (e.g. "14. " or " 3.  ")
+    const withoutPrefix = chunk.replace(/^\s*\d+\.\s+/, '');
+
+    // Extract name from **bold** or leading text (now without numbered prefix)
+    const boldMatch = withoutPrefix.match(/^\*\*([^*]+)\*\*/);
+    // For non-bold: capture up to em dash, en dash, or newline
+    const plainMatch = withoutPrefix.match(/^([^\n—–]+)/);
+
+    let rawName: string;
+    if (boldMatch) {
+      rawName = boldMatch[1].trim();
+    } else if (plainMatch) {
+      rawName = plainMatch[1].trim();
+    } else {
+      rawName = withoutPrefix.split('\n')[0].trim();
+    }
+
+    // Strip trailing em-dash description suffix and any leftover numbered prefix
+    const name = rawName
+      .replace(/\s*—.*$/, '')
+      .replace(/^\d+\.\s+/, '')  // safety: strip any remaining numbered prefix
+      .trim()
+      .slice(0, 120);
 
     // Extract URL from Link: line or any https:// in chunk
     const linkMatch = chunk.match(/Link:\s*<?(\bhttps?:\/\/[^\s>]+)/i);
@@ -377,7 +424,8 @@ function parseBatchEntries(text: string): Array<{ name: string; description: str
     const deadline = deadlineMatch ? deadlineMatch[1].trim() : undefined;
 
     // Build clean description: name — description text, append deadline if present
-    const descMatch = chunk.match(/\*\*[^*]+\*\*\s*[—–-]\s*([\s\S]+?)(?:\n(?:Deadline|Link):|\s*$)/);
+    const descMatch = chunk.match(/\*\*[^*]+\*\*\s*[—–\-]\s*([\s\S]+?)(?:\n(?:Deadline|Link):|\s*$)/)
+      || withoutPrefix.match(/^[^—–]+[—–]\s*([\s\S]+?)(?:\n(?:Deadline|Link):|\s*$)/);
     let description = descMatch ? descMatch[1].trim() : chunk.replace(/^\d+\.\s*/, '').trim();
     if (deadline && deadline.toLowerCase() !== 'none listed') {
       description += `\nDeadline: ${deadline}`;
@@ -404,7 +452,13 @@ export async function processBatchMessage(
   for (const entry of entries) {
     // Detect wire from combined name + description
     const combined = `${entry.name} ${entry.description}`;
-    const wire = detectWire(combined, wires) || wires[0] || 'crypto';
+    const wire = detectWire(combined, wires);
+
+    if (!wire) {
+      result.failed++;
+      result.entries.push({ name: entry.name, wire: 'unknown', error: 'Could not detect wire — needs manual classification' });
+      continue;
+    }
 
     // Dedup check — fail open if dedup service errors
     try {
