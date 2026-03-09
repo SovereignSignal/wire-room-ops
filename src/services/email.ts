@@ -666,3 +666,107 @@ The Wire Room
 
   console.log(`[Email] Scan digest email sent successfully`);
 }
+
+export async function sendDailyDigestEmail(
+  digest: import('../jobs/daily-digest').DailyDigestResult,
+  dashboardUrl: string,
+  recipients?: string[]
+): Promise<void> {
+  const client = getResend();
+  const reviewUrl = `${dashboardUrl.replace(/\/$/, '')}/queue`;
+
+  const wireRows = digest.wires.map(w => {
+    const pendingColor = w.pendingReview > 10 ? '#ef5350' : w.pendingReview > 0 ? '#f5a623' : '#4caf50';
+    return `<tr>
+      <td style="padding:10px 8px;border-bottom:1px solid #2a2a2a;color:#ffffff;font-size:14px;text-transform:capitalize;">${escapeHtml(w.wire)}</td>
+      <td style="padding:10px 8px;border-bottom:1px solid #2a2a2a;color:#cccccc;font-size:14px;text-align:center;">${w.scansRun}</td>
+      <td style="padding:10px 8px;border-bottom:1px solid #2a2a2a;color:#cccccc;font-size:14px;text-align:center;">${w.newUnique}</td>
+      <td style="padding:10px 8px;border-bottom:1px solid #2a2a2a;color:#cccccc;font-size:14px;text-align:center;">${w.recentlyApproved}</td>
+      <td style="padding:10px 8px;border-bottom:1px solid #2a2a2a;text-align:center;">
+        <span style="display:inline-block;background-color:${pendingColor};color:#0d0d0d;padding:2px 10px;border-radius:10px;font-size:13px;font-weight:700;">${w.pendingReview}</span>
+      </td>
+    </tr>`;
+  }).join('');
+
+  const wireText = digest.wires.map(w =>
+    `  ${w.wire.padEnd(10)} scans:${w.scansRun} new:${w.newUnique} approved:${w.recentlyApproved} pending:${w.pendingReview}`
+  ).join('\n');
+
+  const htmlContent = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#0d0d0d;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:#0d0d0d;">
+  <tr><td align="center" style="padding:40px 20px;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:560px;background-color:#1a1a1a;border:1px solid #2a2a2a;border-radius:16px;">
+      <tr><td style="padding:40px;">
+        <h1 style="margin:0 0 4px;font-size:22px;font-weight:700;text-align:center;">
+          <span style="color:#ffffff;">The</span> <span style="color:#f5a623;">Wire</span> <span style="color:#ffffff;">Room</span>
+        </h1>
+        <p style="margin:0 0 28px;color:#999999;font-size:13px;text-align:center;">Daily Digest — ${escapeHtml(digest.date)}</p>
+        <h2 style="margin:0 0 6px;color:#ffffff;font-size:18px;font-weight:600;">Pipeline Summary</h2>
+        <p style="margin:0 0 20px;color:#999999;font-size:14px;">
+          ${digest.totalNewUnique} new unique finds across all wires.
+          ${digest.totalPendingReview > 0
+            ? `<strong style="color:#f5a623;">${digest.totalPendingReview} items pending your review.</strong>`
+            : '<span style="color:#4caf50;">Queue is clear.</span>'}
+        </p>
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-bottom:24px;">
+          <tr>
+            <th style="padding:8px;text-align:left;color:#f5a623;font-size:12px;font-weight:600;text-transform:uppercase;border-bottom:2px solid #2a2a2a;">Wire</th>
+            <th style="padding:8px;text-align:center;color:#f5a623;font-size:12px;font-weight:600;text-transform:uppercase;border-bottom:2px solid #2a2a2a;">Scans</th>
+            <th style="padding:8px;text-align:center;color:#f5a623;font-size:12px;font-weight:600;text-transform:uppercase;border-bottom:2px solid #2a2a2a;">New</th>
+            <th style="padding:8px;text-align:center;color:#f5a623;font-size:12px;font-weight:600;text-transform:uppercase;border-bottom:2px solid #2a2a2a;">Approved</th>
+            <th style="padding:8px;text-align:center;color:#f5a623;font-size:12px;font-weight:600;text-transform:uppercase;border-bottom:2px solid #2a2a2a;">Pending</th>
+          </tr>
+          ${wireRows}
+        </table>
+        ${digest.totalPendingReview > 0 ? `
+        <table role="presentation" cellspacing="0" cellpadding="0" width="100%"><tr><td align="center">
+          <a href="${escapeHtml(reviewUrl)}" target="_blank" style="display:inline-block;padding:14px 32px;background-color:#f5a623;color:#0d0d0d;font-size:15px;font-weight:600;text-decoration:none;border-radius:8px;">
+            Review Queue (${digest.totalPendingReview})
+          </a>
+        </td></tr></table>` : `
+        <table role="presentation" cellspacing="0" cellpadding="0" width="100%"><tr><td align="center">
+          <a href="${escapeHtml(dashboardUrl)}" target="_blank" style="display:inline-block;padding:14px 32px;background-color:#2a2a2a;color:#cccccc;font-size:15px;font-weight:600;text-decoration:none;border-radius:8px;">
+            Open Dashboard
+          </a>
+        </td></tr></table>`}
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top:28px;border-top:1px solid #2a2a2a;">
+          <tr><td style="padding-top:20px;text-align:center;">
+            <p style="margin:0;color:#666666;font-size:12px;">One email per day. Individual scan notifications are disabled.</p>
+          </td></tr>
+        </table>
+      </td></tr>
+    </table>
+    <p style="margin:20px 0 0;color:#666666;font-size:11px;">The Wire Room</p>
+  </td></tr>
+</table>
+</body></html>`;
+
+  const textContent = `The Wire Room — Daily Digest ${digest.date}
+
+${digest.totalNewUnique} new unique finds. ${digest.totalPendingReview} pending review.
+
+WIRE BREAKDOWN
+--------------
+${wireText}
+
+${digest.totalPendingReview > 0 ? `Review queue: ${reviewUrl}` : 'Queue is clear.'}
+
+---
+One email per day. Individual scan notifications disabled.
+The Wire Room`;
+
+  const pendingLabel = digest.totalPendingReview > 0 ? ` | ${digest.totalPendingReview} pending` : '';
+  const to = recipients && recipients.length > 0 ? recipients : config.email.notificationEmail;
+
+  await client.emails.send({
+    from: config.email.fromEmail,
+    to,
+    subject: `Wire Room Digest — ${digest.date} | ${digest.totalNewUnique} new${pendingLabel}`,
+    html: htmlContent,
+    text: textContent,
+  });
+
+  console.log(`[Email] Daily digest sent to: ${Array.isArray(to) ? to.join(', ') : to}`);
+}
