@@ -32,7 +32,8 @@ export async function checkDuplicate(
   lookbackDays: number = 14
 ): Promise<DedupResult> {
   // Layer 1: URL exact match (fastest)
-  const urlResult = await checkUrlMatch(pool, entry.sourceUrl, entry.wire);
+  // Pass entry name so we can distinguish aggregate URLs (one tweet listing multiple grants)
+  const urlResult = await checkUrlMatch(pool, entry.sourceUrl, entry.wire, entry.name);
   if (urlResult.isDuplicate) {
     return urlResult;
   }
@@ -65,11 +66,19 @@ export async function checkDuplicate(
 
 /**
  * Check if this URL (normalized) has been seen before for this wire.
+ *
+ * When a URL matches but the entry names are significantly different,
+ * we DON'T flag as duplicate. This handles aggregate URLs where one
+ * tweet/post lists multiple different grants (e.g. @Onoja_Cee listing
+ * 4 grants in one tweet — all share the same URL but are distinct entries).
+ *
+ * @param entryName - Name of the incoming entry, used for name comparison on URL match
  */
 async function checkUrlMatch(
   pool: Pool,
   sourceUrl: string,
-  wire: string
+  wire: string,
+  entryName?: string
 ): Promise<DedupResult> {
   const normalized = normalizeUrl(sourceUrl);
 
@@ -85,7 +94,23 @@ async function checkUrlMatch(
   if (result.rows.length > 0) {
     const row = result.rows[0];
     const entryId = row.first_seen_entry_id; // null for seeded wire URLs
-    const displayName = row.name || row.url;  // fall back to URL if no scan_entry
+    const matchedName: string | null = row.name;
+    const displayName = matchedName || row.url;  // fall back to URL if no scan_entry
+
+    // If we have both names, check if they're similar enough to be the same entry.
+    // Dissimilar names with the same URL = aggregate post (don't flag as duplicate).
+    if (entryName && matchedName && !areNamesSimilar(entryName, matchedName)) {
+      // Names are significantly different — fall through to name-based dedup
+      return {
+        isDuplicate: false,
+        matchType: null,
+        matchedEntryId: null,
+        matchedEntryName: null,
+        confidence: 0,
+        reason: `URL matches entry #${entryId} ("${matchedName}") but names differ — treating as distinct entry from aggregate URL`,
+      };
+    }
+
     const reason = entryId
       ? `Exact URL match with entry #${entryId}: "${displayName}"`
       : `Exact URL match with existing wire content: "${displayName}"`;
@@ -108,6 +133,38 @@ async function checkUrlMatch(
     confidence: 0,
     reason: '',
   };
+}
+
+/**
+ * Check if two entry names are similar enough to be considered the same program.
+ * Uses token overlap: if >50% of tokens overlap, names are "similar".
+ *
+ * Examples:
+ *   "Optimism Grants" vs "Optimism Grants Program" → similar (high overlap)
+ *   "Optimism Grants" vs "Arbitrum Foundation Fellowship" → dissimilar (no overlap)
+ *   "DARPA CLARA" vs "NSF Graduate Research Fellowship" → dissimilar
+ */
+function areNamesSimilar(nameA: string, nameB: string): boolean {
+  const tokensA = extractNameTokens(nameA);
+  const tokensB = extractNameTokens(nameB);
+
+  // If either has no significant tokens, fall back to conservative (treat as similar)
+  if (tokensA.length === 0 || tokensB.length === 0) return true;
+
+  const setA = new Set(tokensA);
+  const setB = new Set(tokensB);
+
+  let intersection = 0;
+  for (const token of setA) {
+    if (setB.has(token)) intersection++;
+  }
+
+  // Use smaller set as denominator (asymmetric Jaccard)
+  const minSize = Math.min(setA.size, setB.size);
+  const overlap = intersection / minSize;
+
+  // >50% token overlap = same program
+  return overlap > 0.5;
 }
 
 // ============================================================

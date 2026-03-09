@@ -28,6 +28,7 @@ import type { RawScanResult, ToolType } from './types/intake';
 import { renderLoginPage } from './views/login';
 import { renderErrorPage, renderLegacyDownloadPage, renderExpiredLinkPage, renderResendSuccessPage } from './views/error';
 import { handleTelegramUpdate, registerIntakeWebhook, cleanupPendingEntries } from './services/telegram-adapter';
+import { processRawEntries } from './jobs/process-raw';
 
 const app = express();
 const privyJwks = jwksClient({
@@ -1433,6 +1434,24 @@ app.post('/api/summary-sync', requireAuth, async (_req: Request, res: Response) 
   }
 });
 
+// API: Manual trigger for process-raw (dedup+score raw entries)
+app.post('/api/process-raw', requireAuth, async (_req: Request, res: Response) => {
+  if (!rateLimit('process-raw', 3, 5 * 60 * 1000)) {
+    res.status(429).json({ error: 'Process-raw recently run. Please wait 5 minutes.' });
+    return;
+  }
+
+  try {
+    const pool = getPool();
+    const result = await processRawEntries(pool);
+    res.json({ success: true, ...result });
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[ProcessRaw] Manual trigger failed:', error);
+    res.status(500).json({ error: errorMsg });
+  }
+});
+
 // API: Telegram intake webhook (no auth — validated by secret header)
 app.post('/api/telegram/intake-webhook', async (req: Request, res: Response) => {
   // Always return 200 so Telegram doesn't retry
@@ -1845,6 +1864,25 @@ export async function startServer(): Promise<void> {
     }
   }
 
+  // Process raw entries every 5 minutes (dedup + scoring pipeline)
+  const processRawTimer = setInterval(async () => {
+    try {
+      await processRawEntries(getPool());
+    } catch (error) {
+      console.error('[ProcessRaw] Scheduled run failed:', error);
+    }
+  }, 5 * 60 * 1000);
+  processRawTimer.unref();
+
+  // Run once at startup (after a short delay to let DB settle)
+  setTimeout(async () => {
+    try {
+      await processRawEntries(getPool());
+    } catch (error) {
+      console.error('[ProcessRaw] Initial run failed:', error);
+    }
+  }, 10_000);
+
   // Cleanup expired pending intake entries every 15 minutes
   const intakeCleanupTimer = setInterval(cleanupPendingEntries, 15 * 60 * 1000);
   intakeCleanupTimer.unref();
@@ -1860,6 +1898,7 @@ export async function startServer(): Promise<void> {
     stopSummarySync();
     stopAuthCleanup();
     jobQueue.stopPeriodicCleanup();
+    clearInterval(processRawTimer);
     clearInterval(intakeCleanupTimer);
     server.close(async () => {
       await closePool();
