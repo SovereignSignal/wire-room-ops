@@ -20,6 +20,7 @@ import type {
 } from '../types/intake';
 import { getAllScanPrompts, ScanPromptRecord } from '../db';
 import { executeScanPrompt } from '../services/grok';
+import { executePerplexityScan } from '../services/perplexity';
 import { parseStructuredOutput } from '../services/intake';
 import { withRetry } from '../services/processor';
 import { runDailyIntake } from './daily-intake';
@@ -119,26 +120,34 @@ export async function runScanExecution(
     );
 
     try {
-      const grokResult = await withRetry(
-        () => executeScanPrompt(prompt.promptText, {
-          responseFormat: prompt.responseFormat,
-          toolType: prompt.toolType,
-        }),
+      // Route to the correct model provider based on tool_type
+      const scanResult = await withRetry(
+        () => {
+          if (prompt.toolType === 'perplexity') {
+            return executePerplexityScan(prompt.promptText);
+          }
+          return executeScanPrompt(prompt.promptText, {
+            responseFormat: prompt.responseFormat,
+            toolType: prompt.toolType,
+          });
+        },
         2 // 2 total attempts (1 retry) — these are expensive calls
       );
 
-      const parsed = parseStructuredOutput(grokResult.content);
+      const parsed = parseStructuredOutput(scanResult.content);
       const durationMs = Date.now() - promptStart;
 
       if (parsed.length === 0) {
         console.warn(`[ScanExecution] Prompt "${prompt.label}" returned 0 parseable results`);
-        console.warn(`[ScanExecution] Raw Grok output (first 500 chars): ${grokResult.content.substring(0, 500)}`);
+        console.warn(`[ScanExecution] Raw output (first 500 chars): ${scanResult.content.substring(0, 500)}`);
       } else {
         console.log(`[ScanExecution] Prompt "${prompt.label}" parsed ${parsed.length} results`);
       }
 
       // Build submission
-      const source: ScanSource = prompt.toolType === 'web_search' ? 'web-search' : 'x-scan';
+      const source: ScanSource = prompt.toolType === 'perplexity' || prompt.toolType === 'web_search'
+        ? 'web-search'
+        : 'x-scan';
       submissions.push({
         wire: prompt.wire,
         promptVariant: variant,

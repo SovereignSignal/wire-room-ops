@@ -12,7 +12,7 @@ export type PromptVariant = 'A' | 'B' | 'C' | 'N';
 export type PromptStrategy = 'Action' | 'Landscape' | 'Open Sweep';
 
 // Which Grok tool to use for scan execution
-export type ToolType = 'x_search' | 'web_search';
+export type ToolType = 'x_search' | 'web_search' | 'perplexity';
 
 // Where the result came from
 export type ScanSource = 'x-scan' | 'web-search' | 'telegram' | 'email' | 'forum';
