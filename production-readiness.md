@@ -34,13 +34,28 @@ Wire Room Ops should reliably:
 
 ## Hard Requirements Before Going Live
 
-1. All required env vars configured in host.
+1. All 8 required env vars configured in host (DATABASE_URL, ANTHROPIC_API_KEY, GROK_API_KEY, FIRECRAWL_API_KEY, RESEND_API_KEY, NOTIFICATION_EMAIL, PRIVY_APP_ID, PRIVY_APP_SECRET).
 2. Privy login tested end-to-end with allowlisted user.
 3. Email test alert succeeds (`POST /api/test-alert`).
 4. At least one scan prompt per active wire tested (`/api/scan/prompts/:id/test`).
 5. Manual scan run validated (`POST /api/scan/run`).
 6. At least one enabled schedule validated in production.
 7. Daily backup/restore process verified (already present via repo workflows).
+
+## Optional Feature Activation
+
+These features are gracefully disabled when their env vars are absent:
+
+| Feature | Required Env Vars | Notes |
+|---------|-------------------|-------|
+| Telegram channel distribution | `TELEGRAM_BOT_TOKEN` | Channel ID per wire in `distribution_config` |
+| Telegram intake bot | `TELEGRAM_INTAKE_BOT_TOKEN` | Also set `TELEGRAM_INTAKE_WEBHOOK_SECRET` and `TELEGRAM_INTAKE_ALLOWED_USER_ID` |
+| Forum scanning | `FORUM_SCAN_ENABLED=true` | Optionally `DISCUSS_WATCH_API_URL` |
+| Perplexity deep web scans | `PERPLEXITY_API_KEY` | For variant P prompts |
+| Custom brand/audience | `BRAND_AUDIENCE`, `BRAND_CONTENT_TYPE`, `BRAND_CONTENT_VERB` | Defaults to Wire Room/grants values |
+| Quality scoring overrides | `QUALITY_FUNDING_TYPES`, `QUALITY_ACTIONABLE_TYPES` | JSON arrays |
+| Forum search term overrides | `FORUM_SEARCH_TERMS` | Comma-separated |
+| Per-wire intake keywords | `INTAKE_WIRE_KEYWORDS_{WIRE}` | E.g. `INTAKE_WIRE_KEYWORDS_CRYPTO` |
 
 ## Suggested Alerting Thresholds
 

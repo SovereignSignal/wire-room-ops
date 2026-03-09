@@ -1,12 +1,19 @@
 # Wire Room Ops
 
-Backend pipeline and admin dashboard for The Wire Room editorial workflow.
+Backend pipeline and admin dashboard for an intelligence-to-distribution system. Discovers, ingests, deduplicates, scores, and queues entries for operator review, then distributes approved entries across multiple channels.
 
-This service discovers opportunities (X/web/forum), runs intake (parse -> dedup -> quality score), queues items for review, and marks approved entries in `scan_entries` so the public site can publish them.
+Deployed as The Wire Room (grants wire) but designed to be deployment-agnostic — swap brand config and prompts to run any vertical (consulting leads, research intel, etc.).
 
 ## Current Scope (March 2026)
 
-- Includes: scan execution, intake pipeline, queue review, schedule management, summary sync bridge, multi-channel distribution (Telegram/X/newsletter), model listing, email alerts.
+- Scan execution (X search, web search, forum scanning)
+- Multi-channel ingestion (Telegram bot, manual paste, API)
+- Intake pipeline (parse -> dedup -> quality score -> queue)
+- Queue review + approval workflow
+- Multi-channel distribution (Telegram, X/Twitter, newsletter)
+- React dashboard (Lovable design) + server-rendered login
+- Schedule management, summary sync bridge, model listing, email alerts
+- Deployment-agnostic brand/audience configuration
 
 ## Core Workflow
 
@@ -24,13 +31,19 @@ This service discovers opportunities (X/web/forum), runs intake (parse -> dedup 
 ## Features
 
 - Privy-authenticated dashboard (email allowlist support)
-- Dynamic feeds (`crypto`, `ai`, `oss`, plus custom)
-- Prompt CRUD + test execution
+- React/Vite/Tailwind frontend (Lovable satellite array design) for authenticated routes
+- Server-rendered login/error pages with deep space theme and starfield animation
+- Deployment-agnostic brand config (audience, content type, scoring keywords — all env-var driven)
+- Dynamic feeds (DB-driven wire list, not hardcoded)
+- Telegram intake bot for URL/article submissions via webhook
+- Channel-agnostic intake core with adapter pattern (Telegram today, Slack/Discord future)
+- Prompt CRUD + test execution + prompt lab
 - Automated scan runs with SSE progress updates
-- Forum scanning via discuss.watch
+- Forum scanning via discuss.watch (search terms overrideable via env var)
 - Intake scoring + dedup stats + prompt effectiveness stats
+- Quality scorer with overrideable funding/actionable type keywords
 - Scheduler with per-schedule health and retry-on-failure behavior
-- Summary sync bridge (`summaries` -> approved `scan_entries`)
+- Summary sync bridge (`summaries` -> approved `scan_entries`, DB-driven wire list)
 - Multi-channel distribution (Telegram, X/Twitter, newsletter markdown)
 - AI-generated posts via Claude Sonnet with template fallback
 - Postgres-backed generated file storage and email notifications
@@ -94,10 +107,16 @@ npm start
 ## Project Structure
 
 ```text
+client/                     # React/Vite/Tailwind frontend (Lovable design)
+├── src/                    # Served at dist/client/ for authenticated routes
+├── vite.config.ts
+└── ...
 src/
 ├── index.ts
 ├── server.ts
-├── config/index.ts
+├── config/
+│   ├── index.ts            # Environment variables and validation
+│   └── brand.ts            # Deployment-agnostic brand config (env-var driven)
 ├── db/index.ts
 ├── jobs/
 │   ├── daily-intake.ts
@@ -113,6 +132,7 @@ src/
 │   ├── forum.ts
 │   ├── grok.ts
 │   ├── intake.ts
+│   ├── intake-core.ts      # Channel-agnostic intake logic (URL extraction, wire detection, DB insert)
 │   ├── job-queue.ts
 │   ├── models.ts
 │   ├── post-generator.ts
@@ -122,6 +142,7 @@ src/
 │   ├── scheduler.ts
 │   ├── scraper.ts
 │   ├── storage.ts
+│   ├── telegram-adapter.ts  # Telegram intake bot adapter (webhook handler, inline keyboard)
 │   ├── telegram-channel.ts
 │   └── x-client.ts
 ├── types/
@@ -134,10 +155,10 @@ src/
 └── views/
     ├── error.ts
     ├── feed.ts
-    ├── login.ts
+    ├── login.ts            # Server-rendered (Privy + starfield animation)
     ├── queue.ts
     ├── settings.ts
-    └── shared.ts
+    └── shared.ts           # Page shell (deep space palette, Orbitron headings)
 ```
 
 ## Main Endpoints
@@ -151,6 +172,7 @@ Public:
 - `POST /resend-link`
 - `GET /download`
 - `GET /download/:token`
+- `POST /api/telegram/intake-webhook` (validated by secret header, not session auth)
 
 Authenticated UI:
 
@@ -274,13 +296,58 @@ Optional:
 - `PORT`
 - `FROM_EMAIL`
 - `ALLOWED_EMAILS`
-- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_BOT_TOKEN` -- bot token for channel distribution posting
 - `DB_SSL_REJECT_UNAUTHORIZED`
 - `FORUM_SCAN_ENABLED`
 - `DISCUSS_WATCH_API_URL`
+- `PERPLEXITY_API_KEY` -- for deep web research scans (variant P prompts)
+
+Telegram Intake Bot:
+
+- `TELEGRAM_INTAKE_BOT_TOKEN` -- bot token for intake bot (@GrantWireSummarizer_bot)
+- `TELEGRAM_INTAKE_WEBHOOK_SECRET` -- random string for webhook validation
+- `TELEGRAM_INTAKE_ALLOWED_USER_ID` -- Telegram user ID of allowed sender (default: 394395765)
+
+Ingestion / Wire Detection:
+
+- `INTAKE_WIRES` -- comma-separated fallback wire list if DB has no active feeds
+- `INTAKE_WIRE_KEYWORDS_{WIRE}` -- per-wire keyword overrides (e.g. `INTAKE_WIRE_KEYWORDS_CRYPTO`)
+
+Brand / Deployment Config:
+
+- `BRAND_NAME` -- display name (default: "The Wire Room")
+- `BRAND_TAGLINE` -- short descriptor (default: "Intelligence Pipeline")
+- `BRAND_COLOR` -- primary accent hex (default: "#2563eb")
+- `BRAND_URL` -- base URL of the ops dashboard
+- `BRAND_FROM_NAME` -- sender display name for outbound email
+- `BRAND_AUDIENCE` -- who reads the content (default: "grant seekers")
+- `BRAND_CONTENT_TYPE` -- what is scanned for (default: "grant funding opportunities")
+- `BRAND_CONTENT_VERB` -- action word (default: "apply for")
+
+Scoring Overrides:
+
+- `QUALITY_FUNDING_TYPES` -- JSON array override for funding type keywords
+- `QUALITY_ACTIONABLE_TYPES` -- JSON array override for actionable type keywords
+- `FORUM_SEARCH_TERMS` -- comma-separated search terms override
+
+## Multi-Channel Ingestion
+
+Entries can be submitted through multiple channels using the adapter pattern:
+
+- **Telegram bot** (`@GrantWireSummarizer_bot`): Send a URL or text to the bot. Wire is auto-detected from keywords; if ambiguous, the bot presents an inline keyboard for wire selection. Requires `TELEGRAM_INTAKE_BOT_TOKEN`. Only the allowed user ID can submit.
+- **Manual paste**: Submit via the dashboard (existing `/api/scan/submit` and `/api/scan/submit-batch` endpoints).
+- **Future adapters**: Slack, Discord, email — same `intake-core.ts` interface.
+
+The intake core (`src/services/intake-core.ts`) is channel-agnostic: it accepts an `IntakeMessage`, extracts URLs, detects the target wire via per-wire keyword scoring, and inserts a raw `scan_entry`. Channel adapters (like `telegram-adapter.ts`) handle protocol-specific concerns (webhook validation, inline keyboards, etc.) and delegate to the core.
+
+## Architecture
+
+The `client/` directory contains a React/Vite/Tailwind frontend (Lovable wireops-dashboard design). For authenticated routes, the server serves `dist/client/index.html` as a SPA. Only login and error pages are server-rendered (views in `src/views/`).
 
 ## Development Notes
 
 - TypeScript strict mode, CommonJS output.
 - In-memory stores are used for sessions/tokens/job-progress and are reset on restart.
+- Wire list is DB-driven (from `feeds` table), not hardcoded. Fallback via `INTAKE_WIRES` env var.
+- Brand/audience config is env-var driven via `src/config/brand.ts` — AI prompts, emails, and scoring use `getBrand()` instead of hardcoded values.
 - The queue/status model is the publication contract with the frontend site.

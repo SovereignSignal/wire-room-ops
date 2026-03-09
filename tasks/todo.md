@@ -69,3 +69,30 @@
 - Replaced `Remove Feed` with `Archive Feed`, updated the surrounding copy to describe archive/reactivate behavior accurately, and removed the ambiguous `Open Workspace` action from Setup.
 - `Edit Feed` now scrolls and focuses the inline feed editor so the action directly leads to the place where metadata changes happen.
 - Archived feeds now expose `Reactivate Feed`, backed by the existing feed update path with `archived: false`.
+
+---
+
+## March 9, 2026 — Theme, Intake Bot, Deployment-Agnostic Refactor
+
+### Completed
+
+- [x] Lovable satellite array theme applied to login page and shared shell (deep space palette, signal cyan, Orbitron font, starfield animation).
+- [x] React/Vite/Tailwind frontend (`client/`) served for all authenticated routes; only login/error pages are server-rendered.
+- [x] Telegram intake bot (`telegram-adapter.ts` + `intake-core.ts`) with webhook at `/api/telegram/intake-webhook`.
+- [x] Channel-agnostic intake core with adapter pattern for future Slack/Discord adapters.
+- [x] Deployment-agnostic brand config (`brand.ts`) — audience, contentType, contentVerb all env-var driven.
+- [x] AI prompts (Grok, Claude, Perplexity) updated to use `getBrand()` instead of hardcoded values.
+- [x] Wire list now DB-driven everywhere (summary-sync, scheduler, forum-scan) — no more hardcoded `["crypto","ai","oss"]`.
+- [x] Quality scorer FUNDING_TYPES and ACTIONABLE_TYPES overrideable via env vars.
+- [x] Forum scan search terms overrideable via `FORUM_SEARCH_TERMS` env var.
+- [x] All new env vars added to `.env.example`.
+
+### Remaining Known Gaps
+
+- [ ] Slack/Discord intake adapters (same `intake-core.ts` interface).
+- [ ] Email inbound ingestion (URL extraction from forwarded emails).
+- [ ] Automated scheduled distribution (currently manual trigger only).
+- [ ] CRM sync (Notion organization tracking).
+- [ ] Persist sessions/rate-limit state (Redis or DB) for restart resilience.
+- [ ] Structured logging + request IDs for incident debugging.
+- [ ] In-browser runtime verification of Lovable React dashboard (desktop/mobile rendering, live interactions).

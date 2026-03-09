@@ -4,9 +4,11 @@ This file provides context for AI assistants working with this codebase.
 
 ## Project Overview
 
-**Wire Room Ops** is a Node.js/TypeScript application that powers the backend pipeline and admin dashboard for The Wire Room. It automates grant discovery, intake processing, and approval across crypto, AI, and OSS beats. It pulls categorized entries from a Postgres database, enriches them using AI (Grok for X.com content, Claude for other URLs), and surfaces high-quality grant opportunities for operator review.
+**Wire Room Ops** is a Node.js/TypeScript application that powers the backend pipeline and admin dashboard for an intelligence-to-distribution system. It discovers entries from multiple sources (X, web, forums, Telegram intake), runs them through an intake pipeline (parse, dedup, quality score), queues them for operator review, and distributes approved entries across configured channels.
 
-> Current-code note (March 2026): parts of this file describe historical modules that were extracted from this repo (notably CRM/Telegram inbound services). Multi-channel distribution has been re-implemented in this repo. When in doubt, trust `src/` and `README.md` for the implemented scope.
+The system is deployment-agnostic: brand, audience, content type, and scoring keywords are all env-var driven via `src/config/brand.ts`. The default deployment is The Wire Room (grants across crypto, AI, OSS beats), but the same engine can run any vertical by swapping config.
+
+Wire lists are DB-driven (from the `feeds` table), not hardcoded.
 
 ## Multi-Repo Architecture
 
@@ -29,6 +31,11 @@ The Wire Room queries with `WHERE status = 'approved'` (optionally `AND wire = $
 
 ## Key Architecture Decisions
 
+### Deployment-Agnostic Brand Config
+- `src/config/brand.ts` exports `getBrand()` with audience, contentType, contentVerb, and UI settings
+- All AI prompts (Grok, Claude, Perplexity), quality scorer keywords, and email templates use `getBrand()` instead of hardcoded values
+- Override per deployment via `BRAND_AUDIENCE`, `BRAND_CONTENT_TYPE`, `BRAND_CONTENT_VERB`, etc.
+
 ### Dual AI Processing
 - **Grok API** handles X.com/Twitter URLs because it has native access to tweet content
 - **Claude API** handles all other URLs, using Firecrawl for web scraping
@@ -45,42 +52,50 @@ Dashboard login is handled via Privy (social/email auth). On successful Privy lo
 ## File Structure Quick Reference
 
 ```
+client/                       # React/Vite/Tailwind frontend (Lovable wireops-dashboard design)
+├── src/                      # Served at dist/client/ for all authenticated routes
+├── vite.config.ts
+└── ...
 src/
 ├── index.ts              # Entry point - validates config, starts server
-├── server.ts             # Express routes (includes scan, distribution, feed, schedule APIs)
-├── config/index.ts       # Environment variables and validation
+├── server.ts             # Express routes (includes scan, distribution, feed, schedule, intake APIs)
+├── config/
+│   ├── index.ts          # Environment variables and validation
+│   └── brand.ts          # Deployment-agnostic brand config (audience, contentType, contentVerb)
 ├── db/index.ts           # Postgres queries, schedules, feeds, scan tables, scan prompts, distribution tables
 ├── jobs/
 │   ├── daily-intake.ts     # Scan intake pipeline orchestrator (parse -> dedup -> score -> queue)
 │   ├── scan-execution.ts   # Automated scan execution (prompt fetch -> Grok -> intake)
-│   ├── forum-scan.ts       # Forum scan orchestrator (discuss.watch -> intake)
-│   └── summary-sync.ts     # Sync tele-sum summaries into scan_entries as approved
+│   ├── forum-scan.ts       # Forum scan orchestrator (discuss.watch -> intake, DB-driven wire list)
+│   └── summary-sync.ts     # Sync tele-sum summaries into scan_entries as approved (DB-driven wire list)
 ├── services/
-│   ├── anthropic.ts      # Claude API calls with scraping integration
+│   ├── anthropic.ts      # Claude API calls with scraping integration (uses getBrand())
 │   ├── auth.ts           # Session tokens, download tokens, cleanup timers
 │   ├── dedup.ts            # URL exact-match and fuzzy name deduplication
 │   ├── distribution.ts     # Distribution orchestrator: send entries to channels, retry, newsletter
 │   ├── email.ts            # Resend email templates (5 types)
-│   ├── forum.ts            # discuss.watch API client for forum scanning
-│   ├── grok.ts             # Grok Chat + Responses API for X.com content and scans
+│   ├── forum.ts            # discuss.watch API client (search terms overrideable via FORUM_SEARCH_TERMS)
+│   ├── grok.ts             # Grok Chat + Responses API for X.com content and scans (uses getBrand())
 │   ├── intake.ts           # Scan result parser, URL/name normalization
+│   ├── intake-core.ts      # Channel-agnostic intake logic (URL extraction, wire detection, DB insert)
 │   ├── job-queue.ts        # SSE-based job progress tracking
 │   ├── models.ts           # Dynamic model fetching from both APIs
 │   ├── post-generator.ts   # Claude Sonnet AI generates tweet + Telegram HTML per entry
 │   ├── processor.ts        # Entry processing with retry logic
-│   ├── quality-scorer.ts   # 0-100 quality scoring engine for scan entries
+│   ├── quality-scorer.ts   # 0-100 quality scoring (FUNDING_TYPES/ACTIONABLE_TYPES overrideable via env)
 │   ├── scan-stats.ts       # Prompt effectiveness and overlap metrics
-│   ├── scheduler.ts        # node-cron scheduling with health tracking
+│   ├── scheduler.ts        # node-cron scheduling with health tracking (DB-driven wire list)
 │   ├── scraper.ts          # Firecrawl integration, URL resolution
 │   ├── storage.ts          # Postgres-backed file storage with in-memory cache (keeps last 10)
-│   ├── telegram-channel.ts # Telegram Bot API posting to channels
+│   ├── telegram-adapter.ts # Telegram intake bot adapter (webhook handler, inline keyboard)
+│   ├── telegram-channel.ts # Telegram Bot API posting to channels (distribution)
 │   └── x-client.ts         # Twitter/X posting via twitter-api-v2
-├── views/
-│   ├── shared.ts         # Page shell, nav, shared styles, client-side escapeHtml
-│   ├── feed.ts           # Per-wire feed dashboard page
-│   ├── queue.ts          # Scan queue review page
-│   ├── settings.ts       # Schedules/settings page
-│   ├── login.ts          # Privy login page
+├── views/                    # Server-rendered pages (login + error only; dashboard is React SPA)
+│   ├── shared.ts         # Page shell, deep space palette, Orbitron headings, signal cyan accent
+│   ├── feed.ts           # Per-wire feed dashboard page (legacy server-rendered)
+│   ├── queue.ts          # Scan queue review page (legacy server-rendered)
+│   ├── settings.ts       # Schedules/settings page (legacy server-rendered)
+│   ├── login.ts          # Privy login page with starfield canvas animation
 │   └── error.ts          # Error/download/expired link pages
 ├── utils/
 │   ├── async.ts          # Shared sleep() utility
@@ -99,13 +114,15 @@ src/
 3. Return JSON for `/api/*` routes
 
 ### Modifying the Dashboard UI
-The dashboard is rendered via view functions in `src/views/`:
-- `renderLoginPage()` - Login form (Privy-based)
-- `renderFeedPage()` - Per-wire feed dashboard
-- `renderQueuePage()` - Scan queue review interface
-- `renderSettingsPage()` - Schedules and settings
+The dashboard uses a **dual architecture**:
+- **Login and error pages** are server-rendered via view functions in `src/views/` (deep space theme, Orbitron font, starfield animation)
+- **All authenticated routes** serve the React SPA from `client/` (Lovable wireops-dashboard design, Vite/Tailwind)
+- Server serves `dist/client/index.html` for authenticated routes; React handles client-side routing
+
+Server-rendered views (login/error only):
+- `renderLoginPage()` - Login form (Privy-based, starfield canvas animation, signal cyan #00eaff accent)
 - `renderErrorPage()` - Error display
-- All views use `renderPageShell()` from `shared.ts` for consistent layout
+- All server-rendered views use `renderPageShell()` from `shared.ts` for consistent layout
 
 ### Changing AI Prompts
 - Grok newsletter prompt: `src/services/grok.ts` - `GROK_PROMPT`
@@ -227,11 +244,28 @@ Generated files are persisted to Postgres, but sessions and job queues are in-me
 - `PORT` - Server port (default: 3000)
 - `APP_URL` - Base URL (auto-detected on Railway from `RAILWAY_PUBLIC_DOMAIN`)
 - `ALLOWED_EMAILS` - Comma-separated additional emails for dashboard access
-- `TELEGRAM_BOT_TOKEN` - Telegram Bot API token for channel posting (channel ID stored per wire in `distribution_config`)
+- `TELEGRAM_BOT_TOKEN` - Telegram Bot API token for channel distribution posting
 - `FORUM_SCAN_ENABLED` - Set to `true` to enable forum scanning
 - `DISCUSS_WATCH_API_URL` - Base URL for discuss.watch API
 - `FROM_EMAIL` - Sender email address for notifications
 - `DB_SSL_REJECT_UNAUTHORIZED` - Set to `false` for local dev without SSL
+- `PERPLEXITY_API_KEY` - Perplexity API key for deep web research scans (variant P prompts)
+- `TELEGRAM_INTAKE_BOT_TOKEN` - Bot token for Telegram intake bot (gracefully disabled if not set)
+- `TELEGRAM_INTAKE_WEBHOOK_SECRET` - Random string for webhook validation
+- `TELEGRAM_INTAKE_ALLOWED_USER_ID` - Telegram user ID of allowed sender (default: 394395765)
+- `INTAKE_WIRES` - Comma-separated fallback wire list if DB has no active feeds
+- `INTAKE_WIRE_KEYWORDS_{WIRE}` - Per-wire keyword overrides (e.g. `INTAKE_WIRE_KEYWORDS_CRYPTO`)
+- `BRAND_AUDIENCE` - Who reads the content (default: "grant seekers")
+- `BRAND_CONTENT_TYPE` - What is scanned for (default: "grant funding opportunities")
+- `BRAND_CONTENT_VERB` - Action word (default: "apply for")
+- `BRAND_NAME` - Display name (default: "The Wire Room")
+- `BRAND_TAGLINE` - Short descriptor (default: "Intelligence Pipeline")
+- `BRAND_COLOR` - Primary accent hex (default: "#2563eb")
+- `BRAND_URL` - Base URL of the ops dashboard
+- `BRAND_FROM_NAME` - Sender display name for outbound email
+- `FORUM_SEARCH_TERMS` - Comma-separated search terms override for forum scanning
+- `QUALITY_FUNDING_TYPES` - JSON array override for funding type keywords
+- `QUALITY_ACTIONABLE_TYPES` - JSON array override for actionable type keywords
 
 ## Feeds System
 
@@ -252,7 +286,8 @@ Automated discovery of grant opportunities via X.com scanning, web search, and f
 ### Ingestion Channels
 - **X.com scan** (`x-scan`): Grok Responses API with `x_search` tool, runs on schedule
 - **Web search** (`web-search`): Grok Responses API with `web_search` tool, same prompt system as X scan
-- **Forum scan** (`forum`): discuss.watch API searches across 150+ Discourse forums for grant keywords
+- **Forum scan** (`forum`): discuss.watch API searches across 150+ Discourse forums (search terms overrideable via `FORUM_SEARCH_TERMS`)
+- **Telegram intake** (`telegram-intake`): Bot-based URL/article submission via webhook. Uses adapter pattern (`telegram-adapter.ts` -> `intake-core.ts`)
 - **Manual paste** (`x-scan`/`web-search`): Dashboard paste-in flow
 
 ### Data Flow
@@ -267,11 +302,13 @@ Automated discovery of grant opportunities via X.com scanning, web search, and f
 - `src/jobs/scan-execution.ts` - Orchestrates prompt execution and feeds results to intake
 - `src/jobs/daily-intake.ts` - Main intake pipeline (dedup -> score -> queue)
 - `src/services/intake.ts` - Parser, URL/name normalization
+- `src/services/intake-core.ts` - Channel-agnostic intake logic (URL extraction, wire detection, DB insert)
+- `src/services/telegram-adapter.ts` - Telegram intake bot adapter (webhook, inline keyboard, setWebhook)
 - `src/services/dedup.ts` - Two-layer dedup (URL exact + name fuzzy)
-- `src/services/quality-scorer.ts` - Scoring engine with type classification
+- `src/services/quality-scorer.ts` - Scoring engine with type classification (keywords overrideable via env)
 - `src/services/scan-stats.ts` - Prompt effectiveness metrics (dup rate, avg quality, overlap)
 - `src/services/forum.ts` - discuss.watch API client for forum scanning
-- `src/jobs/forum-scan.ts` - Forum scan orchestrator (search -> intake pipeline)
+- `src/jobs/forum-scan.ts` - Forum scan orchestrator (search -> intake pipeline, DB-driven default wire)
 
 ### Schedule Types
 - **`scan-execution`**: Daily cron, runs `runScanExecution()` which executes all active prompts for a wire
@@ -293,8 +330,8 @@ Automated discovery of grant opportunities via X.com scanning, web search, and f
 | Rolling deadline | +5 | Deadline is exactly "Rolling" |
 | Deadline upcoming | +10 | Within 60 days |
 | Expired deadline | -10 | Deadline has passed |
-| Funding opportunity | +20 | Grant, fellowship, accelerator, etc. (FUNDING_TYPES) |
-| Is actionable | +15 | Hackathon, bounty, competition, or has opportunity keywords |
+| Funding opportunity | +20 | Grant, fellowship, accelerator, etc. (FUNDING_TYPES, overrideable via `QUALITY_FUNDING_TYPES`) |
+| Is actionable | +15 | Hackathon, bounty, competition, or has opportunity keywords (overrideable via `QUALITY_ACTIONABLE_TYPES`) |
 | Governance noise | -15 | DAO proposals, treasury votes |
 | Already awarded | -10 | Past-tense grant language (when not also actionable/funding) |
 | Vague description | -5 | Description shorter than 30 characters |
@@ -306,7 +343,7 @@ Automated discovery of grant opportunities via X.com scanning, web search, and f
 - **Viewing prompt effectiveness**: `GET /api/scan/prompt-stats?days=7`
 - **Creating a web search prompt**: Set `toolType: 'web_search'` in POST `/api/scan/prompts` (or select "Web Search" in dashboard)
 - **Running a forum scan**: `POST /api/forum/run` with optional `{ "wire": "crypto" }` (requires `FORUM_SCAN_ENABLED=true`)
-- **Adding forum search keywords**: Edit `GRANT_KEYWORDS` array in `src/services/forum.ts`
+- **Adding forum search keywords**: Set `FORUM_SEARCH_TERMS` env var (comma-separated) or edit defaults in `src/services/forum.ts`
 
 ## Distribution System
 
@@ -384,8 +421,8 @@ In-memory rate limiter in `src/server.ts`:
 
 - TypeScript strict mode
 - Express for HTTP server
-- Login page uses React (via ESM) with Privy; dashboard uses vanilla JS in embedded HTML
-- Views are in `src/views/` with a shared page shell pattern
+- Login page uses React (via ESM) with Privy + starfield canvas animation; dashboard is a React/Vite/Tailwind SPA (`client/`)
+- Server-rendered views (login/error only) are in `src/views/` with a shared page shell pattern (deep space palette, Orbitron headings)
 - Client-side `escapeHtml()` is defined once in `shared.ts` via `CLIENT_ESCAPE_HTML` constant
 - Validation helpers (`isValidUuid()`, `isValidFeedKey()`) are defined in `server.ts`
 - Minimal dependencies
@@ -395,10 +432,12 @@ In-memory rate limiter in `src/server.ts`:
 
 The following features are planned but not yet built:
 - **CRM sync** (Notion organization tracking)
-- **Telegram bot ingestion** (URL submission via Telegram)
+- **Slack/Discord intake adapters** (same `intake-core.ts` interface, new channel adapters)
 - **Email inbound ingestion** (URL extraction from forwarded emails)
 - **Automated scheduled distribution** (currently manual trigger only)
 
 Previously planned and now implemented:
 - ~~Multi-channel distribution~~ -- Implemented: Telegram, X/Twitter, and newsletter channels (see Distribution System section)
 - ~~Weekly newsletter generation~~ -- Implemented: on-demand newsletter markdown generation via `/api/distribution/newsletter/:wire`
+- ~~Telegram bot ingestion~~ -- Implemented: `telegram-adapter.ts` + `intake-core.ts` with webhook at `/api/telegram/intake-webhook`
+- ~~Deployment-agnostic config~~ -- Implemented: `brand.ts` + env-var driven wire lists, scoring keywords, and AI prompts

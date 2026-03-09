@@ -1,6 +1,37 @@
-# Wire Room Ops: Session Handoff (Historical)
+# Wire Room Ops: Session Handoff
 
-> Note: This document is retained for historical context. Some sections (especially distribution/weekly-summary references) are no longer accurate for the current codebase.
+## March 9, 2026 — Theme, Intake Bot, Deployment-Agnostic Refactor
+
+### What Was Shipped
+
+1. **Lovable satellite array theme**: Login page and shared shell updated with deep space palette (hsl 245,35%,6%), signal cyan accent (#00eaff), Orbitron font for headings, and starfield canvas animation. Privy modal accentColor updated.
+
+2. **React dashboard**: `client/` directory added — full React/Vite/Tailwind frontend (Lovable wireops-dashboard UI). Server now serves `dist/client/index.html` for all authenticated routes. Only login/error pages remain server-rendered.
+
+3. **Telegram intake bot**: Channel-agnostic intake core (`src/services/intake-core.ts`) with Telegram adapter (`src/services/telegram-adapter.ts`). Webhook at `POST /api/telegram/intake-webhook`. Auto-registers webhook on startup if `TELEGRAM_INTAKE_BOT_TOKEN` is set. Wire detection via per-wire keyword scoring; inline keyboard for ambiguous cases. Only allowed user ID can submit.
+
+4. **Deployment-agnostic refactor**: Brand config (`src/config/brand.ts`) with `getBrand()` for audience, contentType, contentVerb. AI prompts (Grok, Claude, Perplexity), quality scorer keywords, and email templates all use `getBrand()`. Wire lists DB-driven everywhere (summary-sync, scheduler, forum-scan). Quality scorer `FUNDING_TYPES`/`ACTIONABLE_TYPES` and forum search terms overrideable via env vars.
+
+### New Environment Variables
+
+All optional, all added to `.env.example`:
+- `TELEGRAM_INTAKE_BOT_TOKEN`, `TELEGRAM_INTAKE_WEBHOOK_SECRET`, `TELEGRAM_INTAKE_ALLOWED_USER_ID`
+- `INTAKE_WIRES`, `INTAKE_WIRE_KEYWORDS_{WIRE}`
+- `BRAND_AUDIENCE`, `BRAND_CONTENT_TYPE`, `BRAND_CONTENT_VERB`, `BRAND_NAME`, `BRAND_TAGLINE`, `BRAND_COLOR`, `BRAND_URL`, `BRAND_FROM_NAME`
+- `FORUM_SEARCH_TERMS`, `QUALITY_FUNDING_TYPES`, `QUALITY_ACTIONABLE_TYPES`
+
+### Key New Files
+
+- `client/` — React/Vite/Tailwind dashboard (Lovable design)
+- `src/config/brand.ts` — deployment-agnostic brand config
+- `src/services/intake-core.ts` — channel-agnostic intake logic
+- `src/services/telegram-adapter.ts` — Telegram intake bot adapter
+
+---
+
+# Historical Handoff (Original Session)
+
+> Note: This section is retained for historical context. Some references (especially distribution/weekly-summary) have since been implemented.
 
 ## What This Session Covered
 

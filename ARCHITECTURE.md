@@ -16,6 +16,8 @@ This is intentional. The same Operator can be dropped into any vertical.
 
 Scan prompts, source lists, scoring weights, distribution destinations, Telegram channel IDs — all stored in the database, not hardcoded. The engine is identical across deployments. The configuration is what makes one instance a grants wire and another a lead intelligence system.
 
+Brand-level configuration (`src/config/brand.ts`) lets each deployment define its audience, content type, and action verb via environment variables. AI prompts (Grok, Claude, Perplexity), quality scoring keywords, and email templates all read from `getBrand()` instead of hardcoding "grant seekers" or "grant funding opportunities." Wire lists are loaded from the DB `feeds` table at runtime — no hardcoded `["crypto","ai","oss"]` arrays.
+
 **The system learns in the open.**
 
 User decisions feed back into quality scoring. Nothing is a black box. The Operator explains its reasoning when routing UNSURE items. The end user understands why things are being approved or rejected.
@@ -91,6 +93,36 @@ flowchart TD
 
 ---
 
+## Multi-Channel Ingestion Architecture
+
+Ingestion follows an **adapter + core** pattern:
+
+```
+Channel Adapter                  Intake Core
+(protocol-specific)              (channel-agnostic)
+┌───────────────────┐           ┌───────────────────────────┐
+│ telegram-adapter   │──────────▶│ intake-core.ts            │
+│ (webhook, inline   │           │ - URL extraction          │
+│  keyboard, auth)   │           │ - Wire detection (keyword │
+├───────────────────┤           │   scoring from DB/env)    │
+│ future: slack      │──────────▶│ - DB insert (raw entry)   │
+├───────────────────┤           │ - Pending wire selection   │
+│ future: discord    │──────────▶│   (in-memory, 1hr expiry) │
+├───────────────────┤           └───────────────────────────┘
+│ future: email      │──────────▶
+└───────────────────┘
+```
+
+**Key files:**
+- `src/services/intake-core.ts` — channel-agnostic logic: `processIntakeMessage()` accepts an `IntakeMessage`, detects wire, inserts entry
+- `src/services/telegram-adapter.ts` — Telegram webhook handler, inline keyboard for wire selection, `setWebhook` on startup
+
+**Wire detection:** Per-wire keyword lists are loaded from `INTAKE_WIRE_KEYWORDS_{WIRE}` env vars with built-in defaults as fallback. The highest-scoring wire wins; ties trigger user selection via the channel adapter's UI (e.g. Telegram inline keyboard).
+
+**Wire list is DB-driven:** `getActiveWires()` loads from `feeds` table, falls back to `INTAKE_WIRES` env var, then built-in defaults.
+
+---
+
 ## Database Schema (Key Tables)
 
 | Table | Purpose |
@@ -122,19 +154,23 @@ The pipeline is designed to be deployed as a unit for any domain:
 
 ```
 Wire Room Stack
-├── wire-room-ops/       Backend: scan pipeline, dedup, scoring, distribution
-├── the-wire-room/       Frontend: public-facing wire display
-├── WireOps Dashboard    Ops: queue management, pipeline health (Lovable)
+├── wire-room-ops/       Backend: scan pipeline, dedup, scoring, distribution, ingestion
+│   ├── src/             Server-side: Express, pipeline, adapters
+│   └── client/          React/Vite/Tailwind dashboard (Lovable design, served as SPA)
+├── the-wire-room/       Frontend: public-facing wire display (Next.js)
 └── The Operator         Agent: reads queue, routes, learns from feedback
 ```
 
 **To deploy for a new domain:**
 1. Clone the stack
-2. Update `feeds` table with new vertical names
-3. Write scan prompts for the domain → insert into `scan_prompts`
-4. Set distribution destinations → insert into `distribution_config`
-5. Drop in The Operator with system context only — no domain pre-loading
-6. Let The Operator learn from user feedback over the first 2–4 weeks
+2. Set brand env vars (`BRAND_AUDIENCE`, `BRAND_CONTENT_TYPE`, `BRAND_CONTENT_VERB`, etc.)
+3. Update `feeds` table with new vertical names (or let them auto-seed)
+4. Set per-wire keyword overrides (`INTAKE_WIRE_KEYWORDS_{WIRE}`) if defaults don't fit
+5. Optionally override scoring keywords (`QUALITY_FUNDING_TYPES`, `QUALITY_ACTIONABLE_TYPES`)
+6. Write scan prompts for the domain → insert into `scan_prompts`
+7. Set distribution destinations → insert into `distribution_config`
+8. Drop in The Operator with system context only — no domain pre-loading
+9. Let The Operator learn from user feedback over the first 2–4 weeks
 
 ---
 

@@ -4,15 +4,19 @@ This guide is for running the **current** `wire-room-ops` service in production.
 
 ## What This Service Is For
 
-- Discover grant/opportunity leads from X, web search, and forums.
+- Discover leads from X, web search, forums, and Telegram intake.
 - Normalize, deduplicate, and quality-score leads.
 - Give operators a review queue.
+- Distribute approved entries to Telegram channels, X/Twitter, and newsletter.
 - Publish to the website by setting `scan_entries.status = 'approved'`.
+
+The system is deployment-agnostic: swap brand config and prompts to run any vertical (grants, consulting leads, research intel, etc.).
 
 ## What It Is Not (in this repo)
 
-- No built-in Telegram/X distribution posting flow.
-- Historical docs may reference distribution and CRM modules that are not in the current codebase.
+- No CRM sync or Notion integration (planned).
+- No automated scheduled distribution (manual trigger only).
+- Historical docs may reference CRM modules that are not in the current codebase.
 
 ## Production Checklist
 
@@ -43,6 +47,29 @@ Common optional settings:
 - `ALLOWED_EMAILS`
 - `FORUM_SCAN_ENABLED=true`
 - `DISCUSS_WATCH_API_URL`
+- `TELEGRAM_BOT_TOKEN` (for channel distribution posting)
+- `PERPLEXITY_API_KEY` (for deep web research scans)
+
+Telegram Intake Bot (optional — gracefully disabled if not set):
+
+- `TELEGRAM_INTAKE_BOT_TOKEN` — bot token
+- `TELEGRAM_INTAKE_WEBHOOK_SECRET` — random string for webhook validation
+- `TELEGRAM_INTAKE_ALLOWED_USER_ID` — Telegram user ID of allowed sender (default: 394395765)
+
+Brand / Deployment Config (all optional, defaults to Wire Room values):
+
+- `BRAND_AUDIENCE` — who reads the content (default: "grant seekers")
+- `BRAND_CONTENT_TYPE` — what is scanned for (default: "grant funding opportunities")
+- `BRAND_CONTENT_VERB` — action word (default: "apply for")
+- `BRAND_NAME`, `BRAND_TAGLINE`, `BRAND_COLOR`, `BRAND_URL`, `BRAND_FROM_NAME`
+
+Scoring / Search Overrides (all optional):
+
+- `QUALITY_FUNDING_TYPES` — JSON array override for funding type keywords
+- `QUALITY_ACTIONABLE_TYPES` — JSON array override for actionable type keywords
+- `FORUM_SEARCH_TERMS` — comma-separated search terms override
+- `INTAKE_WIRES` — comma-separated fallback wire list if DB has no active feeds
+- `INTAKE_WIRE_KEYWORDS_{WIRE}` — per-wire keyword overrides
 
 ## 2) First Validation
 
@@ -150,6 +177,46 @@ Common causes:
 - Prompt quality determines downstream queue quality.
 - The most reliable production signal is: stable scheduled runs + manageable queue volume + high approve rate.
 
+## Telegram Intake Bot Setup
+
+The Telegram intake bot lets an authorized user submit URLs and articles to the pipeline by messaging a bot.
+
+1. Create a bot via @BotFather and get the token.
+2. Set env vars:
+   - `TELEGRAM_INTAKE_BOT_TOKEN` — the bot token
+   - `TELEGRAM_INTAKE_WEBHOOK_SECRET` — any random string (used to validate incoming webhooks)
+   - `TELEGRAM_INTAKE_ALLOWED_USER_ID` — your Telegram user ID (default: 394395765)
+3. Deploy. On startup, the bot auto-registers its webhook at `{APP_URL}/api/telegram/intake-webhook`.
+4. Send a URL or text to the bot. If the wire is auto-detected, it's inserted immediately. If ambiguous, the bot presents inline keyboard buttons for wire selection.
+
+The bot is optional — if `TELEGRAM_INTAKE_BOT_TOKEN` is not set, the webhook route still exists but is a no-op.
+
+## Deployment for a New Community
+
+To deploy Wire Room Ops for a different vertical (e.g. consulting leads, research intel):
+
+1. Set brand env vars:
+   ```
+   BRAND_NAME=Claw Consulting
+   BRAND_AUDIENCE=consulting clients
+   BRAND_CONTENT_TYPE=AI consulting leads
+   BRAND_CONTENT_VERB=pursue
+   ```
+2. Create feeds for your verticals via `POST /api/feeds` (e.g. "enterprise", "startup", "government").
+3. Set per-wire keyword overrides if the defaults don't fit:
+   ```
+   INTAKE_WIRE_KEYWORDS_ENTERPRISE=enterprise,fortune 500,procurement
+   INTAKE_WIRE_KEYWORDS_STARTUP=seed,series a,accelerator,startup
+   ```
+4. Optionally override scoring keywords:
+   ```
+   QUALITY_FUNDING_TYPES=["rfp","contract","procurement","consulting engagement"]
+   QUALITY_ACTIONABLE_TYPES=["deadline","open bid","submission window"]
+   ```
+5. Write scan prompts for the new domain and load via `/api/scan/prompts`.
+6. Configure distribution channels per wire.
+7. The pipeline is now running for your vertical — same engine, different config.
+
 ## Useful Endpoints (Quick Reference)
 
 - `GET /api/scheduler-status`
@@ -162,3 +229,6 @@ Common causes:
 - `GET /api/scan/prompt-stats`
 - `GET /api/scan/status-counts`
 - `POST /api/summary-sync`
+- `GET /api/distribution/config`
+- `POST /api/distribution/run/:wire`
+- `GET /api/distribution/newsletter/:wire`
