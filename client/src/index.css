@@ -1,0 +1,309 @@
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* WireOps — Satellite Array / Foreign Land Aesthetic */
+
+@layer base {
+  :root {
+    /* Deep space base */
+    --background: 245 35% 6%;
+    --foreground: 200 60% 94%;
+
+    --card: 245 30% 9%;
+    --card-foreground: 200 60% 94%;
+
+    --popover: 245 30% 9%;
+    --popover-foreground: 200 60% 94%;
+
+    /* Signal cyan accent */
+    --primary: 185 100% 50%;
+    --primary-foreground: 245 35% 6%;
+
+    --secondary: 245 25% 14%;
+    --secondary-foreground: 200 40% 80%;
+
+    --muted: 245 20% 12%;
+    --muted-foreground: 220 15% 50%;
+
+    --accent: 270 50% 25%;
+    --accent-foreground: 200 60% 94%;
+
+    --destructive: 0 85% 55%;
+    --destructive-foreground: 200 60% 98%;
+
+    --border: 245 30% 16%;
+    --input: 245 25% 14%;
+    --ring: 185 100% 50%;
+
+    --radius: 0.25rem;
+
+    /* Status colors - signal-inspired */
+    --status-success: 160 100% 45%;
+    --status-warning: 45 100% 55%;
+    --status-danger: 0 90% 60%;
+
+    /* Table styling */
+    --table-header: 245 30% 8%;
+    --table-row-hover: 245 30% 12%;
+
+    /* Special effects */
+    --glow-primary: 185 100% 50%;
+    --glow-secondary: 270 80% 60%;
+    --grid-line: 245 40% 20%;
+
+    --sidebar-background: 245 35% 6%;
+    --sidebar-foreground: 200 60% 94%;
+    --sidebar-primary: 185 100% 50%;
+    --sidebar-primary-foreground: 245 35% 6%;
+    --sidebar-accent: 245 25% 14%;
+    --sidebar-accent-foreground: 200 60% 94%;
+    --sidebar-border: 245 30% 16%;
+    --sidebar-ring: 185 100% 50%;
+  }
+
+  /* Light mode - Desert Outpost aesthetic */
+  .light {
+    --background: 45 30% 96%;
+    --foreground: 220 25% 15%;
+
+    --card: 45 25% 98%;
+    --card-foreground: 220 25% 15%;
+
+    --popover: 45 25% 98%;
+    --popover-foreground: 220 25% 15%;
+
+    --primary: 185 70% 35%;
+    --primary-foreground: 45 30% 98%;
+
+    --secondary: 45 20% 90%;
+    --secondary-foreground: 220 20% 30%;
+
+    --muted: 45 15% 92%;
+    --muted-foreground: 220 10% 45%;
+
+    --accent: 35 60% 85%;
+    --accent-foreground: 220 25% 15%;
+
+    --destructive: 0 75% 50%;
+    --destructive-foreground: 45 30% 98%;
+
+    --border: 45 20% 85%;
+    --input: 45 20% 90%;
+    --ring: 185 70% 35%;
+
+    --status-success: 160 80% 35%;
+    --status-warning: 45 90% 45%;
+    --status-danger: 0 80% 50%;
+
+    --table-header: 45 20% 94%;
+    --table-row-hover: 45 25% 92%;
+
+    --glow-primary: 185 70% 35%;
+    --glow-secondary: 35 60% 50%;
+    --grid-line: 45 30% 80%;
+  }
+
+  .dark {
+    --background: 245 35% 6%;
+    --foreground: 200 60% 94%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
+  /* Dark mode background effects */
+  .dark body {
+    background-image: 
+      radial-gradient(ellipse at 20% 30%, hsl(270 50% 15% / 0.4) 0%, transparent 50%),
+      radial-gradient(ellipse at 80% 70%, hsl(185 80% 15% / 0.3) 0%, transparent 50%),
+      radial-gradient(circle at 50% 50%, hsl(245 35% 6%) 0%, hsl(245 40% 4%) 100%);
+    background-attachment: fixed;
+  }
+
+  /* Scanline overlay - dark mode only */
+  .dark body::before {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      hsl(245 35% 6% / 0.03) 2px,
+      hsl(245 35% 6% / 0.03) 4px
+    );
+    z-index: 9999;
+  }
+
+  /* Display font for headers */
+  .font-display {
+    font-family: 'Orbitron', sans-serif;
+  }
+
+  .font-mono {
+    font-family: 'IBM Plex Mono', monospace;
+  }
+}
+
+@layer components {
+  /* Score badge variants */
+  .score-high {
+    @apply bg-status-success/15 text-status-success border border-status-success/40;
+    box-shadow: 0 0 8px hsl(var(--status-success) / 0.3);
+  }
+  
+  .score-medium {
+    @apply bg-status-warning/15 text-status-warning border border-status-warning/40;
+    box-shadow: 0 0 8px hsl(var(--status-warning) / 0.3);
+  }
+  
+  .score-low {
+    @apply bg-status-danger/15 text-status-danger border border-status-danger/40;
+    box-shadow: 0 0 8px hsl(var(--status-danger) / 0.3);
+  }
+
+  /* Glowing card effect */
+  .glow-card {
+    @apply bg-card border border-border rounded;
+  }
+
+  .dark .glow-card {
+    box-shadow: 
+      0 0 20px hsl(var(--glow-primary) / 0.05),
+      inset 0 1px 0 hsl(200 60% 94% / 0.03);
+  }
+
+  /* Action bar */
+  .action-bar {
+    @apply fixed bottom-6 left-1/2 -translate-x-1/2 bg-card/95 backdrop-blur-sm border border-primary/30 rounded px-4 py-3 flex items-center gap-4;
+    box-shadow: 0 4px 20px hsl(0 0% 0% / 0.15);
+  }
+
+  .dark .action-bar {
+    box-shadow: 
+      0 0 30px hsl(var(--glow-primary) / 0.2),
+      0 10px 40px hsl(245 35% 0% / 0.5);
+  }
+
+  /* Stat card */
+  .stat-card {
+    @apply bg-card border border-border rounded p-5 relative overflow-hidden;
+  }
+
+  .dark .stat-card {
+    background-image: 
+      linear-gradient(135deg, hsl(245 30% 11%) 0%, hsl(245 30% 8%) 100%);
+  }
+
+  .stat-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, hsl(var(--glow-primary) / 0.5), transparent);
+  }
+
+  /* Table styling */
+  .ops-table {
+    @apply w-full;
+  }
+
+  .ops-table th {
+    @apply bg-table-header text-muted-foreground text-[10px] font-medium uppercase tracking-widest text-left px-4 py-3 font-display;
+  }
+
+  .ops-table td {
+    @apply px-4 py-3 text-sm border-t border-border;
+  }
+
+  .ops-table tr:hover td {
+    @apply bg-table-row-hover;
+  }
+
+  /* Signal pulse animation */
+  @keyframes signal-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+
+  .signal-pulse {
+    animation: signal-pulse 2s ease-in-out infinite;
+  }
+
+  /* Grid background */
+  .grid-bg {
+    background-image: 
+      linear-gradient(hsl(var(--grid-line) / 0.3) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(var(--grid-line) / 0.3) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+
+  /* Radar sweep effect for headers */
+  @keyframes radar-sweep {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
+
+  .radar-icon {
+    animation: radar-sweep 4s linear infinite;
+  }
+}
+
+@layer utilities {
+  .text-status-success {
+    color: hsl(var(--status-success));
+  }
+  
+  .text-status-warning {
+    color: hsl(var(--status-warning));
+  }
+  
+  .text-status-danger {
+    color: hsl(var(--status-danger));
+  }
+
+  .bg-status-success {
+    background-color: hsl(var(--status-success));
+  }
+
+  .bg-status-warning {
+    background-color: hsl(var(--status-warning));
+  }
+
+  .bg-status-danger {
+    background-color: hsl(var(--status-danger));
+  }
+
+  .bg-table-header {
+    background-color: hsl(var(--table-header));
+  }
+
+  .bg-table-row-hover {
+    background-color: hsl(var(--table-row-hover));
+  }
+
+  .glow-text {
+    text-shadow: 0 0 10px hsl(var(--glow-primary) / 0.8);
+  }
+
+  .glow-box {
+    box-shadow: 0 0 20px hsl(var(--glow-primary) / 0.3);
+  }
+}

@@ -1,0 +1,156 @@
+import { useState, useEffect, useCallback } from 'react';
+import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
+import { OverviewTab } from '@/components/dashboard/OverviewTab';
+import { QueueTab } from '@/components/dashboard/QueueTab';
+import { PublishedTab } from '@/components/dashboard/PublishedTab';
+import { ReviewTab } from '@/components/dashboard/ReviewTab';
+import { SourcesTab } from '@/components/dashboard/SourcesTab';
+import { Starfield } from '@/components/dashboard/Starfield';
+import { EntryDetailsSheet } from '@/components/dashboard/EntryDetailsSheet';
+import { fetchEntries, updateEntryStatus, fetchStats, fetchFeeds } from '@/api';
+import { ScanEntry, VerticalStats } from '@/types';
+import { useToast } from '@/hooks/use-toast';
+
+const Index = () => {
+  const [activeTab, setActiveTab] = useState('overview');
+  const [queueEntries, setQueueEntries] = useState<ScanEntry[]>([]);
+  const [approvedEntries, setApprovedEntries] = useState<ScanEntry[]>([]);
+  const [flaggedEntries, setFlaggedEntries] = useState<ScanEntry[]>([]);
+  const [stats, setStats] = useState<VerticalStats[]>([]);
+  const [verticals, setVerticals] = useState<string[]>([]);
+  const [selectedEntry, setSelectedEntry] = useState<ScanEntry | null>(null);
+  const [loading, setLoading] = useState(true);
+  const { toast } = useToast();
+
+  const loadData = useCallback(async () => {
+    try {
+      const [queued, approved, flagged, statsData, feeds] = await Promise.all([
+        fetchEntries({ status: 'queued' }),
+        fetchEntries({ status: 'approved' }),
+        fetchEntries({ status: 'flagged' }),
+        fetchStats(),
+        fetchFeeds(),
+      ]);
+      setQueueEntries(queued);
+      setApprovedEntries(approved);
+      setFlaggedEntries(flagged);
+      setVerticals(feeds.map((f: { key: string }) => f.key));
+
+      // Map intake stats to VerticalStats format
+      const verticalStats: VerticalStats[] = (statsData.intake || []).map((r: any) => ({
+        wire: r.wire,
+        last_scan: r.last_scan || new Date().toISOString(),
+        items_this_week: Number(r.items_this_week) || 0,
+        duplicate_rate: r.items_this_week > 0
+          ? Math.round((Number(r.duplicates_found) / (Number(r.items_this_week) + Number(r.duplicates_found))) * 100)
+          : 0,
+        avg_quality_score: Number(r.avg_quality_score) || 0,
+      }));
+      setStats(verticalStats);
+    } catch (err) {
+      console.error('Failed to load data:', err);
+      toast({ title: 'Error', description: 'Failed to load dashboard data' });
+    } finally {
+      setLoading(false);
+    }
+  }, [toast]);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  const handleUpdateStatus = async (ids: string[], newStatus: ScanEntry['status']) => {
+    try {
+      await Promise.all(ids.map(id => updateEntryStatus(id, newStatus)));
+      toast({
+        title: `${ids.length} item${ids.length > 1 ? 's' : ''} ${newStatus}`,
+        description: `Successfully updated status to ${newStatus}`,
+      });
+      await loadData();
+    } catch (err) {
+      console.error('Failed to update status:', err);
+      toast({ title: 'Error', description: 'Failed to update entry status' });
+    }
+  };
+
+  const handleReviewDecision = async (id: string, decision: 'approved' | 'archived') => {
+    try {
+      await updateEntryStatus(id, decision);
+      toast({
+        title: `Item ${decision}`,
+        description: 'Decision logged successfully',
+      });
+      await loadData();
+    } catch (err) {
+      console.error('Failed to update status:', err);
+      toast({ title: 'Error', description: 'Failed to log decision' });
+    }
+  };
+
+  if (loading) {
+    return (
+      <>
+        <Starfield />
+        <div className="flex items-center justify-center min-h-screen">
+          <div className="text-center space-y-4">
+            <div className="text-4xl animate-pulse">📡</div>
+            <p className="font-display text-sm tracking-wider text-muted-foreground">
+              ESTABLISHING CONNECTION...
+            </p>
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <Starfield />
+      <DashboardLayout
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        queueCount={queueEntries.length}
+        reviewCount={flaggedEntries.length}
+      >
+        {activeTab === 'overview' && (
+          <OverviewTab
+            queueEntries={queueEntries}
+            publishedEntries={approvedEntries}
+            reviewEntries={flaggedEntries}
+            stats={stats}
+          />
+        )}
+        {activeTab === 'queue' && (
+          <QueueTab
+            entries={queueEntries}
+            verticals={verticals}
+            onUpdateStatus={handleUpdateStatus}
+            onViewDetails={setSelectedEntry}
+          />
+        )}
+        {activeTab === 'published' && (
+          <PublishedTab
+            entries={approvedEntries}
+            verticals={verticals}
+            onViewDetails={setSelectedEntry}
+          />
+        )}
+        {activeTab === 'review' && (
+          <ReviewTab
+            entries={flaggedEntries}
+            onDecision={handleReviewDecision}
+            onViewDetails={setSelectedEntry}
+          />
+        )}
+        {activeTab === 'sources' && (
+          <SourcesTab stats={stats} />
+        )}
+      </DashboardLayout>
+
+      <EntryDetailsSheet
+        entry={selectedEntry}
+        onClose={() => setSelectedEntry(null)}
+      />
+    </>
+  );
+};
+
+export default Index;

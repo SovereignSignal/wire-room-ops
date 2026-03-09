@@ -1,3 +1,4 @@
+import path from 'path';
 import express, { Request, Response } from 'express';
 import cookieParser from 'cookie-parser';
 import { config } from './config';
@@ -25,11 +26,6 @@ import { parseStructuredOutput } from './services/intake';
 import { reviewScanPrompt } from './services/anthropic';
 import type { RawScanResult, ToolType } from './types/intake';
 import { renderLoginPage } from './views/login';
-import { renderSettingsPage } from './views/settings';
-import { renderQueuePage } from './views/queue';
-import { renderFeedPage } from './views/feed';
-import { renderDistributionPage } from './views/distribution';
-import { renderPromptsPage } from './views/prompts';
 import { renderErrorPage, renderLegacyDownloadPage, renderExpiredLinkPage, renderResendSuccessPage } from './views/error';
 
 const app = express();
@@ -228,16 +224,18 @@ app.get('/ready', async (_req: Request, res: Response) => {
   res.json(payload);
 });
 
-// Landing page - login (dev mode skips straight to first feed)
+// Landing page - login check then serve React SPA or login page
 app.get('/', async (req: Request, res: Response) => {
   const session = req.cookies?.session as string;
   if (isDevMode || (session && validateSession(session))) {
-    const returnTo = req.query.returnTo as string;
-    if (returnTo && /^\/[a-zA-Z0-9]/.test(returnTo)) {
-      res.redirect(returnTo);
-      return;
-    }
-    res.redirect('/queue');
+    // Authenticated — serve React SPA
+    const indexPath = path.join(__dirname, '../dist/client/index.html');
+    res.sendFile(indexPath, (err) => {
+      if (err) {
+        // Fallback if client not built yet
+        res.redirect('/queue');
+      }
+    });
     return;
   }
   res.send(renderLoginPage());
@@ -321,125 +319,9 @@ app.post('/api/auth/callback', async (req: Request, res: Response) => {
   }
 });
 
-// Feed page — the core per-wire dashboard
-app.get('/feeds/:key', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const feedKey = req.params.key;
-    const feed = await getFeedByKey(feedKey);
-    if (!feed) {
-      res.status(404).send(renderErrorPage(`Feed "${feedKey}" not found`));
-      return;
-    }
-    const allFeeds = await getAllFeeds();
-    const feedNavs = allFeeds.map(f => ({ key: f.key, displayName: f.displayName }));
-    res.send(renderFeedPage(feedKey, feed.displayName, feedNavs));
-  } catch (error) {
-    console.error('Failed to render feed page:', error);
-    res.status(500).send(renderErrorPage('Failed to load feed page'));
-  }
-});
+// Legacy view routes removed — React SPA handles these paths via the * fallback below
 
-// Dashboard → redirect to first feed
-app.get('/dashboard', requireAuth, async (_req: Request, res: Response) => {
-  res.redirect('/queue');
-});
-
-app.get('/queue', requireAuth, async (_req: Request, res: Response) => {
-  const allFeeds = await getAllFeeds();
-  const feedNavs = allFeeds.map(f => ({ key: f.key, displayName: f.displayName }));
-  res.send(renderQueuePage(feedNavs));
-});
-
-// Schedules page (formerly Settings)
-app.get('/schedules', requireAuth, async (_req: Request, res: Response) => {
-  const allFeeds = await getAllFeeds();
-  const feedNavs = allFeeds.map(f => ({ key: f.key, displayName: f.displayName }));
-  res.send(renderSettingsPage(feedNavs));
-});
-
-app.get('/feeds/:key/prompts', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const feedKey = req.params.key;
-    const feed = await getFeedByKey(feedKey);
-    if (!feed) {
-      res.status(404).send(renderErrorPage(`Feed "${feedKey}" not found`));
-      return;
-    }
-    const allFeeds = await getAllFeeds();
-    const feedNavs = allFeeds.map(f => ({ key: f.key, displayName: f.displayName }));
-    const forumEnabled = config.forum.enabled;
-    res.send(renderPromptsPage(feedNavs, forumEnabled, { key: feed.key, displayName: feed.displayName }));
-  } catch (error) {
-    console.error('Failed to render prompts page:', error);
-    res.status(500).send(renderErrorPage('Failed to load prompts page'));
-  }
-});
-
-app.get('/feeds/:key/distribution', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const feedKey = req.params.key;
-    const feed = await getFeedByKey(feedKey);
-    if (!feed) {
-      res.status(404).send(renderErrorPage(`Feed "${feedKey}" not found`));
-      return;
-    }
-    const allFeeds = await getAllFeeds();
-    const feedNavs = allFeeds.map(f => ({ key: f.key, displayName: f.displayName }));
-    res.send(renderDistributionPage(feedNavs, { key: feed.key, displayName: feed.displayName }));
-  } catch (error) {
-    console.error('Failed to render distribution page:', error);
-    res.status(500).send(renderErrorPage('Failed to load distribution page'));
-  }
-});
-
-// Legacy prompts URL → redirect to a feed-scoped prompts page
-app.get('/prompts', requireAuth, async (req: Request, res: Response) => {
-  const requestedWire = typeof req.query.wire === 'string' ? req.query.wire : '';
-
-  if (requestedWire) {
-    res.redirect(`/feeds/${encodeURIComponent(requestedWire)}/prompts`);
-    return;
-  }
-
-  try {
-    const allFeeds = await getAllFeeds();
-    if (allFeeds.length > 0) {
-      res.redirect(`/feeds/${encodeURIComponent(allFeeds[0].key)}/prompts`);
-      return;
-    }
-  } catch {
-    // fall through
-  }
-
-  res.redirect('/queue');
-});
-
-// Legacy distribution URL → redirect to a feed-scoped distribution page
-app.get('/distribution', requireAuth, async (req: Request, res: Response) => {
-  const requestedWire = typeof req.query.wire === 'string' ? req.query.wire : '';
-
-  if (requestedWire) {
-    res.redirect(`/feeds/${encodeURIComponent(requestedWire)}/distribution`);
-    return;
-  }
-
-  try {
-    const allFeeds = await getAllFeeds();
-    if (allFeeds.length > 0) {
-      res.redirect(`/feeds/${encodeURIComponent(allFeeds[0].key)}/distribution`);
-      return;
-    }
-  } catch {
-    // fall through
-  }
-
-  res.redirect('/queue');
-});
-
-// Settings → redirect to schedules
-app.get('/settings', requireAuth, (_req: Request, res: Response) => {
-  res.redirect('/schedules');
-});
+// Legacy view redirect routes removed — React SPA handles all UI paths
 
 // API: Get available models
 app.get('/api/models', requireAuth, async (req: Request, res: Response) => {
@@ -1133,6 +1015,31 @@ app.get('/api/scan/stats', requireAuth, async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Failed to get intake stats:', error);
     res.status(500).json({ error: 'Failed to get intake stats' });
+  }
+});
+
+// API: Dashboard overview stats (aggregated for React dashboard)
+app.get('/api/dashboard/stats', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const pool = getPool();
+    const runs = await pool.query(`
+      SELECT wire,
+        COUNT(*) as scans_run,
+        COALESCE(SUM(new_unique),0) as items_this_week,
+        COALESCE(SUM(duplicates_found),0) as duplicates_found,
+        COALESCE(ROUND(AVG(avg_quality_score)),0) as avg_quality_score,
+        MAX(created_at) as last_scan
+      FROM intake_runs
+      WHERE created_at >= NOW() - INTERVAL '7 days'
+      GROUP BY wire
+    `);
+    const pending = await pool.query(
+      "SELECT wire, COUNT(*) as cnt FROM scan_entries WHERE status='queued' GROUP BY wire"
+    );
+    res.json({ intake: runs.rows, pending: pending.rows });
+  } catch (error) {
+    console.error('Failed to get dashboard stats:', error);
+    res.status(500).json({ error: 'Failed to get dashboard stats' });
   }
 });
 
@@ -1862,6 +1769,20 @@ app.post('/api/scan/entries/:id/redistribute', requireAuth, async (req: Request,
     console.error('[Distribution] Redistribute failed:', error);
     res.status(500).json({ error: errorMsg });
   }
+});
+
+// Serve React dashboard (built client)
+const clientDist = path.join(__dirname, '../dist/client');
+app.use(express.static(clientDist));
+
+// SPA fallback — serve index.html for non-API, non-auth routes
+app.get('*', (req: Request, res: Response, next: Function) => {
+  if (req.path.startsWith('/api') || req.path.startsWith('/auth') || req.path === '/health') {
+    return next();
+  }
+  res.sendFile(path.join(clientDist, 'index.html'), (err) => {
+    if (err) next();
+  });
 });
 
 // Global error handler — catches unhandled errors from async route handlers
