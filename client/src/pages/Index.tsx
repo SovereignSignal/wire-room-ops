@@ -8,8 +8,8 @@ import { DistributionTab } from '@/components/dashboard/DistributionTab';
 // ReviewTab removed — approve/decline now inline in QueueTab
 import { Starfield } from '@/components/dashboard/Starfield';
 import { EntryDetailsSheet } from '@/components/dashboard/EntryDetailsSheet';
-import { fetchEntries, updateEntryStatus, fetchStats, fetchFeeds } from '@/api';
-import { ScanEntry, VerticalStats } from '@/types';
+import { fetchEntries, updateEntryStatus, fetchStats, fetchFeeds, fetchWireCounts } from '@/api';
+import { ScanEntry, VerticalStats, WireCounts } from '@/types';
 import { useToast } from '@/hooks/use-toast';
 
 const Index = () => {
@@ -17,6 +17,7 @@ const Index = () => {
   const [queueEntries, setQueueEntries] = useState<ScanEntry[]>([]);
   const [approvedEntries, setApprovedEntries] = useState<ScanEntry[]>([]);
   const [stats, setStats] = useState<VerticalStats[]>([]);
+  const [wireCounts, setWireCounts] = useState<WireCounts[]>([]);
   const [verticals, setVerticals] = useState<string[]>([]);
   const [selectedEntry, setSelectedEntry] = useState<ScanEntry | null>(null);
   const [loading, setLoading] = useState(true);
@@ -29,9 +30,10 @@ const Index = () => {
         fetchEntries({ status: 'approved' }),
         fetchStats(),
         fetchFeeds(),
+        fetchWireCounts(),
       ]);
 
-      const [queuedR, approvedR, statsR, feedsR] = results;
+      const [queuedR, approvedR, statsR, feedsR, wireCountsR] = results;
 
       // Check if ALL failed (likely auth issue)
       const allFailed = results.every(r => r.status === 'rejected');
@@ -54,6 +56,12 @@ const Index = () => {
         console.warn('Failed to load feeds:', feedsR.reason);
       }
 
+      if (wireCountsR.status === 'fulfilled') {
+        setWireCounts(wireCountsR.value);
+      } else {
+        console.warn('Failed to load wire counts:', wireCountsR.reason);
+      }
+
       if (statsR.status === 'fulfilled') {
         const statsData = statsR.value;
         const verticalStats: VerticalStats[] = (statsData.intake || []).map((r: any) => ({
@@ -64,6 +72,8 @@ const Index = () => {
             ? Math.round((Number(r.duplicates_found) / (Number(r.items_this_week) + Number(r.duplicates_found))) * 100)
             : 0,
           avg_quality_score: Number(r.avg_quality_score) || 0,
+          high_quality_count: Number(r.high_quality_count) || 0,
+          scans_run: Number(r.scans_run) || 0,
         }));
         setStats(verticalStats);
       } else {
@@ -154,7 +164,13 @@ const Index = () => {
           <DistributionTab verticals={verticals} />
         )}
         {activeTab === 'sources' && (
-          <SourcesTab stats={stats} />
+          <SourcesTab
+            stats={stats}
+            wireCounts={wireCounts}
+            onNavigateToQueue={(wire) => {
+              setActiveTab('queue');
+            }}
+          />
         )}
       </DashboardLayout>
 

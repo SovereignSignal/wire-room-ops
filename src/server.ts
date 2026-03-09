@@ -1030,6 +1030,7 @@ app.get('/api/dashboard/stats', requireAuth, async (req: Request, res: Response)
         COALESCE(SUM(new_unique),0) as items_this_week,
         COALESCE(SUM(duplicates_found),0) as duplicates_found,
         COALESCE(ROUND(AVG(avg_quality_score)),0) as avg_quality_score,
+        COALESCE(SUM(high_quality_count),0) as high_quality_count,
         MAX(created_at) as last_scan
       FROM intake_runs
       WHERE created_at >= NOW() - INTERVAL '7 days'

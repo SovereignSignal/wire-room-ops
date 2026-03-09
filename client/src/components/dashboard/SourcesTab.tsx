@@ -1,80 +1,174 @@
-import { VerticalStats } from '@/types';
-import { Clock, FileStack, Copy, TrendingUp, Wifi, Satellite } from 'lucide-react';
+import { VerticalStats, WireCounts } from '@/types';
+import { Clock, FileStack, Copy, TrendingUp, Wifi, AlertTriangle, Star, ArrowRight } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
-import { ScoreBadge } from './ScoreBadge';
+import { Button } from '@/components/ui/button';
 
 interface SourcesTabProps {
   stats: VerticalStats[];
+  wireCounts: WireCounts[];
+  onNavigateToQueue: (wire: string) => void;
 }
 
-export function SourcesTab({ stats }: SourcesTabProps) {
+function qualityConfig(score: number): { color: string; label: string; bg: string; border: string } {
+  if (score >= 60) return {
+    color: 'text-status-success',
+    label: 'Healthy',
+    bg: 'bg-status-success/10',
+    border: 'border-status-success/30',
+  };
+  if (score >= 40) return {
+    color: 'text-status-warning',
+    label: 'Marginal',
+    bg: 'bg-status-warning/10',
+    border: 'border-status-warning/30',
+  };
+  return {
+    color: 'text-destructive',
+    label: 'Poor — most items auto-archived',
+    bg: 'bg-destructive/10',
+    border: 'border-destructive/30',
+  };
+}
+
+export function SourcesTab({ stats, wireCounts, onNavigateToQueue }: SourcesTabProps) {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {stats.map((stat, index) => (
-          <div key={stat.wire} className="stat-card group">
-            {/* Decorative corner */}
-            <div className="absolute top-0 right-0 w-16 h-16 overflow-hidden">
-              <div className="absolute top-2 right-2 w-1 h-1 rounded-full bg-primary/50 signal-pulse" style={{ animationDelay: `${index * 0.3}s` }} />
-              <div className="absolute top-2 right-5 w-1 h-1 rounded-full bg-primary/30" />
-              <div className="absolute top-5 right-2 w-1 h-1 rounded-full bg-primary/30" />
-            </div>
+        {stats.map((stat, index) => {
+          const hoursAgo = (Date.now() - new Date(stat.last_scan).getTime()) / 3_600_000;
+          const isStale = hoursAgo > 6;
+          const qConfig = qualityConfig(stat.avg_quality_score);
+          const counts = wireCounts.find(w => w.wire === stat.wire);
+          const highQualityPct = stat.items_this_week > 0
+            ? Math.round((stat.high_quality_count / stat.items_this_week) * 100)
+            : 0;
 
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded bg-primary/10 border border-primary/20 flex items-center justify-center">
-                  <Wifi className="w-4 h-4 text-primary" />
-                </div>
-                <h3 className="font-display font-semibold text-sm tracking-wider uppercase">{stat.wire}</h3>
-              </div>
-              <span className="text-[10px] text-muted-foreground font-mono px-2 py-1 rounded bg-muted/50 border border-border">
-                {formatDistanceToNow(new Date(stat.last_scan), { addSuffix: true })}
-              </span>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-1 p-3 rounded bg-muted/30 border border-border/50">
-                <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground uppercase tracking-wider">
-                  <FileStack className="w-3 h-3" />
-                  Ingested
-                </div>
-                <div className="text-2xl font-mono font-semibold text-foreground">
-                  {stat.items_this_week}
-                </div>
+          return (
+            <div key={stat.wire || index} className="stat-card group flex flex-col">
+              {/* Decorative corner pulse */}
+              <div className="absolute top-0 right-0 w-16 h-16 overflow-hidden">
+                <div
+                  className="absolute top-2 right-2 w-1 h-1 rounded-full bg-primary/50 signal-pulse"
+                  style={{ animationDelay: `${index * 0.3}s` }}
+                />
               </div>
 
-              <div className="space-y-1 p-3 rounded bg-muted/30 border border-border/50">
-                <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground uppercase tracking-wider">
-                  <Copy className="w-3 h-3" />
-                  Duplicates
-                </div>
-                <div className="text-2xl font-mono font-semibold text-foreground">
-                  {stat.duplicate_rate}<span className="text-sm text-muted-foreground">%</span>
-                </div>
-              </div>
-
-              <div className="space-y-1 p-3 rounded bg-muted/30 border border-border/50">
-                <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground uppercase tracking-wider">
-                  <TrendingUp className="w-3 h-3" />
-                  Avg Quality
+              {/* Card header */}
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded bg-primary/10 border border-primary/20 flex items-center justify-center">
+                    <Wifi className="w-4 h-4 text-primary" />
+                  </div>
+                  <div>
+                    <h3 className="font-display font-semibold text-sm tracking-wider uppercase">
+                      {stat.wire || <span className="text-muted-foreground italic">unknown</span>}
+                    </h3>
+                    <p className="text-[10px] text-muted-foreground font-mono">
+                      {stat.scans_run} scans this week
+                    </p>
+                  </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <ScoreBadge score={stat.avg_quality_score} />
+                  {isStale && (
+                    <AlertTriangle
+                      className="w-4 h-4 text-status-warning animate-pulse"
+                      title={`Last scan ${Math.round(hoursAgo)}h ago — pipeline may be stalled`}
+                    />
+                  )}
+                  <span className="text-[10px] text-muted-foreground font-mono px-2 py-1 rounded bg-muted/50 border border-border">
+                    {formatDistanceToNow(new Date(stat.last_scan), { addSuffix: true })}
+                  </span>
                 </div>
               </div>
 
-              <div className="space-y-1 p-3 rounded bg-muted/30 border border-border/50">
-                <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground uppercase tracking-wider">
-                  <Clock className="w-3 h-3" />
-                  Last Ping
+              {/* Metrics grid */}
+              <div className="grid grid-cols-2 gap-3 flex-1">
+                {/* Ingested */}
+                <div className="space-y-1 p-3 rounded bg-muted/30 border border-border/50">
+                  <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground uppercase tracking-wider">
+                    <FileStack className="w-3 h-3" />
+                    Ingested
+                  </div>
+                  <div className="text-2xl font-mono font-semibold text-foreground">
+                    {stat.items_this_week}
+                  </div>
                 </div>
-                <div className="text-sm font-mono text-foreground">
-                  {new Date(stat.last_scan).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+
+                {/* Duplicates */}
+                <div className="space-y-1 p-3 rounded bg-muted/30 border border-border/50">
+                  <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground uppercase tracking-wider">
+                    <Copy className="w-3 h-3" />
+                    Duplicates
+                  </div>
+                  <div className="text-2xl font-mono font-semibold text-foreground">
+                    {stat.duplicate_rate}<span className="text-sm text-muted-foreground">%</span>
+                  </div>
+                </div>
+
+                {/* Avg Quality — with color threshold */}
+                <div className={`space-y-1 p-3 rounded border ${qConfig.bg} ${qConfig.border}`}>
+                  <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground uppercase tracking-wider">
+                    <TrendingUp className="w-3 h-3" />
+                    Avg Quality
+                  </div>
+                  <div className={`text-2xl font-mono font-semibold ${qConfig.color}`}>
+                    {stat.avg_quality_score}
+                    <span className="text-[10px] ml-1 font-normal opacity-70">{qConfig.label}</span>
+                  </div>
+                </div>
+
+                {/* High Quality (≥70) — replaces redundant Last Ping */}
+                <div className="space-y-1 p-3 rounded bg-muted/30 border border-border/50">
+                  <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground uppercase tracking-wider">
+                    <Star className="w-3 h-3" />
+                    High Quality
+                  </div>
+                  <div className="text-2xl font-mono font-semibold text-foreground">
+                    {stat.high_quality_count}
+                    {stat.items_this_week > 0 && (
+                      <span className={`text-sm ml-1 ${highQualityPct >= 20 ? 'text-status-success' : highQualityPct >= 5 ? 'text-status-warning' : 'text-destructive'}`}>
+                        {highQualityPct}%
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
+
+              {/* Queue depth row */}
+              {counts && (
+                <div className="mt-3 pt-3 border-t border-border/50 grid grid-cols-3 gap-2 text-center">
+                  <div>
+                    <div className="text-[10px] text-muted-foreground uppercase tracking-wider">Queued</div>
+                    <div className={`text-sm font-mono font-semibold ${counts.queued > 0 ? 'text-primary' : 'text-muted-foreground'}`}>
+                      {counts.queued}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-muted-foreground uppercase tracking-wider">Approved</div>
+                    <div className="text-sm font-mono font-semibold text-status-success">{counts.approved}</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-muted-foreground uppercase tracking-wider">Archived</div>
+                    <div className="text-sm font-mono font-semibold text-muted-foreground">{counts.archived}</div>
+                  </div>
+                </div>
+              )}
+
+              {/* View Queue link */}
+              {counts && counts.queued > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onNavigateToQueue(stat.wire)}
+                  className="mt-3 w-full gap-1.5 text-primary hover:text-primary/80 hover:bg-primary/5 font-display text-[10px] tracking-wider border border-primary/20 hover:border-primary/40"
+                >
+                  VIEW {counts.queued} IN QUEUE
+                  <ArrowRight className="w-3 h-3" />
+                </Button>
+              )}
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {stats.length === 0 && (

@@ -1,4 +1,4 @@
-import { ScanEntry } from '@/types';
+import { ScanEntry, WireCounts } from '@/types';
 
 const BASE = "/api";
 
@@ -74,4 +74,31 @@ export async function fetchWires(): Promise<{ key: string; displayName: string; 
   const res = await authFetch(`${BASE}/wires`);
   if (!res.ok) return []; // fail open — return empty so UI degrades gracefully
   return res.json();
+}
+
+export async function fetchWireCounts(): Promise<WireCounts[]> {
+  // Fetch queue depth per wire using existing /api/scan/counts endpoint
+  // Called once per wire — aggregate across known wires
+  try {
+    const feeds = await fetchFeeds();
+    const results = await Promise.allSettled(
+      feeds.map(async (f) => {
+        const res = await authFetch(`${BASE}/scan/counts?wire=${encodeURIComponent(f.key)}`);
+        if (!res.ok) return null;
+        const data = await res.json();
+        return {
+          wire: f.key,
+          queued: Number(data.counts?.queued) || 0,
+          approved: Number(data.counts?.approved) || 0,
+          archived: Number(data.counts?.archived) || 0,
+          raw: Number(data.counts?.raw) || 0,
+        } as WireCounts;
+      })
+    );
+    return results
+      .filter((r): r is PromiseFulfilledResult<WireCounts | null> => r.status === 'fulfilled' && r.value !== null)
+      .map(r => r.value as WireCounts);
+  } catch {
+    return [];
+  }
 }
