@@ -88,7 +88,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
               <th className="w-24">Value</th>
               <th className="w-28">Deadline</th>
               <th className="w-20">Source</th>
-              <th className="w-40">Actions</th>
+              <th className="w-48 min-w-[12rem]">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -132,23 +132,23 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                   </a>
                 </td>
                 <td onClick={(e) => e.stopPropagation()}>
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-2 whitespace-nowrap">
                     <Button
                       size="sm"
                       onClick={() => (onSingleAction ?? ((id, s) => onUpdateStatus([id], s)))(entry.id, 'approved')}
-                      className="gap-1 bg-status-success/20 text-status-success border border-status-success/30 hover:bg-status-success/30 font-display text-[10px] tracking-wider h-7 px-2"
+                      className="gap-1 bg-status-success/20 text-status-success border border-status-success/30 hover:bg-status-success/30 font-display text-[10px] tracking-wider h-7 px-2.5"
                     >
-                      <CheckCircle className="w-3 h-3" />
-                      APPROVE
+                      <CheckCircle className="w-3 h-3 shrink-0" />
+                      OK
                     </Button>
                     <Button
                       size="sm"
                       variant="secondary"
                       onClick={() => (onSingleAction ?? ((id, s) => onUpdateStatus([id], s)))(entry.id, 'archived')}
-                      className="gap-1 font-display text-[10px] tracking-wider h-7 px-2"
+                      className="gap-1 font-display text-[10px] tracking-wider h-7 px-2.5"
                     >
-                      <Archive className="w-3 h-3" />
-                      DECLINE
+                      <Archive className="w-3 h-3 shrink-0" />
+                      SKIP
                     </Button>
                   </div>
                 </td>
