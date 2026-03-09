@@ -68,6 +68,12 @@ export const config = {
     botToken: process.env.TELEGRAM_BOT_TOKEN || '',
   },
 
+  telegramIntake: {
+    botToken: process.env.TELEGRAM_INTAKE_BOT_TOKEN || '',
+    webhookSecret: process.env.TELEGRAM_INTAKE_WEBHOOK_SECRET || '',
+    allowedUserId: process.env.TELEGRAM_INTAKE_ALLOWED_USER_ID || '394395765',
+  },
+
 };
 
 export function validateConfig(): void {

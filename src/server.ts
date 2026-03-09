@@ -27,6 +27,7 @@ import { reviewScanPrompt } from './services/anthropic';
 import type { RawScanResult, ToolType } from './types/intake';
 import { renderLoginPage } from './views/login';
 import { renderErrorPage, renderLegacyDownloadPage, renderExpiredLinkPage, renderResendSuccessPage } from './views/error';
+import { handleTelegramIntakeUpdate, registerIntakeWebhook, cleanupPendingEntries } from './services/telegram-intake';
 
 const app = express();
 const privyJwks = jwksClient({
@@ -1432,6 +1433,24 @@ app.post('/api/summary-sync', requireAuth, async (_req: Request, res: Response) 
   }
 });
 
+// API: Telegram intake webhook (no auth — validated by secret header)
+app.post('/api/telegram/intake-webhook', async (req: Request, res: Response) => {
+  // Always return 200 so Telegram doesn't retry
+  const secret = config.telegramIntake.webhookSecret;
+  if (secret && req.headers['x-telegram-bot-api-secret-token'] !== secret) {
+    console.warn('[TelegramIntake] Webhook called with invalid secret');
+    res.sendStatus(200);
+    return;
+  }
+
+  // Fire and forget — respond immediately
+  handleTelegramIntakeUpdate(req.body).catch(err => {
+    console.error('[TelegramIntake] Handler error:', err);
+  });
+
+  res.sendStatus(200);
+});
+
 // API: Queue action on single entry (approve/decline/reviewlater/restore)
 app.post('/api/scan/entries/:id/action', requireAuth, async (req: Request, res: Response) => {
   const entryId = parseInt(req.params.id, 10);
@@ -1810,6 +1829,19 @@ export async function startServer(): Promise<void> {
     console.error('Summary sync startup failed (non-fatal):', error);
   }
 
+  // Register Telegram intake webhook if configured
+  if (config.telegramIntake.botToken) {
+    try {
+      await registerIntakeWebhook();
+    } catch (error) {
+      console.error('Telegram intake webhook registration failed (non-fatal):', error);
+    }
+  }
+
+  // Cleanup expired pending intake entries every 15 minutes
+  const intakeCleanupTimer = setInterval(cleanupPendingEntries, 15 * 60 * 1000);
+  intakeCleanupTimer.unref();
+
   const server = app.listen(config.app.port, () => {
     console.log(`Server running on port ${config.app.port}`);
   });
@@ -1821,6 +1853,7 @@ export async function startServer(): Promise<void> {
     stopSummarySync();
     stopAuthCleanup();
     jobQueue.stopPeriodicCleanup();
+    clearInterval(intakeCleanupTimer);
     server.close(async () => {
       await closePool();
       console.log('[Server] Shutdown complete');
