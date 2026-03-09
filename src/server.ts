@@ -1495,13 +1495,23 @@ app.post('/api/scan/entries/:id/action', requireAuth, async (req: Request, res: 
   try {
     const pool = getPool();
     const result = await pool.query(
-      `UPDATE scan_entries SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING id, status`,
+      `UPDATE scan_entries SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING id, status, wire`,
       [newStatus, entryId]
     );
 
     if (result.rows.length === 0) {
       res.status(404).json({ error: 'Entry not found' });
       return;
+    }
+
+    // Fire-and-forget distribution when an entry is approved
+    if (action === 'approve') {
+      const wire = result.rows[0].wire;
+      setImmediate(() => {
+        distributeEntries(wire).catch(err => {
+          console.error(`[Distribution] Auto-distribute after approve failed for wire ${wire}:`, err);
+        });
+      });
     }
 
     res.json({ success: true, newStatus });
