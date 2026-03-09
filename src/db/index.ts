@@ -649,7 +649,7 @@ export async function ensureScanTables(): Promise<void> {
     scan_source TEXT NOT NULL DEFAULT 'x-scan',
     scan_date DATE NOT NULL,
     status TEXT NOT NULL DEFAULT 'raw'
-      CHECK (status IN ('raw','deduped','duplicate','scored','queued','enriched','published','archived','skipped','approved','declined')),
+      CHECK (status IN ('raw','deduped','duplicate','queued','enriched','published','archived','skipped','approved','declined')),
     quality_score INTEGER,
     quality_breakdown JSONB,
     duplicate_of_id INTEGER REFERENCES scan_entries(id),
@@ -711,7 +711,7 @@ export async function ensureScanTables(): Promise<void> {
   await client.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_source_url ON scan_entries(source_url)`);
   await client.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_wire_date ON scan_entries(wire, scan_date)`);
   await client.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_wire_status ON scan_entries(wire, status)`);
-  await client.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_queue ON scan_entries(wire, status, quality_score DESC NULLS LAST) WHERE status IN ('scored', 'queued')`);
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_queue ON scan_entries(wire, status, quality_score DESC NULLS LAST) WHERE status IN ('queued')`);
   // Wire Room read path: WHERE status='approved' [AND wire=$1] ORDER BY created_at DESC
   // Drop old version if it exists (was keyed on status instead of wire)
   await client.query(`DROP INDEX IF EXISTS idx_scan_entries_approved`);
@@ -835,7 +835,7 @@ export async function ensureScanPromptsTable(): Promise<void> {
   `);
   await pool.query(`
     ALTER TABLE scan_entries ADD CONSTRAINT scan_entries_status_check
-      CHECK (status IN ('raw','deduped','duplicate','scored','queued','enriched','published','archived','skipped','approved','declined'))
+      CHECK (status IN ('raw','deduped','duplicate','queued','enriched','published','archived','skipped','approved','declined'))
   `);
 
   // Phase 3 migration: tool_type column for x_search vs web_search

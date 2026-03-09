@@ -10,6 +10,7 @@
  */
 
 import { getPool, getAllFeeds } from '../db';
+import { checkDuplicate } from '../services/dedup';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Public types
@@ -232,6 +233,16 @@ export async function processIntakeMessage(
   const wire = detectWire(text, wires);
 
   if (wire) {
+    // Dedup check — fail open if dedup service errors
+    try {
+      const dedupResult = await checkDuplicate(getPool(), { sourceUrl: primaryUrl, name, wire }, 30);
+      if (dedupResult.isDuplicate) {
+        return { status: 'rejected', errorMessage: `Duplicate: already seen as "${dedupResult.matchedEntryName}"` };
+      }
+    } catch (dedupErr) {
+      console.error('[IntakeCore] Dedup check failed, proceeding with insert:', dedupErr);
+    }
+
     try {
       const id = await insertEntry({
         name,
@@ -286,6 +297,16 @@ export async function completeWireSelection(
   }
 
   pendingEntries.delete(pendingKey);
+
+  // Dedup check — fail open if dedup service errors
+  try {
+    const dedupResult = await checkDuplicate(getPool(), { sourceUrl: entry.sourceUrl, name: entry.name, wire }, 30);
+    if (dedupResult.isDuplicate) {
+      return { status: 'rejected', errorMessage: `Duplicate: already seen as "${dedupResult.matchedEntryName}"` };
+    }
+  } catch (dedupErr) {
+    console.error('[IntakeCore] Dedup check failed, proceeding with insert:', dedupErr);
+  }
 
   try {
     const id = await insertEntry({ ...entry, wire });
@@ -374,6 +395,19 @@ export async function processBatchMessage(
     // Detect wire from combined name + description
     const combined = `${entry.name} ${entry.description}`;
     const wire = detectWire(combined, wires) || wires[0] || 'crypto';
+
+    // Dedup check — fail open if dedup service errors
+    try {
+      const dedupResult = await checkDuplicate(getPool(), { sourceUrl: entry.sourceUrl, name: entry.name, wire }, 30);
+      if (dedupResult.isDuplicate) {
+        result.failed++;
+        result.entries.push({ name: entry.name, wire, error: `Duplicate: already seen as "${dedupResult.matchedEntryName}"` });
+        continue;
+      }
+    } catch (dedupErr) {
+      console.error(`[IntakeCore] Dedup check failed for "${entry.name}", proceeding with insert:`, dedupErr);
+    }
+
     try {
       const id = await insertEntry({
         name: entry.name,

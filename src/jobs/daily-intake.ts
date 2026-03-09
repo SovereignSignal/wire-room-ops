@@ -301,7 +301,7 @@ export async function runDailyIntake(
   // Get top finds
   const topFindsRes = await pool.query(
     `SELECT * FROM scan_entries
-     WHERE scan_date = $1 AND status IN ('scored', 'queued')
+     WHERE scan_date = $1 AND status IN ('queued')
      ORDER BY quality_score DESC NULLS LAST
      LIMIT 10`,
     [runDate]
@@ -364,7 +364,7 @@ export async function getDailyQueue(
   const result = await pool.query(
     `SELECT * FROM scan_entries
      WHERE scan_date = $1
-       AND status IN ('queued', 'scored')
+       AND status IN ('queued')
        AND quality_score >= $2
        ${wireClause}
      ORDER BY quality_score DESC NULLS LAST, amount_numeric DESC NULLS LAST`,

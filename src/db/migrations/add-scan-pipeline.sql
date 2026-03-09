@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS scan_entries (
 
   -- Processing state
   status TEXT NOT NULL DEFAULT 'raw'
-    CHECK (status IN ('raw', 'deduped', 'duplicate', 'scored', 'queued', 'enriched', 'published', 'archived')),
+    CHECK (status IN ('raw', 'deduped', 'duplicate', 'queued', 'enriched', 'published', 'archived')),
   quality_score INTEGER,               -- 0-100
   quality_breakdown JSONB,             -- Detailed scoring breakdown
 
@@ -112,7 +112,7 @@ CREATE INDEX IF NOT EXISTS idx_scan_entries_wire_status ON scan_entries(wire, st
 -- Combined index for the daily queue view
 CREATE INDEX IF NOT EXISTS idx_scan_entries_queue
   ON scan_entries(wire, status, quality_score DESC NULLS LAST)
-  WHERE status IN ('scored', 'queued');
+  WHERE status IN ('queued');
 
 -- Intake run lookups
 CREATE INDEX IF NOT EXISTS idx_intake_runs_date ON intake_runs(run_date);

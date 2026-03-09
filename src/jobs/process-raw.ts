@@ -47,6 +47,7 @@ export async function processRawEntries(pool?: Pool): Promise<{
         `SELECT id, name, description, source_url, amount, deadline, wire, scan_date
          FROM scan_entries
          WHERE status = 'raw'
+           AND created_at < NOW() - INTERVAL '2 minutes'
          ORDER BY created_at ASC
          LIMIT $1`,
         [BATCH_SIZE]
