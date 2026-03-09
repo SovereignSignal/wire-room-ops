@@ -664,43 +664,54 @@ export { normalizeUrl } from '../utils/url';
 // Name Normalization (for fuzzy matching)
 // ============================================================
 
-// Common words to strip for name comparison
+// Common words to strip for name comparison.
+// These are words that appear frequently in grant/program names but don't
+// identify a specific grant. Without filtering these, token-overlap dedup
+// produces false positives (e.g. two unrelated grants both containing
+// "proposal" and "treasury" would match).
 const STOP_WORDS = new Set([
-  'the',
-  'a',
-  'an',
-  'and',
-  'or',
-  'for',
-  'of',
-  'in',
-  'to',
-  'by',
-  'with',
-  'on',
-  'at',
-  'from',
-  'program',
-  'programme',
-  'grant',
-  'grants',
-  'fund',
-  'funding',
-  'initiative',
-  'fellowship',
-  'hackathon',
-  'bounty',
-  'challenge',
-  'competition',
-  'scholarship',
-  'accelerator',
-  'incubator',
-  'cohort',
-  'season',
-  'phase',
-  'round',
-  'wave',
-  'new',
+  // English determiners & prepositions
+  'the', 'a', 'an', 'and', 'or', 'for', 'of', 'in', 'to', 'by',
+  'with', 'on', 'at', 'from', 'into', 'via', 'per', 'its', 'this',
+  'that', 'all', 'are', 'has', 'will', 'can', 'not', 'but', 'our',
+  'their', 'your', 'how', 'who', 'what', 'any', 'each', 'more',
+
+  // Grant / program structure words
+  'program', 'programme', 'grant', 'grants', 'fund', 'funding', 'funded',
+  'initiative', 'fellowship', 'hackathon', 'bounty', 'bounties',
+  'challenge', 'competition', 'scholarship', 'accelerator', 'incubator',
+  'cohort', 'season', 'phase', 'round', 'wave', 'new', 'batch',
+  'proposal', 'proposals', 'rfp', 'rfc',
+
+  // Governance & treasury (common in DAO names)
+  'treasury', 'governance', 'dao', 'vote', 'voting', 'delegate',
+  'allocation', 'allocate', 'budget',
+
+  // Generic action / descriptor words
+  'support', 'supporting', 'sponsor', 'sponsors', 'sponsorship',
+  'build', 'builder', 'builders', 'building',
+  'develop', 'developer', 'developers', 'development',
+  'maintain', 'maintainer', 'maintainers', 'maintenance',
+  'research', 'researcher', 'researchers',
+  'contribute', 'contributor', 'contributors', 'contribution',
+  'community', 'ecosystem', 'infrastructure', 'network', 'platform',
+  'project', 'projects', 'activate', 'activates', 'launch', 'launching',
+
+  // Common tech/crypto vocabulary that doesn't identify a specific grant
+  'open', 'source', 'web3', 'web', 'blockchain', 'crypto',
+  'decentralized', 'defi', 'token', 'tokens', 'nft', 'nfts',
+  'smart', 'contract', 'contracts', 'protocol', 'protocols',
+  'layer', 'chain', 'node', 'nodes', 'staking', 'stake',
+  'onchain', 'offchain',
+
+  // Financial terms
+  'million', 'billion', 'usdc', 'usdt', 'usd', 'eth',
+
+  // Generic qualifiers
+  'global', 'annual', 'monthly', 'weekly', 'quarterly',
+  'first', 'second', 'third', 'next', 'latest', 'upcoming',
+  'public', 'private', 'pilot', 'beta', 'alpha',
+
   // Dynamically include current year ± 1 to avoid hardcoding
   ...Array.from({ length: 3 }, (_, i) => String(new Date().getFullYear() - 1 + i)),
 ]);

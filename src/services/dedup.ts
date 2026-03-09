@@ -14,6 +14,31 @@ import type { Pool } from 'pg';
 import type { DedupResult, ScanEntry } from '../types/intake';
 import { normalizeUrl, normalizeName, extractNameTokens } from './intake';
 
+/**
+ * "Semi-generic" tokens: these pass the main stopword filter in intake.ts
+ * but are still common enough in grant names to cause false positives when
+ * they're the ONLY overlapping tokens. A match must include at least one
+ * token that isn't in this set to be considered a true duplicate.
+ *
+ * These differ from STOP_WORDS: STOP_WORDS are stripped entirely before
+ * tokenization. SEMI_GENERIC tokens ARE stored and CAN contribute to
+ * overlap score, but alone they're not sufficient to trigger a match.
+ */
+const SEMI_GENERIC_TOKENS = new Set([
+  // Organization types
+  'foundation', 'labs', 'lab', 'ventures', 'capital', 'institute',
+  'association', 'alliance', 'council', 'committee', 'consortium',
+  // Tech/product patterns
+  'api', 'sdk', 'cli', 'app', 'tool', 'tools', 'framework',
+  'library', 'module', 'plugin', 'extension', 'integration',
+  'data', 'analytics', 'security', 'audit', 'testing',
+  // Action words that survive stopword filter
+  'create', 'improve', 'scale', 'grow', 'expand', 'enable',
+  'reward', 'rewards', 'incentive', 'incentives', 'airdrop',
+  // Misc common qualifiers
+  'core', 'advanced', 'early', 'stage', 'track',
+]);
+
 // ============================================================
 // Main Dedup Check
 // ============================================================
@@ -283,7 +308,8 @@ async function checkNameMatch(
 
 /**
  * Calculate the Jaccard-like overlap between two token sets.
- * Weighted to favor matching rare/significant tokens.
+ * Requires at least one "anchor" token (not in SEMI_GENERIC_TOKENS)
+ * to be shared, preventing matches based solely on common vocabulary.
  *
  * Returns a score from 0 to 1.
  */
@@ -294,8 +320,15 @@ function tokenOverlapScore(tokensA: string[], tokensB: string[]): number {
   const setB = new Set(tokensB);
 
   let intersection = 0;
+  let anchorIntersection = 0;
+
   for (const token of setA) {
-    if (setB.has(token)) intersection++;
+    if (setB.has(token)) {
+      intersection++;
+      if (!SEMI_GENERIC_TOKENS.has(token)) {
+        anchorIntersection++;
+      }
+    }
   }
 
   // Use the smaller set as denominator (asymmetric Jaccard)
@@ -306,6 +339,13 @@ function tokenOverlapScore(tokensA: string[], tokensB: string[]): number {
   // to avoid false positives like "Optimism Grant" vs "Optimism Governance Update".
   // Allow single-token overlap when one set has only 1 token (specific match).
   if (intersection < 2 && minSize > 1 && setA.size + setB.size > 3) {
+    return 0;
+  }
+
+  // Require at least one anchor (non-semi-generic) token in the overlap.
+  // Without this, matches like "Foundation Labs Rewards" vs "Foundation Labs Incentives"
+  // would trigger on purely generic vocabulary.
+  if (anchorIntersection === 0 && intersection > 0) {
     return 0;
   }
 
