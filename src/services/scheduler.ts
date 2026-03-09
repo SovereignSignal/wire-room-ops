@@ -80,6 +80,12 @@ export async function addSchedule(newSchedule?: Partial<Omit<ScheduleConfig, 'id
   }
   
   console.log(`[Scheduler] Created new schedule: ${created.name} (${created.id})`);
+
+  // If this is a new daily-digest schedule, auto-derive scan schedules from it
+  if (created.scheduleType === 'daily-digest') {
+    await syncScanSchedulesFromDigest(created);
+  }
+
   return created;
 }
 
@@ -95,8 +101,116 @@ export async function setSchedule(id: string, updates: Partial<Omit<ScheduleConf
     startScheduleTask(updated);
   }
 
+  // If this is a daily-digest schedule, auto-sync scan schedules to run before it
+  if (updated.scheduleType === 'daily-digest') {
+    await syncScanSchedulesFromDigest(updated);
+  }
+
   console.log(`[Scheduler] Updated schedule: ${updated.name} (${id})`);
   return updated;
+}
+
+/**
+ * Digest-Driven Scan Scheduling
+ *
+ * When a user sets a digest delivery time, we automatically backsolve scan times
+ * so all three wires complete well before the digest fires.
+ *
+ * Lead times before digest:
+ *   crypto → 4.5h before (most scans, most prompts)
+ *   ai     → 3.5h before
+ *   oss    → 2.5h before
+ *
+ * Second pass (afternoon):
+ *   crypto → 4.5h after digest
+ *   ai     → 5.5h after digest
+ *   oss    → 6.5h after digest
+ *
+ * Users set ONE time (when they want results). Everything else is derived.
+ */
+export async function syncScanSchedulesFromDigest(digestSchedule: ScheduleConfig): Promise<void> {
+  const pool = getPool();
+  const digestHour = digestSchedule.hour;
+  const digestMinute = digestSchedule.minute;
+  const timezone = digestSchedule.timezone;
+  const digestEnabled = digestSchedule.enabled;
+
+  // Lead offsets in minutes before digest
+  const wires = [
+    { wire: 'crypto', leadMinutes: 270 },  // 4.5h before
+    { wire: 'ai',     leadMinutes: 210 },  // 3.5h before
+    { wire: 'oss',    leadMinutes: 150 },  // 2.5h before
+  ];
+
+  // Helper: subtract minutes from an hour:minute, wrapping around midnight
+  function subtractMinutes(h: number, m: number, lead: number) {
+    const totalMins = h * 60 + m - lead;
+    const wrapped = ((totalMins % 1440) + 1440) % 1440; // always positive
+    return { hour: Math.floor(wrapped / 60), minute: wrapped % 60 };
+  }
+
+  function addMinutes(h: number, m: number, offset: number) {
+    const totalMins = h * 60 + m + offset;
+    const wrapped = totalMins % 1440;
+    return { hour: Math.floor(wrapped / 60), minute: wrapped % 60 };
+  }
+
+  // Afternoon second-pass offsets after digest (stagger by 90 min each)
+  const afternoonOffsets = [270, 360, 450]; // 4.5h, 6h, 7.5h after digest
+
+  console.log(`[Scheduler] Syncing scan schedules from digest at ${digestHour}:${String(digestMinute).padStart(2,'0')} ${timezone}`);
+
+  for (let i = 0; i < wires.length; i++) {
+    const { wire, leadMinutes } = wires[i];
+    const firstRun = subtractMinutes(digestHour, digestMinute, leadMinutes);
+    const secondRun = addMinutes(digestHour, digestMinute, afternoonOffsets[i]);
+
+    // Find existing scan-execution schedules for this wire
+    const existing = await pool.query(
+      `SELECT id, hour, minute FROM schedules WHERE schedule_type = 'scan-execution' AND wire = $1 ORDER BY hour`,
+      [wire]
+    );
+
+    if (existing.rows.length === 0) {
+      // Create new scan schedules for this wire
+      for (const [idx, run] of [firstRun, secondRun].entries()) {
+        await pool.query(
+          `INSERT INTO schedules (id, name, enabled, hour, minute, timezone, wire, schedule_type, lookback_days, created_at, updated_at)
+           VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, 'scan-execution', 7, NOW(), NOW())`,
+          [
+            `${wire} scan (${idx === 0 ? 'AM' : 'PM'}) — auto`,
+            digestEnabled,
+            run.hour,
+            run.minute,
+            timezone,
+            wire,
+          ]
+        );
+      }
+      console.log(`[Scheduler] Created scan schedules for ${wire}: AM at ${firstRun.hour}:${String(firstRun.minute).padStart(2,'0')}, PM at ${secondRun.hour}:${String(secondRun.minute).padStart(2,'0')}`);
+    } else {
+      // Update existing schedules: first row = first run, second row = second run
+      const sortedRows = existing.rows.sort((a: { hour: number }, b: { hour: number }) => a.hour - b.hour);
+      const updates = [firstRun, secondRun];
+      for (let j = 0; j < Math.min(sortedRows.length, updates.length); j++) {
+        await pool.query(
+          `UPDATE schedules SET hour = $1, minute = $2, timezone = $3, enabled = $4, updated_at = NOW() WHERE id = $5`,
+          [updates[j].hour, updates[j].minute, timezone, digestEnabled, sortedRows[j].id]
+        );
+      }
+      console.log(`[Scheduler] Updated scan schedules for ${wire}: AM at ${firstRun.hour}:${String(firstRun.minute).padStart(2,'0')}, PM at ${secondRun.hour}:${String(secondRun.minute).padStart(2,'0')}`);
+    }
+  }
+
+  // Reload all schedules so the in-memory state reflects the new scan times
+  const allSchedules = await getAllSchedules();
+  schedules.clear();
+  scheduledTasks.forEach((_, id) => stopScheduleTask(id));
+  for (const s of allSchedules) {
+    schedules.set(s.id, s);
+    if (s.enabled) startScheduleTask(s);
+  }
+  console.log(`[Scheduler] Scan schedules synced. ${allSchedules.length} active schedules loaded.`);
 }
 
 export async function removeSchedule(id: string): Promise<boolean> {
