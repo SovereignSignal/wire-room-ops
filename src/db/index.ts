@@ -513,13 +513,16 @@ export async function ensureFeedsTable(): Promise<void> {
     )
   `);
 
-  // Seed known feeds
+  // Seed known feeds — upsert so new core wires are always added on deploy
   let sortIdx = 0;
   for (const [key, data] of Object.entries(SEED_FEEDS)) {
     await pool.query(`
       INSERT INTO feeds (key, display_name, title_template, sort_order)
       VALUES ($1, $2, $3, $4)
-      ON CONFLICT (key) DO NOTHING
+      ON CONFLICT (key) DO UPDATE SET
+        display_name = EXCLUDED.display_name,
+        title_template = EXCLUDED.title_template
+      WHERE feeds.archived = false
     `, [key, data.displayName, data.titleTemplate, sortIdx++]);
   }
 
