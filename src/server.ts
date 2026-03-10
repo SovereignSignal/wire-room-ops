@@ -6,7 +6,7 @@ import { validateMagicLink, createMagicLink, createDownloadToken, createSessionT
 import jwt from 'jsonwebtoken';
 import jwksClient from 'jwks-rsa';
 import { getFile, listFiles } from './services/storage';
-import { getAvailableWires, closePool, getAllFeeds, ensureFeedsTable, getFeedByKey, createFeed, updateFeed, archiveFeed, getEntryCountsByWire, getAllScanPrompts, getScanPromptById, createScanPrompt, updateScanPrompt, deleteScanPrompt, getStatusCounts, getEntriesByStatus, getSeenUrlStats, getSeenUrlsList } from './db';
+import { getAvailableWires, closePool, getAllFeeds, ensureFeedsTable, ensureClassificationColumns, getFeedByKey, createFeed, updateFeed, archiveFeed, getEntryCountsByWire, getAllScanPrompts, getScanPromptById, createScanPrompt, updateScanPrompt, deleteScanPrompt, getStatusCounts, getEntriesByStatus, getSeenUrlStats, getSeenUrlsList } from './db';
 import { sendScanDigestEmail, sendResendLinkEmail } from './services/email';
 import { StoredFile } from './types';
 import { jobQueue } from './services/job-queue';
@@ -29,6 +29,7 @@ import { renderLoginPage } from './views/login';
 import { renderErrorPage, renderLegacyDownloadPage, renderExpiredLinkPage, renderResendSuccessPage } from './views/error';
 import { handleTelegramUpdate, registerIntakeWebhook, cleanupPendingEntries } from './services/telegram-adapter';
 import { processRawEntries } from './jobs/process-raw';
+import { databaseRouter } from './routes/database';
 
 const app = express();
 const privyJwks = jwksClient({
@@ -2110,6 +2111,9 @@ app.post('/api/distribution/channels/:id/test', requireAuth, async (req: Request
   }
 });
 
+// Database introspection API
+app.use('/api/database', requireAuth, databaseRouter);
+
 // Serve React dashboard (built client)
 const clientDist = path.join(__dirname, '../dist/client');
 app.use(express.static(clientDist));
@@ -2145,6 +2149,13 @@ export async function startServer(): Promise<void> {
     await ensureFeedsTable();
   } catch (error) {
     console.error('Feeds table initialization failed (non-fatal):', error);
+  }
+
+  // Add classification columns to scan_entries (Gate 1 + Gate 2 support)
+  try {
+    await ensureClassificationColumns();
+  } catch (error) {
+    console.error('Classification columns migration failed (non-fatal):', error);
   }
 
   // Initialize the scheduler (loads config from database)

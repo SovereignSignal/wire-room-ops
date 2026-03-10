@@ -5,6 +5,7 @@ import { QueueTab } from '@/components/dashboard/QueueTab';
 import { PublishedTab } from '@/components/dashboard/PublishedTab';
 import { SourcesTab } from '@/components/dashboard/SourcesTab';
 import { DistributionTab } from '@/components/dashboard/DistributionTab';
+import { DatabaseTab } from '@/components/dashboard/DatabaseTab';
 // ReviewTab removed — approve/decline now inline in QueueTab
 import { Starfield } from '@/components/dashboard/Starfield';
 import { EntryDetailsSheet } from '@/components/dashboard/EntryDetailsSheet';
@@ -172,6 +173,9 @@ const Index = () => {
               setActiveTab('queue');
             }}
           />
+        )}
+        {activeTab === 'database' && (
+          <DatabaseTab />
         )}
       </DashboardLayout>
 

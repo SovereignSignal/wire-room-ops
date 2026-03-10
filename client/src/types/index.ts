@@ -68,3 +68,54 @@ export interface FilterState {
   scoreMax: number | null;
   dateStatus: 'all' | 'upcoming' | 'no_date' | 'expired';
 }
+
+// Database introspection types
+export interface DbScanEntry {
+  id: number;
+  name: string;
+  description: string;
+  source_url: string;
+  wire: string;
+  status: string;
+  quality_score: number | null;
+  scan_source: string;
+  prompt_variant: string | null;
+  created_at: string;
+  amount: string | null;
+  deadline: string | null;
+}
+
+export interface DbIntakeRun {
+  id: string;
+  wire: string;
+  new_unique: number;
+  duplicates_found: number;
+  avg_quality_score: number | null;
+  scans_run: number;
+  created_at: string;
+}
+
+export interface DbDistributionEntry {
+  id: string;
+  channel: string;
+  wire: string;
+  status: string;
+  post_text: string | null;
+  created_at: string;
+}
+
+export interface DbTableResponse<T> {
+  data: T[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
+}
+
+export interface DbStats {
+  scan_entries: { total: number; queued: number; approved: number; archived: number; raw: number };
+  intake_runs: { total: number; last_run: string | null };
+  distribution_log: { total: number; sent_24h: number };
+}

@@ -1,4 +1,4 @@
-import { ScanEntry, WireCounts } from '@/types';
+import { ScanEntry, WireCounts, DbStats, DbTableResponse } from '@/types';
 
 const BASE = "/api";
 
@@ -114,4 +114,54 @@ export async function fetchWireCounts(): Promise<WireCounts[]> {
   } catch {
     return [];
   }
+}
+
+// --- Database introspection API ---
+
+export async function fetchDbConfig(): Promise<{ configured: boolean; host: string | null; database: string | null; source: string }> {
+  const res = await authFetch(`${BASE}/database/config`);
+  if (!res.ok) throw new Error(`Failed to fetch DB config: ${res.status}`);
+  return res.json();
+}
+
+export async function testDbConnection(databaseUrl: string): Promise<{ success: boolean; latencyMs: number; version?: string; error?: string }> {
+  const res = await authFetch(`${BASE}/database/config/test`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ databaseUrl }),
+  });
+  if (!res.ok) throw new Error(`Failed to test connection: ${res.status}`);
+  return res.json();
+}
+
+export async function saveDbConfig(databaseUrl: string): Promise<any> {
+  const res = await authFetch(`${BASE}/database/config`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ databaseUrl }),
+  });
+  if (!res.ok) throw new Error(`Failed to save DB config: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchDbTable<T>(
+  table: 'scan-entries' | 'intake-runs' | 'distribution-log',
+  params: Record<string, string | number>
+): Promise<DbTableResponse<T>> {
+  const q = new URLSearchParams(
+    Object.fromEntries(
+      Object.entries(params)
+        .filter(([, v]) => v != null && v !== '')
+        .map(([k, v]) => [k, String(v)])
+    )
+  ).toString();
+  const res = await authFetch(`${BASE}/database/${table}${q ? '?' + q : ''}`);
+  if (!res.ok) throw new Error(`Failed to fetch ${table}: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchDbStats(): Promise<DbStats> {
+  const res = await authFetch(`${BASE}/database/stats`);
+  if (!res.ok) throw new Error(`Failed to fetch DB stats: ${res.status}`);
+  return res.json();
 }

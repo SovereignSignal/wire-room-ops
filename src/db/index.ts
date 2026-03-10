@@ -771,6 +771,28 @@ export async function ensureScanTables(): Promise<void> {
   }
 }
 
+export async function ensureClassificationColumns(): Promise<void> {
+  const pool = getPool();
+
+  // Add classification columns
+  await pool.query(`ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS classification VARCHAR(20) DEFAULT 'UNCHECKED'`);
+  await pool.query(`ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS classification_reason TEXT`);
+  await pool.query(`ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'`);
+
+  // Expand status constraint to include 'incomplete'
+  await pool.query(`ALTER TABLE scan_entries DROP CONSTRAINT IF EXISTS scan_entries_status_check`);
+  await pool.query(`
+    ALTER TABLE scan_entries ADD CONSTRAINT scan_entries_status_check
+      CHECK (status IN ('raw','deduped','duplicate','queued','enriched','published','archived','skipped','approved','declined','incomplete'))
+  `);
+
+  // Indexes for classification queries
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_classification ON scan_entries(classification)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_status_wire ON scan_entries(status, wire)`);
+
+  console.log('[DB] Classification columns ready');
+}
+
 export async function ensureScanPromptsTable(): Promise<void> {
   const pool = getPool();
 
