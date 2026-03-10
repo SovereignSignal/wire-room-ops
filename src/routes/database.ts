@@ -489,4 +489,18 @@ router.get('/schema/:table', async (req: Request, res: Response) => {
   }
 });
 
+// GET /enums/:type — list enum values (debug tool)
+router.get('/enums/:type', async (req: Request, res: Response) => {
+  try {
+    const pool = getLazyPool();
+    const result = await pool.query(
+      `SELECT e.enumlabel FROM pg_enum e JOIN pg_type t ON e.enumtypid = t.oid WHERE t.typname = $1 ORDER BY e.enumsortorder`,
+      [req.params.type]
+    );
+    res.json({ type: req.params.type, values: result.rows.map(r => r.enumlabel) });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to query enum' });
+  }
+});
+
 export { router as databaseRouter };
