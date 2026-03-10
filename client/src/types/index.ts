@@ -88,10 +88,11 @@ export interface DbScanEntry {
 export interface DbIntakeRun {
   id: string;
   wire: string;
+  total_ingested: number;
   new_unique: number;
   duplicates_found: number;
   avg_quality_score: number | null;
-  scans_run: number;
+  high_quality_count: number;
   created_at: string;
 }
 

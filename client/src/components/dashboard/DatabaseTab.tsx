@@ -689,10 +689,10 @@ function IntakeRunsTable({ data }: { data: DbIntakeRun[] }) {
       <TableHeader>
         <TableRow>
           <TableHead className="font-display text-[10px] tracking-wider uppercase">WIRE</TableHead>
-          <TableHead className="font-display text-[10px] tracking-wider uppercase">INGESTED</TableHead>
+          <TableHead className="font-display text-[10px] tracking-wider uppercase">TOTAL</TableHead>
+          <TableHead className="font-display text-[10px] tracking-wider uppercase">NEW</TableHead>
           <TableHead className="font-display text-[10px] tracking-wider uppercase">DUPES</TableHead>
           <TableHead className="font-display text-[10px] tracking-wider uppercase">AVG QUALITY</TableHead>
-          <TableHead className="font-display text-[10px] tracking-wider uppercase">SCANS</TableHead>
           <TableHead className="font-display text-[10px] tracking-wider uppercase">DATE</TableHead>
         </TableRow>
       </TableHeader>
@@ -704,12 +704,12 @@ function IntakeRunsTable({ data }: { data: DbIntakeRun[] }) {
                 {row.wire}
               </Badge>
             </TableCell>
-            <TableCell className="font-mono text-sm">{row.new_unique}</TableCell>
-            <TableCell className="font-mono text-sm text-muted-foreground">{row.duplicates_found}</TableCell>
+            <TableCell className="font-mono text-sm">{(row as any).total_ingested ?? 0}</TableCell>
+            <TableCell className="font-mono text-sm">{row.new_unique ?? 0}</TableCell>
+            <TableCell className="font-mono text-sm text-muted-foreground">{row.duplicates_found ?? 0}</TableCell>
             <TableCell>
               <QualityCell score={row.avg_quality_score} />
             </TableCell>
-            <TableCell className="font-mono text-sm">{row.scans_run}</TableCell>
             <TableCell className="font-mono text-xs text-muted-foreground whitespace-nowrap">
               {relativeTime(row.created_at)}
             </TableCell>

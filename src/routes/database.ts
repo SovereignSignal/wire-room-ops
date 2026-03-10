@@ -38,7 +38,7 @@ function resetPool(): void {
 // Allowed sort columns per table (whitelist to prevent SQL injection)
 const SORT_COLUMNS: Record<string, string[]> = {
   'scan-entries': ['id', 'name', 'wire', 'status', 'quality_score', 'scan_source', 'created_at', 'amount', 'deadline'],
-  'intake-runs': ['id', 'wire', 'new_unique', 'duplicates_found', 'avg_quality_score', 'scans_run', 'created_at'],
+  'intake-runs': ['id', 'wire', 'new_unique', 'duplicates_found', 'avg_quality_score', 'high_quality_count', 'created_at'],
   'distribution-log': ['id', 'channel', 'wire', 'status', 'created_at'],
   'summaries': ['id', 'title', 'wire', 'processing_status', 'data_quality', 'confidence', 'created_at'],
 };
@@ -217,7 +217,7 @@ router.get('/intake-runs', async (req: Request, res: Response) => {
     const total = parseInt(countResult.rows[0].count, 10);
 
     const dataResult = await pool.query(
-      `SELECT id, wire, new_unique, duplicates_found, avg_quality_score, scans_run, created_at
+      `SELECT id, wire, new_unique, duplicates_found, avg_quality_score, high_quality_count, total_ingested, created_at
        FROM intake_runs ${where}
        ORDER BY ${sortCol} ${order}
        LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
