@@ -222,7 +222,7 @@
 
   /* Table styling */
   .ops-table {
-    @apply w-full;
+    @apply w-full table-fixed;
   }
 
   .ops-table th {

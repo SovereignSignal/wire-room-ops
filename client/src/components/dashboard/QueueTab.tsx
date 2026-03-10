@@ -364,14 +364,14 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                   className="border-primary/50 data-[state=checked]:bg-primary data-[state=checked]:border-primary"
                 />
               </th>
-              <th>Name</th>
+              <th className="w-auto">Name</th>
               <th className="w-24">Wire</th>
-              <th className="w-28">Type</th>
+              <th className="w-32">Classification</th>
               <th className="w-20">Score</th>
               <th className="w-24">Amount</th>
               <th className="w-28">Deadline</th>
-              <th className="w-20">Source</th>
-              <th className="w-52 min-w-[13rem]">Actions</th>
+              <th className="w-16">Source</th>
+              <th className="w-44">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -388,9 +388,9 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                     className="border-primary/50 data-[state=checked]:bg-primary data-[state=checked]:border-primary"
                   />
                 </td>
-                <td>
-                  <div className="font-medium text-foreground">{entry.name}</div>
-                  <div className="text-xs text-muted-foreground truncate max-w-md">
+                <td className="overflow-hidden">
+                  <div className="font-medium text-foreground truncate">{entry.name}</div>
+                  <div className="text-xs text-muted-foreground truncate">
                     {entry.description}
                   </div>
                 </td>
