@@ -307,3 +307,12 @@
     box-shadow: 0 0 20px hsl(var(--glow-primary) / 0.3);
   }
 }
+
+/* Hide scrollbar but keep scroll functionality */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}

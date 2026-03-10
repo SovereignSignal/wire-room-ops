@@ -27,22 +27,22 @@ export function DashboardLayout({
       {/* Header */}
       <header className="border-b border-border bg-card/80 backdrop-blur-sm relative">
         <div className="absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-primary/50 to-transparent" />
-        <div className="container py-4">
+        <div className="container py-3 sm:py-4">
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-3 sm:gap-4">
               <div className="relative">
-                <div className="w-10 h-10 rounded bg-gradient-to-br from-primary/20 to-accent/20 border border-primary/30 flex items-center justify-center glow-box">
-                  <span className="text-xl">🛰️</span>
+                <div className="w-8 h-8 sm:w-10 sm:h-10 rounded bg-gradient-to-br from-primary/20 to-accent/20 border border-primary/30 flex items-center justify-center glow-box">
+                  <span className="text-lg sm:text-xl">🛰️</span>
                 </div>
                 <div className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-primary signal-pulse" />
               </div>
               <div>
-                <h1 className="text-xl font-display font-semibold tracking-wider glow-text">WIREOPS</h1>
-                <p className="text-[10px] text-muted-foreground tracking-widest uppercase">Array Control Station</p>
+                <h1 className="text-lg sm:text-xl font-display font-semibold tracking-wider glow-text">WIREOPS</h1>
+                <p className="text-[9px] sm:text-[10px] text-muted-foreground tracking-widest uppercase hidden sm:block">Array Control Station</p>
               </div>
             </div>
-            <div className="flex items-center gap-6">
-              <div className="flex items-center gap-2">
+            <div className="flex items-center gap-3 sm:gap-6">
+              <div className="hidden sm:flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-status-success signal-pulse" />
                 <span className="text-xs text-muted-foreground font-mono">ARRAY ONLINE</span>
               </div>
@@ -55,28 +55,28 @@ export function DashboardLayout({
                 title="Log out"
               >
                 <LogOut className="w-3.5 h-3.5" />
-                LOGOUT
+                <span className="hidden sm:inline">LOGOUT</span>
               </Button>
             </div>
           </div>
         </div>
       </header>
 
-      {/* Navigation */}
+      {/* Navigation — horizontally scrollable on mobile */}
       <div className="border-b border-border bg-card/50 backdrop-blur-sm">
-        <div className="container">
+        <div className="container overflow-x-auto scrollbar-hide">
           <Tabs value={activeTab} onValueChange={onTabChange}>
-            <TabsList className="h-12 bg-transparent border-none gap-2 flex-wrap sm:flex-nowrap">
+            <TabsList className="h-12 bg-transparent border-none gap-1 sm:gap-2 flex-nowrap w-max sm:w-auto">
               <TabsTrigger 
                 value="overview" 
-                className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-2 px-4 font-display text-xs tracking-wider"
+                className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-1.5 px-2.5 sm:px-4 font-display text-[10px] sm:text-xs tracking-wider whitespace-nowrap"
               >
                 <span className="text-sm">👁️</span>
                 OVERVIEW
               </TabsTrigger>
               <TabsTrigger 
                 value="queue" 
-                className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-2 px-4 font-display text-xs tracking-wider"
+                className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-1.5 px-2.5 sm:px-4 font-display text-[10px] sm:text-xs tracking-wider whitespace-nowrap"
               >
                 <span className="text-sm">📡</span>
                 QUEUE
@@ -88,28 +88,28 @@ export function DashboardLayout({
               </TabsTrigger>
               <TabsTrigger 
                 value="published" 
-                className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-2 px-4 font-display text-xs tracking-wider"
+                className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-1.5 px-2.5 sm:px-4 font-display text-[10px] sm:text-xs tracking-wider whitespace-nowrap"
               >
                 <span className="text-sm">✅</span>
                 PUBLISHED
               </TabsTrigger>
               <TabsTrigger 
                 value="distribution" 
-                className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-2 px-4 font-display text-xs tracking-wider"
+                className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-1.5 px-2.5 sm:px-4 font-display text-[10px] sm:text-xs tracking-wider whitespace-nowrap"
               >
                 <span className="text-sm">📢</span>
                 DISTRIBUTION
               </TabsTrigger>
               <TabsTrigger
                 value="sources"
-                className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-2 px-4 font-display text-xs tracking-wider"
+                className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-1.5 px-2.5 sm:px-4 font-display text-[10px] sm:text-xs tracking-wider whitespace-nowrap"
               >
                 <span className="text-sm">🛰️</span>
                 SOURCES
               </TabsTrigger>
               <TabsTrigger
                 value="database"
-                className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-2 px-4 font-display text-xs tracking-wider"
+                className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-1.5 px-2.5 sm:px-4 font-display text-[10px] sm:text-xs tracking-wider whitespace-nowrap"
               >
                 <span className="text-sm">🗄️</span>
                 DATABASE

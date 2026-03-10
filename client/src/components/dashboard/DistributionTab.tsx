@@ -194,16 +194,16 @@ export function DistributionTab({ verticals }: DistributionTabProps) {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h2 className="text-lg font-display tracking-wider glow-text">DISTRIBUTION CHANNELS</h2>
+          <h2 className="text-base sm:text-lg font-display tracking-wider glow-text">DISTRIBUTION CHANNELS</h2>
           <p className="text-xs text-muted-foreground mt-1">
-            Manage where approved entries get published. {channels.length} channel{channels.length !== 1 ? 's' : ''} configured.
+            {channels.length} channel{channels.length !== 1 ? 's' : ''} configured.
           </p>
         </div>
         <button
           onClick={openAddForm}
-          className="px-4 py-2 text-xs font-display tracking-wider bg-primary/10 text-primary border border-primary/30 rounded hover:bg-primary/20 transition-colors"
+          className="px-4 py-2 text-xs font-display tracking-wider bg-primary/10 text-primary border border-primary/30 rounded hover:bg-primary/20 transition-colors self-start sm:self-auto"
         >
           + ADD CHANNEL
         </button>
@@ -217,8 +217,8 @@ export function DistributionTab({ verticals }: DistributionTabProps) {
           <p className="text-xs text-muted-foreground mt-1">Click "Add Channel" to set up Telegram, Discord, or Slack delivery.</p>
         </div>
       ) : (
-        <div className="border border-border rounded-lg overflow-hidden">
-          <table className="w-full">
+        <div className="border border-border rounded-lg overflow-x-auto">
+          <table className="w-full min-w-[600px]">
             <thead>
               <tr className="bg-card/80 border-b border-border">
                 <th className="text-left text-[10px] font-display tracking-widest text-muted-foreground px-4 py-3">NAME</th>
