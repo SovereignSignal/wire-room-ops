@@ -121,7 +121,7 @@ router.post('/config', async (req: Request, res: Response) => {
   try {
     const result = saveDbConfig(databaseUrl);
     resetPool(); // Force pool recreation with new URL
-    res.json({ success: true, ...getDbConfigMeta(), ...result });
+    res.json({ ...result, ...getDbConfigMeta() });
   } catch (error) {
     res.status(500).json({ error: 'Failed to save config' });
   }
