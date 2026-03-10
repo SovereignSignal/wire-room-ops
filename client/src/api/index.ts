@@ -48,6 +48,17 @@ export async function updateEntryStatus(id: number | string, status: string) {
   return res.json();
 }
 
+export async function bulkUpdateEntryStatus(ids: (number | string)[], status: string) {
+  const action = STATUS_TO_ACTION[status] || status;
+  const res = await authFetch(`${BASE}/scan/entries/bulk-action`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids, action }),
+  });
+  if (!res.ok) throw new Error(`Failed to bulk update entries: ${res.status}`);
+  return res.json();
+}
+
 export async function updateEntryWire(id: number | string, wire: string) {
   const res = await authFetch(`${BASE}/scan/entries/${id}/wire`, {
     method: "PATCH",
@@ -145,7 +156,7 @@ export async function saveDbConfig(databaseUrl: string): Promise<any> {
 }
 
 export async function fetchDbTable<T>(
-  table: 'scan-entries' | 'intake-runs' | 'distribution-log',
+  table: 'scan-entries' | 'intake-runs' | 'distribution-log' | 'summaries',
   params: Record<string, string | number>
 ): Promise<DbTableResponse<T>> {
   const q = new URLSearchParams(

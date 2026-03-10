@@ -9,7 +9,7 @@ import { DatabaseTab } from '@/components/dashboard/DatabaseTab';
 // ReviewTab removed — approve/decline now inline in QueueTab
 import { Starfield } from '@/components/dashboard/Starfield';
 import { EntryDetailsSheet } from '@/components/dashboard/EntryDetailsSheet';
-import { fetchEntries, updateEntryStatus, fetchStats, fetchFeeds, fetchWireCounts } from '@/api';
+import { fetchEntries, updateEntryStatus, bulkUpdateEntryStatus, fetchStats, fetchFeeds, fetchWireCounts } from '@/api';
 import { ScanEntry, VerticalStats, WireCounts } from '@/types';
 import { useToast } from '@/hooks/use-toast';
 
@@ -98,7 +98,11 @@ const Index = () => {
 
   const handleUpdateStatus = async (ids: string[], newStatus: ScanEntry['status']) => {
     try {
-      await Promise.all(ids.map(id => updateEntryStatus(id, newStatus)));
+      if (ids.length === 1) {
+        await updateEntryStatus(ids[0], newStatus);
+      } else {
+        await bulkUpdateEntryStatus(ids, newStatus);
+      }
       toast({
         title: `${ids.length} item${ids.length > 1 ? 's' : ''} ${newStatus}`,
         description: `Successfully updated status to ${newStatus}`,
