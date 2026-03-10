@@ -278,7 +278,82 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
 
       <FilterBar filters={filters} onFilterChange={setFilters} verticals={verticals} />
       
-      <div className="glow-card overflow-x-auto overflow-y-visible">
+      {/* Mobile card view */}
+      <div className="block md:hidden space-y-2">
+        {filteredEntries.length === 0 ? (
+          <div className="glow-card p-8 text-center">
+            <span className="text-4xl block mb-3 opacity-50">📡</span>
+            <p className="text-muted-foreground font-display text-sm tracking-wider">NO ITEMS MATCH FILTERS</p>
+          </div>
+        ) : filteredEntries.map(entry => (
+          <div
+            key={entry.id}
+            className={`glow-card p-3 ${selectedIds.has(entry.id) ? 'border-primary/40 bg-primary/5' : ''}`}
+          >
+            {/* Row 1: Checkbox + Name + Source link */}
+            <div className="flex items-start gap-2">
+              <div className="pt-0.5" onClick={(e) => e.stopPropagation()}>
+                <Checkbox
+                  checked={selectedIds.has(entry.id)}
+                  onCheckedChange={() => toggleSelect(entry.id)}
+                  className="border-primary/50 data-[state=checked]:bg-primary data-[state=checked]:border-primary"
+                />
+              </div>
+              <div className="flex-1 min-w-0" onClick={() => onViewDetails(entry)}>
+                <div className="font-medium text-foreground text-sm leading-tight">{entry.name}</div>
+                {entry.description && (
+                  <div className="text-xs text-muted-foreground mt-1 line-clamp-2">{entry.description}</div>
+                )}
+              </div>
+              {entry.source_url && (
+                <a href={entry.source_url} target="_blank" rel="noopener noreferrer"
+                  className="text-primary hover:text-primary/80 shrink-0 p-1">
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+              )}
+            </div>
+
+            {/* Row 2: Badges + Amount/Deadline */}
+            <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+              <div onClick={(e) => e.stopPropagation()}>
+                <WireSelector wire={entry.wire} entryId={entry.id} onWireChange={handleWireChange} availableWires={availableWires} />
+              </div>
+              <ClassificationBadge classification={entry.classification} />
+              <ScoreBadge score={entry.quality_score} />
+              {entry.amount && (
+                <span className="text-[10px] font-mono text-muted-foreground">{entry.amount}</span>
+              )}
+              {entry.deadline && (
+                <span className="text-[10px] font-mono text-muted-foreground">⏰ {entry.deadline}</span>
+              )}
+            </div>
+
+            {/* Row 3: Action buttons — always visible, full width */}
+            <div className="flex items-center gap-2 mt-2.5 pt-2 border-t border-border/50" onClick={(e) => e.stopPropagation()}>
+              <Button
+                size="sm"
+                onClick={() => (onSingleAction ?? ((id, s) => onUpdateStatus([id], s)))(entry.id, 'approved')}
+                className="flex-1 gap-1.5 bg-status-success/20 text-status-success border border-status-success/30 hover:bg-status-success/30 font-display text-[11px] tracking-wider h-9"
+              >
+                <CheckCircle className="w-4 h-4 shrink-0" />
+                APPROVE
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => (onSingleAction ?? ((id, s) => onUpdateStatus([id], s)))(entry.id, 'archived')}
+                className="flex-1 gap-1.5 font-display text-[11px] tracking-wider h-9"
+              >
+                <Archive className="w-4 h-4 shrink-0" />
+                SKIP
+              </Button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Desktop table view */}
+      <div className="hidden md:block glow-card overflow-x-auto overflow-y-visible">
         <table className="ops-table">
           <thead>
             <tr>
