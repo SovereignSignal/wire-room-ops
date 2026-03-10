@@ -14,7 +14,7 @@ import { getAllModels } from './services/models';
 import { getSchedule, getSchedules, setSchedule, addSchedule, removeSchedule, formatScheduleDescription, getNextRunTime, initScheduler, stopScheduler, ScheduleConfig, sendTestAlert, getSchedulerStatus } from './services/scheduler';
 import { buildSubmission, buildBatchSubmission } from './services/intake';
 import { runDailyIntake, getDailyQueue, getIntakeStats } from './jobs/daily-intake';
-import { getPool, getDistributionConfigs, upsertDistributionConfig, getDistributionLogs, getDistributionStatusBulk, getDistributionStatusForEntries, getDistributionChannels, getDistributionChannelById, createDistributionChannel, updateDistributionChannel, deleteDistributionChannel } from './db';
+import { getPool, getDistributionConfigs, upsertDistributionConfig, getDistributionLogs, getDistributionStatusBulk, getDistributionStatusForEntries, getDistributionChannels, getDistributionChannelById, createDistributionChannel, updateDistributionChannel, deleteDistributionChannel, insertApprovedSummary } from './db';
 import { executeScanPrompt } from './services/grok';
 import { withRetry } from './services/processor';
 import { runScanExecution } from './jobs/scan-execution';
@@ -30,6 +30,7 @@ import { renderErrorPage, renderLegacyDownloadPage, renderExpiredLinkPage, rende
 import { handleTelegramUpdate, registerIntakeWebhook, cleanupPendingEntries } from './services/telegram-adapter';
 import { processRawEntries } from './jobs/process-raw';
 import { databaseRouter } from './routes/database';
+import { runEnrichment } from './jobs/enrichment';
 
 const app = express();
 const privyJwks = jwksClient({
@@ -1454,6 +1455,24 @@ app.post('/api/process-raw', requireAuth, async (_req: Request, res: Response) =
   }
 });
 
+// API: Enrich queued entries with thin descriptions
+app.post('/api/enrich', requireAuth, async (req: Request, res: Response) => {
+  if (!rateLimit('enrich', 3, 5 * 60 * 1000)) {
+    res.status(429).json({ error: 'Enrichment recently run. Please wait 5 minutes.' });
+    return;
+  }
+
+  try {
+    const wire = req.body?.wire as string | undefined;
+    const result = await runEnrichment(wire);
+    res.json({ success: true, ...result });
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[Enrichment] Manual trigger failed:', error);
+    res.status(500).json({ error: errorMsg });
+  }
+});
+
 // API: Batch-classify queued entries with Grok LLM (Gate 2)
 app.post('/api/scan/classify-queue', requireAuth, async (req: Request, res: Response) => {
   if (!rateLimit('classify-queue', 3, 5 * 60 * 1000)) {
@@ -1518,6 +1537,88 @@ app.post('/api/telegram/intake-webhook', async (req: Request, res: Response) => 
   res.sendStatus(200);
 });
 
+// API: Bulk action on multiple entries (approve/decline/reviewlater/restore)
+app.post('/api/scan/entries/bulk-action', requireAuth, async (req: Request, res: Response) => {
+  const { ids, action } = req.body;
+
+  if (!Array.isArray(ids) || ids.length === 0) {
+    res.status(400).json({ error: 'ids must be a non-empty array' });
+    return;
+  }
+  if (ids.length > 200) {
+    res.status(400).json({ error: 'Maximum 200 entries per bulk action' });
+    return;
+  }
+
+  const actionMap: Record<string, string> = {
+    approve: 'approved',
+    decline: 'declined',
+    reviewlater: 'skipped',
+    restore: 'queued',
+  };
+
+  const newStatus = actionMap[action];
+  if (!newStatus) {
+    res.status(400).json({ error: 'Invalid action. Must be approve, decline, reviewlater, or restore.' });
+    return;
+  }
+
+  const entryIds = ids.map((id: any) => parseInt(id, 10)).filter((id: number) => !isNaN(id));
+  if (entryIds.length === 0) {
+    res.status(400).json({ error: 'No valid entry IDs provided' });
+    return;
+  }
+
+  try {
+    const pool = getPool();
+
+    // Bulk update status
+    const result = await pool.query(
+      `UPDATE scan_entries SET status = $1, updated_at = NOW()
+       WHERE id = ANY($2)
+       RETURNING id, status, wire, name, description, enriched_summary, quality_score, amount, deadline, source_url`,
+      [newStatus, entryIds]
+    );
+
+    const updated = result.rows;
+    const summaryIds: Record<number, number | null> = {};
+
+    // On bulk approve: write each entry to summaries + fire-and-forget distribution
+    if (action === 'approve') {
+      for (const row of updated) {
+        try {
+          const sid = await insertApprovedSummary({
+            title: row.name,
+            summary: row.enriched_summary || row.description || '',
+            wire: row.wire,
+            qualityScore: row.quality_score,
+            entities: {
+              amounts: row.amount ? [row.amount] : [],
+              deadlines: row.deadline ? [row.deadline] : [],
+              source_url: row.source_url,
+            },
+          });
+          summaryIds[row.id] = sid;
+        } catch (err) {
+          console.error(`[BulkApprove] Failed to write summary for entry ${row.id}:`, err);
+        }
+
+        // Fire-and-forget distribution per entry
+        setImmediate(() => {
+          distributeEntry(row.id, row.wire).catch(err => {
+            console.error(`[Distribution] Auto-distribute after bulk approve failed for entry ${row.id}:`, err);
+          });
+        });
+      }
+    }
+
+    res.json({ success: true, updated: updated.length, newStatus, summaryIds });
+  } catch (error) {
+    console.error('Failed to bulk update entry status:', error);
+    res.status(500).json({ error: 'Failed to bulk update entries' });
+  }
+});
+
 // API: Queue action on single entry (approve/decline/reviewlater/restore)
 app.post('/api/scan/entries/:id/action', requireAuth, async (req: Request, res: Response) => {
   const entryId = parseInt(req.params.id, 10);
@@ -1543,7 +1644,8 @@ app.post('/api/scan/entries/:id/action', requireAuth, async (req: Request, res: 
   try {
     const pool = getPool();
     const result = await pool.query(
-      `UPDATE scan_entries SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING id, status, wire`,
+      `UPDATE scan_entries SET status = $1, updated_at = NOW() WHERE id = $2
+       RETURNING id, status, wire, name, description, enriched_summary, quality_score, amount, deadline, source_url`,
       [newStatus, entryId]
     );
 
@@ -1552,17 +1654,38 @@ app.post('/api/scan/entries/:id/action', requireAuth, async (req: Request, res: 
       return;
     }
 
-    // Fire-and-forget distribution when an entry is approved — single entry only
+    let summaryId: number | null = null;
+
+    // On approve: write to summaries table + fire-and-forget distribution
     if (action === 'approve') {
-      const wire = result.rows[0].wire;
+      const row = result.rows[0];
+
+      // Write-through to summaries (master database)
+      try {
+        summaryId = await insertApprovedSummary({
+          title: row.name,
+          summary: row.enriched_summary || row.description || '',
+          wire: row.wire,
+          qualityScore: row.quality_score,
+          entities: {
+            amounts: row.amount ? [row.amount] : [],
+            deadlines: row.deadline ? [row.deadline] : [],
+            source_url: row.source_url,
+          },
+        });
+      } catch (err) {
+        console.error(`[Approve] Failed to write summary for entry ${entryId}:`, err);
+      }
+
+      // Fire-and-forget distribution
       setImmediate(() => {
-        distributeEntry(entryId, wire).catch(err => {
+        distributeEntry(entryId, row.wire).catch(err => {
           console.error(`[Distribution] Auto-distribute after approve failed for entry ${entryId}:`, err);
         });
       });
     }
 
-    res.json({ success: true, newStatus });
+    res.json({ success: true, newStatus, summaryId });
   } catch (error) {
     console.error('Failed to update entry status:', error);
     res.status(500).json({ error: 'Failed to update entry' });

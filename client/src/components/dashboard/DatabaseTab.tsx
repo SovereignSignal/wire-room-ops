@@ -306,7 +306,7 @@ export function DatabaseTab() {
               ['scan-entries', 'Scan Entries'],
               ['intake-runs', 'Intake Runs'],
               ['distribution-log', 'Distribution Log'],
-              ['summaries', 'Summaries'],
+              ['summaries', 'Published'],
             ] as [TableName, string][]).map(([key, label]) => (
               <button
                 key={key}

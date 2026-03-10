@@ -761,6 +761,15 @@ export async function ensureScanTables(): Promise<void> {
     ALTER TABLE seen_urls ALTER COLUMN first_seen_entry_id DROP NOT NULL
   `);
 
+  // Phase 5 migration: ensure summaries table accepts scan-pipeline entries
+  // (message_id and category_id must be nullable for entries with no tele-sum origin)
+  try {
+    await client.query(`ALTER TABLE summaries ALTER COLUMN message_id DROP NOT NULL`);
+    await client.query(`ALTER TABLE summaries ALTER COLUMN category_id DROP NOT NULL`);
+  } catch {
+    // summaries table may not exist yet — that's OK, it's an external table
+  }
+
     await client.query('COMMIT');
     console.log('[DB] Scan pipeline tables ready');
   } catch (error) {
@@ -1593,4 +1602,53 @@ export async function getEnabledDistributionChannelsForWire(wire: string): Promi
     [wire]
   );
   return result.rows.map(parseDistributionChannelRow);
+}
+
+// --- Summaries write-through on approve ---
+
+export interface SummaryInsert {
+  title: string;
+  summary: string;
+  wire: string;
+  qualityScore: number | null;
+  entities: Record<string, unknown>;
+}
+
+/**
+ * Insert an approved scan_entry into the summaries table.
+ * Returns the new summaries row ID, or null if the summaries table doesn't exist.
+ */
+export async function insertApprovedSummary(entry: SummaryInsert): Promise<number | null> {
+  const pool = getPool();
+
+  const dataQuality = entry.qualityScore !== null
+    ? (entry.qualityScore >= 70 ? 'HIGH' : entry.qualityScore >= 40 ? 'MEDIUM' : 'LOW')
+    : 'MEDIUM';
+  const confidence = entry.qualityScore !== null
+    ? Math.round(entry.qualityScore) / 100
+    : 0.5;
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO summaries (title, summary, wire, processing_status, data_quality, confidence, entities, message_id, category_id)
+       VALUES ($1, $2, $3, 'SUCCESS', $4, $5, $6, NULL, NULL)
+       RETURNING id`,
+      [
+        entry.title,
+        entry.summary,
+        entry.wire,
+        dataQuality,
+        confidence,
+        JSON.stringify(entry.entities),
+      ]
+    );
+    return result.rows[0]?.id ?? null;
+  } catch (err: any) {
+    // Gracefully handle missing summaries table (external table may not exist in dev)
+    if (err.code === '42P01') {
+      console.warn('[DB] summaries table does not exist — skipping write-through');
+      return null;
+    }
+    throw err;
+  }
 }
