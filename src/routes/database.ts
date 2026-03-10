@@ -321,7 +321,7 @@ router.get('/summaries', async (req: Request, res: Response) => {
 
     params.push(limit, offset);
     const rows = await pool.query(
-      `SELECT id, title, wire, processing_status, data_quality, confidence, summary, created_at
+      `SELECT id, title, wire, processing_status, data_quality, confidence, summary, entities, created_at
        FROM summaries ${where}
        ORDER BY ${sortCol} ${sortDir}
        LIMIT $${params.length - 1} OFFSET $${params.length}`,

@@ -749,52 +749,90 @@ function DistributionLogTable({ data }: { data: DbDistributionEntry[] }) {
   );
 }
 
+function parseEntities(raw: any): { source_url?: string; orgs?: string[] } {
+  if (!raw) return {};
+  let entities = raw;
+  if (typeof entities === 'string') {
+    try { entities = JSON.parse(entities); } catch { return {}; }
+  }
+  const source_url = entities.source_url || undefined;
+  const orgs = entities.orgs || entities.protocols || [];
+  return { source_url, orgs: orgs.length > 0 ? orgs : undefined };
+}
+
 function SummariesTable({ data }: { data: any[] }) {
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+
   return (
     <Table>
       <TableHeader>
         <TableRow>
           <TableHead className="font-display text-[10px] tracking-wider uppercase">TITLE</TableHead>
-          <TableHead className="font-display text-[10px] tracking-wider uppercase">WIRE</TableHead>
-          <TableHead className="font-display text-[10px] tracking-wider uppercase">STATUS</TableHead>
-          <TableHead className="font-display text-[10px] tracking-wider uppercase">QUALITY</TableHead>
-          <TableHead className="font-display text-[10px] tracking-wider uppercase">CONFIDENCE</TableHead>
+          <TableHead className="font-display text-[10px] tracking-wider uppercase w-20">WIRE</TableHead>
           <TableHead className="font-display text-[10px] tracking-wider uppercase">SUMMARY</TableHead>
-          <TableHead className="font-display text-[10px] tracking-wider uppercase">DATE</TableHead>
+          <TableHead className="font-display text-[10px] tracking-wider uppercase w-16">LINK</TableHead>
+          <TableHead className="font-display text-[10px] tracking-wider uppercase w-28">DATE</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
-        {data.map(row => (
-          <TableRow key={row.id} className="hover:bg-primary/5">
-            <TableCell className="max-w-[220px]">
-              <span className="truncate block text-sm">{truncate(row.title || '—', 50)}</span>
-            </TableCell>
-            <TableCell>
-              {row.wire && (
-                <Badge variant="outline" className={`text-[10px] font-display tracking-wider ${getWireBadgeClass(row.wire)}`}>
-                  {row.wire}
-                </Badge>
-              )}
-            </TableCell>
-            <TableCell>
-              <Badge variant="outline" className={`text-[10px] font-display tracking-wider ${getStatusBadgeClass(row.processing_status || '')}`}>
-                {row.processing_status || '—'}
-              </Badge>
-            </TableCell>
-            <TableCell className="font-mono text-xs text-muted-foreground">
-              {row.data_quality || '—'}
-            </TableCell>
-            <TableCell className="font-mono text-xs text-muted-foreground">
-              {row.confidence || '—'}
-            </TableCell>
-            <TableCell className="max-w-[300px]">
-              <span className="truncate block text-xs text-muted-foreground">{truncate(row.summary || '—', 80)}</span>
-            </TableCell>
-            <TableCell className="font-mono text-xs text-muted-foreground whitespace-nowrap">
-              {relativeTime(row.created_at)}
-            </TableCell>
-          </TableRow>
-        ))}
+        {data.map(row => {
+          const { source_url, orgs } = parseEntities(row.entities);
+          const isExpanded = expandedId === row.id;
+          const summary = row.summary || '—';
+
+          return (
+            <TableRow key={row.id} className="hover:bg-primary/5 align-top">
+              <TableCell className="max-w-[250px]">
+                <div className="font-medium text-sm text-foreground">{row.title || '—'}</div>
+                {orgs && orgs.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {orgs.slice(0, 4).map((org: string) => (
+                      <span key={org} className="text-[9px] px-1.5 py-0.5 rounded bg-muted/50 text-muted-foreground border border-border font-mono">
+                        {org}
+                      </span>
+                    ))}
+                    {orgs.length > 4 && (
+                      <span className="text-[9px] text-muted-foreground">+{orgs.length - 4}</span>
+                    )}
+                  </div>
+                )}
+              </TableCell>
+              <TableCell>
+                {row.wire && (
+                  <Badge variant="outline" className={`text-[10px] font-display tracking-wider ${getWireBadgeClass(row.wire)}`}>
+                    {row.wire}
+                  </Badge>
+                )}
+              </TableCell>
+              <TableCell className="max-w-[400px]">
+                <div
+                  className={`text-xs text-muted-foreground cursor-pointer ${isExpanded ? '' : 'line-clamp-2'}`}
+                  onClick={() => setExpandedId(isExpanded ? null : row.id)}
+                  title="Click to expand"
+                >
+                  {summary}
+                </div>
+              </TableCell>
+              <TableCell>
+                {source_url ? (
+                  <a
+                    href={source_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-primary hover:text-primary/80"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                ) : (
+                  <span className="text-muted-foreground">—</span>
+                )}
+              </TableCell>
+              <TableCell className="font-mono text-xs text-muted-foreground whitespace-nowrap">
+                {relativeTime(row.created_at)}
+              </TableCell>
+            </TableRow>
+          );
+        })}
       </TableBody>
     </Table>
   );
