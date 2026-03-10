@@ -16,7 +16,7 @@ function getClient(): Anthropic {
   return client;
 }
 
-const MODEL = 'claude-sonnet-4-5-20250514';
+const MODEL = 'claude-sonnet-4-6-20250627';
 
 const WIRE_CONTEXT: Record<string, string> = {
   crypto: 'crypto/blockchain grants and funding',
