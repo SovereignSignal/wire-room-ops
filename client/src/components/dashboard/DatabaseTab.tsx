@@ -181,6 +181,8 @@ export function DatabaseTab() {
 
   // Reset non-common filters on table switch
   const handleTableSwitch = (table: TableName) => {
+    setData([]);              // Clear stale data immediately to prevent type mismatch renders
+    setTableLoading(true);    // Show skeleton while new data loads
     setActiveTable(table);
     setStatusFilter('');
     setChannelFilter('');
