@@ -303,27 +303,30 @@ router.get('/summaries', async (req: Request, res: Response) => {
 
     if (req.query.status) {
       params.push(req.query.status);
-      conditions.push(`processing_status = $${params.length}`);
+      conditions.push(`s.processing_status = $${params.length}`);
     }
     if (req.query.wire) {
       params.push(req.query.wire);
-      conditions.push(`wire = $${params.length}`);
+      conditions.push(`s.wire = $${params.length}`);
     }
     if (req.query.search) {
       params.push(`%${req.query.search}%`);
-      conditions.push(`(title ILIKE $${params.length} OR summary ILIKE $${params.length})`);
+      conditions.push(`(s.title ILIKE $${params.length} OR s.summary ILIKE $${params.length})`);
     }
 
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
-    const countResult = await pool.query(`SELECT COUNT(*) FROM summaries ${where}`, params);
+    const countResult = await pool.query(`SELECT COUNT(*) FROM summaries s ${where}`, params);
     const total = parseInt(countResult.rows[0].count, 10);
 
     params.push(limit, offset);
     const rows = await pool.query(
-      `SELECT id, title, wire, processing_status, data_quality, confidence, summary, entities, created_at
-       FROM summaries ${where}
-       ORDER BY ${sortCol} ${sortDir}
+      `SELECT s.id, s.title, s.wire, s.processing_status, s.data_quality, s.confidence, s.summary, s.entities, s.created_at,
+              m.extracted_urls
+       FROM summaries s
+       LEFT JOIN messages m ON s.message_id = m.id
+       ${where}
+       ORDER BY s.${sortCol} ${sortDir}
        LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params
     );
@@ -343,7 +346,7 @@ router.get('/stats', async (_req: Request, res: Response) => {
   try {
     const pool = getLazyPool();
 
-    const [scanR, intakeR, distR] = await Promise.all([
+    const [scanR, intakeR, distR, sumR] = await Promise.all([
       pool.query(`
         SELECT
           COUNT(*) AS total,
@@ -363,11 +366,13 @@ router.get('/stats', async (_req: Request, res: Response) => {
           COUNT(*) FILTER (WHERE status = 'success' AND created_at > NOW() - INTERVAL '24 hours') AS sent_24h
         FROM distribution_logs
       `),
+      pool.query(`SELECT COUNT(*) AS total FROM summaries`).catch(() => ({ rows: [{ total: 0 }] })),
     ]);
 
     const scan = scanR.rows[0];
     const intake = intakeR.rows[0];
     const dist = distR.rows[0];
+    const sum = sumR.rows[0];
 
     res.json({
       scan_entries: {
@@ -376,6 +381,9 @@ router.get('/stats', async (_req: Request, res: Response) => {
         approved: parseInt(scan.approved, 10),
         archived: parseInt(scan.archived, 10),
         raw: parseInt(scan.raw, 10),
+      },
+      summaries: {
+        total: parseInt(sum.total, 10),
       },
       intake_runs: {
         total: parseInt(intake.total, 10),

@@ -262,16 +262,27 @@ export function DatabaseTab() {
   return (
     <div className="space-y-6">
       {/* Stat cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <div className="stat-card group">
           <div className="flex items-center gap-3 mb-4">
             <div className="w-8 h-8 rounded bg-primary/10 border border-primary/20 flex items-center justify-center text-lg">
               <Database className="w-4 h-4 text-primary" />
             </div>
-            <h3 className="font-display font-semibold text-xs tracking-wider uppercase">TOTAL ENTRIES</h3>
+            <h3 className="font-display font-semibold text-xs tracking-wider uppercase">SCAN ENTRIES</h3>
           </div>
           <div className="text-3xl font-mono font-semibold text-foreground">
             {stats?.scan_entries.total.toLocaleString() ?? '—'}
+          </div>
+        </div>
+        <div className="stat-card group">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-8 h-8 rounded bg-status-success/10 border border-status-success/20 flex items-center justify-center text-lg">
+              <span>✅</span>
+            </div>
+            <h3 className="font-display font-semibold text-xs tracking-wider uppercase">PUBLISHED</h3>
+          </div>
+          <div className="text-3xl font-mono font-semibold text-foreground">
+            {(stats as any)?.summaries?.total?.toLocaleString() ?? '—'}
           </div>
         </div>
         <div className="stat-card group">
@@ -287,13 +298,13 @@ export function DatabaseTab() {
         </div>
         <div className="stat-card group">
           <div className="flex items-center gap-3 mb-4">
-            <div className="w-8 h-8 rounded bg-status-success/10 border border-status-success/20 flex items-center justify-center text-lg">
-              <span>✅</span>
+            <div className="w-8 h-8 rounded bg-orange-500/10 border border-orange-500/20 flex items-center justify-center text-lg">
+              <span>📥</span>
             </div>
-            <h3 className="font-display font-semibold text-xs tracking-wider uppercase">APPROVED</h3>
+            <h3 className="font-display font-semibold text-xs tracking-wider uppercase">RAW / UNPROCESSED</h3>
           </div>
           <div className="text-3xl font-mono font-semibold text-foreground">
-            {stats?.scan_entries.approved.toLocaleString() ?? '—'}
+            {stats?.scan_entries.raw.toLocaleString() ?? '—'}
           </div>
         </div>
       </div>
@@ -749,15 +760,29 @@ function DistributionLogTable({ data }: { data: DbDistributionEntry[] }) {
   );
 }
 
-function parseEntities(raw: any): { source_url?: string; orgs?: string[] } {
+function extractSourceUrl(row: any): string | undefined {
+  // New pipeline: entities.source_url
+  let entities = row.entities || {};
+  if (typeof entities === 'string') {
+    try { entities = JSON.parse(entities); } catch { entities = {}; }
+  }
+  if (entities.source_url) return entities.source_url;
+
+  // Legacy pipeline: messages.extracted_urls (JSONB array)
+  const urls = row.extracted_urls;
+  if (Array.isArray(urls) && urls.length > 0) return urls[0];
+
+  return undefined;
+}
+
+function parseEntities(raw: any): { orgs?: string[] } {
   if (!raw) return {};
   let entities = raw;
   if (typeof entities === 'string') {
     try { entities = JSON.parse(entities); } catch { return {}; }
   }
-  const source_url = entities.source_url || undefined;
   const orgs = entities.orgs || entities.protocols || [];
-  return { source_url, orgs: orgs.length > 0 ? orgs : undefined };
+  return { orgs: orgs.length > 0 ? orgs : undefined };
 }
 
 function SummariesTable({ data }: { data: any[] }) {
@@ -776,7 +801,8 @@ function SummariesTable({ data }: { data: any[] }) {
       </TableHeader>
       <TableBody>
         {data.map(row => {
-          const { source_url, orgs } = parseEntities(row.entities);
+          const source_url = extractSourceUrl(row);
+          const { orgs } = parseEntities(row.entities);
           const isExpanded = expandedId === row.id;
           const summary = row.summary || '—';
 
