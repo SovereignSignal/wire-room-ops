@@ -278,7 +278,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
 
       <FilterBar filters={filters} onFilterChange={setFilters} verticals={verticals} />
       
-      <div className="glow-card overflow-hidden">
+      <div className="glow-card overflow-x-auto overflow-y-visible">
         <table className="ops-table">
           <thead>
             <tr>
@@ -296,7 +296,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
               <th className="w-24">Amount</th>
               <th className="w-28">Deadline</th>
               <th className="w-20">Source</th>
-              <th className="w-48 min-w-[12rem]">Actions</th>
+              <th className="w-52 min-w-[13rem]">Actions</th>
             </tr>
           </thead>
           <tbody>
