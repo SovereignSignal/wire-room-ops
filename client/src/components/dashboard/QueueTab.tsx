@@ -48,6 +48,24 @@ const wireFilterColors: Record<string, string> = {
   oss: 'bg-amber-400/20 text-amber-400 border-amber-400/50',
 };
 
+function ExpandableDescription({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const isLong = text.length > 120;
+  return (
+    <div className="text-xs text-muted-foreground mt-0.5">
+      <span className={expanded ? '' : 'line-clamp-1'}>{text}</span>
+      {isLong && (
+        <button
+          onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }}
+          className="ml-1 text-primary/60 hover:text-primary text-[10px] font-mono whitespace-nowrap"
+        >
+          {expanded ? '▲ less' : '▼ more'}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function WireSelector({ wire, entryId, onWireChange, availableWires = [] }: { wire: string; entryId: string; onWireChange: (id: string, wire: string) => void; availableWires?: { key: string; displayName: string }[] }) {
   // Fall back to just showing current wire if no list loaded yet
   const options = availableWires.length > 0 ? availableWires.map(w => w.key) : [wire];
@@ -390,9 +408,9 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                 </td>
                 <td className="overflow-hidden">
                   <div className="font-medium text-foreground truncate">{entry.name}</div>
-                  <div className="text-xs text-muted-foreground truncate">
-                    {entry.description}
-                  </div>
+                  {entry.description && (
+                    <ExpandableDescription text={entry.description} />
+                  )}
                 </td>
                 <td onClick={(e) => e.stopPropagation()}>
                   <WireSelector wire={entry.wire} entryId={entry.id} onWireChange={handleWireChange} availableWires={availableWires} />
@@ -403,9 +421,11 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                 <td>
                   <ScoreBadge score={entry.quality_score} />
                 </td>
-                <td className="font-mono text-sm">{entry.amount}</td>
-                <td className="text-sm font-mono">
-                  {entry.deadline || <span className="text-muted-foreground">—</span>}
+                <td className="overflow-hidden"><div className="font-mono text-sm truncate">{entry.amount}</div></td>
+                <td className="overflow-hidden">
+                  <div className="text-sm font-mono truncate">
+                    {entry.deadline || <span className="text-muted-foreground">—</span>}
+                  </div>
                 </td>
                 <td>
                   <a 
