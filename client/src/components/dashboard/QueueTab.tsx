@@ -372,7 +372,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
               <th className="w-20">Score</th>
               <th className="w-24">Amount</th>
               <th className="w-28">Deadline</th>
-              <th className="w-14">Source</th>
+              <th className="w-24">Source</th>
               <th className="w-40">Actions</th>
             </tr>
           </thead>

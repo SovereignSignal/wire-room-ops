@@ -119,14 +119,19 @@ export function EntryDetailsSheet({ entry, onClose }: EntryDetailsSheetProps) {
                 <div className="space-y-3">
                   <div className="flex justify-between items-center">
                     <span className="text-xs text-muted-foreground font-mono">Source Link</span>
-                    <a 
-                      href={entry.source_url} 
-                      target="_blank" 
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 text-xs text-primary hover:text-primary/80 transition-colors font-mono"
-                    >
-                      Open Original <ExternalLink className="w-3 h-3" />
-                    </a>
+                    {entry.source_url && entry.source_url.startsWith('http') ? (
+                      <a 
+                        href={entry.source_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="inline-flex items-center gap-1 text-xs text-primary hover:text-primary/80 transition-colors font-mono"
+                      >
+                        Open Original <ExternalLink className="w-3 h-3" />
+                      </a>
+                    ) : (
+                      <span className="text-xs text-muted-foreground font-mono">—</span>
+                    )}
                   </div>
                   
                   <div className="flex justify-between items-center">
