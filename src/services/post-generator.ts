@@ -198,25 +198,13 @@ function buildPrompt(entry: ReturnType<typeof cleanEntry>, wire: string): string
   parts.push('- Lead with what makes this interesting (amount, org, deadline)');
   parts.push('');
   parts.push('Rules for telegram:');
-  parts.push('- Plain text (NOT HTML). Use Unicode for emphasis if needed.');
-  parts.push('- Format EXACTLY like this:');
-  parts.push('');
-  parts.push('  <emoji> <Name>');
-  parts.push('');
-  parts.push('  <1-2 sentence description>');
-  parts.push('');
-  parts.push('  Amount: <amount>        ← only if amount is provided');
-  parts.push('  Deadline: <deadline>    ← only if deadline is provided');
-  parts.push('');
-  parts.push('  Learn more → <link>');
-  parts.push('');
-  parts.push('- Start with a relevant emoji (💰🔬🛠️🏗️🎯🌐 etc.)');
-  parts.push('- Name should be clean — no org handles, no brackets, no markdown');
-  parts.push('- Description: 1-2 sentences max, plain language, no hashtags');
-  parts.push('- Skip Amount/Deadline lines entirely if not provided');
-  parts.push('- End with "Learn more →" or "Apply →" followed by the link');
-  parts.push('- NO hashtags, NO HTML tags, NO timestamps, NO "Details" text');
-  parts.push('- NO raw tweet text — write a clean human summary');
+  parts.push('- EXACTLY two lines, nothing more:');
+  parts.push('  Line 1: One sentence summary (plain text, no emoji, no label, no hashtags)');
+  parts.push('  Line 2: The link (bare URL, no "Learn more →" prefix)');
+  parts.push('- The sentence should say what it is and why it matters in plain language');
+  parts.push('- Include the amount naturally in the sentence if provided (e.g. "$22k recurring fund")');
+  parts.push('- NO name header, NO emoji, NO "Amount:" label, NO "Deadline:" label, NO "Learn more →"');
+  parts.push('- NO extra blank lines, NO brackets, NO hashtags, NO HTML');
 
   return parts.join('\n');
 }
@@ -232,18 +220,13 @@ function buildFallbackPosts(entry: ReturnType<typeof cleanEntry>): GeneratedPost
   const amount = entry.amount ? ` (${entry.amount})` : '';
   const tweet = `${entry.name}${amount}: ${desc} ${entry.bestLink}`.substring(0, 280);
 
-  // Telegram — clean, scannable format
-  const tgLines: string[] = [];
-  tgLines.push(`💰 ${entry.name}`);
-  tgLines.push('');
-  tgLines.push(desc);
-  tgLines.push('');
-  if (entry.amount) tgLines.push(`Amount: ${entry.amount}`);
-  if (entry.deadline) tgLines.push(`Deadline: ${entry.deadline}`);
-  if (entry.amount || entry.deadline) tgLines.push('');
-  tgLines.push(`Learn more → ${entry.bestLink}`);
+  // Telegram — one sentence + link, nothing else
+  const sentence = entry.amount
+    ? `${entry.name} — ${entry.amount} grant. ${desc}`
+    : `${entry.name}: ${desc}`;
+  const telegram = `${sentence.substring(0, 280)}\n${entry.bestLink}`;
 
-  return { tweet, telegram: tgLines.join('\n') };
+  return { tweet, telegram };
 }
 
 function escapeHtml(str: string): string {
