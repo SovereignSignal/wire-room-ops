@@ -71,6 +71,7 @@ function DailyDigestCard() {
   const [recipients, setRecipients] = useState('');
   const [dirty, setDirty] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [sendingDigest, setSendingDigest] = useState(false);
   const { toast } = useToast();
 
   const loadDigest = useCallback(async () => {
@@ -126,6 +127,23 @@ function DailyDigestCard() {
   };
 
   const markDirty = () => setDirty(true);
+
+  const handleSendDigest = async () => {
+    setSendingDigest(true);
+    try {
+      const res = await fetch('/api/digest/send-now', { method: 'POST', credentials: 'include' });
+      const data = await res.json() as { success: boolean; message?: string; error?: string; stats?: { pendingReview: number } };
+      if (res.ok && data.success) {
+        toast({ title: 'Digest sent', description: data.message || `${data.stats?.pendingReview ?? 0} pending items included` });
+      } else {
+        toast({ title: 'Send failed', description: data.error || 'Unknown error' });
+      }
+    } catch {
+      toast({ title: 'Error', description: 'Could not reach server' });
+    } finally {
+      setSendingDigest(false);
+    }
+  };
 
   const handleSendTest = async () => {
     setTesting(true);
@@ -256,15 +274,15 @@ function DailyDigestCard() {
           {saving ? 'SAVING...' : dirty ? 'SAVE CHANGES' : 'SAVED'}
         </Button>
         <Button
-          onClick={handleSendTest}
-          disabled={testing || !recipients.trim()}
+          onClick={handleSendDigest}
+          disabled={sendingDigest || !recipients.trim()}
           variant="outline"
           size="sm"
           className="gap-1.5 font-display text-[10px] tracking-wider"
-          title="Send a test email now to verify delivery"
+          title="Send the actual daily digest summary right now"
         >
-          {testing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Mail className="w-3 h-3" />}
-          {testing ? 'SENDING...' : 'TEST'}
+          {sendingDigest ? <Loader2 className="w-3 h-3 animate-spin" /> : <Mail className="w-3 h-3" />}
+          {sendingDigest ? 'SENDING...' : 'SEND NOW'}
         </Button>
       </div>
     </div>

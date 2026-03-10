@@ -878,6 +878,32 @@ app.post('/api/schedule', requireAuth, async (req: Request, res: Response) => {
   }
 });
 
+// API: Send actual daily digest now (on-demand)
+app.post('/api/digest/send-now', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const pool = getPool();
+    const { runDailyDigest, getTopPendingFinds } = await import('./jobs/daily-digest');
+    const { sendDailyDigestEmail } = await import('./services/email');
+    const { getSchedules } = await import('./services/scheduler');
+
+    // Get configured recipients from the daily-digest schedule
+    const allSchedules = getSchedules();
+    const digestSchedule = allSchedules.find(s => s.scheduleType === 'daily-digest');
+    const recipients = digestSchedule?.notifyEmails
+      ? digestSchedule.notifyEmails.split(',').map(e => e.trim()).filter(Boolean)
+      : undefined;
+
+    const digest = await runDailyDigest(pool);
+    const topFinds = digest.totalPendingReview > 0 ? await getTopPendingFinds(pool, 5) : [];
+
+    await sendDailyDigestEmail(digest, config.app.url, recipients, topFinds);
+    res.json({ success: true, message: `Digest sent to ${recipients?.join(', ') || 'default recipients'}`, stats: { wires: digest.wires.length, pendingReview: digest.totalPendingReview } });
+  } catch (error) {
+    console.error('[DigestNow] Failed:', error);
+    res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Failed to send digest' });
+  }
+});
+
 // API: Send test alert to verify email configuration
 app.post('/api/test-alert', requireAuth, async (req: Request, res: Response) => {
 
