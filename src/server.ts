@@ -29,6 +29,7 @@ import { renderLoginPage } from './views/login';
 import { renderErrorPage, renderLegacyDownloadPage, renderExpiredLinkPage, renderResendSuccessPage } from './views/error';
 import { handleTelegramUpdate, registerIntakeWebhook, cleanupPendingEntries } from './services/telegram-adapter';
 import { processRawEntries } from './jobs/process-raw';
+import { databaseRouter } from './routes/database';
 
 const app = express();
 const privyJwks = jwksClient({
@@ -2063,6 +2064,9 @@ app.post('/api/distribution/channels/:id/test', requireAuth, async (req: Request
     res.status(500).json({ error: 'Failed to send test message' });
   }
 });
+
+// Database introspection API
+app.use('/api/database', requireAuth, databaseRouter);
 
 // Serve React dashboard (built client)
 const clientDist = path.join(__dirname, '../dist/client');
