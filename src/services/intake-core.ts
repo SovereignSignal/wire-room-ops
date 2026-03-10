@@ -55,11 +55,27 @@ const pendingEntries = new Map<string, PendingEntry>();
 // ────────────────────────────────────────────────────────────────────────────
 
 const DEFAULT_WIRE_KEYWORDS: Record<string, string[]> = {
-  crypto: ['grant', 'protocol', 'defi', 'ethereum', 'solana', 'arbitrum', 'optimism', 'dao', 'web3', 'blockchain', 'uniswap', 'aave', 'crypto', 'token', 'staking'],
+  crypto: [
+    // Generic crypto/web3 terms
+    'grant', 'protocol', 'defi', 'web3', 'blockchain', 'crypto', 'token', 'staking',
+    'decentralized', 'on-chain', 'on chain', 'smart contract', 'nft', 'dao', 'dex', 'dapp',
+    'wallet', 'l1', 'l2', 'layer 2', 'layer2', 'mainnet', 'testnet', 'ecosystem fund',
+    'bounty', 'hackathon', 'retro funding', 'retroactive', 'airdrop',
+    // Major L1/L2 chains and protocols
+    'ethereum', 'solana', 'avalanche', 'avax', 'sui', 'aptos', 'near', 'cosmos',
+    'polkadot', 'cardano', 'algorand', 'hedera', 'stellar', 'tron', 'fantom',
+    'arbitrum', 'optimism', 'base', 'polygon', 'matic', 'bnb', 'bsc', 'linea',
+    'scroll', 'zksync', 'starknet', 'mantle', 'mode', 'blast', 'sonic',
+    // Major protocols / orgs
+    'uniswap', 'aave', 'chainlink', 'gitcoin', 'ethereum foundation', 'ef grant',
+    'sia', 'filecoin', 'ipfs', 'arweave', 'the graph', 'ens', 'safe',
+    'compound', 'curve', 'maker', 'makerdao', 'sky', 'lido', 'eigenlayer',
+    'celestia', 'hyperliquid', 'drift', 'jupiter', 'jito', 'magic eden',
+  ],
   ai: [
     // Specific orgs / products (high signal)
     'openai', 'anthropic', 'google deepmind', 'deepmind', 'hugging face', 'huggingface',
-    'meta ai', 'stability ai', 'mistral', 'cohere',
+    'meta ai', 'stability ai', 'mistral', 'cohere', 'perplexity', 'claude', 'gemini',
     // Core AI/ML terminology
     'artificial intelligence', 'machine learning', 'deep learning', 'neural network',
     'neural', 'llm', 'gpt', 'foundation model', 'transformer', 'large language model',
@@ -70,9 +86,14 @@ const DEFAULT_WIRE_KEYWORDS: Record<string, string[]> = {
     'alignment research', 'agi',
     // Broad but distinctive AI terms
     'ai', 'ml', 'ai research', 'ai fellowship', 'ai workforce',
-    'ai impact', 'ai challenge', 'ai grant',
+    'ai impact', 'ai challenge', 'ai grant', 'ai hackathon', 'ai accelerator',
   ],
-  oss: ['open source', 'github', 'apache', 'linux', 'cncf', 'mozilla', 'open-source', 'foss', 'libre'],
+  oss: [
+    'open source', 'open-source', 'foss', 'libre', 'free software',
+    'github', 'apache', 'linux', 'linux foundation', 'cncf', 'mozilla',
+    'sovereign tech', 'nlnet', 'oss', 'gnu', 'creative commons',
+    'open collective', 'fiscal sponsor', 'open infrastructure',
+  ],
 };
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -455,17 +476,28 @@ export async function processBatchMessage(
     const wire = detectWire(combined, wires);
 
     if (!wire) {
-      result.failed++;
-      result.entries.push({ name: entry.name, wire: 'unknown', error: 'Could not detect wire — needs manual classification' });
-      continue;
+      // Default to 'crypto' if available — most unclassified grant content is crypto.
+      // Gate 2 LLM classifier will correct the wire assignment if it's wrong.
+      const defaultWire = wires.includes('crypto') ? 'crypto' : wires[0];
+      if (!defaultWire) {
+        result.failed++;
+        result.entries.push({ name: entry.name, wire: 'unknown', error: 'No wires configured' });
+        continue;
+      }
+      console.log(`[BatchIntake] Wire not detected for "${entry.name}", defaulting to "${defaultWire}"`);
+      // Proceed with defaultWire
+      const resolvedWire = defaultWire;
+      // (fall through by reassigning wire variable)
+      Object.assign(entry, { _resolvedWire: resolvedWire });
     }
+    const resolvedWire = (entry as typeof entry & { _resolvedWire?: string })._resolvedWire || wire!;
 
     // Dedup check — fail open if dedup service errors
     try {
-      const dedupResult = await checkDuplicate(getPool(), { sourceUrl: entry.sourceUrl, name: entry.name, wire }, 30);
+      const dedupResult = await checkDuplicate(getPool(), { sourceUrl: entry.sourceUrl, name: entry.name, wire: resolvedWire }, 30);
       if (dedupResult.isDuplicate) {
         result.failed++;
-        result.entries.push({ name: entry.name, wire, error: `Duplicate: already seen as "${dedupResult.matchedEntryName}"` });
+        result.entries.push({ name: entry.name, wire: resolvedWire, error: `Duplicate: already seen as "${dedupResult.matchedEntryName}"` });
         continue;
       }
     } catch (dedupErr) {
@@ -477,21 +509,21 @@ export async function processBatchMessage(
         name: entry.name,
         description: entry.description,
         sourceUrl: entry.sourceUrl,
-        wire,
+        wire: resolvedWire,
         scanDate,
         submittedBy: msg.senderId,
         scanSource,
       });
       try {
-        await registerSeen(getPool(), { id, sourceUrl: entry.sourceUrl, name: entry.name, wire, scanDate });
+        await registerSeen(getPool(), { id, sourceUrl: entry.sourceUrl, name: entry.name, wire: resolvedWire, scanDate });
       } catch (regError) {
         // non-fatal
       }
       result.inserted++;
-      result.entries.push({ name: entry.name, wire, id });
+      result.entries.push({ name: entry.name, wire: resolvedWire, id });
     } catch (err) {
       result.failed++;
-      result.entries.push({ name: entry.name, wire, error: err instanceof Error ? err.message : 'Insert failed' });
+      result.entries.push({ name: entry.name, wire: resolvedWire, error: err instanceof Error ? err.message : 'Insert failed' });
     }
   }
 
