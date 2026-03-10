@@ -56,8 +56,8 @@ function getSourceLabel(url: string): string {
     if (host.includes('linkedin.com')) return 'LI';
     if (host.includes('medium.com')) return 'MED';
     if (host.includes('substack.com')) return 'SUB';
-    // Return first segment of domain, max 6 chars
-    return host.split('.')[0].slice(0, 6).toUpperCase();
+    // Return first segment of domain, max 4 chars
+    return host.split('.')[0].slice(0, 4).toUpperCase();
   } catch {
     return 'LINK';
   }
@@ -372,8 +372,8 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
               <th className="w-20">Score</th>
               <th className="w-24">Amount</th>
               <th className="w-28">Deadline</th>
-              <th className="w-16">Source</th>
-              <th className="w-44">Actions</th>
+              <th className="w-14">Source</th>
+              <th className="w-40">Actions</th>
             </tr>
           </thead>
           <tbody>

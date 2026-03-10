@@ -96,6 +96,16 @@ const Index = () => {
 
   useEffect(() => { loadData(); }, [loadData]);
 
+  // Auto-refresh queue count every 60 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchEntries({ status: 'queued' })
+        .then(entries => setQueueEntries(entries))
+        .catch(() => {/* silent — stale data is fine */});
+    }, 60_000);
+    return () => clearInterval(interval);
+  }, []);
+
   const handleUpdateStatus = async (ids: string[], newStatus: ScanEntry['status']) => {
     try {
       if (ids.length === 1) {
