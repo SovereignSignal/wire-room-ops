@@ -12,7 +12,7 @@ import { fetchDbConfig, testDbConnection, saveDbConfig as saveDbConfigApi, fetch
 import type { DbScanEntry, DbIntakeRun, DbDistributionEntry, DbStats, DbTableResponse } from '@/types';
 import { ChevronDown, ChevronUp, ExternalLink, Database, Download } from 'lucide-react';
 
-type TableName = 'scan-entries' | 'intake-runs' | 'distribution-log';
+type TableName = 'scan-entries' | 'intake-runs' | 'distribution-log' | 'summaries';
 
 const STATUS_COLORS: Record<string, string> = {
   queued: 'bg-primary/20 text-primary border-primary/30',
@@ -101,11 +101,11 @@ export function DatabaseTab() {
     try {
       const params: Record<string, string | number> = { page, limit: 50 };
       if (wireFilter) params.wire = wireFilter;
-      if (search && table === 'scan-entries') params.search = search;
+      if (search && (table === 'scan-entries' || table === 'summaries')) params.search = search;
       if (dateFrom && table === 'scan-entries') params.from = dateFrom;
       if (dateTo && table === 'scan-entries') params.to = dateTo;
       if (statusFilter) {
-        if (table === 'scan-entries' || table === 'distribution-log') params.status = statusFilter;
+        if (table === 'scan-entries' || table === 'distribution-log' || table === 'summaries') params.status = statusFilter;
       }
       if (channelFilter && table === 'distribution-log') params.channel = channelFilter;
 
@@ -306,6 +306,7 @@ export function DatabaseTab() {
               ['scan-entries', 'Scan Entries'],
               ['intake-runs', 'Intake Runs'],
               ['distribution-log', 'Distribution Log'],
+              ['summaries', 'Summaries'],
             ] as [TableName, string][]).map(([key, label]) => (
               <button
                 key={key}
@@ -350,7 +351,7 @@ export function DatabaseTab() {
             </Select>
           </div>
 
-          {(activeTable === 'scan-entries' || activeTable === 'distribution-log') && (
+          {(activeTable === 'scan-entries' || activeTable === 'distribution-log' || activeTable === 'summaries') && (
             <div className="space-y-1">
               <label className="text-[10px] font-display tracking-wider uppercase text-muted-foreground">Status</label>
               <Select value={statusFilter} onValueChange={v => setStatusFilter(v === 'all' ? '' : v)}>
@@ -365,6 +366,12 @@ export function DatabaseTab() {
                       <SelectItem value="approved">approved</SelectItem>
                       <SelectItem value="archived">archived</SelectItem>
                       <SelectItem value="raw">raw</SelectItem>
+                    </>
+                  ) : activeTable === 'summaries' ? (
+                    <>
+                      <SelectItem value="processed">processed</SelectItem>
+                      <SelectItem value="pending">pending</SelectItem>
+                      <SelectItem value="failed">failed</SelectItem>
                     </>
                   ) : (
                     <>
@@ -395,13 +402,13 @@ export function DatabaseTab() {
             </div>
           )}
 
-          {activeTable === 'scan-entries' && (
+          {(activeTable === 'scan-entries' || activeTable === 'summaries') && (
             <>
               <div className="space-y-1">
                 <label className="text-[10px] font-display tracking-wider uppercase text-muted-foreground">Search</label>
                 <div className="flex gap-1.5">
                   <Input
-                    placeholder="Name or description..."
+                    placeholder={activeTable === 'summaries' ? 'Title or summary...' : 'Name or description...'}
                     value={search}
                     onChange={e => setSearch(e.target.value)}
                     onKeyDown={e => e.key === 'Enter' && handleSearch()}
@@ -409,24 +416,28 @@ export function DatabaseTab() {
                   />
                 </div>
               </div>
-              <div className="space-y-1">
-                <label className="text-[10px] font-display tracking-wider uppercase text-muted-foreground">From</label>
-                <Input
-                  type="date"
-                  value={dateFrom}
-                  onChange={e => setDateFrom(e.target.value)}
-                  className="w-[140px] h-8 text-xs font-mono"
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-[10px] font-display tracking-wider uppercase text-muted-foreground">To</label>
-                <Input
-                  type="date"
-                  value={dateTo}
-                  onChange={e => setDateTo(e.target.value)}
-                  className="w-[140px] h-8 text-xs font-mono"
-                />
-              </div>
+              {activeTable === 'scan-entries' && (
+                <>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-display tracking-wider uppercase text-muted-foreground">From</label>
+                    <Input
+                      type="date"
+                      value={dateFrom}
+                      onChange={e => setDateFrom(e.target.value)}
+                      className="w-[140px] h-8 text-xs font-mono"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-display tracking-wider uppercase text-muted-foreground">To</label>
+                    <Input
+                      type="date"
+                      value={dateTo}
+                      onChange={e => setDateTo(e.target.value)}
+                      className="w-[140px] h-8 text-xs font-mono"
+                    />
+                  </div>
+                </>
+              )}
               <Button
                 variant="outline"
                 size="sm"
@@ -456,6 +467,8 @@ export function DatabaseTab() {
             <ScanEntriesTable data={data as DbScanEntry[]} />
           ) : activeTable === 'intake-runs' ? (
             <IntakeRunsTable data={data as DbIntakeRun[]} />
+          ) : activeTable === 'summaries' ? (
+            <SummariesTable data={data} />
           ) : (
             <DistributionLogTable data={data as DbDistributionEntry[]} />
           )}
@@ -725,6 +738,57 @@ function DistributionLogTable({ data }: { data: DbDistributionEntry[] }) {
               <Badge variant="outline" className={`text-[10px] font-display tracking-wider ${getStatusBadgeClass(row.status)}`}>
                 {row.status}
               </Badge>
+            </TableCell>
+            <TableCell className="font-mono text-xs text-muted-foreground whitespace-nowrap">
+              {relativeTime(row.created_at)}
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+function SummariesTable({ data }: { data: any[] }) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead className="font-display text-[10px] tracking-wider uppercase">TITLE</TableHead>
+          <TableHead className="font-display text-[10px] tracking-wider uppercase">WIRE</TableHead>
+          <TableHead className="font-display text-[10px] tracking-wider uppercase">STATUS</TableHead>
+          <TableHead className="font-display text-[10px] tracking-wider uppercase">QUALITY</TableHead>
+          <TableHead className="font-display text-[10px] tracking-wider uppercase">CONFIDENCE</TableHead>
+          <TableHead className="font-display text-[10px] tracking-wider uppercase">SUMMARY</TableHead>
+          <TableHead className="font-display text-[10px] tracking-wider uppercase">DATE</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {data.map(row => (
+          <TableRow key={row.id} className="hover:bg-primary/5">
+            <TableCell className="max-w-[220px]">
+              <span className="truncate block text-sm">{truncate(row.title || '—', 50)}</span>
+            </TableCell>
+            <TableCell>
+              {row.wire && (
+                <Badge variant="outline" className={`text-[10px] font-display tracking-wider ${getWireBadgeClass(row.wire)}`}>
+                  {row.wire}
+                </Badge>
+              )}
+            </TableCell>
+            <TableCell>
+              <Badge variant="outline" className={`text-[10px] font-display tracking-wider ${getStatusBadgeClass(row.processing_status || '')}`}>
+                {row.processing_status || '—'}
+              </Badge>
+            </TableCell>
+            <TableCell className="font-mono text-xs text-muted-foreground">
+              {row.data_quality || '—'}
+            </TableCell>
+            <TableCell className="font-mono text-xs text-muted-foreground">
+              {row.confidence || '—'}
+            </TableCell>
+            <TableCell className="max-w-[300px]">
+              <span className="truncate block text-xs text-muted-foreground">{truncate(row.summary || '—', 80)}</span>
             </TableCell>
             <TableCell className="font-mono text-xs text-muted-foreground whitespace-nowrap">
               {relativeTime(row.created_at)}

@@ -40,12 +40,14 @@ const SORT_COLUMNS: Record<string, string[]> = {
   'scan-entries': ['id', 'name', 'wire', 'status', 'quality_score', 'scan_source', 'created_at', 'amount', 'deadline'],
   'intake-runs': ['id', 'wire', 'new_unique', 'duplicates_found', 'avg_quality_score', 'scans_run', 'created_at'],
   'distribution-log': ['id', 'channel', 'wire', 'status', 'created_at'],
+  'summaries': ['id', 'title', 'wire', 'processing_status', 'data_quality', 'confidence', 'created_at'],
 };
 
 const TABLE_MAP: Record<string, string> = {
   'scan-entries': 'scan_entries',
   'intake-runs': 'intake_runs',
   'distribution-log': 'distribution_logs',
+  'summaries': 'summaries',
 };
 
 // GET /config — returns config meta (never password)
@@ -281,6 +283,58 @@ router.get('/distribution-log', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('[DB] distribution-log query failed:', error);
     res.status(500).json({ error: 'Failed to query distribution_logs' });
+  }
+});
+
+// GET /summaries — paginated with filters
+router.get('/summaries', async (req: Request, res: Response) => {
+  try {
+    const pool = getLazyPool();
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const limit = Math.min(200, Math.max(1, parseInt(req.query.limit as string) || 50));
+    const offset = (page - 1) * limit;
+    const sortCol = SORT_COLUMNS['summaries'].includes(req.query.sort as string)
+      ? req.query.sort as string
+      : 'created_at';
+    const sortDir = req.query.dir === 'asc' ? 'ASC' : 'DESC';
+
+    const conditions: string[] = [];
+    const params: any[] = [];
+
+    if (req.query.status) {
+      params.push(req.query.status);
+      conditions.push(`processing_status = $${params.length}`);
+    }
+    if (req.query.wire) {
+      params.push(req.query.wire);
+      conditions.push(`wire = $${params.length}`);
+    }
+    if (req.query.search) {
+      params.push(`%${req.query.search}%`);
+      conditions.push(`(title ILIKE $${params.length} OR summary ILIKE $${params.length})`);
+    }
+
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    const countResult = await pool.query(`SELECT COUNT(*) FROM summaries ${where}`, params);
+    const total = parseInt(countResult.rows[0].count, 10);
+
+    params.push(limit, offset);
+    const rows = await pool.query(
+      `SELECT id, title, wire, processing_status, data_quality, confidence, summary, created_at
+       FROM summaries ${where}
+       ORDER BY ${sortCol} ${sortDir}
+       LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      params
+    );
+
+    res.json({
+      data: rows.rows,
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    });
+  } catch (error) {
+    console.error('[DB] summaries query failed:', error);
+    res.status(500).json({ error: 'Failed to query summaries' });
   }
 });
 
