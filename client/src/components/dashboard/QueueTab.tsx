@@ -6,8 +6,8 @@ import { ActionBar } from './ActionBar';
 import { FilterBar } from './FilterBar';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Button } from '@/components/ui/button';
-import { ExternalLink, CheckCircle, Archive, ChevronDown, Loader2 } from 'lucide-react';
-import { updateEntryWire, fetchWires, classifyQueue } from '@/api';
+import { ExternalLink, CheckCircle, Archive, ChevronDown } from 'lucide-react';
+import { updateEntryWire, fetchWires } from '@/api';
 
 const classificationStyles: Record<string, string> = {
   GRANT: 'border-green-500/50 text-green-400 bg-green-500/10',
@@ -131,8 +131,6 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [wireFilter, setWireFilter] = useState<string | null>(null);
   const [classificationFilter, setClassificationFilter] = useState<string | null>(null);
-  const [classifying, setClassifying] = useState(false);
-  const [classifyToast, setClassifyToast] = useState<string | null>(null);
   const [availableWires, setAvailableWires] = useState<{ key: string; displayName: string }[]>([]);
 
   useEffect(() => {
@@ -153,21 +151,6 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
       onEntryUpdated?.(entryId, { wire: newWire });
     } catch (err) {
       console.error('Failed to update wire:', err);
-    }
-  };
-
-  const handleClassifyQueue = async () => {
-    setClassifying(true);
-    setClassifyToast(null);
-    try {
-      const result = await classifyQueue(wireFilter || undefined);
-      setClassifyToast(`Classified ${result.classified} entries${result.errors > 0 ? ` (${result.errors} errors)` : ''}`);
-      onRefresh?.();
-    } catch (err) {
-      setClassifyToast(`Error: ${err instanceof Error ? err.message : 'Classification failed'}`);
-    } finally {
-      setClassifying(false);
-      setTimeout(() => setClassifyToast(null), 5000);
     }
   };
 
@@ -249,21 +232,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
           </button>
         ))}
 
-        <div className="ml-auto flex items-center gap-2">
-          {classifyToast && (
-            <span className="text-xs font-mono text-muted-foreground">{classifyToast}</span>
-          )}
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={classifying}
-            onClick={handleClassifyQueue}
-            className="gap-1.5 font-display text-[10px] tracking-wider h-7"
-          >
-            {classifying ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
-            {classifying ? 'CLASSIFYING...' : '\uD83E\uDD16 CLASSIFY QUEUE'}
-          </Button>
-        </div>
+
       </div>
 
       {/* Classification filter */}

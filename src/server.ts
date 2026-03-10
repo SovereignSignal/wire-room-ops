@@ -2311,6 +2311,31 @@ export async function startServer(): Promise<void> {
     console.error('Scheduler initialization failed (non-fatal):', error);
   }
 
+  // Backfill: classify any entries that predate Gate 2 (UNCHECKED status)
+  // Runs once on startup, non-blocking. New entries are classified inline via process-raw.
+  setTimeout(async () => {
+    try {
+      const pool = getPool();
+      const unclassified = await pool.query(
+        `SELECT id, name, description, source_url, wire FROM scan_entries
+         WHERE (classification IS NULL OR classification = 'UNCHECKED')
+           AND status IN ('queued', 'approved')
+         ORDER BY created_at DESC
+         LIMIT 500`
+      );
+      if (unclassified.rows.length > 0) {
+        console.log(`[Startup] Backfilling classification for ${unclassified.rows.length} unclassified entries...`);
+        const { classifyBatch } = await import('./services/classifier');
+        const stats = await classifyBatch(unclassified.rows, pool);
+        console.log(`[Startup] Classification backfill complete: ${stats.classified} classified, ${stats.errors} errors`);
+      } else {
+        console.log('[Startup] No unclassified entries to backfill');
+      }
+    } catch (err) {
+      console.error('[Startup] Classification backfill failed (non-fatal):', err);
+    }
+  }, 10000); // 10s delay — let the server fully start first
+
   // Start the summary sync bridge (tele-sum summaries → approved scan_entries)
   try {
     startSummarySync(getPool(), 15);
