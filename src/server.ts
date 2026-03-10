@@ -6,7 +6,7 @@ import { validateMagicLink, createMagicLink, createDownloadToken, createSessionT
 import jwt from 'jsonwebtoken';
 import jwksClient from 'jwks-rsa';
 import { getFile, listFiles } from './services/storage';
-import { getAvailableWires, closePool, getAllFeeds, ensureFeedsTable, getFeedByKey, createFeed, updateFeed, archiveFeed, getEntryCountsByWire, getAllScanPrompts, getScanPromptById, createScanPrompt, updateScanPrompt, deleteScanPrompt, getStatusCounts, getEntriesByStatus, getSeenUrlStats, getSeenUrlsList } from './db';
+import { getAvailableWires, closePool, getAllFeeds, ensureFeedsTable, ensureClassificationColumns, getFeedByKey, createFeed, updateFeed, archiveFeed, getEntryCountsByWire, getAllScanPrompts, getScanPromptById, createScanPrompt, updateScanPrompt, deleteScanPrompt, getStatusCounts, getEntriesByStatus, getSeenUrlStats, getSeenUrlsList } from './db';
 import { sendScanDigestEmail, sendResendLinkEmail } from './services/email';
 import { StoredFile } from './types';
 import { jobQueue } from './services/job-queue';
@@ -2103,6 +2103,13 @@ export async function startServer(): Promise<void> {
     await ensureFeedsTable();
   } catch (error) {
     console.error('Feeds table initialization failed (non-fatal):', error);
+  }
+
+  // Add classification columns to scan_entries (Gate 1 + Gate 2 support)
+  try {
+    await ensureClassificationColumns();
+  } catch (error) {
+    console.error('Classification columns migration failed (non-fatal):', error);
   }
 
   // Initialize the scheduler (loads config from database)
