@@ -46,9 +46,6 @@ export function DashboardLayout({
                 <span className="w-2 h-2 rounded-full bg-status-success signal-pulse" />
                 <span className="text-xs text-muted-foreground font-mono">ARRAY ONLINE</span>
               </div>
-              <div className="text-xs text-muted-foreground font-mono border border-border px-3 py-1.5 rounded bg-card/50">
-                SYS v1.0.4 • LAT 42.3°N
-              </div>
               <ThemeToggle />
               <Button
                 variant="ghost"

@@ -33,7 +33,7 @@ const STATUS_TO_ACTION: Record<string, string> = {
   approved: 'approve',
   archived: 'decline',
   declined: 'decline',
-  flagged: 'reviewlater',
+
   queued: 'restore',
 };
 

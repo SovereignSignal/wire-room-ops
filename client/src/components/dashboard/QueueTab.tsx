@@ -289,11 +289,11 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                   className="border-primary/50 data-[state=checked]:bg-primary data-[state=checked]:border-primary"
                 />
               </th>
-              <th>Designation</th>
-              <th className="w-24">Vertical</th>
+              <th>Name</th>
+              <th className="w-24">Wire</th>
               <th className="w-28">Type</th>
-              <th className="w-20">Signal</th>
-              <th className="w-24">Value</th>
+              <th className="w-20">Score</th>
+              <th className="w-24">Amount</th>
               <th className="w-28">Deadline</th>
               <th className="w-20">Source</th>
               <th className="w-48 min-w-[12rem]">Actions</th>
@@ -380,7 +380,6 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
         selectedCount={selectedIds.size}
         onApprove={() => handleAction('approved')}
         onArchive={() => handleAction('archived')}
-        onFlag={() => handleAction('flagged')}
         onClear={() => setSelectedIds(new Set())}
       />
     </div>

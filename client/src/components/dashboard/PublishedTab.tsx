@@ -56,10 +56,10 @@ export function PublishedTab({ entries, verticals, onViewDetails }: PublishedTab
         <table className="ops-table">
           <thead>
             <tr>
-              <th>Designation</th>
-              <th className="w-24">Vertical</th>
-              <th className="w-20">Signal</th>
-              <th className="w-24">Value</th>
+              <th>Name</th>
+              <th className="w-24">Wire</th>
+              <th className="w-20">Score</th>
+              <th className="w-24">Amount</th>
               <th className="w-28">Deadline</th>
               <th className="w-48">Distribution</th>
               <th className="w-20">Source</th>

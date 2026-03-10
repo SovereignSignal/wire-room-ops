@@ -380,9 +380,8 @@ export function DatabaseTab() {
                     </>
                   ) : activeTable === 'summaries' ? (
                     <>
-                      <SelectItem value="processed">processed</SelectItem>
-                      <SelectItem value="pending">pending</SelectItem>
-                      <SelectItem value="failed">failed</SelectItem>
+                      <SelectItem value="SUCCESS">SUCCESS</SelectItem>
+                      <SelectItem value="FAILED">FAILED</SelectItem>
                     </>
                   ) : (
                     <>

@@ -1,15 +1,14 @@
 import { Button } from '@/components/ui/button';
-import { CheckCircle, Archive, Flag, X } from 'lucide-react';
+import { CheckCircle, Archive, X } from 'lucide-react';
 
 interface ActionBarProps {
   selectedCount: number;
   onApprove: () => void;
   onArchive: () => void;
-  onFlag: () => void;
   onClear: () => void;
 }
 
-export function ActionBar({ selectedCount, onApprove, onArchive, onFlag, onClear }: ActionBarProps) {
+export function ActionBar({ selectedCount, onApprove, onArchive, onClear }: ActionBarProps) {
   if (selectedCount === 0) return null;
 
   return (
@@ -18,20 +17,20 @@ export function ActionBar({ selectedCount, onApprove, onArchive, onFlag, onClear
         <span className="font-mono text-primary text-lg">{selectedCount}</span>
         <span className="text-muted-foreground font-display text-[10px] tracking-wider uppercase">Selected</span>
       </div>
-      
+
       <div className="h-6 w-px bg-border" />
-      
+
       <div className="flex items-center gap-2">
-        <Button 
-          size="sm" 
+        <Button
+          size="sm"
           onClick={onApprove}
           className="gap-1.5 bg-status-success/20 text-status-success border border-status-success/30 hover:bg-status-success/30 font-display text-[10px] tracking-wider"
         >
           <CheckCircle className="w-3.5 h-3.5" />
           APPROVE
         </Button>
-        <Button 
-          size="sm" 
+        <Button
+          size="sm"
           variant="secondary"
           onClick={onArchive}
           className="gap-1.5 font-display text-[10px] tracking-wider"
@@ -39,20 +38,12 @@ export function ActionBar({ selectedCount, onApprove, onArchive, onFlag, onClear
           <Archive className="w-3.5 h-3.5" />
           ARCHIVE
         </Button>
-        <Button 
-          size="sm" 
-          onClick={onFlag}
-          className="gap-1.5 bg-status-warning/20 text-status-warning border border-status-warning/30 hover:bg-status-warning/30 font-display text-[10px] tracking-wider"
-        >
-          <Flag className="w-3.5 h-3.5" />
-          FLAG
-        </Button>
       </div>
-      
+
       <div className="h-6 w-px bg-border" />
-      
-      <Button 
-        size="sm" 
+
+      <Button
+        size="sm"
         variant="ghost"
         onClick={onClear}
         className="gap-1.5 text-muted-foreground hover:text-foreground font-display text-[10px] tracking-wider"

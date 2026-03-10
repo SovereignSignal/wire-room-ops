@@ -1,23 +1,23 @@
 import { ScanEntry, VerticalStats } from '@/types';
 import { ScoreBadge } from './ScoreBadge';
-import { Activity, Radio, AlertTriangle, CheckCircle, Clock } from 'lucide-react';
+import { Activity, Clock } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 
 interface OverviewTabProps {
   queueEntries: ScanEntry[];
   publishedEntries: ScanEntry[];
-  reviewEntries: ScanEntry[];
+  rawCount: number;
   stats: VerticalStats[];
 }
 
-export function OverviewTab({ queueEntries, publishedEntries, reviewEntries, stats }: OverviewTabProps) {
+export function OverviewTab({ queueEntries, publishedEntries, rawCount, stats }: OverviewTabProps) {
   const totalItemsThisWeek = stats.reduce((acc, curr) => acc + curr.items_this_week, 0);
   const avgQuality = stats.length > 0 
     ? stats.reduce((acc, curr) => acc + curr.avg_quality_score, 0) / stats.length 
     : 0;
 
   // Get most recent items across all categories
-  const recentItems = [...queueEntries, ...publishedEntries, ...reviewEntries]
+  const recentItems = [...queueEntries, ...publishedEntries]
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
     .slice(0, 5);
 
@@ -53,16 +53,16 @@ export function OverviewTab({ queueEntries, publishedEntries, reviewEntries, sta
           </div>
         </div>
 
-        {/* Pending Review */}
+        {/* Raw / Incoming */}
         <div className="stat-card group">
           <div className="flex items-center gap-3 mb-4">
-            <div className="w-8 h-8 rounded bg-status-warning/10 border border-status-warning/20 flex items-center justify-center text-lg">
-              ⚠️
+            <div className="w-8 h-8 rounded bg-orange-500/10 border border-orange-500/20 flex items-center justify-center text-lg">
+              📥
             </div>
-            <h3 className="font-display font-semibold text-sm tracking-wider uppercase">NEEDS REVIEW</h3>
+            <h3 className="font-display font-semibold text-sm tracking-wider uppercase">RAW / INCOMING</h3>
           </div>
           <div className="text-3xl font-mono font-semibold text-foreground">
-            {reviewEntries.length}
+            {rawCount}
           </div>
         </div>
 
@@ -90,19 +90,12 @@ export function OverviewTab({ queueEntries, publishedEntries, reviewEntries, sta
           
           <div className="space-y-6">
             <div className="flex justify-between items-center pb-4 border-b border-border">
-              <span className="text-sm font-mono text-muted-foreground">Global Signal Avg</span>
+              <span className="text-sm font-mono text-muted-foreground">Avg Quality</span>
               <ScoreBadge score={Math.round(avgQuality)} />
             </div>
-            <div className="flex justify-between items-center pb-4 border-b border-border">
-              <span className="text-sm font-mono text-muted-foreground">Active Sources</span>
-              <span className="font-mono">{stats.length} Nodes</span>
-            </div>
             <div className="flex justify-between items-center">
-              <span className="text-sm font-mono text-muted-foreground">Network Status</span>
-              <span className="flex items-center gap-2 text-xs text-status-success font-mono bg-status-success/10 px-2 py-1 rounded border border-status-success/20">
-                <span className="w-1.5 h-1.5 rounded-full bg-status-success signal-pulse" />
-                NOMINAL
-              </span>
+              <span className="text-sm font-mono text-muted-foreground">Active Sources</span>
+              <span className="font-mono">{stats.length} Wires</span>
             </div>
           </div>
         </div>
@@ -123,7 +116,6 @@ export function OverviewTab({ queueEntries, publishedEntries, reviewEntries, sta
                       <td className="w-8">
                         {item.status === 'queued' && <span className="text-primary opacity-80">⏳</span>}
                         {item.status === 'approved' && <span className="text-status-success opacity-80">✅</span>}
-                        {item.status === 'flagged' && <span className="text-status-warning opacity-80">⚠️</span>}
                         {item.status === 'archived' && <span className="text-muted-foreground opacity-80">❌</span>}
                       </td>
                       <td>

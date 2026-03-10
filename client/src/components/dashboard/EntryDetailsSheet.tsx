@@ -30,7 +30,7 @@ export function EntryDetailsSheet({ entry, onClose }: EntryDetailsSheetProps) {
                 <div className="ml-auto flex items-center gap-2">
                   {entry.status === 'queued' && <span className="text-xs font-mono px-2 py-1 rounded bg-primary/10 text-primary border border-primary/20">⏳ IN QUEUE</span>}
                   {entry.status === 'approved' && <span className="text-xs font-mono px-2 py-1 rounded bg-status-success/10 text-status-success border border-status-success/20">✅ PUBLISHED</span>}
-                  {entry.status === 'flagged' && <span className="text-xs font-mono px-2 py-1 rounded bg-status-warning/10 text-status-warning border border-status-warning/20">⚠️ REVIEW</span>}
+
                   {entry.classification && entry.classification !== 'UNCHECKED' && (
                     <span className={`text-xs font-mono px-2 py-1 rounded border ${
                       entry.classification === 'GRANT' ? 'bg-green-500/10 text-green-400 border-green-500/20' :

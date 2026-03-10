@@ -142,7 +142,7 @@ const Index = () => {
           <OverviewTab
             queueEntries={queueEntries}
             publishedEntries={approvedEntries}
-            reviewEntries={[]}
+            rawCount={wireCounts.reduce((sum, wc) => sum + wc.raw, 0)}
             stats={stats}
           />
         )}
