@@ -9,7 +9,7 @@ import {
 import { ScoreBadge } from './ScoreBadge';
 import { VerticalTag } from './VerticalTag';
 import { DistributionBadges } from './DistributionBadges';
-import { ExternalLink, Calendar, DollarSign, Activity, FileText } from 'lucide-react';
+import { ExternalLink, Calendar, DollarSign, Activity, FileText, Tag } from 'lucide-react';
 import { format } from 'date-fns';
 
 interface EntryDetailsSheetProps {
@@ -31,6 +31,18 @@ export function EntryDetailsSheet({ entry, onClose }: EntryDetailsSheetProps) {
                   {entry.status === 'queued' && <span className="text-xs font-mono px-2 py-1 rounded bg-primary/10 text-primary border border-primary/20">⏳ IN QUEUE</span>}
                   {entry.status === 'approved' && <span className="text-xs font-mono px-2 py-1 rounded bg-status-success/10 text-status-success border border-status-success/20">✅ PUBLISHED</span>}
                   {entry.status === 'flagged' && <span className="text-xs font-mono px-2 py-1 rounded bg-status-warning/10 text-status-warning border border-status-warning/20">⚠️ REVIEW</span>}
+                  {entry.classification && entry.classification !== 'UNCHECKED' && (
+                    <span className={`text-xs font-mono px-2 py-1 rounded border ${
+                      entry.classification === 'GRANT' ? 'bg-green-500/10 text-green-400 border-green-500/20' :
+                      entry.classification === 'EXPIRED' ? 'bg-orange-500/10 text-orange-400 border-orange-500/20' :
+                      entry.classification === 'NEWS' ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' :
+                      'bg-red-500/10 text-red-400 border-red-500/20'
+                    }`}>{
+                      entry.classification === 'GRANT' ? '✅ GRANT' :
+                      entry.classification === 'EXPIRED' ? '⏰ EXPIRED' :
+                      entry.classification === 'NEWS' ? '📰 NEWS' : '🚫 NOISE'
+                    }</span>
+                  )}
                 </div>
               </div>
               
@@ -61,6 +73,42 @@ export function EntryDetailsSheet({ entry, onClose }: EntryDetailsSheetProps) {
                   </div>
                 </div>
               </div>
+
+              {entry.metadata?.summary && (
+                <div className="glow-card p-4 space-y-2 border-primary/20">
+                  <div className="flex items-center gap-1.5 text-[10px] text-primary uppercase tracking-wider">
+                    <Tag className="w-3 h-3" />
+                    AI Summary
+                  </div>
+                  <div className="text-sm font-mono text-foreground/90 leading-relaxed">
+                    {entry.metadata.summary}
+                  </div>
+                  {(entry.metadata.eligibility || entry.metadata.amount || entry.metadata.deadline) && (
+                    <div className="flex flex-wrap gap-3 pt-2 border-t border-border mt-2">
+                      {entry.metadata.amount && (
+                        <span className="text-xs font-mono text-muted-foreground">
+                          <span className="text-green-400">{entry.metadata.amount}</span>
+                        </span>
+                      )}
+                      {entry.metadata.deadline && (
+                        <span className="text-xs font-mono text-muted-foreground">
+                          Due: <span className="text-orange-400">{entry.metadata.deadline}</span>
+                        </span>
+                      )}
+                      {entry.metadata.eligibility && (
+                        <span className="text-xs font-mono text-muted-foreground">
+                          For: <span className="text-blue-400">{entry.metadata.eligibility}</span>
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {entry.classification_reason && (
+                    <div className="text-[10px] font-mono text-muted-foreground/60 pt-1">
+                      Reason: {entry.classification_reason}
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div className="glow-card p-4 space-y-4">
                 <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground uppercase tracking-wider border-b border-border pb-2">

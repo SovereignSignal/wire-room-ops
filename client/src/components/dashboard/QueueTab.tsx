@@ -1,13 +1,38 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
-import { ScanEntry, FilterState } from '@/types';
+import { ScanEntry, FilterState, Classification } from '@/types';
 import { ScoreBadge } from './ScoreBadge';
 import { VerticalTag } from './VerticalTag';
 import { ActionBar } from './ActionBar';
 import { FilterBar } from './FilterBar';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Button } from '@/components/ui/button';
-import { ExternalLink, CheckCircle, Archive, ChevronDown } from 'lucide-react';
-import { updateEntryWire, fetchWires } from '@/api';
+import { ExternalLink, CheckCircle, Archive, ChevronDown, Loader2 } from 'lucide-react';
+import { updateEntryWire, fetchWires, classifyQueue } from '@/api';
+
+const classificationStyles: Record<string, string> = {
+  GRANT: 'border-green-500/50 text-green-400 bg-green-500/10',
+  EXPIRED: 'border-orange-500/50 text-orange-400 bg-orange-500/10',
+  NEWS: 'border-blue-500/50 text-blue-400 bg-blue-500/10',
+  NOISE: 'border-red-500/50 text-red-400 bg-red-500/10',
+  UNCHECKED: 'border-border text-muted-foreground bg-muted/20',
+};
+
+const classificationLabels: Record<string, string> = {
+  GRANT: '\u2705 GRANT',
+  EXPIRED: '\u23F0 EXPIRED',
+  NEWS: '\uD83D\uDCF0 NEWS',
+  NOISE: '\uD83D\uDEAB NOISE',
+  UNCHECKED: '\u2014 UNCLASSIFIED',
+};
+
+function ClassificationBadge({ classification }: { classification?: Classification }) {
+  const cls = classification || 'UNCHECKED';
+  return (
+    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-mono font-medium border ${classificationStyles[cls]}`}>
+      {classificationLabels[cls]}
+    </span>
+  );
+}
 
 // Fallback colors for known wires; unknown wires get a neutral style
 const wireColors: Record<string, string> = {
@@ -81,11 +106,15 @@ interface QueueTabProps {
   onViewDetails: (entry: ScanEntry) => void;
   onSingleAction?: (id: string, status: ScanEntry['status']) => void;
   onEntryUpdated?: (id: string, updates: Partial<ScanEntry>) => void;
+  onRefresh?: () => void;
 }
 
-export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, onSingleAction, onEntryUpdated }: QueueTabProps) {
+export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, onSingleAction, onEntryUpdated, onRefresh }: QueueTabProps) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [wireFilter, setWireFilter] = useState<string | null>(null);
+  const [classificationFilter, setClassificationFilter] = useState<string | null>(null);
+  const [classifying, setClassifying] = useState(false);
+  const [classifyToast, setClassifyToast] = useState<string | null>(null);
   const [availableWires, setAvailableWires] = useState<{ key: string; displayName: string }[]>([]);
 
   useEffect(() => {
@@ -109,10 +138,30 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
     }
   };
 
+  const handleClassifyQueue = async () => {
+    setClassifying(true);
+    setClassifyToast(null);
+    try {
+      const result = await classifyQueue(wireFilter || undefined);
+      setClassifyToast(`Classified ${result.classified} entries${result.errors > 0 ? ` (${result.errors} errors)` : ''}`);
+      onRefresh?.();
+    } catch (err) {
+      setClassifyToast(`Error: ${err instanceof Error ? err.message : 'Classification failed'}`);
+    } finally {
+      setClassifying(false);
+      setTimeout(() => setClassifyToast(null), 5000);
+    }
+  };
+
   const filteredEntries = useMemo(() => {
     return entries.filter(entry => {
       // Quick wire filter (button group)
       if (wireFilter && entry.wire !== wireFilter) return false;
+      // Classification filter
+      if (classificationFilter) {
+        const entryCls = entry.classification || 'UNCHECKED';
+        if (entryCls !== classificationFilter) return false;
+      }
       // Advanced filters
       if (filters.wire && entry.wire !== filters.wire) return false;
       if (filters.scoreMin !== null && entry.quality_score < filters.scoreMin) return false;
@@ -129,7 +178,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
       
       return true;
     });
-  }, [entries, filters, wireFilter]);
+  }, [entries, filters, wireFilter, classificationFilter]);
 
   const toggleSelect = (id: string) => {
     const newSet = new Set(selectedIds);
@@ -156,8 +205,8 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
 
   return (
     <div className="space-y-4">
-      {/* Quick wire filter buttons */}
-      <div className="flex items-center gap-2">
+      {/* Quick wire filter buttons + classify action */}
+      <div className="flex items-center gap-2 flex-wrap">
         <button
           onClick={() => setWireFilter(null)}
           className={`px-3 py-1.5 rounded text-[10px] font-display font-medium uppercase tracking-wider border transition-colors ${
@@ -181,6 +230,50 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
             {displayName || w}
           </button>
         ))}
+
+        <div className="ml-auto flex items-center gap-2">
+          {classifyToast && (
+            <span className="text-xs font-mono text-muted-foreground">{classifyToast}</span>
+          )}
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={classifying}
+            onClick={handleClassifyQueue}
+            className="gap-1.5 font-display text-[10px] tracking-wider h-7"
+          >
+            {classifying ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+            {classifying ? 'CLASSIFYING...' : '\uD83E\uDD16 CLASSIFY QUEUE'}
+          </Button>
+        </div>
+      </div>
+
+      {/* Classification filter */}
+      <div className="flex items-center gap-1.5">
+        <span className="text-[10px] text-muted-foreground font-mono mr-1">TYPE:</span>
+        <button
+          onClick={() => setClassificationFilter(null)}
+          className={`px-2 py-1 rounded text-[9px] font-mono border transition-colors ${
+            classificationFilter === null
+              ? 'bg-primary/20 text-primary border-primary/50'
+              : 'bg-muted/20 text-muted-foreground border-border hover:text-foreground hover:bg-muted/40'
+          }`}
+        >
+          All
+        </button>
+        {(['GRANT', 'EXPIRED', 'NEWS', 'NOISE', 'UNCHECKED'] as const).map(cls => (
+          <button
+            key={cls}
+            onClick={() => setClassificationFilter(classificationFilter === cls ? null : cls)}
+            className={`px-2 py-1 rounded text-[9px] font-mono border transition-colors ${
+              classificationFilter === cls
+                ? classificationStyles[cls]
+                : 'bg-muted/20 text-muted-foreground border-border hover:text-foreground hover:bg-muted/40'
+            }`}
+          >
+            {classificationLabels[cls]}
+          </button>
+        ))}
       </div>
 
       <FilterBar filters={filters} onFilterChange={setFilters} verticals={verticals} />
@@ -198,6 +291,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
               </th>
               <th>Designation</th>
               <th className="w-24">Vertical</th>
+              <th className="w-28">Type</th>
               <th className="w-20">Signal</th>
               <th className="w-24">Value</th>
               <th className="w-28">Deadline</th>
@@ -227,6 +321,9 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                 </td>
                 <td onClick={(e) => e.stopPropagation()}>
                   <WireSelector wire={entry.wire} entryId={entry.id} onWireChange={handleWireChange} availableWires={availableWires} />
+                </td>
+                <td>
+                  <ClassificationBadge classification={entry.classification} />
                 </td>
                 <td>
                   <ScoreBadge score={entry.quality_score} />
@@ -270,7 +367,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
             ))}
             {filteredEntries.length === 0 && (
               <tr>
-                <td colSpan={8} className="text-center py-12 text-muted-foreground font-display text-sm tracking-wider">
+                <td colSpan={9} className="text-center py-12 text-muted-foreground font-display text-sm tracking-wider">
                   NO ITEMS MATCH FILTERS
                 </td>
               </tr>

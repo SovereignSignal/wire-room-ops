@@ -76,6 +76,19 @@ export async function fetchWires(): Promise<{ key: string; displayName: string; 
   return res.json();
 }
 
+export async function classifyQueue(wire?: string): Promise<{ classified: number; errors: number; durationMs: number }> {
+  const res = await authFetch(`${BASE}/scan/classify-queue`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(wire ? { wire } : {}),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `Failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function fetchWireCounts(): Promise<WireCounts[]> {
   // Fetch queue depth per wire using existing /api/scan/counts endpoint
   // Called once per wire — aggregate across known wires

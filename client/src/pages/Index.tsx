@@ -151,6 +151,7 @@ const Index = () => {
             onEntryUpdated={(id, updates) => {
               setQueueEntries(prev => prev.map(e => e.id === id ? { ...e, ...updates } : e));
             }}
+            onRefresh={loadData}
           />
         )}
         {activeTab === 'published' && (
