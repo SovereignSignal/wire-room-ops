@@ -386,8 +386,11 @@ export async function completeWireSelection(
 
 export interface BatchIntakeResult {
   inserted: number;
+  duplicates: number;
+  errors: number;
+  /** @deprecated use duplicates + errors instead */
   failed: number;
-  entries: Array<{ name: string; wire: string; id?: number; error?: string }>;
+  entries: Array<{ name: string; wire: string; id?: number; error?: string; isDuplicate?: boolean }>;
 }
 
 /**
@@ -468,7 +471,7 @@ export async function processBatchMessage(
   const scanDate = new Date().toISOString().slice(0, 10);
   const entries = parseBatchEntries(text);
 
-  const result: BatchIntakeResult = { inserted: 0, failed: 0, entries: [] };
+  const result: BatchIntakeResult = { inserted: 0, duplicates: 0, errors: 0, failed: 0, entries: [] };
 
   for (const entry of entries) {
     // Detect wire from combined name + description
@@ -480,6 +483,7 @@ export async function processBatchMessage(
       // Gate 2 LLM classifier will correct the wire assignment if it's wrong.
       const defaultWire = wires.includes('crypto') ? 'crypto' : wires[0];
       if (!defaultWire) {
+        result.errors++;
         result.failed++;
         result.entries.push({ name: entry.name, wire: 'unknown', error: 'No wires configured' });
         continue;
@@ -496,8 +500,9 @@ export async function processBatchMessage(
     try {
       const dedupResult = await checkDuplicate(getPool(), { sourceUrl: entry.sourceUrl, name: entry.name, wire: resolvedWire }, 30);
       if (dedupResult.isDuplicate) {
+        result.duplicates++;
         result.failed++;
-        result.entries.push({ name: entry.name, wire: resolvedWire, error: `Duplicate: already seen as "${dedupResult.matchedEntryName}"` });
+        result.entries.push({ name: entry.name, wire: resolvedWire, error: `Already seen as "${dedupResult.matchedEntryName}"`, isDuplicate: true });
         continue;
       }
     } catch (dedupErr) {
@@ -522,6 +527,7 @@ export async function processBatchMessage(
       result.inserted++;
       result.entries.push({ name: entry.name, wire: resolvedWire, id });
     } catch (err) {
+      result.errors++;
       result.failed++;
       result.entries.push({ name: entry.name, wire: resolvedWire, error: err instanceof Error ? err.message : 'Insert failed' });
     }

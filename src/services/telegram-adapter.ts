@@ -171,10 +171,15 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     console.log(`[TelegramAdapter] Batch message detected from user ${userId}`);
     await sendMessage(message.chat.id, '⏳ Processing batch… hold tight.');
     const batch = await processBatchMessage(intakeMsg, 'telegram');
-    const lines = [`✅ Batch complete: ${batch.inserted} added, ${batch.failed} failed.\n`];
+    const summaryParts = [`✅ ${batch.inserted} added`];
+    if (batch.duplicates > 0) summaryParts.push(`🔄 ${batch.duplicates} duplicate${batch.duplicates !== 1 ? 's' : ''}`);
+    if (batch.errors > 0) summaryParts.push(`❌ ${batch.errors} error${batch.errors !== 1 ? 's' : ''}`);
+    const lines = [`Batch complete: ${summaryParts.join(', ')}\n`];
     for (const e of batch.entries) {
       if (e.id) {
-        lines.push(`• #${e.id} [${e.wire}] ${e.name}`);
+        lines.push(`• ✅ #${e.id} [${e.wire}] ${e.name}`);
+      } else if (e.isDuplicate) {
+        lines.push(`• 🔄 ${e.name} — ${e.error}`);
       } else {
         lines.push(`• ❌ ${e.name} — ${e.error}`);
       }
