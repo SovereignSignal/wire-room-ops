@@ -14,6 +14,8 @@ export type Classification = 'GRANT' | 'EXPIRED' | 'NEWS' | 'NOISE' | 'UNCHECKED
 export interface ClassificationResult {
   classification: Classification;
   reason: string;
+  qualityScore: number;
+  scoreReason: string;
   extracted: {
     amount?: string;
     deadline?: string;
@@ -30,22 +32,42 @@ function buildClassificationPrompt(entry: {
   source_url: string;
   wire: string;
 }): string {
-  return `Classify this grant/funding opportunity for the ${entry.wire} grants intelligence feed.
+  return `You are an intelligence analyst for a ${entry.wire} grants and funding feed. Classify AND score this entry.
 
 Name: ${entry.name}
 Description: ${entry.description}
 URL: ${entry.source_url}
 
+## Classification
 Classify as exactly one of:
 - GRANT: Real, currently open funding opportunity someone can apply to right now
 - EXPIRED: Was real but deadline has passed or program is closed
-- NEWS: Article/announcement about funding but not an application you can submit
-- NOISE: Not a funding opportunity (spam, unrelated content, error)
+- NEWS: Article/announcement about funding, org update, or industry signal — not a direct application
+- NOISE: Not relevant (spam, hype/shill content, unrelated, error)
 
-Also extract if available: amount (funding size), deadline (application deadline), eligibility (who can apply), summary (one clean sentence describing the opportunity).
+## Quality Score (0-100)
+Score based on INFORMATION VALUE to a professional tracking grants, funding, and industry signals.
+
+Scoring philosophy:
+- Source credibility matters most. An update from Linux Foundation, Mozilla, Ethereum Foundation, Uniswap, Gitcoin, or a major DAO is inherently valuable — even without a dollar amount.
+- High-quality news from credible orgs can score HIGHER than low-quality grants from unknown sources.
+- A $500 hackathon from an unknown project with hype language = low score (15-25).
+- A Linux Foundation program update with real substance = high score (60-75) even if no direct application.
+- A well-documented $50K+ grant from an established org with clear eligibility and deadline = highest score (75-95).
+- Hype language, promotional tone, influencer shilling = score penalty.
+- Vague tweets with just hashtags and no real content = very low (5-15).
+
+Score ranges:
+- 80-100: High-value grant with full details from credible org
+- 60-79: Strong signal — credible org update, solid grant with some details missing, or major program announcement
+- 40-59: Moderate — decent source or content but missing key details, or mid-tier org with good info
+- 20-39: Low — unknown source, thin content, small/questionable opportunity
+- 0-19: Noise — hype, spam, irrelevant, or completely empty content
+
+Also extract if available: amount, deadline, eligibility, summary.
 
 Respond in JSON only, no markdown:
-{"classification":"GRANT","reason":"brief reason","extracted":{"amount":"$50k","deadline":"March 31 2026","eligibility":"Web3 builders","summary":"One sentence."}}`;
+{"classification":"GRANT","quality_score":72,"score_reason":"Linux Foundation mentorship program — credible org, actionable for OSS contributors, clear structure","reason":"Open application for LFX Mentorship 2026","extracted":{"amount":"$6,000 stipend","deadline":"April 15 2026","eligibility":"Open source contributors","summary":"One sentence."}}`;
 }
 
 export async function classifyEntry(entry: {
@@ -79,7 +101,7 @@ export async function classifyEntry(entry: {
   const content = data.choices?.[0]?.message?.content;
 
   if (!content) {
-    return { classification: 'UNCHECKED', reason: 'empty_response', extracted: {} };
+    return { classification: 'UNCHECKED', reason: 'empty_response', qualityScore: 0, scoreReason: '', extracted: {} };
   }
 
   try {
@@ -91,9 +113,15 @@ export async function classifyEntry(entry: {
       ? (parsed.classification as Classification)
       : 'UNCHECKED';
 
+    const qualityScore = typeof parsed.quality_score === 'number'
+      ? Math.max(0, Math.min(100, Math.round(parsed.quality_score)))
+      : 0;
+
     return {
       classification,
       reason: String(parsed.reason || ''),
+      qualityScore,
+      scoreReason: String(parsed.score_reason || ''),
       extracted: {
         amount: parsed.extracted?.amount || undefined,
         deadline: parsed.extracted?.deadline || undefined,
@@ -102,7 +130,7 @@ export async function classifyEntry(entry: {
       },
     };
   } catch {
-    return { classification: 'UNCHECKED', reason: 'parse_error', extracted: {} };
+    return { classification: 'UNCHECKED', reason: 'parse_error', qualityScore: 0, scoreReason: '', extracted: {} };
   }
 }
 
@@ -132,11 +160,15 @@ export async function classifyBatch(
           `UPDATE scan_entries
            SET classification = $1,
                classification_reason = $2,
-               metadata = COALESCE(metadata, '{}'::jsonb) || $3::jsonb
-           WHERE id = $4`,
+               quality_score = $3,
+               quality_breakdown = $4,
+               metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb
+           WHERE id = $6`,
           [
             result.classification,
             result.reason,
+            result.qualityScore,
+            JSON.stringify({ scoreReason: result.scoreReason }),
             JSON.stringify(result.extracted),
             entry.id,
           ]

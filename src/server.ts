@@ -2311,28 +2311,34 @@ export async function startServer(): Promise<void> {
     console.error('Scheduler initialization failed (non-fatal):', error);
   }
 
-  // Backfill: classify any entries that predate Gate 2 (UNCHECKED status)
-  // Runs once on startup, non-blocking. New entries are classified inline via process-raw.
+  // Backfill: re-classify + re-score entries using LLM scorer
+  // Runs once on startup, non-blocking. Covers: unclassified entries AND entries
+  // with old keyword-based scores (quality_breakdown not containing scoreReason).
   setTimeout(async () => {
     try {
       const pool = getPool();
-      const unclassified = await pool.query(
+      const toRescore = await pool.query(
         `SELECT id, name, description, source_url, wire FROM scan_entries
-         WHERE (classification IS NULL OR classification = 'UNCHECKED')
-           AND status IN ('queued', 'approved')
+         WHERE status IN ('queued', 'approved')
+           AND (
+             classification IS NULL
+             OR classification = 'UNCHECKED'
+             OR quality_breakdown IS NULL
+             OR quality_breakdown::text NOT LIKE '%scoreReason%'
+           )
          ORDER BY created_at DESC
          LIMIT 500`
       );
-      if (unclassified.rows.length > 0) {
-        console.log(`[Startup] Backfilling classification for ${unclassified.rows.length} unclassified entries...`);
+      if (toRescore.rows.length > 0) {
+        console.log(`[Startup] Re-scoring ${toRescore.rows.length} entries with LLM scorer...`);
         const { classifyBatch } = await import('./services/classifier');
-        const stats = await classifyBatch(unclassified.rows, pool);
-        console.log(`[Startup] Classification backfill complete: ${stats.classified} classified, ${stats.errors} errors`);
+        const stats = await classifyBatch(toRescore.rows, pool);
+        console.log(`[Startup] LLM re-score complete: ${stats.classified} scored, ${stats.errors} errors`);
       } else {
-        console.log('[Startup] No unclassified entries to backfill');
+        console.log('[Startup] All entries already scored with LLM scorer');
       }
     } catch (err) {
-      console.error('[Startup] Classification backfill failed (non-fatal):', err);
+      console.error('[Startup] LLM re-score backfill failed (non-fatal):', err);
     }
   }, 10000); // 10s delay — let the server fully start first
 

@@ -33,7 +33,7 @@ import {
   extractNameTokens,
 } from '../services/intake';
 import { checkDuplicate, registerSeen } from '../services/dedup';
-import { scoreEntry } from '../services/quality-scorer';
+// quality-scorer.ts replaced by LLM scoring in classifier.ts
 import { seedSeenUrlsFromMessages } from '../db';
 
 // ============================================================
@@ -235,34 +235,53 @@ export async function runDailyIntake(
   let totalScore = 0;
   let highQualityCount = 0;
 
+  const { classifyEntry } = await import('../services/classifier');
+
   for (const entryId of uniqueEntryIds) {
-    // Fetch the entry for scoring
+    // Fetch the entry for classification + scoring
     const entryRes = await pool.query(
-      `SELECT name, description, amount, deadline, scan_date FROM scan_entries WHERE id = $1`,
+      `SELECT name, description, amount, deadline, scan_date, source_url, wire FROM scan_entries WHERE id = $1`,
       [entryId]
     );
     const entry = entryRes.rows[0];
 
-    const breakdown = scoreEntry({
-      name: entry.name,
-      description: entry.description,
-      amount: entry.amount,
-      deadline: entry.deadline,
-      scanDate: entry.scan_date,
-    });
+    // Gate 2: LLM classification + quality scoring (single call)
+    let qualityScore = 0;
+    try {
+      const classResult = await classifyEntry({
+        name: entry.name,
+        description: entry.description || '',
+        source_url: entry.source_url || '',
+        wire: entry.wire,
+      });
+      qualityScore = classResult.qualityScore;
 
-    const newStatus =
-      breakdown.totalScore >= config.qualityThreshold ? 'queued' : 'archived';
+      await pool.query(
+        `UPDATE scan_entries
+         SET quality_score = $1, quality_breakdown = $2, status = 'queued',
+             classification = $3, classification_reason = $4,
+             metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb
+         WHERE id = $6`,
+        [
+          qualityScore,
+          JSON.stringify({ scoreReason: classResult.scoreReason }),
+          classResult.classification,
+          classResult.reason,
+          JSON.stringify(classResult.extracted),
+          entryId,
+        ]
+      );
+    } catch (classError) {
+      console.error(`[DailyIntake] Classification failed for entry ${entryId}:`, classError);
+      // Fallback: queue with score 0
+      await pool.query(
+        `UPDATE scan_entries SET quality_score = 0, status = 'queued' WHERE id = $1`,
+        [entryId]
+      );
+    }
 
-    await pool.query(
-      `UPDATE scan_entries
-       SET quality_score = $1, quality_breakdown = $2, status = $3
-       WHERE id = $4`,
-      [breakdown.totalScore, JSON.stringify(breakdown), newStatus, entryId]
-    );
-
-    totalScore += breakdown.totalScore;
-    if (breakdown.totalScore >= 60) highQualityCount++;
+    totalScore += qualityScore;
+    if (qualityScore >= 60) highQualityCount++;
   }
 
   const avgScore =

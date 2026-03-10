@@ -14,7 +14,7 @@
 
 import type { Pool } from 'pg';
 import { checkDuplicate, registerSeen } from '../services/dedup';
-import { scoreEntry } from '../services/quality-scorer';
+// quality-scorer.ts replaced by LLM scoring in classifier.ts
 import { classifyEntry } from '../services/classifier';
 
 const BATCH_SIZE = 50;
@@ -168,30 +168,19 @@ export async function processRawEntries(pool?: Pool): Promise<{
                 : String(row.scan_date),
             });
 
-            // Phase 3: Quality scoring (kept for display, does NOT gate queue entry)
-            const breakdown = scoreEntry({
-              name: row.name,
-              description: row.description,
-              amount: row.amount,
-              deadline: row.deadline,
-              scanDate: row.scan_date instanceof Date
-                ? row.scan_date.toISOString().split('T')[0]
-                : String(row.scan_date),
-            });
-
-            // Always queue — human reviews everything. Score is for display only.
+            // Always queue — human reviews everything. Score is set by Gate 2 below.
             await db.query(
               `UPDATE scan_entries
-               SET quality_score = $1,
-                   quality_breakdown = $2,
+               SET quality_score = 0,
                    status = 'queued',
                    classification = 'UNCHECKED'
-               WHERE id = $3`,
-              [breakdown.totalScore, JSON.stringify(breakdown), row.id]
+               WHERE id = $1`,
+              [row.id]
             );
 
             stats.queued++;
-            // Gate 2: LLM classification (non-blocking — failure leaves entry as UNCHECKED)
+            // Gate 2: LLM classification + quality scoring (single Grok call)
+            // Non-blocking — failure leaves entry as UNCHECKED with score 0
             try {
               const classResult = await classifyEntry({
                 name: row.name,
@@ -203,11 +192,15 @@ export async function processRawEntries(pool?: Pool): Promise<{
                 `UPDATE scan_entries
                  SET classification = $1,
                      classification_reason = $2,
-                     metadata = COALESCE(metadata, '{}'::jsonb) || $3::jsonb
-                 WHERE id = $4`,
+                     quality_score = $3,
+                     quality_breakdown = $4,
+                     metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb
+                 WHERE id = $6`,
                 [
                   classResult.classification,
                   classResult.reason,
+                  classResult.qualityScore,
+                  JSON.stringify({ scoreReason: classResult.scoreReason }),
                   JSON.stringify(classResult.extracted),
                   row.id,
                 ]
