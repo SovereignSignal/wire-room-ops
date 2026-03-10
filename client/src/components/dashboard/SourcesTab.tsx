@@ -70,6 +70,7 @@ function DailyDigestCard() {
   const [timezone, setTimezone] = useState('America/Los_Angeles');
   const [recipients, setRecipients] = useState('');
   const [dirty, setDirty] = useState(false);
+  const [testing, setTesting] = useState(false);
   const { toast } = useToast();
 
   const loadDigest = useCallback(async () => {
@@ -125,6 +126,23 @@ function DailyDigestCard() {
   };
 
   const markDirty = () => setDirty(true);
+
+  const handleSendTest = async () => {
+    setTesting(true);
+    try {
+      const res = await fetch('/api/test-alert', { method: 'POST', credentials: 'include' });
+      if (res.ok) {
+        toast({ title: 'Test sent', description: `Check ${recipients || 'your inbox'} for the test email` });
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toast({ title: 'Send failed', description: (err as { error?: string }).error || 'Unknown error' });
+      }
+    } catch {
+      toast({ title: 'Error', description: 'Could not reach server' });
+    } finally {
+      setTesting(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -225,21 +243,30 @@ function DailyDigestCard() {
         )}
       </div>
 
-      {/* Save button */}
-      <Button
-        onClick={handleSave}
-        disabled={saving || !dirty}
-        className="mt-4 w-full gap-1.5 font-display text-[10px] tracking-wider"
-        variant={dirty ? 'default' : 'outline'}
-        size="sm"
-      >
-        {saving ? (
-          <Loader2 className="w-3 h-3 animate-spin" />
-        ) : (
-          <Save className="w-3 h-3" />
-        )}
-        {saving ? 'SAVING...' : dirty ? 'SAVE CHANGES' : 'SAVED'}
-      </Button>
+      {/* Actions row */}
+      <div className="mt-4 flex gap-2">
+        <Button
+          onClick={handleSave}
+          disabled={saving || !dirty}
+          className="flex-1 gap-1.5 font-display text-[10px] tracking-wider"
+          variant={dirty ? 'default' : 'outline'}
+          size="sm"
+        >
+          {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+          {saving ? 'SAVING...' : dirty ? 'SAVE CHANGES' : 'SAVED'}
+        </Button>
+        <Button
+          onClick={handleSendTest}
+          disabled={testing || !recipients.trim()}
+          variant="outline"
+          size="sm"
+          className="gap-1.5 font-display text-[10px] tracking-wider"
+          title="Send a test email now to verify delivery"
+        >
+          {testing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Mail className="w-3 h-3" />}
+          {testing ? 'SENDING...' : 'TEST'}
+        </Button>
+      </div>
     </div>
   );
 }
