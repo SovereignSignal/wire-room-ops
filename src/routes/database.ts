@@ -465,4 +465,28 @@ router.get('/export/scan-entries', async (req: Request, res: Response) => {
   }
 });
 
+// GET /schema/:table — introspect column definitions (debug tool)
+router.get('/schema/:table', async (req: Request, res: Response) => {
+  const tableName = TABLE_MAP[req.params.table] || req.params.table;
+  // Only allow known tables
+  if (!Object.values(TABLE_MAP).includes(tableName) && tableName !== 'messages') {
+    res.status(400).json({ error: 'Unknown table' });
+    return;
+  }
+  try {
+    const pool = getLazyPool();
+    const result = await pool.query(
+      `SELECT column_name, data_type, is_nullable, column_default
+       FROM information_schema.columns
+       WHERE table_name = $1
+       ORDER BY ordinal_position`,
+      [tableName]
+    );
+    res.json({ table: tableName, columns: result.rows });
+  } catch (error) {
+    console.error('[DB] schema query failed:', error);
+    res.status(500).json({ error: 'Failed to query schema' });
+  }
+});
+
 export { router as databaseRouter };
