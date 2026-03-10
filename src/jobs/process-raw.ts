@@ -15,6 +15,7 @@
 import type { Pool } from 'pg';
 import { checkDuplicate, registerSeen } from '../services/dedup';
 import { scoreEntry } from '../services/quality-scorer';
+import { classifyEntry } from '../services/classifier';
 
 const BATCH_SIZE = 50;
 
@@ -190,6 +191,30 @@ export async function processRawEntries(pool?: Pool): Promise<{
             );
 
             stats.queued++;
+            // Gate 2: LLM classification (non-blocking — failure leaves entry as UNCHECKED)
+            try {
+              const classResult = await classifyEntry({
+                name: row.name,
+                description: row.description || '',
+                source_url: row.source_url,
+                wire: row.wire,
+              });
+              await db.query(
+                `UPDATE scan_entries
+                 SET classification = $1,
+                     classification_reason = $2,
+                     metadata = COALESCE(metadata, '{}'::jsonb) || $3::jsonb
+                 WHERE id = $4`,
+                [
+                  classResult.classification,
+                  classResult.reason,
+                  JSON.stringify(classResult.extracted),
+                  row.id,
+                ]
+              );
+            } catch (classError) {
+              console.error(`[ProcessRaw] Classification failed for entry ${row.id}, leaving as UNCHECKED:`, classError);
+            }
           }
 
           stats.processed++;

@@ -1,5 +1,7 @@
 export type EntryStatus = 'queued' | 'approved' | 'archived' | 'flagged';
 
+export type Classification = 'GRANT' | 'EXPIRED' | 'NEWS' | 'NOISE' | 'UNCHECKED';
+
 export interface ScanEntry {
   id: string;
   name: string;
@@ -14,6 +16,14 @@ export interface ScanEntry {
   created_at: string;
   operator_notes?: string;
   distribution_channels?: string[];
+  classification?: Classification;
+  classification_reason?: string;
+  metadata?: {
+    amount?: string;
+    deadline?: string;
+    eligibility?: string;
+    summary?: string;
+  };
 }
 
 export interface IntakeRun {

@@ -866,7 +866,13 @@ export async function ensureScanPromptsTable(): Promise<void> {
       CHECK (tool_type IN ('x_search', 'web_search'))
   `);
 
-  console.log('[DB] Scan prompts table ready (Phase 2+3 migrations applied)');
+  // Gate 2 migration: classification columns on scan_entries
+  await pool.query(`ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS classification TEXT DEFAULT 'UNCHECKED'`);
+  await pool.query(`ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS classification_reason TEXT`);
+  await pool.query(`ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_classification ON scan_entries(classification) WHERE status IN ('queued','approved')`);
+
+  console.log('[DB] Scan prompts table ready (Phase 2+3 migrations applied, Gate 2 columns added)');
 }
 
 /**

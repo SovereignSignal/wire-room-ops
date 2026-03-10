@@ -1454,6 +1454,52 @@ app.post('/api/process-raw', requireAuth, async (_req: Request, res: Response) =
   }
 });
 
+// API: Batch-classify queued entries with Grok LLM (Gate 2)
+app.post('/api/scan/classify-queue', requireAuth, async (req: Request, res: Response) => {
+  if (!rateLimit('classify-queue', 3, 5 * 60 * 1000)) {
+    res.status(429).json({ error: 'Classification recently run. Please wait a few minutes.' });
+    return;
+  }
+
+  try {
+    const pool = getPool();
+    const wire = req.body?.wire as string | undefined;
+
+    const conditions = [`status IN ('queued', 'approved')`, `(classification IS NULL OR classification = 'UNCHECKED')`];
+    const values: any[] = [];
+    let paramIndex = 1;
+
+    if (wire) {
+      conditions.push(`wire = $${paramIndex++}`);
+      values.push(wire);
+    }
+
+    const result = await pool.query(
+      `SELECT id, name, description, source_url, wire FROM scan_entries
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY created_at DESC
+       LIMIT 200`,
+      values
+    );
+
+    if (result.rows.length === 0) {
+      res.json({ classified: 0, errors: 0, durationMs: 0 });
+      return;
+    }
+
+    const { classifyBatch } = await import('./services/classifier');
+    const start = Date.now();
+    const stats = await classifyBatch(result.rows, pool);
+    const durationMs = Date.now() - start;
+
+    res.json({ ...stats, durationMs });
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[ClassifyQueue] Failed:', error);
+    res.status(500).json({ error: errorMsg });
+  }
+});
+
 // API: Telegram intake webhook (no auth — validated by secret header)
 app.post('/api/telegram/intake-webhook', async (req: Request, res: Response) => {
   // Always return 200 so Telegram doesn't retry
