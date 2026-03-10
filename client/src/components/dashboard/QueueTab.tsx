@@ -48,6 +48,21 @@ const wireFilterColors: Record<string, string> = {
   oss: 'bg-amber-400/20 text-amber-400 border-amber-400/50',
 };
 
+function getSourceLabel(url: string): string {
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, '');
+    if (host.includes('x.com') || host.includes('twitter.com')) return 'X';
+    if (host.includes('github.com')) return 'GH';
+    if (host.includes('linkedin.com')) return 'LI';
+    if (host.includes('medium.com')) return 'MED';
+    if (host.includes('substack.com')) return 'SUB';
+    // Return first segment of domain, max 6 chars
+    return host.split('.')[0].slice(0, 6).toUpperCase();
+  } catch {
+    return 'LINK';
+  }
+}
+
 function ExpandableDescription({ text }: { text: string }) {
   const [expanded, setExpanded] = useState(false);
   const isLong = text.length > 120;
@@ -396,15 +411,19 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                     {entry.deadline || <span className="text-muted-foreground">—</span>}
                   </div>
                 </td>
-                <td>
-                  <a 
-                    href={entry.source_url} 
-                    target="_blank" 
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 text-primary hover:text-primary/80 text-sm transition-colors"
-                  >
-                    <ExternalLink className="w-3.5 h-3.5" />
-                  </a>
+                <td onClick={(e) => e.stopPropagation()}>
+                  {entry.source_url ? (
+                    <a
+                      href={entry.source_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 text-[10px] font-mono font-medium transition-colors whitespace-nowrap"
+                    >
+                      <ExternalLink className="w-3 h-3 shrink-0" />
+                      {getSourceLabel(entry.source_url)}
+                    </a>
+                  ) : <span className="text-muted-foreground text-xs">—</span>}
                 </td>
                 <td onClick={(e) => e.stopPropagation()}>
                   <div className="flex items-center gap-2 whitespace-nowrap">
