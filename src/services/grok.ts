@@ -41,7 +41,7 @@ interface GrokResponse {
 }
 
 // Default model if none specified - using reasoning variant for highest quality
-const DEFAULT_GROK_MODEL = 'grok-4-1-fast-reasoning';
+const DEFAULT_GROK_MODEL = 'grok-4-1-fast-non-reasoning';
 
 export async function summarizeWithGrok(entry: DatabaseEntry, model?: string): Promise<string> {
   const prompt = buildGrokPrompt()
