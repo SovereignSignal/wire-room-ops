@@ -32,7 +32,7 @@ function buildClassificationPrompt(entry: {
   source_url: string;
   wire: string;
 }): string {
-  return `You are an intelligence analyst for a ${entry.wire} grants and funding feed. Classify AND score this entry.
+  return `You are an intelligence analyst for a grants and funding intelligence feed. Classify AND score this entry. The entry is currently tagged for the "${entry.wire}" wire but you should verify this is correct — if the content is clearly about a different domain (e.g., an AI grant tagged as crypto), note it in your reason.
 
 Name: ${entry.name}
 Description: ${entry.description}
@@ -49,20 +49,22 @@ Classify as exactly one of:
 Score based on INFORMATION VALUE to a professional tracking grants, funding, and industry signals.
 
 Scoring philosophy:
-- Source credibility matters most. An update from Linux Foundation, Mozilla, Ethereum Foundation, Uniswap, Gitcoin, or a major DAO is inherently valuable — even without a dollar amount.
-- High-quality news from credible orgs can score HIGHER than low-quality grants from unknown sources.
+- Evaluate the PROGRAM/CONTENT, not the posting account. Many grants are posted by aggregator accounts (@opportunitiesfy, grant newsletters, etc.) — a Google.org $3M grant posted by @opportunitiesfy is still a Google.org $3M grant. Score it on the program's credibility.
+- Programs from major orgs (Google, Mozilla, Linux Foundation, Ethereum Foundation, Uniswap, Gitcoin, major universities, government bodies, established DAOs) = inherently high credibility.
+- High-quality news from credible orgs can score HIGHER than low-quality grants from unknown projects.
 - A $500 hackathon from an unknown project with hype language = low score (15-25).
-- A Linux Foundation program update with real substance = high score (60-75) even if no direct application.
+- A Linux Foundation or Mozilla program update with real substance = high score (60-75) even without a direct application link.
 - A well-documented $50K+ grant from an established org with clear eligibility and deadline = highest score (75-95).
-- Hype language, promotional tone, influencer shilling = score penalty.
+- Hype language, promotional shilling, unknown microcap project = score penalty.
+- Pure aggregator repost with zero original content (just a link, no details) = low (10-20).
 - Vague tweets with just hashtags and no real content = very low (5-15).
 
 Score ranges:
-- 80-100: High-value grant with full details from credible org
-- 60-79: Strong signal — credible org update, solid grant with some details missing, or major program announcement
+- 80-100: High-value grant/fellowship with full details from credible org (Google, Mozilla, EF, major DAO, university, government)
+- 60-79: Strong signal — credible org update or solid grant with some details missing, major program announcement
 - 40-59: Moderate — decent source or content but missing key details, or mid-tier org with good info
-- 20-39: Low — unknown source, thin content, small/questionable opportunity
-- 0-19: Noise — hype, spam, irrelevant, or completely empty content
+- 20-39: Low — unknown source, thin content, small or questionable opportunity
+- 0-19: Noise — hype/shill, spam, irrelevant, or completely empty content
 
 Also extract if available: amount, deadline, eligibility, summary.
 
