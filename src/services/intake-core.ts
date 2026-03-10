@@ -318,23 +318,44 @@ export async function processIntakeMessage(
     }
   }
 
-  // Ambiguous or no match — store as pending
-  const pendingKey = `${msg.senderId}_${msg.channelMessageId}`;
-  pendingEntries.set(pendingKey, {
-    name,
-    description: text,
-    sourceUrl: primaryUrl,
-    scanDate,
-    submittedBy: msg.senderId,
-    scanSource,
-    createdAt: Date.now(),
-  });
+  // No wire detected — default to crypto (same fallback as batch intake)
+  const fallbackWire = wires.includes('crypto') ? 'crypto' : wires[0];
+  console.log(`[IntakeCore] Wire undetected for "${name}", defaulting to "${fallbackWire}"`);
 
-  return {
-    status: 'needs_wire',
-    pendingKey,
-    availableWires: wires,
-  };
+  try {
+    const dedupResult = await checkDuplicate(getPool(), { sourceUrl: primaryUrl, name, wire: fallbackWire }, 30);
+    if (dedupResult.isDuplicate) {
+      return { status: 'rejected', errorMessage: `Duplicate: already seen as "${dedupResult.matchedEntryName}"` };
+    }
+  } catch (dedupErr) {
+    console.error('[IntakeCore] Dedup check failed, proceeding with insert:', dedupErr);
+  }
+
+  try {
+    const id = await insertEntry({
+      name,
+      description: text,
+      sourceUrl: primaryUrl,
+      wire: fallbackWire,
+      scanDate,
+      submittedBy: msg.senderId,
+      scanSource,
+    });
+    try {
+      await registerSeen(getPool(), { id, sourceUrl: primaryUrl, name, wire: fallbackWire, scanDate });
+    } catch (regError) {
+      console.error('[IntakeCore] registerSeen failed (non-fatal):', regError);
+    }
+    return {
+      status: 'inserted',
+      entryId: id,
+      detectedWire: fallbackWire,
+      confirmText: `Captured ${fallbackWire} entry #${id}: ${name} (wire auto-assigned)`,
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Insert failed';
+    return { status: 'error', errorMessage };
+  }
 }
 
 /**
