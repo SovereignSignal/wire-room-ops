@@ -1622,11 +1622,12 @@ export async function insertApprovedSummary(entry: SummaryInsert): Promise<numbe
   const pool = getPool();
 
   const dataQuality = entry.qualityScore !== null
-    ? (entry.qualityScore >= 70 ? 'HIGH' : entry.qualityScore >= 40 ? 'MEDIUM' : 'LOW')
-    : 'MEDIUM';
-  const confidence = entry.qualityScore !== null
-    ? Math.round(entry.qualityScore) / 100
-    : 0.5;
+    ? (entry.qualityScore >= 70 ? 'complete' : entry.qualityScore >= 40 ? 'partial' : 'incomplete')
+    : 'complete';
+  // confidence is an ENUM (confidencelevel): CONFIDENT or UNCERTAIN
+  const confidence = entry.qualityScore !== null && entry.qualityScore >= 50
+    ? 'CONFIDENT'
+    : 'UNCERTAIN';
 
   try {
     const result = await pool.query(
