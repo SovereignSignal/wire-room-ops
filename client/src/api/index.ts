@@ -176,3 +176,55 @@ export async function fetchDbStats(): Promise<DbStats> {
   if (!res.ok) throw new Error(`Failed to fetch DB stats: ${res.status}`);
   return res.json();
 }
+
+// --- Schedules API ---
+
+export interface ScheduleResponse {
+  id: string;
+  name: string;
+  enabled: boolean;
+  dayOfWeek: number;
+  hour: number;
+  minute: number;
+  lookbackDays: number;
+  timezone: string;
+  wire?: string;
+  scheduleType?: 'scan-execution' | 'forum-scan' | 'daily-digest';
+  frequencyHours?: number;
+  notifyEmails?: string;
+  description?: string;
+  nextRun?: string | null;
+}
+
+export async function fetchSchedules(): Promise<ScheduleResponse[]> {
+  const res = await authFetch(`${BASE}/schedules`);
+  if (!res.ok) throw new Error(`Failed to fetch schedules: ${res.status}`);
+  const data = await res.json();
+  return data.schedules || [];
+}
+
+export async function createSchedule(schedule: Partial<Omit<ScheduleResponse, 'id' | 'description' | 'nextRun'>>): Promise<ScheduleResponse> {
+  const res = await authFetch(`${BASE}/schedules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(schedule),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `Failed to create schedule: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function updateSchedule(id: string, updates: Partial<Omit<ScheduleResponse, 'id' | 'description' | 'nextRun'>>): Promise<ScheduleResponse> {
+  const res = await authFetch(`${BASE}/schedules/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `Failed to update schedule: ${res.status}`);
+  }
+  return res.json();
+}
