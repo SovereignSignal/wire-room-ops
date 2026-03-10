@@ -684,8 +684,8 @@ app.get('/api/schedule', requireAuth, (req: Request, res: Response) => {
 // Validate schedule numeric parameters
 function validateScheduleParams(body: Record<string, any>): string | null {
   const { dayOfWeek, hour, minute, lookbackDays, scheduleType, frequencyHours, notifyEmails } = body;
-  if (scheduleType && !['scan-execution', 'forum-scan'].includes(scheduleType)) {
-    return 'scheduleType must be "scan-execution" or "forum-scan"';
+  if (scheduleType && !['scan-execution', 'forum-scan', 'daily-digest'].includes(scheduleType)) {
+    return 'scheduleType must be "scan-execution", "forum-scan", or "daily-digest"';
   }
   if (typeof dayOfWeek === 'number' && (dayOfWeek < 0 || dayOfWeek > 6)) {
     return 'dayOfWeek must be between 0 (Sunday) and 6 (Saturday)';
@@ -2286,6 +2286,27 @@ export async function startServer(): Promise<void> {
   try {
     await initScheduler();
     console.log('Scheduler initialized');
+
+    // Ensure a daily-digest schedule exists (disabled by default — operator opts in)
+    const allSchedules = getSchedules();
+    const hasDigest = allSchedules.some(s => s.scheduleType === 'daily-digest');
+    if (!hasDigest) {
+      try {
+        await addSchedule({
+          name: 'Daily Digest',
+          scheduleType: 'daily-digest',
+          hour: 6,
+          minute: 0,
+          timezone: 'America/Los_Angeles',
+          enabled: false,
+          dayOfWeek: 0,
+          lookbackDays: 1,
+        });
+        console.log('Created default daily-digest schedule (disabled)');
+      } catch (digestErr) {
+        console.error('Failed to create default daily-digest schedule (non-fatal):', digestErr);
+      }
+    }
   } catch (error) {
     console.error('Scheduler initialization failed (non-fatal):', error);
   }
