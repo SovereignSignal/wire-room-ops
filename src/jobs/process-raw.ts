@@ -2,9 +2,11 @@
  * Process Raw Entries Job
  *
  * Background job that processes entries with status='raw' through
- * the dedup+scoring pipeline. Handles entries from any scan_source
- * (telegram, manual-intake, etc.) that were inserted at raw status
- * but never processed through daily-intake.
+ * Gate 1 (completeness) → dedup → scoring → queue pipeline.
+ *
+ * Gate 1 rejects entries with missing/garbage data (status='incomplete').
+ * Entries that pass Gate 1 + dedup always go to 'queued' — human reviews everything.
+ * Quality score is still calculated for display but does NOT gate queue entry.
  *
  * Idempotent: safe to run multiple times. Only touches status='raw' entries.
  * Processes in batches of 50 to avoid overwhelming the DB.
@@ -15,27 +17,73 @@ import { checkDuplicate, registerSeen } from '../services/dedup';
 import { scoreEntry } from '../services/quality-scorer';
 
 const BATCH_SIZE = 50;
-const QUALITY_THRESHOLD = 40;
 
 let isRunning = false;
 
 /**
- * Process all raw entries through dedup and scoring.
+ * Gate 1: Completeness check.
+ * Returns whether the entry has sufficient data to proceed through the pipeline.
+ */
+export function isCompletionSufficient(entry: {
+  name: string | null;
+  description: string | null;
+  source_url: string | null;
+}): { passes: boolean; reason?: string } {
+  // Check name
+  const name = entry.name?.trim() ?? '';
+  if (!name) {
+    return { passes: false, reason: 'Missing name' };
+  }
+  if (/^https?:\/\//i.test(name)) {
+    return { passes: false, reason: 'Name is only a URL' };
+  }
+  if (/^@?[a-zA-Z0-9_]+$/.test(name)) {
+    return { passes: false, reason: 'Name is only a handle' };
+  }
+
+  // Check description — strip whitespace and emoji before length check
+  const description = entry.description?.trim() ?? '';
+  if (!description) {
+    return { passes: false, reason: 'Missing description' };
+  }
+  if (/^https?:\/\//i.test(description)) {
+    return { passes: false, reason: 'Description is only a URL' };
+  }
+  // Strip emoji (surrogate pairs + common emoji ranges) and whitespace for length check
+  const strippedDescription = description
+    .replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{200D}\u{20E3}]/gu, '')
+    .replace(/\s+/g, '');
+  if (strippedDescription.length < 30) {
+    return { passes: false, reason: `Description too short (${strippedDescription.length} chars after stripping)` };
+  }
+
+  // Check source_url
+  const sourceUrl = entry.source_url?.trim() ?? '';
+  if (!sourceUrl || sourceUrl.startsWith('scan://')) {
+    return { passes: false, reason: sourceUrl ? 'Internal scan:// URL' : 'Missing source URL' };
+  }
+
+  return { passes: true };
+}
+
+/**
+ * Process all raw entries through Gate 1, dedup, and scoring.
  * Returns a summary of what was processed.
  */
 export async function processRawEntries(pool?: Pool): Promise<{
   processed: number;
+  incomplete: number;
   duplicates: number;
   queued: number;
   archived: number;
 }> {
   if (isRunning) {
     console.log('[ProcessRaw] Already running, skipping');
-    return { processed: 0, duplicates: 0, queued: 0, archived: 0 };
+    return { processed: 0, incomplete: 0, duplicates: 0, queued: 0, archived: 0 };
   }
 
   isRunning = true;
-  const stats = { processed: 0, duplicates: 0, queued: 0, archived: 0 };
+  const stats = { processed: 0, incomplete: 0, duplicates: 0, queued: 0, archived: 0 };
 
   try {
     // Use provided pool or get default
@@ -59,7 +107,28 @@ export async function processRawEntries(pool?: Pool): Promise<{
 
       for (const row of batch.rows) {
         try {
-          // Phase 1: Dedup check
+          // Gate 1: Completeness check
+          const completeness = isCompletionSufficient({
+            name: row.name,
+            description: row.description,
+            source_url: row.source_url,
+          });
+
+          if (!completeness.passes) {
+            await db.query(
+              `UPDATE scan_entries
+               SET status = 'incomplete',
+                   classification = 'UNCHECKED'
+               WHERE id = $1 AND status = 'raw'`,
+              [row.id]
+            );
+            console.log(`[ProcessRaw] Gate 1 fail for entry ${row.id}: ${completeness.reason}`);
+            stats.incomplete++;
+            stats.processed++;
+            continue;
+          }
+
+          // Phase 2: Dedup check
           const dedupResult = await checkDuplicate(
             db,
             {
@@ -98,7 +167,7 @@ export async function processRawEntries(pool?: Pool): Promise<{
                 : String(row.scan_date),
             });
 
-            // Phase 2: Quality scoring
+            // Phase 3: Quality scoring (kept for display, does NOT gate queue entry)
             const breakdown = scoreEntry({
               name: row.name,
               description: row.description,
@@ -109,22 +178,18 @@ export async function processRawEntries(pool?: Pool): Promise<{
                 : String(row.scan_date),
             });
 
-            const newStatus = breakdown.totalScore >= QUALITY_THRESHOLD ? 'queued' : 'archived';
-
+            // Always queue — human reviews everything. Score is for display only.
             await db.query(
               `UPDATE scan_entries
                SET quality_score = $1,
                    quality_breakdown = $2,
-                   status = $3
-               WHERE id = $4`,
-              [breakdown.totalScore, JSON.stringify(breakdown), newStatus, row.id]
+                   status = 'queued',
+                   classification = 'UNCHECKED'
+               WHERE id = $3`,
+              [breakdown.totalScore, JSON.stringify(breakdown), row.id]
             );
 
-            if (newStatus === 'queued') {
-              stats.queued++;
-            } else {
-              stats.archived++;
-            }
+            stats.queued++;
           }
 
           stats.processed++;
@@ -136,14 +201,14 @@ export async function processRawEntries(pool?: Pool): Promise<{
 
       console.log(
         `[ProcessRaw] Batch complete: ${stats.processed} processed, ` +
-        `${stats.duplicates} dupes, ${stats.queued} queued, ${stats.archived} archived`
+        `${stats.incomplete} incomplete, ${stats.duplicates} dupes, ${stats.queued} queued`
       );
     }
 
     if (stats.processed > 0) {
       console.log(
         `[ProcessRaw] Done: ${stats.processed} processed, ` +
-        `${stats.duplicates} duplicates, ${stats.queued} queued, ${stats.archived} archived`
+        `${stats.incomplete} incomplete, ${stats.duplicates} duplicates, ${stats.queued} queued`
       );
     }
 
