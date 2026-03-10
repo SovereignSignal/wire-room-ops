@@ -1649,6 +1649,8 @@ export async function insertApprovedSummary(entry: SummaryInsert): Promise<numbe
       console.warn('[DB] summaries table does not exist — skipping write-through');
       return null;
     }
-    throw err;
+    console.error(`[DB] insertApprovedSummary FAILED — code=${err.code} message=${err.message} detail=${err.detail}`);
+    // Don't throw — log and return null so approve still succeeds
+    return null;
   }
 }

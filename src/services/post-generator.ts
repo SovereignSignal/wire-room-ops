@@ -212,19 +212,26 @@ function buildPrompt(entry: ReturnType<typeof cleanEntry>, wire: string): string
 // --- Fallback generation ---
 
 function buildFallbackPosts(entry: ReturnType<typeof cleanEntry>): GeneratedPosts {
-  const desc = entry.description.length > 150
-    ? entry.description.substring(0, 150) + '...'
-    : entry.description;
+  // Truncate description to one sentence (first period/excl/question, or 120 chars)
+  let shortDesc = entry.description;
+  const sentenceEnd = shortDesc.search(/[.!?]\s/);
+  if (sentenceEnd > 0 && sentenceEnd < 200) {
+    shortDesc = shortDesc.substring(0, sentenceEnd + 1);
+  } else if (shortDesc.length > 120) {
+    shortDesc = shortDesc.substring(0, 120) + '…';
+  }
 
   // Tweet
   const amount = entry.amount ? ` (${entry.amount})` : '';
-  const tweet = `${entry.name}${amount}: ${desc} ${entry.bestLink}`.substring(0, 280);
+  const deadline = entry.deadline ? ` — deadline ${entry.deadline}` : '';
+  const tweet = `${entry.name}${amount}${deadline}: ${shortDesc} ${entry.bestLink}`.substring(0, 280);
 
-  // Telegram — one sentence + link, nothing else
-  const sentence = entry.amount
-    ? `${entry.name} — ${entry.amount} grant. ${desc}`
-    : `${entry.name}: ${desc}`;
-  const telegram = `${sentence.substring(0, 280)}\n${entry.bestLink}`;
+  // Telegram — one-liner summary + link on separate line
+  const parts = [entry.name];
+  if (entry.amount) parts.push(`— ${entry.amount}`);
+  if (entry.deadline) parts.push(`— deadline ${entry.deadline}`);
+  const telegramLine1 = parts.join(' ');
+  const telegram = `${telegramLine1}\n${entry.bestLink}`;
 
   return { tweet, telegram };
 }
