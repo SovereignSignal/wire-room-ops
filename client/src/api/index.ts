@@ -12,9 +12,10 @@ async function authFetch(url: string, init?: RequestInit): Promise<Response> {
   return res;
 }
 
-export async function fetchEntries(params: { status?: string; wire?: string } = {}): Promise<ScanEntry[]> {
+export async function fetchEntries(params: { status?: string; wire?: string; limit?: number } = {}): Promise<ScanEntry[]> {
+  const effectiveParams = { limit: 500, ...params };
   const q = new URLSearchParams(
-    Object.fromEntries(Object.entries(params).filter(([, v]) => v != null))
+    Object.fromEntries(Object.entries(effectiveParams).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)]))
   ).toString();
   const res = await authFetch(`${BASE}/scan/entries${q ? "?" + q : ""}`);
   if (!res.ok) throw new Error(`Failed to fetch entries: ${res.status}`);
