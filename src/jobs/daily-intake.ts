@@ -236,6 +236,7 @@ export async function runDailyIntake(
   let highQualityCount = 0;
 
   const { classifyEntry } = await import('../services/classifier');
+  const classificationFailures: number[] = [];
 
   for (const entryId of uniqueEntryIds) {
     // Fetch the entry for classification + scoring
@@ -273,6 +274,7 @@ export async function runDailyIntake(
       );
     } catch (classError) {
       console.error(`[DailyIntake] Classification failed for entry ${entryId}:`, classError);
+      classificationFailures.push(entryId);
       // Fallback: queue with score 0
       await pool.query(
         `UPDATE scan_entries SET quality_score = 0, status = 'queued' WHERE id = $1`,
@@ -282,6 +284,56 @@ export async function runDailyIntake(
 
     totalScore += qualityScore;
     if (qualityScore >= 60) highQualityCount++;
+  }
+
+  // Retry failed classifications once
+  if (classificationFailures.length > 0) {
+    progress(`Retrying ${classificationFailures.length} failed classifications...`, 82);
+
+    for (const entryId of classificationFailures) {
+      try {
+        // Brief pause between retries
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        const entryRes = await pool.query(
+          `SELECT name, description, source_url, wire FROM scan_entries WHERE id = $1`,
+          [entryId]
+        );
+        const entry = entryRes.rows[0];
+        if (!entry) continue;
+
+        const classResult = await classifyEntry({
+          name: entry.name,
+          description: entry.description || '',
+          source_url: entry.source_url || '',
+          wire: entry.wire,
+        });
+
+        await pool.query(
+          `UPDATE scan_entries
+           SET quality_score = $1, quality_breakdown = $2,
+               classification = $3, classification_reason = $4,
+               metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb
+           WHERE id = $6`,
+          [
+            classResult.qualityScore,
+            JSON.stringify({ scoreReason: classResult.scoreReason }),
+            classResult.classification,
+            classResult.reason,
+            JSON.stringify(classResult.extracted),
+            entryId,
+          ]
+        );
+
+        // Update running totals
+        totalScore += classResult.qualityScore;
+        if (classResult.qualityScore >= 60) highQualityCount++;
+
+        console.log(`[DailyIntake] Retry succeeded for entry ${entryId}: ${classResult.classification} (${classResult.qualityScore})`);
+      } catch (retryError) {
+        console.error(`[DailyIntake] Retry also failed for entry ${entryId}:`, retryError);
+      }
+    }
   }
 
   const avgScore =

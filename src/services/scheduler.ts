@@ -566,7 +566,7 @@ export function getSchedulerStatus(): SchedulerStatus {
       lastJobStatus: jobStatus?.status || null,
       lastJobError: jobStatus?.error || null,
       nextRun: getNextRunTime(schedule.id)?.toISOString() || null,
-      cronExpression: schedule.enabled ? buildCronExpression(schedule) : null,
+      cronExpression: buildCronExpression(schedule),
       description: formatScheduleDescription(schedule),
       config: schedule,
     });
@@ -628,6 +628,12 @@ export async function initScheduler(): Promise<void> {
       const defaultSchedule = await createSchedule(DEFAULT_SCHEDULE_TEMPLATE);
       schedules.set(defaultSchedule.id, defaultSchedule);
       console.log('[Scheduler] No saved schedules found, created default');
+    }
+
+    // Log all loaded schedules for observability
+    console.log(`[Scheduler] Loaded ${schedules.size} schedules:`);
+    for (const schedule of schedules.values()) {
+      console.log(`  - ${schedule.name} [${schedule.scheduleType}] wire=${schedule.wire} enabled=${schedule.enabled} cron=${buildCronExpression(schedule)}`);
     }
 
     // Start all enabled schedules

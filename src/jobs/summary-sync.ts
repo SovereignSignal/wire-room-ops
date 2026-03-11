@@ -58,11 +58,11 @@ export interface SyncResult {
  * Idempotent: checks source_url to avoid duplicates.
  *
  * @param pool - Postgres pool
- * @param lookbackHours - How far back to look for unsynced summaries (default: 48)
+ * @param lookbackHours - How far back to look for unsynced summaries (default: 168 = 7 days)
  */
 export async function syncSummariesToScanEntries(
   pool: Pool,
-  lookbackHours = 48
+  lookbackHours = 168
 ): Promise<SyncResult> {
   const result: SyncResult = { synced: 0, skipped: 0, errors: 0 };
 

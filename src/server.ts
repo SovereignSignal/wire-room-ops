@@ -33,6 +33,7 @@ import { handleTelegramUpdate, registerIntakeWebhook, cleanupPendingEntries } fr
 import { processRawEntries } from './jobs/process-raw';
 import { databaseRouter } from './routes/database';
 import { runEnrichment } from './jobs/enrichment';
+import { validateForApproval } from './services/approval-guard';
 
 const app = express();
 const privyJwks = jwksClient({
@@ -1465,6 +1466,27 @@ app.post('/api/summary-sync', requireAuth, async (_req: Request, res: Response) 
   }
 });
 
+// API: Historical backfill for summary sync (large lookback window)
+app.post('/api/admin/summary-sync-backfill', requireAuth, async (req: Request, res: Response) => {
+  if (!rateLimit('summary-sync-backfill', 1, 30 * 60 * 1000)) {
+    res.status(429).json({ error: 'Backfill recently run. Please wait 30 minutes.' });
+    return;
+  }
+
+  try {
+    const pool = getPool();
+    const requestedHours = typeof req.body?.lookbackHours === 'number' ? req.body.lookbackHours : 8760;
+    const lookbackHours = Math.min(Math.max(1, requestedHours), 17520); // Cap at 2 years
+    console.log(`[SummarySync] Backfill triggered with lookbackHours=${lookbackHours}`);
+    const result = await syncSummariesToScanEntries(pool, lookbackHours);
+    res.json({ success: true, lookbackHours, ...result });
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[SummarySync] Backfill failed:', error);
+    res.status(500).json({ error: errorMsg });
+  }
+});
+
 // API: Manual trigger for process-raw (dedup+score raw entries)
 app.post('/api/process-raw', requireAuth, async (_req: Request, res: Response) => {
   if (!rateLimit('process-raw', 3, 5 * 60 * 1000)) {
@@ -1681,6 +1703,37 @@ app.post('/api/scan/entries/bulk-action', requireAuth, async (req: Request, res:
   try {
     const pool = getPool();
 
+    // Pre-approval validation gate for bulk approve
+    if (action === 'approve') {
+      const preCheck = await pool.query(
+        `SELECT id, name, description, source_url, classification, quality_score, deadline
+         FROM scan_entries WHERE id = ANY($1)`,
+        [entryIds]
+      );
+
+      const blocked: Array<{ id: number; errors: string[]; warnings: string[] }> = [];
+      let passCount = 0;
+
+      for (const row of preCheck.rows) {
+        const validation = validateForApproval(row);
+        if (!validation.valid) {
+          blocked.push({ id: row.id, errors: validation.errors, warnings: validation.warnings });
+        } else {
+          passCount++;
+        }
+      }
+
+      if (blocked.length > 0 && req.query.force !== 'true') {
+        res.status(422).json({
+          error: 'Some entries blocked',
+          blocked,
+          passCount,
+          blockCount: blocked.length,
+        });
+        return;
+      }
+    }
+
     // Bulk update status
     const result = await pool.query(
       `UPDATE scan_entries SET status = $1, updated_at = NOW()
@@ -1774,6 +1827,34 @@ app.post('/api/scan/entries/:id/action', requireAuth, async (req: Request, res: 
 
   try {
     const pool = getPool();
+
+    // Pre-approval validation gate for single approve
+    let approvalWarnings: string[] = [];
+    if (action === 'approve') {
+      const preCheck = await pool.query(
+        `SELECT id, name, description, source_url, classification, quality_score, deadline
+         FROM scan_entries WHERE id = $1`,
+        [entryId]
+      );
+
+      if (preCheck.rows.length === 0) {
+        res.status(404).json({ error: 'Entry not found' });
+        return;
+      }
+
+      const validation = validateForApproval(preCheck.rows[0]);
+      approvalWarnings = validation.warnings;
+
+      if (!validation.valid && req.query.force !== 'true') {
+        res.status(422).json({
+          error: 'Approval blocked',
+          issues: validation.errors,
+          warnings: validation.warnings,
+        });
+        return;
+      }
+    }
+
     const result = await pool.query(
       `UPDATE scan_entries SET status = $1, updated_at = NOW() WHERE id = $2
        RETURNING id, status, wire, name, description, enriched_summary, quality_score, amount, deadline, source_url, org_id, scan_date`,
@@ -1838,7 +1919,11 @@ app.post('/api/scan/entries/:id/action', requireAuth, async (req: Request, res: 
       }
     }
 
-    res.json({ success: true, newStatus, summaryId });
+    const response: Record<string, any> = { success: true, newStatus, summaryId };
+    if (approvalWarnings.length > 0) {
+      response.warnings = approvalWarnings;
+    }
+    res.json(response);
   } catch (error) {
     console.error('Failed to update entry status:', error);
     res.status(500).json({ error: 'Failed to update entry' });
@@ -2617,6 +2702,60 @@ app.post('/api/distribution/channels/:id/test', requireAuth, async (req: Request
   } catch (error) {
     console.error('Failed to send test message:', error);
     res.status(500).json({ error: 'Failed to send test message' });
+  }
+});
+
+// API: Run one-time data cleanup migration
+app.post('/api/admin/run-migration', requireAuth, async (_req: Request, res: Response) => {
+  if (!rateLimit('admin-migration', 1, 30 * 60 * 1000)) {
+    res.status(429).json({ error: 'Migration recently run. Please wait 30 minutes.' });
+    return;
+  }
+
+  try {
+    const { runDataCleanup } = await import('./migrations/cleanup-approved-data');
+    const pool = getPool();
+    const result = await runDataCleanup(pool);
+    res.json(result);
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[Migration] Data cleanup failed:', error);
+    res.status(500).json({ error: errorMsg });
+  }
+});
+
+// API: Backfill classification for UNCHECKED entries
+app.post('/api/admin/classify-backfill', requireAuth, async (req: Request, res: Response) => {
+  if (!rateLimit('classify-backfill', 3, 5 * 60 * 1000)) {
+    res.status(429).json({ error: 'Backfill recently run. Please wait a few minutes.' });
+    return;
+  }
+
+  try {
+    const pool = getPool();
+    const limit = Math.min(Math.max(Number(req.body?.limit) || 50, 1), 200);
+
+    const result = await pool.query(
+      `SELECT id, name, description, source_url, wire FROM scan_entries
+       WHERE classification = 'UNCHECKED' AND status IN ('queued', 'approved')
+       ORDER BY status DESC, created_at DESC
+       LIMIT $1`,
+      [limit]
+    );
+
+    if (result.rows.length === 0) {
+      res.json({ processed: 0, classified: 0, errors: 0 });
+      return;
+    }
+
+    const { classifyBatch } = await import('./services/classifier');
+    const stats = await classifyBatch(result.rows, pool);
+
+    res.json({ processed: result.rows.length, ...stats });
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[ClassifyBackfill] Failed:', error);
+    res.status(500).json({ error: errorMsg });
   }
 });
 
