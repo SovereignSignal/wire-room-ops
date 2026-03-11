@@ -75,11 +75,15 @@ function isXUrl(url: string): boolean {
   } catch { return false; }
 }
 
-/** Returns the best clickable URL: X links trusted directly, everything else → search */
+/** Returns the best clickable URL: trust stored URL if it exists, search fallback if not */
 function resolveSourceUrl(entry: { source_url?: string; name?: string; description?: string }): string {
   const url = entry.source_url?.trim();
-  if (url && isXUrl(url)) return url; // X links are accurate
-  if (entry.name) return searchUrl(entry.name); // everything else → search
+  // Trust any real URL — X links, web links, whatever we have
+  if (url && url.startsWith('http') && !url.startsWith('https://manual/') && !url.startsWith('https://t.me/manual/')) {
+    return url;
+  }
+  // No URL → search fallback
+  if (entry.name) return searchUrl(entry.name);
   return 'https://www.google.com/search';
 }
 
@@ -451,11 +455,11 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                         target="_blank"
                         rel="noopener noreferrer"
                         onClick={(e) => e.stopPropagation()}
-                        title={isX ? 'Open X post' : 'Search Google for this grant'}
+                        title={isX ? 'Open X post' : href.includes('google.com/search') ? 'Search Google' : 'Open source'}
                         className="inline-flex items-center gap-1 px-2 py-1 rounded border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 text-[10px] font-mono font-medium transition-colors whitespace-nowrap"
                       >
                         <ExternalLink className="w-3 h-3 shrink-0" />
-                        {isX ? 'X' : 'Search'}
+                        {isX ? 'X' : href.includes('google.com/search') ? '🔍' : getSourceLabel(href)}
                       </a>
                     );
                   })() : <span className="text-muted-foreground text-xs">—</span>}

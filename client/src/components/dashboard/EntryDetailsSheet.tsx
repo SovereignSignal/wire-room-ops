@@ -147,20 +147,19 @@ export function EntryDetailsSheet({ entry, onClose }: EntryDetailsSheetProps) {
                           X Post <ExternalLink className="w-3 h-3" />
                         </a>
                       )}
-                      {/* Web links: shown as secondary, labeled as potentially stale */}
+                      {/* Web links: shown as primary link */}
                       {getDirectUrl(entry) && (
                         <a
                           href={getDirectUrl(entry)!}
                           target="_blank"
                           rel="noopener noreferrer"
                           onClick={(e) => e.stopPropagation()}
-                          className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-primary transition-colors font-mono"
-                          title="May be stale or incorrect"
+                          className="inline-flex items-center gap-1 text-xs text-primary hover:text-primary/80 transition-colors font-mono"
                         >
-                          Web Link <ExternalLink className="w-3 h-3" />
+                          Source <ExternalLink className="w-3 h-3" />
                         </a>
                       )}
-                      {/* Always provide search as reliable fallback */}
+                      {/* Search as fallback */}
                       {entry.name && (
                         <a
                           href={`https://www.google.com/search?q=${encodeURIComponent(entry.name)}`}
