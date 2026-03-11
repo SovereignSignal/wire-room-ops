@@ -48,6 +48,57 @@ function stripMarkdownArtifacts(text: string): string {
 }
 
 // ============================================================
+// Post-parse field sanitization
+// ============================================================
+
+/**
+ * Post-parse sanitization: clean up fields that parsers may have mangled.
+ * Applied uniformly to all parser strategy outputs.
+ */
+function sanitizeResult(result: RawScanResult): RawScanResult {
+  let { name, description, amount, deadline, sourceUrl } = result;
+
+  // 1. Name: truncate at 120 chars at word boundary
+  if (name.length > 120) {
+    // If name is a full sentence, move the excess text into description if empty
+    const truncated = name.substring(0, 120).replace(/\s+\S*$/, '');
+    if (!description || description.length < 10) {
+      description = name; // Use full text as description
+    }
+    name = truncated || name.substring(0, 120);
+  }
+
+  // 2. Name: strip trailing junk after semicolons/closing parens that indicate parser leakage
+  name = name.replace(/[;)]\s*.{10,}$/, '').trim();
+
+  // 3. Deadline: reject if it looks like junk (contains URLs, semicolons, or is too long)
+  if (deadline) {
+    if (deadline.length > 50 || /[;)(]/.test(deadline) || /https?:\/\//.test(deadline)) {
+      deadline = null;
+    }
+  }
+
+  // 4. Amount: flag suspiciously low bare numbers without K/M/B suffix
+  //    "$53" is almost certainly a misparse, but "$53K" and "$5,000" are fine
+  if (amount) {
+    const bareSmallAmount = amount.match(/^\$(\d{1,3})$/);
+    if (bareSmallAmount) {
+      const num = parseInt(bareSmallAmount[1]);
+      if (num < 100) {
+        amount = null; // Likely a misparse
+      }
+    }
+  }
+
+  // 5. Description: if still empty after name truncation, provide a minimal fallback
+  if (!description || description.trim().length === 0) {
+    description = '';
+  }
+
+  return { name: name.trim(), description, amount, deadline, sourceUrl };
+}
+
+// ============================================================
 // Text Parser: Structured Grok Output -> RawScanResult[]
 // ============================================================
 
@@ -61,19 +112,19 @@ function stripMarkdownArtifacts(text: string): string {
 export function parseStructuredOutput(text: string): RawScanResult[] {
   // Strategy 1: Try structured text format (numbered list with bold names)
   const structured = parseStructuredText(text);
-  if (structured.length > 0) return structured;
+  if (structured.length > 0) return structured.map(sanitizeResult);
 
   // Strategy 2: Try JSON parsing (array of objects or wrapped array)
   const jsonResults = parseJsonOutput(text);
-  if (jsonResults.length > 0) return jsonResults;
+  if (jsonResults.length > 0) return jsonResults.map(sanitizeResult);
 
   // Strategy 4: Try X-post format (@Handle  Description / URL / date blocks)
   const xPosts = parseXPostFormat(text);
-  if (xPosts.length > 0) return xPosts;
+  if (xPosts.length > 0) return xPosts.map(sanitizeResult);
 
   // Strategy 3: Try lenient numbered list (no bold required, flexible URL detection)
   const lenient = parseLenientNumberedList(text);
-  if (lenient.length > 0) return lenient;
+  if (lenient.length > 0) return lenient.map(sanitizeResult);
 
   return [];
 }

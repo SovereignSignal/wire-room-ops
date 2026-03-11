@@ -64,12 +64,15 @@ src/
 │   └── brand.ts          # Deployment-agnostic brand config (audience, contentType, contentVerb)
 ├── db/index.ts           # Postgres queries, schedules, feeds, scan tables, scan prompts, distribution tables
 ├── jobs/
-│   ├── daily-intake.ts     # Scan intake pipeline orchestrator (parse -> dedup -> score -> queue)
+│   ├── daily-intake.ts     # Scan intake pipeline orchestrator (parse -> dedup -> classify -> queue)
 │   ├── scan-execution.ts   # Automated scan execution (prompt fetch -> Grok -> intake)
 │   ├── forum-scan.ts       # Forum scan orchestrator (discuss.watch -> intake, DB-driven wire list)
-│   └── summary-sync.ts     # Sync tele-sum summaries into scan_entries as approved (DB-driven wire list)
+│   └── summary-sync.ts     # Sync tele-sum summaries into scan_entries as approved (7-day lookback)
+├── migrations/
+│   └── cleanup-approved-data.ts  # One-time data cleanup for existing bad entries
 ├── services/
 │   ├── anthropic.ts      # Claude API calls with scraping integration (uses getBrand())
+│   ├── approval-guard.ts   # Pre-approval validation (blocks bad data from reaching website)
 │   ├── auth.ts           # Session tokens, download tokens, cleanup timers
 │   ├── dedup.ts            # URL exact-match and fuzzy name deduplication
 │   ├── distribution.ts     # Distribution orchestrator: send entries to channels, retry, newsletter
@@ -92,9 +95,6 @@ src/
 │   └── x-client.ts         # Twitter/X posting via twitter-api-v2
 ├── views/                    # Server-rendered pages (login + error only; dashboard is React SPA)
 │   ├── shared.ts         # Page shell, deep space palette, Orbitron headings, signal cyan accent
-│   ├── feed.ts           # Per-wire feed dashboard page (legacy server-rendered)
-│   ├── queue.ts          # Scan queue review page (legacy server-rendered)
-│   ├── settings.ts       # Schedules/settings page (legacy server-rendered)
 │   ├── login.ts          # Privy login page with starfield canvas animation
 │   └── error.ts          # Error/download/expired link pages
 ├── utils/
@@ -135,19 +135,94 @@ Server-rendered views (login/error only):
 3. Update `.env.example`
 4. Update README.md environment variables table
 
-## Database Queries
+## Database Architecture
 
-The main query is in `src/db/index.ts` - `getEntriesForDateRange()`:
-- Joins `summaries`, `messages`, and `categories` tables
-- Filters by `processing_status = 'SUCCESS'`
-- Orders by category then date descending
-- Extracts first URL from `extracted_urls` JSON array
+### Shared PostgreSQL Database
 
-Schedule configuration uses a `schedules` table with UUID primary keys, supporting multiple named schedules with a `schedule_type` field (`scan-execution` or `forum-scan`). Legacy `schedule_config` data is auto-migrated on startup.
+All services (`wire-room-ops`, `the-wire-room`, `tele-sum`) share one PostgreSQL database hosted on Railway (`wire-room-db`). This repo is the primary writer; `the-wire-room` reads approved entries for the public website.
 
-The `feeds` table manages dynamic wire/feed types, seeded from `SEED_FEEDS` and auto-discovered from `channel_configs`. Scan pipeline uses 4 tables: `scan_entries`, `seen_urls`, `seen_names`, `intake_runs`. Scan prompts are stored in `scan_prompts` with CRUD support.
+### Table Groups
 
-Distribution uses 2 tables: `distribution_config` (composite PK on `wire` + `channel`, stores per-channel settings in JSONB) and `distribution_logs` (tracks per-entry, per-channel send status with a unique partial index on `(entry_id, channel) WHERE status IN ('pending','success')` to prevent double-posts). Tables are auto-created via `ensureDistributionTables()` on scheduler startup.
+| Group | Tables | Purpose |
+|-------|--------|---------|
+| **Scan pipeline** | `scan_entries`, `seen_urls`, `seen_names`, `intake_runs`, `scan_prompts` | Core intake/dedup/queue pipeline |
+| **tele-sum legacy** | `messages`, `summaries`, `categories`, `users`, `telegram_bots`, `channel_configs` | Telegram ingestion (bridged via `summary-sync.ts`) |
+| **Distribution** | `distribution_channels`, `distribution_logs`, `distribution_config` (legacy) | Channel output tracking |
+| **Config** | `feeds`, `schedules`, `schedule_config`, `integration_config` | Wire/schedule/integration config |
+| **Identity** | `org_profiles`, `sessions` | Organization tracking + auth sessions |
+| **Legacy** | `grant_entries`, `grok_usage`, `review_queue`, `alembic_version`, `sync_status` | Historical/dormant tables |
+
+### scan_entries — The Central Table
+
+All pipeline data flows through `scan_entries`. Key columns:
+
+| Column | Type | Purpose |
+|--------|------|---------|
+| `status` | text | Pipeline stage: `raw` → `deduped` → `queued` → `approved`/`declined`/`archived`/`duplicate` |
+| `classification` | varchar | Gate 2 label: `GRANT`, `NEWS`, `EXPIRED`, `NOISE`, `UNCHECKED` |
+| `quality_score` | integer | 0-100 score from LLM classifier |
+| `wire` | text | Feed vertical (crypto/ai/oss) |
+| `scan_source` | text | Ingestion channel: `x-scan`, `web-search`, `forum`, `telegram` |
+| `source_url` | text | Original source link |
+| `metadata` | jsonb | LLM-extracted structured data (amount, deadline, eligibility, summary) |
+| `org_id` | integer | FK to `org_profiles` (auto-linked on approve) |
+
+Status distribution (typical): ~46% duplicate, ~22% archived, ~17% queued, ~12% approved, ~3% declined.
+
+### Data Flow: Ingestion → Refinery → Publishing
+
+```
+INGESTION (raw data)                    THE REFINERY (processing)               PUBLISHING
+┌─────────────────┐                     ┌───────────────────┐                   ┌──────────────┐
+│ X/Grok Scans    │──┐                  │ Gate 1: Complete  │──incomplete──→ archived
+│ Web Search      │  ├──→ scan_entries ──│ Gate 2: Classify  │──NOISE──────→ archived
+│ Forum Scan      │  │    (status=raw)   │ Deduplication     │──duplicate──→ duplicate
+│ Telegram Bridge │──┘                  │ Quality Score     │──low score──→ archived
+│ Manual Paste    │                     └───────┬───────────┘
+└─────────────────┘                             │ score >= 40
+                                                ▼
+                                         queued (editorial queue)
+                                                │ operator review
+                                                ▼
+                                         approved ──→ thewireroom.xyz
+                                                  ──→ distribution channels (TG, X, newsletter)
+```
+
+### Dedup Tables
+
+- **`seen_urls`**: Exact URL match. Composite unique on `(normalized_url, wire)`. Handles aggregate URLs (same URL, different entries) via name similarity check.
+- **`seen_names`**: Fuzzy token overlap. GIN index on `name_tokens`. Unique on `(entry_id)`. Requires anchor token (non-generic) overlap to prevent false positives.
+
+### Approval Validation Guard
+
+Pre-approval validation (`src/services/approval-guard.ts`) prevents bad data from reaching the public website:
+- **Blocks**: empty description, empty source_url, EXPIRED classification
+- **Warns**: oversized names (>120 chars), junk deadline data, UNCHECKED classification, missing quality score
+- Applied to both single and bulk approve endpoints. Operator can override with `?force=true`.
+
+### The Telegram Bridge
+
+`summary-sync.ts` bridges `tele-sum`'s `summaries` table → `scan_entries` (as `status=approved`):
+- Runs every 15 minutes, 7-day lookback window
+- Idempotent: skips entries where `source_url` already exists in `scan_entries`
+- Infers wire from content keywords (AI/OSS detection, defaults to crypto)
+- Historical backfill available via `POST /api/admin/summary-sync-backfill`
+
+### Admin Endpoints
+
+| Method | Path | Purpose | Rate Limit |
+|--------|------|---------|------------|
+| POST | `/api/admin/run-migration` | One-time data cleanup (fix junk fields, expired approvals) | 1 / 30 min |
+| POST | `/api/admin/classify-backfill` | Batch-classify UNCHECKED queued/approved entries | 1 / 10 min |
+| POST | `/api/admin/summary-sync-backfill` | Historical Telegram summary import | 1 / 30 min |
+
+### Other Tables
+
+Schedule configuration uses a `schedules` table with UUID primary keys, supporting multiple named schedules with a `schedule_type` field (`scan-execution` or `forum-scan`). Cron expressions are computed dynamically from `hour`/`minute`/`frequencyHours` columns via `buildCronExpression()`.
+
+The `feeds` table manages dynamic wire/feed types, seeded from `SEED_FEEDS` and auto-discovered from `channel_configs`. Scan prompts are stored in `scan_prompts` with CRUD support.
+
+Distribution uses `distribution_channels` (managed channels with UUID PK, per-channel credentials in JSONB) and `distribution_logs` (tracks per-entry, per-channel send status with a unique partial index to prevent double-posts). Legacy `distribution_config` table exists but is unused.
 
 ## API Integration Details
 
@@ -292,23 +367,29 @@ Automated discovery of grant opportunities via X.com scanning, web search, and f
 
 ### Data Flow
 1. **Execute**: `scan-execution.ts` fetches active prompts from `scan_prompts`, calls Grok Responses API with `x_search` or `web_search` tool (per prompt's `tool_type`)
-2. **Parse**: `intake.ts` extracts structured results (name, description, deadline, link, amount) from Grok output
-3. **Insert**: Raw results written to `scan_entries` with `status: raw`
-4. **Dedup**: `dedup.ts` checks against `seen_urls` (exact URL match) and `seen_names` (fuzzy token overlap)
-5. **Score**: `quality-scorer.ts` assigns 0-100 quality score based on amount, deadline, actionability
-6. **Queue**: Entries with score >= 40 get `status: queued`; below threshold -> `status: archived`
+2. **Parse**: `intake.ts` extracts structured results via 4 parser strategies (structured text, JSON, X-post format, lenient numbered list)
+3. **Sanitize**: Post-parse `sanitizeResult()` cleans all parsed output — truncates names >120 chars, rejects junk deadlines (>50 chars, contains URLs/semicolons), discards suspicious small amounts (<$100 bare), moves excess name text into description
+4. **Insert**: Raw results written to `scan_entries` with `status: raw`
+5. **Gate 1 — Completeness**: Entries with empty `source_url` or missing critical fields are flagged/archived before dedup
+6. **Dedup**: `dedup.ts` checks against `seen_urls` (exact URL match) and `seen_names` (fuzzy token overlap)
+7. **Gate 2 — LLM Classify + Score**: `classifier.ts` calls Grok to classify (GRANT/NEWS/EXPIRED/NOISE) and score (0-100) in one call. Failed classifications retry once with 2-second delay.
+8. **Queue**: Classified entries get `status: queued`; NOISE -> `status: archived`
+9. **Approve Guard**: Pre-approval validation blocks entries with empty descriptions, empty URLs, or EXPIRED classification from being published
 
 ### Key Files
 - `src/jobs/scan-execution.ts` - Orchestrates prompt execution and feeds results to intake
-- `src/jobs/daily-intake.ts` - Main intake pipeline (dedup -> score -> queue)
-- `src/services/intake.ts` - Parser, URL/name normalization
+- `src/jobs/daily-intake.ts` - Main intake pipeline (dedup -> classify -> queue, with classification retry)
+- `src/services/intake.ts` - Parser with 4 strategies + `sanitizeResult()` post-parse cleanup
 - `src/services/intake-core.ts` - Channel-agnostic intake logic (URL extraction, wire detection, DB insert)
+- `src/services/approval-guard.ts` - Pre-approval validation (blocks empty desc/URL, EXPIRED entries)
+- `src/services/classifier.ts` - Gate 2 LLM classifier (GRANT/NEWS/EXPIRED/NOISE + quality score)
 - `src/services/telegram-adapter.ts` - Telegram intake bot adapter (webhook, inline keyboard, setWebhook)
 - `src/services/dedup.ts` - Two-layer dedup (URL exact + name fuzzy)
 - `src/services/quality-scorer.ts` - Scoring engine with type classification (keywords overrideable via env)
 - `src/services/scan-stats.ts` - Prompt effectiveness metrics (dup rate, avg quality, overlap)
 - `src/services/forum.ts` - discuss.watch API client for forum scanning
 - `src/jobs/forum-scan.ts` - Forum scan orchestrator (search -> intake pipeline, DB-driven default wire)
+- `src/migrations/cleanup-approved-data.ts` - One-time data cleanup for existing bad entries
 
 ### Schedule Types
 - **`scan-execution`**: Daily cron, runs `runScanExecution()` which executes all active prompts for a wire
@@ -320,21 +401,16 @@ Automated discovery of grant opportunities via X.com scanning, web search, and f
 - Test endpoint: `/api/scan/prompts/:id/test` -- executes a prompt and returns parsed results without intake processing
 - Effectiveness stats: `/api/scan/prompt-stats` -- per-prompt metrics and cross-prompt overlap rate
 
-### Quality Score Breakdown
-| Signal | Points | Condition |
-|--------|--------|-----------|
-| Has amount | +25 | Non-empty amount field |
-| Amount > $5K | +15 | Parsed numeric >= 5000 |
-| Small amount | -5 | Parsed numeric < 1000 |
-| Has deadline | +15 | Specific date (not "Rolling" or empty) |
-| Rolling deadline | +5 | Deadline is exactly "Rolling" |
-| Deadline upcoming | +10 | Within 60 days |
-| Expired deadline | -10 | Deadline has passed |
-| Funding opportunity | +20 | Grant, fellowship, accelerator, etc. (FUNDING_TYPES, overrideable via `QUALITY_FUNDING_TYPES`) |
-| Is actionable | +15 | Hackathon, bounty, competition, or has opportunity keywords (overrideable via `QUALITY_ACTIONABLE_TYPES`) |
-| Governance noise | -15 | DAO proposals, treasury votes |
-| Already awarded | -10 | Past-tense grant language (when not also actionable/funding) |
-| Vague description | -5 | Description shorter than 30 characters |
+### Gate 2: LLM Classification + Scoring
+
+Quality scoring is done by the Grok LLM classifier (`src/services/classifier.ts`) in a single API call that:
+1. Classifies entries as GRANT/NEWS/EXPIRED/NOISE
+2. Assigns a 0-100 quality score based on information value
+3. Extracts structured data (amount, deadline, eligibility, summary) into `metadata` JSONB
+
+Failed classifications retry once with a 2-second delay. If both attempts fail, entries are queued with score 0 and classification UNCHECKED. A backfill endpoint (`POST /api/admin/classify-backfill`) can batch-classify UNCHECKED entries later.
+
+The legacy rule-based scorer (`src/services/quality-scorer.ts`) is still in the codebase but is no longer used in the main pipeline.
 
 ### Common Tasks for Scan Pipeline
 - **Adjusting quality scoring weights**: `src/services/quality-scorer.ts` -- modify point values in `scoreEntry()`
@@ -358,8 +434,9 @@ Per-feed multi-channel distribution of approved scan entries. Distribution is a 
 - **Types**: `src/types/intake.ts` -- `DistributionChannel`, `DistributionStatus`, `DistributionConfig`, `DistributionLog`, `GeneratedPosts`
 
 ### Database Tables
-- **`distribution_config`**: Composite PK `(wire, channel)`. Columns: `wire`, `channel` (telegram/x/newsletter), `enabled` boolean, `config` JSONB (channel-specific settings like channel ID or OAuth creds). Created via `ensureDistributionTables()` on scheduler startup.
+- **`distribution_channels`**: Managed channels with UUID PK. Columns: `id`, `wire`, `channel` (telegram/x), `name`, `enabled`, `target_id`, `credentials` JSONB (bot tokens, OAuth creds), `created_at`, `updated_at`. CRUD via Settings > Distribution tab.
 - **`distribution_logs`**: Tracks each send attempt. Columns: `id` (UUID), `entry_id` FK to `scan_entries`, `channel`, `wire`, `status` (pending/success/failed), `post_text`, `external_id` (platform post ID), `error_message`, `created_at`. Has unique partial index on `(entry_id, channel) WHERE status IN ('pending','success')` to prevent double-posts.
+- **`distribution_config`**: Legacy table (unused). Replaced by `distribution_channels`.
 
 ### API Routes
 | Method | Path | Purpose | Rate Limit |
@@ -391,8 +468,7 @@ Per-feed multi-channel distribution of approved scan entries. Distribution is a 
 - **Retry sends only to failed channels**: Redistribution skips channels that already have a `success` or `pending` log entry
 
 ### Dashboard UI
-- **Feed page** (`src/views/feed.ts`): Distribution section with per-channel config cards showing enabled/disabled status, a configure dialog, "Distribute to Channels" button, and "Generate Newsletter" button
-- **Queue page** (`src/views/queue.ts`): Approved entries tab shows distribution status pills (TG/X/NL) -- green for success, red for failed (clickable to retry), gray for pending
+- **Dashboard** (`client/`): React SPA with Settings > Distribution tab showing managed channel cards (TEST/EDIT/DEL actions), Queue tab with approve/decline actions and distribution status, Published tab with distribution pills
 
 ### Common Tasks for Distribution
 - **Configuring Telegram for a wire**: PUT `/api/distribution/config/:wire/telegram` with `{ "enabled": true, "config": { "channelId": "@yourchannel" } }`. Requires `TELEGRAM_BOT_TOKEN` env var.
@@ -416,6 +492,9 @@ In-memory rate limiter in `src/server.ts`:
 | `/api/distribution/run/:wire` | 3 per wire | 5 min |
 | `/api/distribution/newsletter/:wire` | 5 global | 5 min |
 | `/api/scan/entries/:id/redistribute` | 5 global | 5 min |
+| `/api/admin/run-migration` | 1 global | 30 min |
+| `/api/admin/classify-backfill` | 3 global | 5 min |
+| `/api/admin/summary-sync-backfill` | 1 global | 30 min |
 
 ## Code Style Notes
 
@@ -441,3 +520,4 @@ Previously planned and now implemented:
 - ~~Weekly newsletter generation~~ -- Implemented: on-demand newsletter markdown generation via `/api/distribution/newsletter/:wire`
 - ~~Telegram bot ingestion~~ -- Implemented: `telegram-adapter.ts` + `intake-core.ts` with webhook at `/api/telegram/intake-webhook`
 - ~~Deployment-agnostic config~~ -- Implemented: `brand.ts` + env-var driven wire lists, scoring keywords, and AI prompts
+- ~~Data quality gates~~ -- Implemented: parser sanitization, approval guard, classification retry, admin backfill endpoints
