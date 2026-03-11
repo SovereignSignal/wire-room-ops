@@ -6,6 +6,7 @@ import { PublishedTab } from '@/components/dashboard/PublishedTab';
 import { SourcesTab } from '@/components/dashboard/SourcesTab';
 import { DistributionTab } from '@/components/dashboard/DistributionTab';
 import { DatabaseTab } from '@/components/dashboard/DatabaseTab';
+import { IntegrationsTab } from '@/components/dashboard/IntegrationsTab';
 // ReviewTab removed — approve/decline now inline in QueueTab
 import { Starfield } from '@/components/dashboard/Starfield';
 import { EntryDetailsSheet } from '@/components/dashboard/EntryDetailsSheet';
@@ -190,6 +191,9 @@ const Index = () => {
         )}
         {activeTab === 'database' && (
           <DatabaseTab />
+        )}
+        {activeTab === 'integrations' && (
+          <IntegrationsTab />
         )}
       </DashboardLayout>
 

@@ -17,6 +17,7 @@ import { runDailyIntake, getDailyQueue, getIntakeStats } from './jobs/daily-inta
 import { getPool, getDistributionConfigs, upsertDistributionConfig, getDistributionLogs, getDistributionStatusBulk, getDistributionStatusForEntries, getDistributionChannels, getDistributionChannelById, createDistributionChannel, updateDistributionChannel, deleteDistributionChannel, insertApprovedSummary } from './db';
 import { executeScanPrompt } from './services/grok';
 import { runOrgExtraction, getOrgProfiles, getOrgById, getEntriesByOrg, ensureOrgProfilesTable, extractOrgFromName, upsertOrgProfile, linkEntryToOrg } from './services/org-extractor';
+import { ensureIntegrationConfigTable, getIntegrationConfigs, getIntegrationById, upsertIntegration, updateIntegration, deleteIntegration, validateNotionToken, validateNotionDatabase, syncOrgsToNotion } from './services/notion-sync';
 import { withRetry } from './services/processor';
 import { runScanExecution } from './jobs/scan-execution';
 import { runForumScan } from './jobs/forum-scan';
@@ -1889,6 +1890,162 @@ app.post('/api/orgs/extract', requireAuth, async (req: Request, res: Response) =
   }
 });
 
+// ============================================================
+// Integrations API (Notion CRM Sync)
+// ============================================================
+
+// GET /api/integrations — list all integrations
+app.get('/api/integrations', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const provider = req.query.provider as string | undefined;
+    const configs = await getIntegrationConfigs(provider);
+    // Mask token
+    const masked = configs.map(c => ({
+      ...c,
+      config: {
+        ...c.config,
+        notion_token: c.config.notion_token ? '****' + c.config.notion_token.slice(-4) : '',
+      },
+    }));
+    res.json(masked);
+  } catch (err) {
+    console.error('[API] Failed to list integrations:', err);
+    res.status(500).json({ error: 'Failed to list integrations' });
+  }
+});
+
+// GET /api/integrations/:id — get single integration
+app.get('/api/integrations/:id', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const config = await getIntegrationById(id);
+    if (!config) { res.status(404).json({ error: 'Not found' }); return; }
+    res.json({
+      ...config,
+      config: {
+        ...config.config,
+        notion_token: config.config.notion_token ? '****' + config.config.notion_token.slice(-4) : '',
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to get integration' });
+  }
+});
+
+// POST /api/integrations — create integration
+app.post('/api/integrations', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { provider = 'notion', name, enabled = false, config: configData } = req.body;
+    if (!name) { res.status(400).json({ error: 'name is required' }); return; }
+    const result = await upsertIntegration(provider, name, enabled, configData || {});
+    res.json({
+      ...result,
+      config: {
+        ...result.config,
+        notion_token: result.config.notion_token ? '****' + result.config.notion_token.slice(-4) : '',
+      },
+    });
+  } catch (err) {
+    console.error('[API] Failed to create integration:', err);
+    res.status(500).json({ error: 'Failed to create integration' });
+  }
+});
+
+// PUT /api/integrations/:id — update integration
+app.put('/api/integrations/:id', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { enabled, config: configData } = req.body;
+
+    // Merge config — don't overwrite token if not provided
+    const existing = await getIntegrationById(id);
+    if (!existing) { res.status(404).json({ error: 'Not found' }); return; }
+
+    const mergedConfig = configData
+      ? { ...existing.config, ...configData }
+      : undefined;
+
+    // If token is masked, keep the existing one
+    if (mergedConfig?.notion_token?.startsWith('****')) {
+      mergedConfig.notion_token = existing.config.notion_token;
+    }
+
+    const result = await updateIntegration(id, { enabled, config: mergedConfig });
+    res.json({
+      ...result,
+      config: {
+        ...result.config,
+        notion_token: result.config.notion_token ? '****' + result.config.notion_token.slice(-4) : '',
+      },
+    });
+  } catch (err) {
+    console.error('[API] Failed to update integration:', err);
+    res.status(500).json({ error: 'Failed to update integration' });
+  }
+});
+
+// DELETE /api/integrations/:id
+app.delete('/api/integrations/:id', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    await deleteIntegration(id);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete integration' });
+  }
+});
+
+// POST /api/integrations/:id/validate — validate Notion token + database
+app.post('/api/integrations/:id/validate', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const integration = await getIntegrationById(id);
+    if (!integration) { res.status(404).json({ error: 'Not found' }); return; }
+
+    const token = integration.config.notion_token;
+    if (!token) { res.json({ valid: false, error: 'No token configured' }); return; }
+
+    // Validate token
+    const tokenResult = await validateNotionToken(token);
+    if (!tokenResult.valid) {
+      res.json({ valid: false, error: `Token invalid: ${tokenResult.error}` });
+      return;
+    }
+
+    // Validate database if configured
+    const dbId = integration.config.database_id;
+    if (dbId) {
+      const dbResult = await validateNotionDatabase(token, dbId);
+      if (!dbResult.valid) {
+        res.json({ valid: false, error: `Database not accessible: ${dbResult.error}`, workspace: tokenResult.workspace });
+        return;
+      }
+      res.json({
+        valid: true,
+        workspace: tokenResult.workspace,
+        database: dbResult.title,
+        properties: dbResult.properties,
+      });
+    } else {
+      res.json({ valid: true, workspace: tokenResult.workspace, database: null });
+    }
+  } catch (err) {
+    res.status(500).json({ error: 'Validation failed' });
+  }
+});
+
+// POST /api/integrations/:id/sync — trigger CRM sync
+app.post('/api/integrations/:id/sync', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const stats = await syncOrgsToNotion(id);
+    res.json({ success: true, ...stats });
+  } catch (err) {
+    console.error('[API] Sync failed:', err);
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Sync failed' });
+  }
+});
+
 // API: Update entry wire/vertical
 app.patch('/api/scan/entries/:id/wire', requireAuth, async (req: Request, res: Response) => {
   const entryId = parseInt(req.params.id, 10);
@@ -2483,6 +2640,13 @@ export async function startServer(): Promise<void> {
     await ensureOrgProfilesTable();
   } catch (error) {
     console.error('Org profiles table migration failed (non-fatal):', error);
+  }
+
+  // Ensure integration_config table exists (Notion CRM Sync)
+  try {
+    await ensureIntegrationConfigTable();
+  } catch (error) {
+    console.error('Integration config table migration failed (non-fatal):', error);
   }
 
   // Initialize the scheduler (loads config from database)
