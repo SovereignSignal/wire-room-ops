@@ -97,7 +97,7 @@ function parseStructuredText(text: string): RawScanResult[] {
       /^\d+\.\s+\*\*(.+?)\*\*\s*[—\-–:]\s*(.+)/
     );
     if (headerMatch) {
-      if (currentEntry && currentEntry.name && currentEntry.sourceUrl) {
+      if (currentEntry && currentEntry.name) {
         results.push(currentEntry as RawScanResult);
       }
       const name = stripMarkdownArtifacts(headerMatch[1].trim());
@@ -115,34 +115,36 @@ function parseStructuredText(text: string): RawScanResult[] {
     // Match deadline line
     const deadlineMatch = line.match(/^(?:Deadline|Due|Closes|Date):\s*(.+)/i);
     if (deadlineMatch && currentEntry) {
-      currentEntry.deadline = normalizeDeadline(deadlineMatch[1].trim());
+      currentEntry.deadline = normalizeDeadline(stripMarkdownArtifacts(deadlineMatch[1].trim()));
       continue;
     }
 
     // Match link/URL line
     const linkMatch = line.match(/^(?:Link|URL|Source|Website):\s*(https?:\/\/\S+)/i);
     if (linkMatch && currentEntry) {
-      const _u1 = linkMatch[1].trim(); if (isUsefulUrl(_u1)) currentEntry.sourceUrl = _u1;
+      const u = linkMatch[1].trim();
+      if (isUsefulUrl(u)) currentEntry.sourceUrl = u;
       continue;
     }
 
     // Also catch bare URLs on their own line
     const bareUrlMatch = line.match(/^(https?:\/\/\S+)$/);
     if (bareUrlMatch && currentEntry && !currentEntry.sourceUrl) {
-      const _u2 = bareUrlMatch[1].trim(); if (isUsefulUrl(_u2)) currentEntry.sourceUrl = _u2;
+      const u = bareUrlMatch[1].trim();
+      if (isUsefulUrl(u)) currentEntry.sourceUrl = u;
       continue;
     }
 
     // Match "Total: X results" line (end of output)
     if (line.match(/^Total:\s*\d+\s*results/i)) {
-      if (currentEntry && currentEntry.name && currentEntry.sourceUrl) {
+      if (currentEntry && currentEntry.name) {
         results.push(currentEntry as RawScanResult);
       }
       currentEntry = null;
     }
   }
 
-  if (currentEntry && currentEntry.name && currentEntry.sourceUrl) {
+  if (currentEntry && currentEntry.name) {
     results.push(currentEntry as RawScanResult);
   }
 
@@ -251,7 +253,7 @@ function parseLenientNumberedList(text: string): RawScanResult[] {
       // Deadline patterns
       const deadlineMatch = line.match(/(?:Deadline|Due|Closes|Date|Expires|Apply by):\s*(.+)/i);
       if (deadlineMatch) {
-        currentEntry.deadline = normalizeDeadline(deadlineMatch[1].trim());
+        currentEntry.deadline = normalizeDeadline(stripMarkdownArtifacts(deadlineMatch[1].trim()));
         continue;
       }
 
@@ -265,14 +267,16 @@ function parseLenientNumberedList(text: string): RawScanResult[] {
       // URL patterns
       const urlMatch = line.match(/(?:Link|URL|Source|Website|More info|Apply|Details):\s*(https?:\/\/\S+)/i);
       if (urlMatch) {
-        const _u3 = urlMatch[1].trim(); if (isUsefulUrl(_u3)) currentEntry.sourceUrl = _u3;
+        const u = urlMatch[1].trim();
+        if (isUsefulUrl(u)) currentEntry.sourceUrl = u;
         continue;
       }
 
       // Bare URL
       const bareUrl = line.match(/^(https?:\/\/\S+)$/);
       if (bareUrl && !currentEntry.sourceUrl) {
-        const _u4 = bareUrl[1].trim(); if (isUsefulUrl(_u4)) currentEntry.sourceUrl = _u4;
+        const u = bareUrl[1].trim();
+        if (isUsefulUrl(u)) currentEntry.sourceUrl = u;
         continue;
       }
 
@@ -280,7 +284,8 @@ function parseLenientNumberedList(text: string): RawScanResult[] {
       if (!currentEntry.sourceUrl) {
         const embeddedUrl = line.match(/(https?:\/\/\S+)/);
         if (embeddedUrl) {
-          const _u5 = embeddedUrl[1].trim(); if (isUsefulUrl(_u5)) currentEntry.sourceUrl = _u5;
+          const u = embeddedUrl[1].trim();
+          if (isUsefulUrl(u)) currentEntry.sourceUrl = u;
           continue;
         }
       }
@@ -390,12 +395,16 @@ function parseXPostFormat(text: string): RawScanResult[] {
     const fullText = title + ' ' + bodyLines.join(' ');
     const amount = extractAmount(fullText);
 
-    // Extract deadline from body text
+    // Extract deadline from body text — strip artifacts and limit to date portion
     let deadline: string | null = null;
     const deadlineMatch = fullText.match(/(?:deadline|due|closes|apply by)[:\s]+([^\n,]+)/i)
       || fullText.match(/(?:registration|applications?)\s*(?:close|end|due)[:\s]+([^\n,]+)/i);
     if (deadlineMatch) {
-      deadline = deadlineMatch[1].trim();
+      // Strip Grok citation artifacts and truncate at common delimiters
+      const cleaned = stripMarkdownArtifacts(deadlineMatch[1])
+        .replace(/\s*[\[\(].+$/, '')  // strip anything in brackets after date
+        .trim();
+      deadline = normalizeDeadline(cleaned);
     }
 
     results.push({

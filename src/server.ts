@@ -1567,6 +1567,14 @@ app.post('/api/telegram/intake-webhook', async (req: Request, res: Response) => 
  * Auto-summarize an approved entry using Grok if enriched_summary is missing/thin.
  * Fire-and-forget — updates scan_entries.enriched_summary and patches the summaries row.
  */
+function cleanText(s: string): string {
+  return s
+    .replace(/\[?\[(\d+)\]\]?\([^)]*\)/g, '') // strip [[N]](url) citation refs
+    .replace(/```[\w]*\n?/g, '')               // strip code fences
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
 async function autoSummarizeOnApprove(
   entryId: number,
   summaryId: number | null,
@@ -1574,19 +1582,24 @@ async function autoSummarizeOnApprove(
   description: string,
   amount: string | null,
   deadline: string | null,
-  sourceUrl: string | null
+  sourceUrl: string | null,
+  wire?: string
 ): Promise<void> {
   try {
     const pool = getPool();
-    const prompt = `You are writing a concise grant/opportunity summary for a crypto grants newsletter.
+    const wireLabel = wire === 'ai' ? 'AI funding' : wire === 'oss' ? 'open-source funding' : 'crypto grants';
+    const cleanDesc = cleanText(description);
+    const cleanName = cleanText(name);
 
-Grant name: ${name}
+    const prompt = `You are writing a concise opportunity summary for a ${wireLabel} newsletter.
+
+Grant name: ${cleanName}
 ${amount ? `Amount: ${amount}` : ''}
 ${deadline ? `Deadline: ${deadline}` : ''}
-${sourceUrl ? `Source: ${sourceUrl}` : ''}
-Description: ${description}
+${sourceUrl && sourceUrl.startsWith('http') ? `Source: ${sourceUrl}` : ''}
+Description: ${cleanDesc}
 
-Write a 2-4 sentence newsletter summary. Lead with the org/program name and a strong action verb. Include all key numbers (amounts, dates, eligibility). Plain prose, no bullet points, no fluff. Max 120 words.`;
+Write a 2-4 sentence newsletter summary. Lead with the organization/program name and a strong action verb. Include all specific numbers (amounts, dates, eligibility requirements). Plain prose, no bullet points, no fluff, no hype words. Max 120 words.`;
 
     const response = await fetch(`${config.apis.grok.baseUrl}/chat/completions`, {
       method: 'POST',
@@ -1709,7 +1722,7 @@ app.post('/api/scan/entries/bulk-action', requireAuth, async (req: Request, res:
           setImmediate(() => {
             autoSummarizeOnApprove(
               row.id, summaryIds[row.id] ?? null, row.name,
-              row.description || '', row.amount, row.deadline, row.source_url
+              row.description || '', row.amount, row.deadline, row.source_url, row.wire
             ).catch(err => console.error(`[AutoSummarize] Bulk approve failed for entry ${row.id}:`, err));
           });
         }
@@ -1793,7 +1806,7 @@ app.post('/api/scan/entries/:id/action', requireAuth, async (req: Request, res: 
         setImmediate(() => {
           autoSummarizeOnApprove(
             entryId, summaryId, row.name,
-            row.description || '', row.amount, row.deadline, row.source_url
+            row.description || '', row.amount, row.deadline, row.source_url, row.wire
           ).catch(err => console.error(`[AutoSummarize] Single approve failed for entry ${entryId}:`, err));
         });
       }
