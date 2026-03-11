@@ -56,16 +56,11 @@ function getSourceLabel(url: string): string {
     if (host.includes('linkedin.com')) return 'LI';
     if (host.includes('medium.com')) return 'MED';
     if (host.includes('substack.com')) return 'SUB';
-    if (host.includes('google.com')) return '🔍';
     // Return first segment of domain, max 4 chars
     return host.split('.')[0].slice(0, 4).toUpperCase();
   } catch {
     return 'LINK';
   }
-}
-
-function searchUrl(name: string): string {
-  return `https://www.google.com/search?q=${encodeURIComponent(name)}`;
 }
 
 function isXUrl(url: string): boolean {
@@ -75,16 +70,13 @@ function isXUrl(url: string): boolean {
   } catch { return false; }
 }
 
-/** Returns the best clickable URL: trust stored URL if it exists, search fallback if not */
-function resolveSourceUrl(entry: { source_url?: string; name?: string; description?: string }): string {
+/** Returns the stored source URL if valid, or null if missing */
+function resolveSourceUrl(entry: { source_url?: string }): string | null {
   const url = entry.source_url?.trim();
-  // Trust any real URL — X links, web links, whatever we have
   if (url && url.startsWith('http') && !url.startsWith('https://manual/') && !url.startsWith('https://t.me/manual/')) {
     return url;
   }
-  // No URL → search fallback
-  if (entry.name) return searchUrl(entry.name);
-  return 'https://www.google.com/search';
+  return null;
 }
 
 /** Returns the raw stored URL only for display in the slide-out (labeled as potentially stale) */
@@ -340,12 +332,14 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                   <div className="text-xs text-muted-foreground mt-1 line-clamp-2">{entry.description}</div>
                 )}
               </div>
-              {resolveSourceUrl(entry) && (
+              {resolveSourceUrl(entry) ? (
                 <a href={resolveSourceUrl(entry)!} target="_blank" rel="noopener noreferrer"
                   onClick={(e) => e.stopPropagation()}
                   className="text-primary hover:text-primary/80 shrink-0 p-1">
                   <ExternalLink className="w-3.5 h-3.5" />
                 </a>
+              ) : (
+                <span className="text-muted-foreground shrink-0 p-1 text-xs">—</span>
               )}
             </div>
 
@@ -446,8 +440,9 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                   </div>
                 </td>
                 <td onClick={(e) => e.stopPropagation()}>
-                  {entry.name ? (() => {
+                  {(() => {
                     const href = resolveSourceUrl(entry);
+                    if (!href) return <span className="text-muted-foreground text-xs">—</span>;
                     const isX = isXUrl(href);
                     return (
                       <a
@@ -455,14 +450,14 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                         target="_blank"
                         rel="noopener noreferrer"
                         onClick={(e) => e.stopPropagation()}
-                        title={isX ? 'Open X post' : href.includes('google.com/search') ? 'Search Google' : 'Open source'}
+                        title={isX ? 'Open X post' : 'Open source'}
                         className="inline-flex items-center gap-1 px-2 py-1 rounded border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 text-[10px] font-mono font-medium transition-colors whitespace-nowrap"
                       >
                         <ExternalLink className="w-3 h-3 shrink-0" />
-                        {isX ? 'X' : href.includes('google.com/search') ? '🔍' : getSourceLabel(href)}
+                        {isX ? 'X' : getSourceLabel(href)}
                       </a>
                     );
-                  })() : <span className="text-muted-foreground text-xs">—</span>}
+                  })()}
                 </td>
                 <td onClick={(e) => e.stopPropagation()}>
                   <div className="flex items-center gap-2 whitespace-nowrap">

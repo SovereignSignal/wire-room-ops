@@ -159,17 +159,9 @@ export function EntryDetailsSheet({ entry, onClose }: EntryDetailsSheetProps) {
                           Source <ExternalLink className="w-3 h-3" />
                         </a>
                       )}
-                      {/* Search as fallback */}
-                      {entry.name && (
-                        <a
-                          href={`https://www.google.com/search?q=${encodeURIComponent(entry.name)}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={(e) => e.stopPropagation()}
-                          className="inline-flex items-center gap-1 text-xs text-primary/70 hover:text-primary transition-colors font-mono"
-                        >
-                          Search <ExternalLink className="w-3 h-3" />
-                        </a>
+                      {/* No URL indicator */}
+                      {!entry.source_url && (
+                        <span className="text-xs text-muted-foreground font-mono">No source link</span>
                       )}
                     </div>
                   </div>
