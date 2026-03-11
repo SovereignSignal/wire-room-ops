@@ -20,6 +20,25 @@ import type {
  * Strip markdown artifacts that Grok injects into output.
  * Removes reference-style links [[N]](url) and code fence markers.
  */
+/**
+ * Validate that a URL is "useful" — not just a bare domain homepage.
+ * X/Twitter URLs are always trusted (Grok has direct access).
+ * Web URLs require a meaningful path (depth >= 2 segments after domain).
+ */
+function isUsefulUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./, '');
+    // X URLs: always trust
+    if (host === 'x.com' || host === 'twitter.com') return true;
+    // Web URLs: require path depth >= 1 meaningful segment beyond root
+    const segments = u.pathname.split('/').filter(s => s.length > 0);
+    return segments.length >= 1;
+  } catch {
+    return false;
+  }
+}
+
 function stripMarkdownArtifacts(text: string): string {
   return text
     .replace(/\[?\[(\d+)\]\]?\([^)]*\)/g, '')  // [[N]](url) or [N](url)
@@ -103,14 +122,14 @@ function parseStructuredText(text: string): RawScanResult[] {
     // Match link/URL line
     const linkMatch = line.match(/^(?:Link|URL|Source|Website):\s*(https?:\/\/\S+)/i);
     if (linkMatch && currentEntry) {
-      currentEntry.sourceUrl = linkMatch[1].trim();
+      const _u1 = linkMatch[1].trim(); if (isUsefulUrl(_u1)) currentEntry.sourceUrl = _u1;
       continue;
     }
 
     // Also catch bare URLs on their own line
     const bareUrlMatch = line.match(/^(https?:\/\/\S+)$/);
     if (bareUrlMatch && currentEntry && !currentEntry.sourceUrl) {
-      currentEntry.sourceUrl = bareUrlMatch[1].trim();
+      const _u2 = bareUrlMatch[1].trim(); if (isUsefulUrl(_u2)) currentEntry.sourceUrl = _u2;
       continue;
     }
 
@@ -186,7 +205,7 @@ function parseJsonOutput(text: string): RawScanResult[] {
       description: stripMarkdownArtifacts(String(description).trim()) || 'Found via X scan',
       amount: obj.amount ? String(obj.amount) : extractAmount(String(description)),
       deadline: obj.deadline ? normalizeDeadline(String(obj.deadline)) : null,
-      sourceUrl: String(sourceUrl).trim(),
+      sourceUrl: (() => { const u = String(sourceUrl).trim(); return isUsefulUrl(u) ? u : ''; })(),
     });
   }
 
@@ -246,14 +265,14 @@ function parseLenientNumberedList(text: string): RawScanResult[] {
       // URL patterns
       const urlMatch = line.match(/(?:Link|URL|Source|Website|More info|Apply|Details):\s*(https?:\/\/\S+)/i);
       if (urlMatch) {
-        currentEntry.sourceUrl = urlMatch[1].trim();
+        const _u3 = urlMatch[1].trim(); if (isUsefulUrl(_u3)) currentEntry.sourceUrl = _u3;
         continue;
       }
 
       // Bare URL
       const bareUrl = line.match(/^(https?:\/\/\S+)$/);
       if (bareUrl && !currentEntry.sourceUrl) {
-        currentEntry.sourceUrl = bareUrl[1].trim();
+        const _u4 = bareUrl[1].trim(); if (isUsefulUrl(_u4)) currentEntry.sourceUrl = _u4;
         continue;
       }
 
@@ -261,7 +280,7 @@ function parseLenientNumberedList(text: string): RawScanResult[] {
       if (!currentEntry.sourceUrl) {
         const embeddedUrl = line.match(/(https?:\/\/\S+)/);
         if (embeddedUrl) {
-          currentEntry.sourceUrl = embeddedUrl[1].trim();
+          const _u5 = embeddedUrl[1].trim(); if (isUsefulUrl(_u5)) currentEntry.sourceUrl = _u5;
           continue;
         }
       }
@@ -393,12 +412,13 @@ function parseXPostFormat(text: string): RawScanResult[] {
 
 
 function finalizeLenientEntry(entry: Partial<RawScanResult>): RawScanResult {
+  const rawUrl = entry.sourceUrl || '';
   return {
     name: entry.name || 'Unknown',
     description: entry.description || '',
     amount: entry.amount || null,
     deadline: entry.deadline || null,
-    sourceUrl: entry.sourceUrl || '',
+    sourceUrl: isUsefulUrl(rawUrl) ? rawUrl : '',
   };
 }
 
