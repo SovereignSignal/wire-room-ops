@@ -386,10 +386,11 @@ export async function registerSeen(
       [entry.sourceUrl, normalized_url, entry.id, entry.scanDate, entry.wire]
     );
 
-    // Register name
+    // Register name (idempotent — retries won't create duplicates)
     await client.query(
       `INSERT INTO seen_names (name_original, name_normalized, name_tokens, entry_id, wire, first_seen)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (entry_id) DO NOTHING`,
       [entry.name, normalized_name, tokens, entry.id, entry.wire, entry.scanDate]
     );
 
@@ -444,10 +445,17 @@ export async function getDedupStats(
     params
   );
 
+  const uniqueNames = await pool.query(
+    `SELECT COUNT(DISTINCT name_normalized) as count FROM seen_names
+     WHERE first_seen BETWEEN $1::date AND $2::date
+       ${wire ? 'AND wire = $3' : ''}`,
+    params
+  );
+
   return {
     totalEntries: parseInt(total.rows[0].count),
     uniqueUrls: parseInt(uniqueUrls.rows[0].count),
     duplicateUrls: parseInt(dupes.rows[0].count),
-    uniqueNames: 0, // TODO: implement
+    uniqueNames: parseInt(uniqueNames.rows[0].count),
   };
 }

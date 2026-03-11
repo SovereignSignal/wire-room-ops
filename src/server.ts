@@ -23,7 +23,7 @@ import { runScanExecution } from './jobs/scan-execution';
 import { runForumScan } from './jobs/forum-scan';
 import { syncSummariesToScanEntries, startSummarySync, stopSummarySync } from './jobs/summary-sync';
 import { getPromptEffectivenessStats } from './services/scan-stats';
-import { distributeEntries, distributeEntry, retryDistribution, generateNewsletterMarkdown, sendTestMessage } from './services/distribution';
+import { distributeEntries, distributeEntry, retryDistribution, generateNewsletterMarkdown, confirmNewsletterDistribution, sendTestMessage } from './services/distribution';
 import { parseStructuredOutput } from './services/intake';
 import { reviewScanPrompt } from './services/anthropic';
 import type { RawScanResult, ToolType } from './types/intake';
@@ -2243,7 +2243,15 @@ app.put('/api/distribution/config/:wire/:channel', requireAuth, async (req: Requ
     // Merge incoming config with existing to avoid overwriting secrets on partial updates
     const existing = await getDistributionConfigs(wire);
     const current = existing.find(c => c.channel === channel);
-    const mergedConfig = { ...(current?.config || {}), ...(configData || {}) };
+    // Filter out masked values (e.g. "****...") so they don't overwrite real secrets
+    const cleanedData: Record<string, any> = {};
+    if (configData) {
+      for (const [k, v] of Object.entries(configData)) {
+        if (typeof v === 'string' && v.startsWith('****')) continue;
+        cleanedData[k] = v;
+      }
+    }
+    const mergedConfig = { ...(current?.config || {}), ...cleanedData };
 
     const result = await upsertDistributionConfig(
       wire,
@@ -2310,11 +2318,35 @@ app.get('/api/distribution/newsletter/:wire', requireAuth, async (req: Request, 
   try {
     const feed = await getFeedByKey(wire);
     const displayName = feed?.displayName || wire;
-    const markdown = await generateNewsletterMarkdown(wire, displayName);
-    res.json({ success: true, markdown });
+    const { markdown, entryIds } = await generateNewsletterMarkdown(wire, displayName);
+    res.json({ success: true, markdown, entryIds });
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';
     console.error('[Distribution] Newsletter generation failed:', error);
+    res.status(500).json({ error: errorMsg });
+  }
+});
+
+// POST /api/distribution/newsletter/:wire/confirm — mark newsletter entries as distributed
+app.post('/api/distribution/newsletter/:wire/confirm', requireAuth, async (req: Request, res: Response) => {
+  const { wire } = req.params;
+  if (!wire || !isValidFeedKey(wire)) {
+    res.status(400).json({ error: 'Invalid wire' });
+    return;
+  }
+
+  const { entryIds } = req.body;
+  if (!Array.isArray(entryIds) || entryIds.length === 0) {
+    res.status(400).json({ error: 'entryIds must be a non-empty array' });
+    return;
+  }
+
+  try {
+    await confirmNewsletterDistribution(entryIds, wire);
+    res.json({ success: true, confirmed: entryIds.length });
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[Distribution] Newsletter confirmation failed:', error);
     res.status(500).json({ error: errorMsg });
   }
 });
