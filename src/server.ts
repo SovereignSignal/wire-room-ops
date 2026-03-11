@@ -16,6 +16,7 @@ import { buildSubmission, buildBatchSubmission } from './services/intake';
 import { runDailyIntake, getDailyQueue, getIntakeStats } from './jobs/daily-intake';
 import { getPool, getDistributionConfigs, upsertDistributionConfig, getDistributionLogs, getDistributionStatusBulk, getDistributionStatusForEntries, getDistributionChannels, getDistributionChannelById, createDistributionChannel, updateDistributionChannel, deleteDistributionChannel, insertApprovedSummary } from './db';
 import { executeScanPrompt } from './services/grok';
+import { runOrgExtraction, getOrgProfiles, getOrgById, getEntriesByOrg, ensureOrgProfilesTable, extractOrgFromName, upsertOrgProfile, linkEntryToOrg } from './services/org-extractor';
 import { withRetry } from './services/processor';
 import { runScanExecution } from './jobs/scan-execution';
 import { runForumScan } from './jobs/forum-scan';
@@ -1683,7 +1684,7 @@ app.post('/api/scan/entries/bulk-action', requireAuth, async (req: Request, res:
     const result = await pool.query(
       `UPDATE scan_entries SET status = $1, updated_at = NOW()
        WHERE id = ANY($2)
-       RETURNING id, status, wire, name, description, enriched_summary, quality_score, amount, deadline, source_url`,
+       RETURNING id, status, wire, name, description, enriched_summary, quality_score, amount, deadline, source_url, org_id, scan_date`,
       [newStatus, entryIds]
     );
 
@@ -1726,6 +1727,18 @@ app.post('/api/scan/entries/bulk-action', requireAuth, async (req: Request, res:
             ).catch(err => console.error(`[AutoSummarize] Bulk approve failed for entry ${row.id}:`, err));
           });
         }
+
+        // Fire-and-forget org linking
+        if (!row.org_id) {
+          setImmediate(() => {
+            const orgName = extractOrgFromName(row.name);
+            if (orgName) {
+              upsertOrgProfile(orgName, row.wire, row.scan_date?.toISOString?.()?.split('T')[0])
+                .then(orgId => linkEntryToOrg(row.id, orgId))
+                .catch(err => console.error(`[OrgLink] Bulk approve failed for entry ${row.id}:`, err));
+            }
+          });
+        }
       }
     }
 
@@ -1762,7 +1775,7 @@ app.post('/api/scan/entries/:id/action', requireAuth, async (req: Request, res: 
     const pool = getPool();
     const result = await pool.query(
       `UPDATE scan_entries SET status = $1, updated_at = NOW() WHERE id = $2
-       RETURNING id, status, wire, name, description, enriched_summary, quality_score, amount, deadline, source_url`,
+       RETURNING id, status, wire, name, description, enriched_summary, quality_score, amount, deadline, source_url, org_id, scan_date`,
       [newStatus, entryId]
     );
 
@@ -1810,12 +1823,69 @@ app.post('/api/scan/entries/:id/action', requireAuth, async (req: Request, res: 
           ).catch(err => console.error(`[AutoSummarize] Single approve failed for entry ${entryId}:`, err));
         });
       }
+
+      // Fire-and-forget org linking
+      if (!row.org_id) {
+        setImmediate(() => {
+          const orgName = extractOrgFromName(row.name);
+          if (orgName) {
+            upsertOrgProfile(orgName, row.wire, row.scan_date?.toISOString?.()?.split('T')[0])
+              .then(orgId => linkEntryToOrg(entryId, orgId))
+              .catch(err => console.error(`[OrgLink] Single approve failed for entry ${entryId}:`, err));
+          }
+        });
+      }
     }
 
     res.json({ success: true, newStatus, summaryId });
   } catch (error) {
     console.error('Failed to update entry status:', error);
     res.status(500).json({ error: 'Failed to update entry' });
+  }
+});
+
+// ============================================================
+// Org Profiles API
+// ============================================================
+
+// API: List org profiles
+app.get('/api/orgs', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const wire = req.query.wire as string | undefined;
+    const search = req.query.search as string | undefined;
+    const limit = Math.min(parseInt(req.query.limit as string, 10) || 50, 200);
+    const offset = parseInt(req.query.offset as string, 10) || 0;
+    const { orgs, total } = await getOrgProfiles({ wire, search, limit, offset });
+    res.json({ orgs, total });
+  } catch (err) {
+    console.error('[API] Failed to list orgs:', err);
+    res.status(500).json({ error: 'Failed to list organizations' });
+  }
+});
+
+// API: Get single org with linked entries
+app.get('/api/orgs/:id', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const orgId = parseInt(req.params.id, 10);
+    if (isNaN(orgId)) { res.status(400).json({ error: 'Invalid org ID' }); return; }
+    const org = await getOrgById(orgId);
+    if (!org) { res.status(404).json({ error: 'Org not found' }); return; }
+    const entries = await getEntriesByOrg(orgId);
+    res.json({ org, entries });
+  } catch (err) {
+    console.error('[API] Failed to get org:', err);
+    res.status(500).json({ error: 'Failed to get organization' });
+  }
+});
+
+// API: Run org extraction
+app.post('/api/orgs/extract', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const stats = await runOrgExtraction();
+    res.json({ success: true, ...stats });
+  } catch (err) {
+    console.error('[API] Org extraction failed:', err);
+    res.status(500).json({ error: 'Org extraction failed' });
   }
 });
 
@@ -2406,6 +2476,13 @@ export async function startServer(): Promise<void> {
     await ensureClassificationColumns();
   } catch (error) {
     console.error('Classification columns migration failed (non-fatal):', error);
+  }
+
+  // Ensure org_profiles table exists (Gate 2.5)
+  try {
+    await ensureOrgProfilesTable();
+  } catch (error) {
+    console.error('Org profiles table migration failed (non-fatal):', error);
   }
 
   // Initialize the scheduler (loads config from database)
