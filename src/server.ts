@@ -1563,6 +1563,74 @@ app.post('/api/telegram/intake-webhook', async (req: Request, res: Response) => 
   res.sendStatus(200);
 });
 
+/**
+ * Auto-summarize an approved entry using Grok if enriched_summary is missing/thin.
+ * Fire-and-forget — updates scan_entries.enriched_summary and patches the summaries row.
+ */
+async function autoSummarizeOnApprove(
+  entryId: number,
+  summaryId: number | null,
+  name: string,
+  description: string,
+  amount: string | null,
+  deadline: string | null,
+  sourceUrl: string | null
+): Promise<void> {
+  try {
+    const pool = getPool();
+    const prompt = `You are writing a concise grant/opportunity summary for a crypto grants newsletter.
+
+Grant name: ${name}
+${amount ? `Amount: ${amount}` : ''}
+${deadline ? `Deadline: ${deadline}` : ''}
+${sourceUrl ? `Source: ${sourceUrl}` : ''}
+Description: ${description}
+
+Write a 2-4 sentence newsletter summary. Lead with the org/program name and a strong action verb. Include all key numbers (amounts, dates, eligibility). Plain prose, no bullet points, no fluff. Max 120 words.`;
+
+    const response = await fetch(`${config.apis.grok.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.apis.grok.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: 'grok-3-fast',
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 200,
+        temperature: 0.3,
+      }),
+    });
+
+    if (!response.ok) {
+      console.warn(`[AutoSummarize] Grok returned ${response.status} for entry ${entryId}`);
+      return;
+    }
+
+    const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+    const summary = data.choices?.[0]?.message?.content?.trim();
+    if (!summary || summary.length < 20) return;
+
+    // Update scan_entries
+    await pool.query(
+      `UPDATE scan_entries SET enriched_summary = $1, updated_at = NOW() WHERE id = $2`,
+      [summary, entryId]
+    );
+
+    // Patch the summaries row if we have its ID
+    if (summaryId) {
+      await pool.query(
+        `UPDATE summaries SET summary = $1 WHERE id = $2`,
+        [summary, summaryId]
+      ).catch(err => console.warn(`[AutoSummarize] Failed to patch summaries row ${summaryId}:`, err.message));
+    }
+
+    console.log(`[AutoSummarize] Generated summary for entry ${entryId} (${summary.length} chars)`);
+  } catch (err) {
+    console.error(`[AutoSummarize] Failed for entry ${entryId}:`, err);
+  }
+}
+
 // API: Bulk action on multiple entries (approve/decline/reviewlater/restore)
 app.post('/api/scan/entries/bulk-action', requireAuth, async (req: Request, res: Response) => {
   const { ids, action } = req.body;
@@ -1635,6 +1703,16 @@ app.post('/api/scan/entries/bulk-action', requireAuth, async (req: Request, res:
             console.error(`[Distribution] Auto-distribute after bulk approve failed for entry ${row.id}:`, err);
           });
         });
+
+        // Fire-and-forget auto-summarize if enriched_summary is missing/thin
+        if (!row.enriched_summary || row.enriched_summary.length < 60) {
+          setImmediate(() => {
+            autoSummarizeOnApprove(
+              row.id, summaryIds[row.id] ?? null, row.name,
+              row.description || '', row.amount, row.deadline, row.source_url
+            ).catch(err => console.error(`[AutoSummarize] Bulk approve failed for entry ${row.id}:`, err));
+          });
+        }
       }
     }
 
@@ -1709,6 +1787,16 @@ app.post('/api/scan/entries/:id/action', requireAuth, async (req: Request, res: 
           console.error(`[Distribution] Auto-distribute after approve failed for entry ${entryId}:`, err);
         });
       });
+
+      // Fire-and-forget auto-summarize if enriched_summary is missing/thin
+      if (!row.enriched_summary || row.enriched_summary.length < 60) {
+        setImmediate(() => {
+          autoSummarizeOnApprove(
+            entryId, summaryId, row.name,
+            row.description || '', row.amount, row.deadline, row.source_url
+          ).catch(err => console.error(`[AutoSummarize] Single approve failed for entry ${entryId}:`, err));
+        });
+      }
     }
 
     res.json({ success: true, newStatus, summaryId });
