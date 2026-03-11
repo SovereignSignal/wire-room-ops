@@ -64,20 +64,31 @@ function getSourceLabel(url: string): string {
   }
 }
 
-/** Always returns a Google search URL for reliable navigation */
 function searchUrl(name: string): string {
   return `https://www.google.com/search?q=${encodeURIComponent(name)}`;
 }
 
-/** Returns the direct stored URL if it looks real, for use in the slide-out detail view */
-function resolveSourceUrl(entry: { source_url?: string; name?: string; description?: string }): string | null {
+function isXUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, '');
+    return host === 'x.com' || host === 'twitter.com';
+  } catch { return false; }
+}
+
+/** Returns the best clickable URL: X links trusted directly, everything else → search */
+function resolveSourceUrl(entry: { source_url?: string; name?: string; description?: string }): string {
   const url = entry.source_url?.trim();
-  if (url && url.startsWith('http') && !url.startsWith('https://manual/') && !url.startsWith('https://t.me/manual/')) {
-    return url;
+  if (url && isXUrl(url)) return url; // X links are accurate
+  if (entry.name) return searchUrl(entry.name); // everything else → search
+  return 'https://www.google.com/search';
+}
+
+/** Returns the raw stored URL only for display in the slide-out (labeled as potentially stale) */
+function getDirectUrl(entry: { source_url?: string; description?: string }): string | null {
+  const url = entry.source_url?.trim();
+  if (url && url.startsWith('http') && !url.startsWith('https://manual/') && !url.startsWith('https://t.me/manual/') && !isXUrl(url)) {
+    return url; // show non-X direct links in slide-out as secondary option
   }
-  const descMatch = (entry.description || '').match(/https?:\/\/[^\s)>"]+/);
-  if (descMatch) return descMatch[0];
-  if (entry.name) return searchUrl(entry.name);
   return null;
 }
 
@@ -431,19 +442,23 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                   </div>
                 </td>
                 <td onClick={(e) => e.stopPropagation()}>
-                  {entry.name ? (
-                    <a
-                      href={searchUrl(entry.name)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={(e) => e.stopPropagation()}
-                      title="Search Google for this grant"
-                      className="inline-flex items-center gap-1 px-2 py-1 rounded border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 text-[10px] font-mono font-medium transition-colors whitespace-nowrap"
-                    >
-                      <ExternalLink className="w-3 h-3 shrink-0" />
-                      Search
-                    </a>
-                  ) : <span className="text-muted-foreground text-xs">—</span>}
+                  {entry.name ? (() => {
+                    const href = resolveSourceUrl(entry);
+                    const isX = isXUrl(href);
+                    return (
+                      <a
+                        href={href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        title={isX ? 'Open X post' : 'Search Google for this grant'}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 text-[10px] font-mono font-medium transition-colors whitespace-nowrap"
+                      >
+                        <ExternalLink className="w-3 h-3 shrink-0" />
+                        {isX ? 'X' : 'Search'}
+                      </a>
+                    );
+                  })() : <span className="text-muted-foreground text-xs">—</span>}
                 </td>
                 <td onClick={(e) => e.stopPropagation()}>
                   <div className="flex items-center gap-2 whitespace-nowrap">

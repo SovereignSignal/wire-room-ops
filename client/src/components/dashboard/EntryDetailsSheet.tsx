@@ -1,12 +1,18 @@
 import { ScanEntry } from '@/types';
 
+function isXUrl(url: string): boolean {
+  try { const h = new URL(url).hostname.replace(/^www\./, ''); return h === 'x.com' || h === 'twitter.com'; }
+  catch { return false; }
+}
+
+/** Returns non-X direct URL for slide-out display (labeled as potentially stale) */
 function getDirectUrl(entry: { source_url?: string; description?: string }): string | null {
   const url = entry.source_url?.trim();
-  if (url && url.startsWith('http') && !url.startsWith('https://manual/') && !url.startsWith('https://t.me/manual/')) {
+  if (url && url.startsWith('http') && !url.startsWith('https://manual/') && !url.startsWith('https://t.me/manual/') && !isXUrl(url)) {
     return url;
   }
   const descMatch = (entry.description || '').match(/https?:\/\/[^\s)>"]+/);
-  return descMatch ? descMatch[0] : null;
+  return descMatch && !isXUrl(descMatch[0]) ? descMatch[0] : null;
 }
 import {
   Sheet,
@@ -129,6 +135,19 @@ export function EntryDetailsSheet({ entry, onClose }: EntryDetailsSheetProps) {
                   <div className="flex justify-between items-center">
                     <span className="text-xs text-muted-foreground font-mono">Source Link</span>
                     <div className="flex items-center gap-3">
+                      {/* X links: trusted, shown as primary */}
+                      {entry.source_url && isXUrl(entry.source_url) && (
+                        <a
+                          href={entry.source_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="inline-flex items-center gap-1 text-xs text-primary hover:text-primary/80 transition-colors font-mono"
+                        >
+                          X Post <ExternalLink className="w-3 h-3" />
+                        </a>
+                      )}
+                      {/* Web links: shown as secondary, labeled as potentially stale */}
                       {getDirectUrl(entry) && (
                         <a
                           href={getDirectUrl(entry)!}
@@ -136,18 +155,19 @@ export function EntryDetailsSheet({ entry, onClose }: EntryDetailsSheetProps) {
                           rel="noopener noreferrer"
                           onClick={(e) => e.stopPropagation()}
                           className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-primary transition-colors font-mono"
-                          title="Direct link (may be stale)"
+                          title="May be stale or incorrect"
                         >
-                          Direct <ExternalLink className="w-3 h-3" />
+                          Web Link <ExternalLink className="w-3 h-3" />
                         </a>
                       )}
+                      {/* Always provide search as reliable fallback */}
                       {entry.name && (
                         <a
                           href={`https://www.google.com/search?q=${encodeURIComponent(entry.name)}`}
                           target="_blank"
                           rel="noopener noreferrer"
                           onClick={(e) => e.stopPropagation()}
-                          className="inline-flex items-center gap-1 text-xs text-primary hover:text-primary/80 transition-colors font-mono"
+                          className="inline-flex items-center gap-1 text-xs text-primary/70 hover:text-primary transition-colors font-mono"
                         >
                           Search <ExternalLink className="w-3 h-3" />
                         </a>
