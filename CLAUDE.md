@@ -159,7 +159,7 @@ Distribution uses 2 tables: `distribution_config` (composite PK on `wire` + `cha
 
 ### Claude API (Anthropic)
 - Uses official SDK `@anthropic-ai/sdk`
-- Default model: `claude-opus-4-5-20251101`
+- Default model: `claude-opus-4-1-20250805`
 
 ### Firecrawl API
 - Endpoint: `https://api.firecrawl.dev/v1/scrape`

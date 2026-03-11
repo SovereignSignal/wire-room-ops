@@ -686,6 +686,8 @@ export async function ensureScanTables(): Promise<void> {
     first_seen DATE NOT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW()
   )`);
+  // Ensure one seen_name row per entry (idempotent retries)
+  await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_seen_names_entry_id ON seen_names(entry_id)`);
 
   // intake_runs — log of each processing run
   await client.query(`CREATE TABLE IF NOT EXISTS intake_runs (

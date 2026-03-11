@@ -5,10 +5,10 @@ dotenv.config();
 function normalizeAppUrl(url: string): string {
   const trimmed = url.trim();
   if (!trimmed) return '';
-  if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
-    return `https://${trimmed}`;
-  }
-  return trimmed.replace(/\/+$/, '');
+  const withProtocol = (!trimmed.startsWith('http://') && !trimmed.startsWith('https://'))
+    ? `https://${trimmed}`
+    : trimmed;
+  return withProtocol.replace(/\/+$/, '');
 }
 
 export const config = {

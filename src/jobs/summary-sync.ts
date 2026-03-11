@@ -79,9 +79,9 @@ export async function syncSummariesToScanEntries(
     FROM summaries s
     LEFT JOIN messages m ON s.message_id = m.id
     WHERE s.processing_status = 'SUCCESS'
-      AND s.created_at >= NOW() - INTERVAL '${lookbackHours} hours'
+      AND s.created_at >= NOW() - INTERVAL '1 hour' * $1
     ORDER BY s.created_at ASC
-  `);
+  `, [lookbackHours]);
 
   if (summaries.length === 0) {
     return result;

@@ -3,18 +3,9 @@
  * Single Claude call generates both a tweet and Telegram message.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
-import { config } from '../config';
+import { getClient } from './anthropic';
 import type { GeneratedPosts } from '../types/intake';
-
-let client: Anthropic | null = null;
-
-function getClient(): Anthropic {
-  if (!client) {
-    client = new Anthropic({ apiKey: config.apis.anthropic.apiKey });
-  }
-  return client;
-}
+import { escapeHtml } from '../utils/html';
 
 const MODEL = 'claude-sonnet-4-6-20250627';
 
@@ -235,12 +226,6 @@ function buildFallbackPosts(entry: ReturnType<typeof cleanEntry>): GeneratedPost
 
   return { tweet, telegram };
 }
-
-function escapeHtml(str: string): string {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-// --- Main export ---
 
 export async function generatePosts(
   entry: EntryInput,

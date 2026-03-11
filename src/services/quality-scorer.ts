@@ -289,9 +289,16 @@ export function scoreEntry(entry: {
  * Check if text contains a phrase as a whole word (not a substring).
  * e.g. "grant" matches "open grant program" but not "immigrant".
  */
+const regexpCache = new Map<string, RegExp>();
+
 function containsWord(text: string, phrase: string): boolean {
-  const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`\\b${escaped}\\b`, 'i').test(text);
+  let re = regexpCache.get(phrase);
+  if (!re) {
+    const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    re = new RegExp(`\\b${escaped}\\b`, 'i');
+    regexpCache.set(phrase, re);
+  }
+  return re.test(text);
 }
 
 function classifyAsFunding(name: string, desc: string): boolean {

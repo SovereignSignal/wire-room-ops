@@ -94,6 +94,7 @@ export async function distributeEntries(wire: string): Promise<DistributeResult>
       if (anySuccess) result.distributed++;
     } catch (error) {
       console.error(`[Distribution] Failed to distribute entry ${entry.id}:`, error);
+      // Log failures for each channel (entry-level failure, count once)
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       for (const cfg of enabledConfigs) {
         await logDistribution({
@@ -104,7 +105,6 @@ export async function distributeEntries(wire: string): Promise<DistributeResult>
           errorMessage: errorMsg,
         });
         detail.channels[cfg.channel] = 'failed';
-        result.failed++;
       }
       for (const mc of managedChannels) {
         await logDistribution({
@@ -115,8 +115,8 @@ export async function distributeEntries(wire: string): Promise<DistributeResult>
           errorMessage: errorMsg,
         });
         detail.channels[`${mc.channel}:${mc.id.slice(0, 8)}`] = 'failed';
-        result.failed++;
       }
+      result.failed++;
     }
 
     result.details.push(detail);
@@ -406,28 +406,33 @@ export async function distributeEntry(entryId: number, wire: string): Promise<Di
 }
 
 export async function retryDistribution(entryId: number, wire: string): Promise<DistributeResult> {
-  // Identify which channels already succeeded — only retry the rest
-  const existingLogs = await getDistributionLogs(entryId);
-  const succeededChannels = new Set(
-    existingLogs.filter(l => l.status === 'success').map(l => l.channel)
-  );
-
-  await deleteFailedDistributionLogs(entryId);
-
-  const configs = await getDistributionConfigs(wire);
-  const retryConfigs = configs.filter(
-    c => c.enabled && c.channel !== 'newsletter' && !succeededChannels.has(c.channel)
-  );
-
+  // Validate entry exists before deleting any logs
   const pool = getPool();
   const entryResult = await pool.query(
     `SELECT * FROM scan_entries WHERE id = $1 AND status = 'approved'`,
     [entryId]
   );
 
-  if (entryResult.rows.length === 0 || retryConfigs.length === 0) {
+  if (entryResult.rows.length === 0) {
     return { wire, totalEntries: 0, distributed: 0, failed: 0, skipped: 0, details: [] };
   }
+
+  // Identify which channels already succeeded — only retry the rest
+  const existingLogs = await getDistributionLogs(entryId);
+  const succeededChannels = new Set(
+    existingLogs.filter(l => l.status === 'success').map(l => l.channel)
+  );
+
+  const configs = await getDistributionConfigs(wire);
+  const retryConfigs = configs.filter(
+    c => c.enabled && c.channel !== 'newsletter' && !succeededChannels.has(c.channel)
+  );
+
+  if (retryConfigs.length === 0) {
+    return { wire, totalEntries: 0, distributed: 0, failed: 0, skipped: 0, details: [] };
+  }
+
+  await deleteFailedDistributionLogs(entryId);
 
   const entry = entryResult.rows[0];
   const telegramBotToken = config.telegram.botToken;
@@ -467,16 +472,21 @@ export async function retryDistribution(entryId: number, wire: string): Promise<
 
 /**
  * Generate a newsletter markdown digest of approved entries.
+ * Pure read — does NOT write distribution logs.
+ * Call confirmNewsletterDistribution() separately to mark entries as distributed.
  */
 export async function generateNewsletterMarkdown(
   wire: string,
   feedDisplayName: string
-): Promise<string> {
+): Promise<{ markdown: string; entryIds: number[] }> {
   // Get approved entries not yet included in a newsletter log
   const entries = await getUndistributedEntries(wire, 'newsletter');
 
   if (entries.length === 0) {
-    return `# ${feedDisplayName} Newsletter\n\n*No new entries to include.*`;
+    return {
+      markdown: `# ${feedDisplayName} Newsletter\n\n*No new entries to include.*`,
+      entryIds: [],
+    };
   }
 
   const lines: string[] = [
@@ -487,6 +497,8 @@ export async function generateNewsletterMarkdown(
     '---',
     '',
   ];
+
+  const entryIds: number[] = [];
 
   for (const entry of entries) {
     lines.push(`## ${entry.name}`);
@@ -502,14 +514,25 @@ export async function generateNewsletterMarkdown(
     lines.push('---');
     lines.push('');
 
-    // Log as newsletter-distributed
+    entryIds.push(entry.id);
+  }
+
+  return { markdown: lines.join('\n'), entryIds };
+}
+
+/**
+ * Mark newsletter entries as distributed after the operator confirms.
+ */
+export async function confirmNewsletterDistribution(
+  entryIds: number[],
+  wire: string
+): Promise<void> {
+  for (const entryId of entryIds) {
     await logDistribution({
-      entryId: entry.id,
+      entryId,
       channel: 'newsletter',
       wire,
       status: 'success',
     });
   }
-
-  return lines.join('\n');
 }
