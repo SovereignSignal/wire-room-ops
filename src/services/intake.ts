@@ -29,10 +29,13 @@ function isUsefulUrl(url: string): boolean {
   try {
     const u = new URL(url);
     const host = u.hostname.replace(/^www\./, '');
-    // X URLs: always trust
+    // X/Twitter URLs: always trust (tweets are specific)
     if (host === 'x.com' || host === 'twitter.com') return true;
-    // Web URLs: require path depth >= 1 meaningful segment beyond root
-    const segments = u.pathname.split('/').filter(s => s.length > 0);
+    // t.co short links: trust (they redirect to the real URL)
+    if (host === 't.co') return true;
+    // Web URLs: require at least one meaningful path segment (not just /en/ or /about/)
+    const genericSegments = new Set(['en', 'es', 'fr', 'de', 'ja', 'ko', 'zh', 'about', 'blog', 'home', 'index']);
+    const segments = u.pathname.split('/').filter(s => s.length > 0 && !genericSegments.has(s.toLowerCase()));
     return segments.length >= 1;
   } catch {
     return false;

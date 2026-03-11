@@ -238,6 +238,8 @@ export async function runDailyIntake(
   const { classifyEntry } = await import('../services/classifier');
   const classificationFailures: number[] = [];
 
+  let archivedNoUrl = 0;
+
   for (const entryId of uniqueEntryIds) {
     // Fetch the entry for classification + scoring
     const entryRes = await pool.query(
@@ -245,6 +247,19 @@ export async function runDailyIntake(
       [entryId]
     );
     const entry = entryRes.rows[0];
+
+    // Gate 1.5: Entries without a source URL don't belong in the queue
+    if (!entry.source_url || entry.source_url.trim() === '') {
+      await pool.query(
+        `UPDATE scan_entries
+         SET status = 'archived',
+             metadata = COALESCE(metadata, '{}'::jsonb) || '{"archived_reason": "no_source_url"}'::jsonb
+         WHERE id = $1`,
+        [entryId]
+      );
+      archivedNoUrl++;
+      continue;
+    }
 
     // Gate 2: LLM classification + quality scoring (single call)
     let qualityScore = 0;
@@ -339,6 +354,9 @@ export async function runDailyIntake(
   const avgScore =
     uniqueEntryIds.length > 0 ? totalScore / uniqueEntryIds.length : 0;
 
+  if (archivedNoUrl > 0) {
+    console.log(`[DailyIntake] Archived ${archivedNoUrl} entries with no source URL`);
+  }
   progress(`Scoring complete: ${highQualityCount} high quality entries`, 85);
 
   // ---- Phase 4: Build Summary ----
