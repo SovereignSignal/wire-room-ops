@@ -2593,7 +2593,17 @@ app.use('/api/database', requireAuth, databaseRouter);
 
 // Serve React dashboard (built client)
 const clientDist = path.join(__dirname, '../dist/client');
-app.use(express.static(clientDist));
+app.use(express.static(clientDist, {
+  // Hashed assets (e.g. index-abc123.js) can be cached forever
+  setHeaders: (res, filePath) => {
+    if (filePath.match(/\.(js|css)$/) && filePath.match(/[-\.][a-f0-9]{8}\./)) {
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    } else {
+      // index.html and other non-hashed files: no cache
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    }
+  }
+}));
 
 // SPA fallback — serve index.html for non-API, non-auth routes
 app.get('*', (req: Request, res: Response, next: Function) => {
