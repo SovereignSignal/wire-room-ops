@@ -64,19 +64,20 @@ function getSourceLabel(url: string): string {
   }
 }
 
-/** Resolve the best available URL for an entry — falls back to description extraction, then a search link */
+/** Always returns a Google search URL for reliable navigation */
+function searchUrl(name: string): string {
+  return `https://www.google.com/search?q=${encodeURIComponent(name)}`;
+}
+
+/** Returns the direct stored URL if it looks real, for use in the slide-out detail view */
 function resolveSourceUrl(entry: { source_url?: string; name?: string; description?: string }): string | null {
   const url = entry.source_url?.trim();
   if (url && url.startsWith('http') && !url.startsWith('https://manual/') && !url.startsWith('https://t.me/manual/')) {
     return url;
   }
-  // Try to extract a URL from the description
   const descMatch = (entry.description || '').match(/https?:\/\/[^\s)>"]+/);
   if (descMatch) return descMatch[0];
-  // Fall back to a search URL based on name
-  if (entry.name) {
-    return `https://www.google.com/search?q=${encodeURIComponent(entry.name)}`;
-  }
+  if (entry.name) return searchUrl(entry.name);
   return null;
 }
 
@@ -430,21 +431,19 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                   </div>
                 </td>
                 <td onClick={(e) => e.stopPropagation()}>
-                  {(() => {
-                    const resolved = resolveSourceUrl(entry);
-                    return resolved ? (
-                      <a
-                        href={resolved}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        onClick={(e) => e.stopPropagation()}
-                        className="inline-flex items-center gap-1 px-2 py-1 rounded border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 text-[10px] font-mono font-medium transition-colors whitespace-nowrap"
-                      >
-                        <ExternalLink className="w-3 h-3 shrink-0" />
-                        {getSourceLabel(resolved)}
-                      </a>
-                    ) : <span className="text-muted-foreground text-xs">—</span>;
-                  })()}
+                  {entry.name ? (
+                    <a
+                      href={searchUrl(entry.name)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      title="Search Google for this grant"
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 text-[10px] font-mono font-medium transition-colors whitespace-nowrap"
+                    >
+                      <ExternalLink className="w-3 h-3 shrink-0" />
+                      Search
+                    </a>
+                  ) : <span className="text-muted-foreground text-xs">—</span>}
                 </td>
                 <td onClick={(e) => e.stopPropagation()}>
                   <div className="flex items-center gap-2 whitespace-nowrap">

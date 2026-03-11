@@ -1,14 +1,12 @@
 import { ScanEntry } from '@/types';
 
-function resolveSourceUrl(entry: { source_url?: string; name?: string; description?: string }): string | null {
+function getDirectUrl(entry: { source_url?: string; description?: string }): string | null {
   const url = entry.source_url?.trim();
   if (url && url.startsWith('http') && !url.startsWith('https://manual/') && !url.startsWith('https://t.me/manual/')) {
     return url;
   }
   const descMatch = (entry.description || '').match(/https?:\/\/[^\s)>"]+/);
-  if (descMatch) return descMatch[0];
-  if (entry.name) return `https://www.google.com/search?q=${encodeURIComponent(entry.name)}`;
-  return null;
+  return descMatch ? descMatch[0] : null;
 }
 import {
   Sheet,
@@ -130,23 +128,31 @@ export function EntryDetailsSheet({ entry, onClose }: EntryDetailsSheetProps) {
                 <div className="space-y-3">
                   <div className="flex justify-between items-center">
                     <span className="text-xs text-muted-foreground font-mono">Source Link</span>
-                    {(() => {
-                      const resolved = resolveSourceUrl(entry);
-                      const isSearch = resolved?.includes('google.com/search');
-                      return resolved ? (
+                    <div className="flex items-center gap-3">
+                      {getDirectUrl(entry) && (
                         <a
-                          href={resolved}
+                          href={getDirectUrl(entry)!}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-primary transition-colors font-mono"
+                          title="Direct link (may be stale)"
+                        >
+                          Direct <ExternalLink className="w-3 h-3" />
+                        </a>
+                      )}
+                      {entry.name && (
+                        <a
+                          href={`https://www.google.com/search?q=${encodeURIComponent(entry.name)}`}
                           target="_blank"
                           rel="noopener noreferrer"
                           onClick={(e) => e.stopPropagation()}
                           className="inline-flex items-center gap-1 text-xs text-primary hover:text-primary/80 transition-colors font-mono"
                         >
-                          {isSearch ? 'Search' : 'Open Original'} <ExternalLink className="w-3 h-3" />
+                          Search <ExternalLink className="w-3 h-3" />
                         </a>
-                      ) : (
-                        <span className="text-xs text-muted-foreground font-mono">—</span>
-                      );
-                    })()}
+                      )}
+                    </div>
                   </div>
                   
                   <div className="flex justify-between items-center">
