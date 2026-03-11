@@ -4,6 +4,15 @@
  */
 export function normalizeUrl(url: string): string {
   if (!url) return '';
+
+  // Strip markdown link artifacts: "url](url" → take part before ](
+  const mdArtifact = url.indexOf('](');
+  if (mdArtifact !== -1) {
+    url = url.substring(0, mdArtifact);
+  }
+  // Strip trailing markdown/punctuation junk
+  url = url.replace(/[\]\).,;:]+$/, '');
+
   try {
     const u = new URL(url);
 

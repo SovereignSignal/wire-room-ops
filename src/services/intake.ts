@@ -90,7 +90,18 @@ function sanitizeResult(result: RawScanResult): RawScanResult {
     }
   }
 
-  // 5. Description: if still empty after name truncation, provide a minimal fallback
+  // 5. Source URL: strip markdown link artifacts like "url](url" or trailing "](" fragments
+  if (sourceUrl) {
+    // Pattern: "https://x.com/foo/123](https://x.com/foo/123" — take the part before ](
+    const mdArtifact = sourceUrl.indexOf('](');
+    if (mdArtifact !== -1) {
+      sourceUrl = sourceUrl.substring(0, mdArtifact);
+    }
+    // Strip trailing markdown/punctuation junk: ], ), ., ,, ;, :
+    sourceUrl = sourceUrl.replace(/[\]\).,;:]+$/, '');
+  }
+
+  // 6. Description: if still empty after name truncation, provide a minimal fallback
   if (!description || description.trim().length === 0) {
     description = '';
   }
