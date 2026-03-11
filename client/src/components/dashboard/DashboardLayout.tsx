@@ -93,13 +93,6 @@ export function DashboardLayout({
                 <span className="text-sm">✅</span>
                 PUBLISHED
               </TabsTrigger>
-              <TabsTrigger 
-                value="distribution" 
-                className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-1.5 px-2.5 sm:px-4 font-display text-[10px] sm:text-xs tracking-wider whitespace-nowrap"
-              >
-                <span className="text-sm">📢</span>
-                DISTRIBUTION
-              </TabsTrigger>
               <TabsTrigger
                 value="sources"
                 className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-1.5 px-2.5 sm:px-4 font-display text-[10px] sm:text-xs tracking-wider whitespace-nowrap"
@@ -115,11 +108,11 @@ export function DashboardLayout({
                 DATABASE
               </TabsTrigger>
               <TabsTrigger
-                value="integrations"
+                value="settings"
                 className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-1.5 px-2.5 sm:px-4 font-display text-[10px] sm:text-xs tracking-wider whitespace-nowrap"
               >
-                <span className="text-sm">🔗</span>
-                INTEGRATIONS
+                <span className="text-sm">⚙️</span>
+                SETTINGS
               </TabsTrigger>
             </TabsList>
           </Tabs>
