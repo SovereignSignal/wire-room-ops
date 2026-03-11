@@ -1,22 +1,28 @@
 import { useState } from 'react';
+import { SourcesTab } from './SourcesTab';
 import { DistributionTab } from './DistributionTab';
 import { IntegrationsTab } from './IntegrationsTab';
 import { DailyDigestCard } from './DailyDigestCard';
+import { VerticalStats, WireCounts } from '@/types';
 
 interface SettingsTabProps {
   verticals: string[];
+  stats: VerticalStats[];
+  wireCounts: WireCounts[];
+  onNavigateToQueue: (wire: string) => void;
 }
 
-type SettingsSection = 'distribution' | 'integrations' | 'email';
+type SettingsSection = 'sources' | 'distribution' | 'integrations' | 'email';
 
 const SECTIONS: { key: SettingsSection; label: string; icon: string; description: string }[] = [
+  { key: 'sources', label: 'SOURCES', icon: '🛰️', description: 'Wire health & scan metrics' },
   { key: 'distribution', label: 'DISTRIBUTION', icon: '📢', description: 'Telegram, Discord, Slack channels' },
   { key: 'integrations', label: 'INTEGRATIONS', icon: '🔗', description: 'Notion CRM sync' },
   { key: 'email', label: 'EMAIL', icon: '📧', description: 'Daily digest schedule' },
 ];
 
-export function SettingsTab({ verticals }: SettingsTabProps) {
-  const [activeSection, setActiveSection] = useState<SettingsSection>('distribution');
+export function SettingsTab({ verticals, stats, wireCounts, onNavigateToQueue }: SettingsTabProps) {
+  const [activeSection, setActiveSection] = useState<SettingsSection>('sources');
 
   return (
     <div className="space-y-6">
@@ -49,6 +55,9 @@ export function SettingsTab({ verticals }: SettingsTabProps) {
 
       {/* Section content */}
       <div className="min-h-[400px]">
+        {activeSection === 'sources' && (
+          <SourcesTab stats={stats} wireCounts={wireCounts} onNavigateToQueue={onNavigateToQueue} />
+        )}
         {activeSection === 'distribution' && (
           <DistributionTab verticals={verticals} />
         )}
