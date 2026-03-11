@@ -88,14 +88,28 @@ export function PublishedTab({ entries, verticals, onViewDetails }: PublishedTab
                   <DistributionBadges channels={entry.distribution_channels || []} />
                 </td>
                 <td>
-                  <a 
-                    href={entry.source_url} 
-                    target="_blank" 
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 text-primary hover:text-primary/80 text-sm"
-                  >
-                    <ExternalLink className="w-3.5 h-3.5" />
-                  </a>
+                  {entry.source_url && entry.source_url.startsWith('http') ? (
+                    <a 
+                      href={entry.source_url} 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-primary hover:text-primary/80 text-sm"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
+                  ) : entry.name ? (
+                    <a
+                      href={`https://www.google.com/search?q=${encodeURIComponent(entry.name)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-muted-foreground hover:text-primary text-sm"
+                      title="No source URL — search fallback"
+                    >
+                      🔍
+                    </a>
+                  ) : (
+                    <span className="text-muted-foreground text-xs">—</span>
+                  )}
                 </td>
               </tr>
             ))}
