@@ -31,6 +31,7 @@ import {
   normalizeUrl,
   normalizeName,
   extractNameTokens,
+  isUsefulUrl,
 } from '../services/intake';
 import { checkDuplicate, registerSeen } from '../services/dedup';
 // quality-scorer.ts replaced by LLM scoring in classifier.ts
@@ -248,8 +249,8 @@ export async function runDailyIntake(
     );
     const entry = entryRes.rows[0];
 
-    // Gate 1.5: Entries without a source URL don't belong in the queue
-    if (!entry.source_url || entry.source_url.trim() === '') {
+    // Gate 1.5: Entries without a usable source URL don't belong in the queue
+    if (!entry.source_url || entry.source_url.trim() === '' || !isUsefulUrl(entry.source_url)) {
       await pool.query(
         `UPDATE scan_entries
          SET status = 'archived',

@@ -25,12 +25,23 @@ import type {
  * X/Twitter URLs are always trusted (Grok has direct access).
  * Web URLs require a meaningful path (depth >= 2 segments after domain).
  */
-function isUsefulUrl(url: string): boolean {
+export function isUsefulUrl(url: string): boolean {
   try {
     const u = new URL(url);
     const host = u.hostname.replace(/^www\./, '');
-    // X/Twitter URLs: always trust (tweets are specific)
-    if (host === 'x.com' || host === 'twitter.com') return true;
+    // Reject bare "www" with no TLD (e.g. "https://www")
+    if (!host || host === 'www' || !host.includes('.')) return false;
+    // X/Twitter URLs: validate tweet ID length for x.com/i/status/ URLs
+    if (host === 'x.com' || host === 'twitter.com') {
+      const statusMatch = u.pathname.match(/\/(?:i\/)?status\/(\d+)/);
+      if (statusMatch) {
+        // Real tweet IDs are 18-20 digits; reject truncated ones
+        return statusMatch[1].length >= 18;
+      }
+      // Non-status X URLs (profiles, etc.) — reject x.com/i/statu and similar truncations
+      if (u.pathname.startsWith('/i/') && !u.pathname.startsWith('/i/status/')) return false;
+      return true;
+    }
     // t.co short links: trust (they redirect to the real URL)
     if (host === 't.co') return true;
     // Web URLs: require at least one meaningful path segment (not just /en/ or /about/)
@@ -102,6 +113,15 @@ function sanitizeResult(result: RawScanResult): RawScanResult {
     }
     // Strip trailing markdown/punctuation junk: ], ), ., ,, ;, :
     sourceUrl = sourceUrl.replace(/[\]\).,;:]+$/, '');
+    // Strip trailing & from truncated UTM params (e.g. ?utm_source=Twitter&)
+    sourceUrl = sourceUrl.replace(/&$/, '');
+    // Detect truncated Google Forms URLs (form ID must be 50+ chars)
+    if (sourceUrl.includes('google.com/forms/d/e/') && !sourceUrl.includes('/viewform')) {
+      const formIdMatch = sourceUrl.match(/\/e\/([^/]+)/);
+      if (formIdMatch && formIdMatch[1].length < 50) {
+        sourceUrl = ''; // Truncated form ID, unusable
+      }
+    }
   }
 
   // 6. Description: if still empty after name truncation, provide a minimal fallback
