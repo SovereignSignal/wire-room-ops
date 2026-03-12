@@ -203,21 +203,23 @@ function buildPrompt(entry: ReturnType<typeof cleanEntry>, wire: string): string
   parts.push('- Lead with what makes this interesting (amount, org, deadline)');
   parts.push('');
   parts.push('Rules for telegram (use Telegram HTML formatting):');
-  parts.push('- Structure:');
-  parts.push('  Line 1: <b>Title</b> — a clean, descriptive title (not the raw entry name)');
+  parts.push('- EXACT structure (3 lines only):');
+  parts.push('  Line 1: <b>One-line headline</b> — weave org, what it is, and key figure (amount/deadline) into one natural sentence');
   parts.push('  Line 2: blank');
-  parts.push('  Lines 3+: 2-3 sentence summary explaining what this is, who it\'s for, and why it matters');
-  parts.push('  Line after summary: blank');
-  parts.push('  Details line (if amount or deadline): e.g. "💰 $3M  |  ⏰ April 15, 2026"');
-  parts.push('  Last line: 🔗 <a href="URL">Source</a>');
+  parts.push('  Line 3: 1-2 sentence summary adding context beyond the headline (scope, eligibility, why it matters)');
+  parts.push('  Line 4: blank');
+  parts.push('  Line 5: 🔗 <a href="URL">Source</a>');
   parts.push('');
-  parts.push('- Write in clear, direct language — like a knowledgeable analyst briefing a colleague');
-  parts.push('- The summary should ADD context beyond just restating the name — explain scope, eligibility, or significance');
-  parts.push('- Do NOT repeat the title/name in the summary body — the title is already on its own line above');
-  parts.push('- Use <b> for the title only. Use <a href="...">Source</a> for the link');
-  parts.push('- Only include 💰 and ⏰ on the details line (not scattered through text)');
-  parts.push('- If no amount/deadline, skip the details line entirely');
-  parts.push('- NO hashtags, NO @mentions, NO markdown, NO code blocks');
+  parts.push('- The headline should read like a news wire alert, e.g.:');
+  parts.push('  <b>Linux Foundation 2025 Open Source ROI Report: $3.9B invested yields $23.2B in benefits</b>');
+  parts.push('  <b>Sovereign Tech Agency opens Fellowship for open source maintainers — 3-12 month contracts</b>');
+  parts.push('  <b>OpenAI launches €500K grant for Youth AI Safety Research in EMEA</b>');
+  parts.push('');
+  parts.push('- Do NOT add a separate amount/deadline line with emojis — fold key numbers INTO the headline');
+  parts.push('- Do NOT repeat the headline in the summary — add NEW information only');
+  parts.push('- Do NOT prefix summary with "LATEST:" or similar labels');
+  parts.push('- Use <b> for the headline only. Use <a href="...">Source</a> for the link');
+  parts.push('- NO hashtags, NO @mentions, NO markdown, NO code blocks, NO extra emoji lines');
 
   return parts.join('\n');
 }
@@ -242,19 +244,16 @@ function buildFallbackPosts(entry: ReturnType<typeof cleanEntry>): GeneratedPost
   const deadline = entry.deadline ? ` — deadline ${entry.deadline}` : '';
   const tweet = `${entry.name}${amount}${deadline}: ${shortDesc} ${entry.bestLink}`.substring(0, 280);
 
-  // Telegram — structured HTML post
+  // Telegram — clean 3-line format: headline, summary, source link
   const tgParts: string[] = [];
-  tgParts.push(`<b>${escapeHtml(entry.name)}</b>`);
+  // Build headline: fold amount/deadline into the name
+  const headlineBits: string[] = [escapeHtml(entry.name)];
+  if (entry.amount) headlineBits.push(`— ${escapeHtml(entry.amount)}`);
+  if (entry.deadline) headlineBits.push(entry.amount ? `, deadline ${escapeHtml(entry.deadline)}` : `— deadline ${escapeHtml(entry.deadline)}`);
+  tgParts.push(`<b>${headlineBits.join(' ')}</b>`);
   tgParts.push('');
   if (shortDesc !== entry.name) {
     tgParts.push(escapeHtml(shortDesc));
-    tgParts.push('');
-  }
-  const detailBits: string[] = [];
-  if (entry.amount) detailBits.push(`💰 ${escapeHtml(entry.amount)}`);
-  if (entry.deadline) detailBits.push(`⏰ ${escapeHtml(entry.deadline)}`);
-  if (detailBits.length > 0) {
-    tgParts.push(detailBits.join('  |  '));
     tgParts.push('');
   }
   tgParts.push(`🔗 <a href="${escapeHtml(entry.bestLink)}">Source</a>`);

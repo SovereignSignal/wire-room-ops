@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useToast } from '@/hooks/use-toast';
-import { fetchProviders as apiFetchProviders, updateProvider as apiUpdateProvider, testProvider as apiTestProvider } from '@/api';
-import type { ProviderResponse } from '@/api';
+import { fetchProviders as apiFetchProviders, updateProvider as apiUpdateProvider, testProvider as apiTestProvider, fetchModels } from '@/api';
+import type { ProviderResponse, ModelInfo } from '@/api';
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
 
 type Provider = ProviderResponse;
 
@@ -11,9 +12,12 @@ const PROVIDER_ICONS: Record<string, string> = {
   firecrawl: '\u{1F525}',
   perplexity: '\u{1F52E}',
   resend: '\u{1F4E7}',
+  telegram: '\u{1F4E1}',
+  'telegram-intake': '\u{1F4E5}',
 };
 
 const PROVIDERS_WITH_BASE_URL = new Set(['grok', 'firecrawl', 'perplexity']);
+const PROVIDERS_WITH_MODELS = new Set(['grok', 'anthropic', 'perplexity']);
 
 export function ProvidersTab() {
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -21,7 +25,12 @@ export function ProvidersTab() {
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [testing, setTesting] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{ provider: string; ok: boolean; message: string } | null>(null);
+  const [models, setModels] = useState<Record<string, ModelInfo[]>>({});
   const { toast } = useToast();
+
+  useEffect(() => {
+    fetchModels().then(setModels).catch(() => {}); // silent fail, degrades to text input
+  }, []);
 
   // Form state
   const [formApiKey, setFormApiKey] = useState('');
@@ -156,7 +165,7 @@ export function ProvidersTab() {
                     <div className="text-[10px] text-muted-foreground mt-0.5 font-mono space-x-3">
                       <span>Key: {p.api_key || 'not set'}</span>
                       {p.base_url && <span>URL: {p.base_url}</span>}
-                      {p.default_model && <span>Model: {p.default_model}</span>}
+                      {PROVIDERS_WITH_MODELS.has(p.provider) && p.default_model && <span>Model: {p.default_model}</span>}
                     </div>
                   </div>
                 </div>
@@ -231,19 +240,36 @@ export function ProvidersTab() {
                     </div>
                   )}
 
-                  {/* Default Model */}
-                  <div>
-                    <label className="block text-[10px] font-display tracking-widest text-muted-foreground mb-1.5">
-                      DEFAULT MODEL
-                    </label>
-                    <input
-                      type="text"
-                      value={formModel}
-                      onChange={e => setFormModel(e.target.value)}
-                      placeholder="e.g. grok-4-1-fast"
-                      className="w-full px-3 py-2 text-sm bg-background border border-border rounded focus:border-primary/50 focus:outline-none font-mono"
-                    />
-                  </div>
+                  {/* Default Model (only for AI providers) */}
+                  {PROVIDERS_WITH_MODELS.has(p.provider) && (
+                    <div>
+                      <label className="block text-[10px] font-display tracking-widest text-muted-foreground mb-1.5">
+                        DEFAULT MODEL
+                      </label>
+                      {models[p.provider]?.length ? (
+                        <Select value={formModel} onValueChange={setFormModel}>
+                          <SelectTrigger className="w-full font-mono text-sm">
+                            <SelectValue placeholder="Select a model" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {models[p.provider].slice(0, 3).map(m => (
+                              <SelectItem key={m.id} value={m.id}>
+                                {m.displayName}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        <input
+                          type="text"
+                          value={formModel}
+                          onChange={e => setFormModel(e.target.value)}
+                          placeholder="e.g. grok-4-1-fast"
+                          className="w-full px-3 py-2 text-sm bg-background border border-border rounded focus:border-primary/50 focus:outline-none font-mono"
+                        />
+                      )}
+                    </div>
+                  )}
 
                   {/* Enabled toggle */}
                   <div className="flex items-center gap-3">

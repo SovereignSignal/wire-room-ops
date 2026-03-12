@@ -79,18 +79,27 @@ export const config = {
 export function validateConfig(): void {
   const required = [
     ['DATABASE_URL', config.database.url],
-    ['ANTHROPIC_API_KEY', config.apis.anthropic.apiKey],
-    ['GROK_API_KEY', config.apis.grok.apiKey],
-    ['FIRECRAWL_API_KEY', config.apis.firecrawl.apiKey],
-    ['RESEND_API_KEY', config.email.resendApiKey],
     ['NOTIFICATION_EMAIL', config.email.notificationEmail],
     ['PRIVY_APP_ID', config.privy.appId],
     ['PRIVY_APP_SECRET', config.privy.appSecret],
   ];
-  
+
+  const optional = [
+    ['ANTHROPIC_API_KEY', config.apis.anthropic.apiKey],
+    ['GROK_API_KEY', config.apis.grok.apiKey],
+    ['FIRECRAWL_API_KEY', config.apis.firecrawl.apiKey],
+    ['RESEND_API_KEY', config.email.resendApiKey],
+  ];
+
   const missing = required.filter(([, value]) => !value).map(([name]) => name);
-  
+
   if (missing.length > 0) {
     throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
+  }
+
+  for (const [name, value] of optional) {
+    if (!value) {
+      console.warn(`[Startup] API key not set: ${name} — configure via Settings > API Providers`);
+    }
   }
 }

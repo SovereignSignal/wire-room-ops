@@ -6,7 +6,12 @@
 
 import { getDistributionConfigs, getUndistributedEntries, logDistribution, deleteFailedDistributionLogs, getDistributionLogs, getPool, getEnabledDistributionChannelsForWire, DistributionChannelRecord } from '../db';
 import { config } from '../config';
+import { getCachedProvider } from './api-provider';
 import { generatePosts } from './post-generator';
+
+function getTelegramBotToken(): string {
+  return getCachedProvider('telegram')?.api_key || config.telegram.botToken;
+}
 import { sendChannelMessage } from './telegram-channel';
 import { sendDiscordMessage } from './discord-channel';
 import { postTweet, XCredentials } from './x-client';
@@ -51,7 +56,7 @@ export async function distributeEntries(wire: string): Promise<DistributeResult>
     details: [],
   };
 
-  const telegramBotToken = config.telegram.botToken;
+  const telegramBotToken = getTelegramBotToken();
 
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i];
@@ -140,7 +145,7 @@ async function dispatchToManagedChannel(
   const targetId = mc.targetId;
 
   if (channel === 'telegram') {
-    const token = creds.bot_token || config.telegram.botToken;
+    const token = creds.bot_token || getTelegramBotToken();
     if (!token || !targetId) {
       await logDistribution({
         entryId: entry.id,
@@ -246,7 +251,7 @@ export async function sendTestMessage(mc: DistributionChannelRecord): Promise<{ 
   const testText = `🛰️ Wire Room Test Message\n\nThis is a test from Wire Room Ops.\nChannel: ${mc.name || mc.channel}\nWire: ${mc.wire}\nTimestamp: ${new Date().toISOString()}`;
 
   if (mc.channel === 'telegram') {
-    const token = creds.bot_token || config.telegram.botToken;
+    const token = creds.bot_token || getTelegramBotToken();
     if (!token || !targetId) return { success: false, error: !token ? 'bot_token not set' : 'target_id not configured' };
     const result = await sendChannelMessage(token, targetId, testText);
     return result ? { success: true } : { success: false, error: 'Telegram API call failed' };
@@ -373,7 +378,7 @@ export async function distributeEntry(entryId: number, wire: string): Promise<Di
   }
 
   const entry = entryResult.rows[0];
-  const telegramBotToken = config.telegram.botToken;
+  const telegramBotToken = getTelegramBotToken();
   const posts = await generatePosts({
     name: entry.name,
     description: entry.description || '',
@@ -435,7 +440,7 @@ export async function retryDistribution(entryId: number, wire: string): Promise<
   await deleteFailedDistributionLogs(entryId);
 
   const entry = entryResult.rows[0];
-  const telegramBotToken = config.telegram.botToken;
+  const telegramBotToken = getTelegramBotToken();
   const posts = await generatePosts({
     name: entry.name,
     description: entry.description || '',

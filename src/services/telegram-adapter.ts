@@ -6,7 +6,12 @@
  */
 
 import { config } from '../config';
+import { getCachedProvider } from './api-provider';
 import { processIntakeMessage, completeWireSelection, cleanupPendingEntries, isBatchMessage, processBatchMessage } from './intake-core';
+
+function getIntakeBotToken(): string {
+  return getCachedProvider('telegram-intake')?.api_key || config.telegramIntake.botToken;
+}
 import type { IntakeResult } from './intake-core';
 
 const TELEGRAM_API = 'https://api.telegram.org';
@@ -51,7 +56,7 @@ function escapeHtml(text: string): string {
 }
 
 async function sendMessage(chatId: number, text: string, replyMarkup?: object): Promise<void> {
-  const botToken = config.telegramIntake.botToken;
+  const botToken = getIntakeBotToken();
   try {
     const body: Record<string, unknown> = {
       chat_id: chatId,
@@ -75,7 +80,7 @@ async function sendMessage(chatId: number, text: string, replyMarkup?: object): 
 }
 
 async function answerCallbackQuery(callbackQueryId: string): Promise<void> {
-  const botToken = config.telegramIntake.botToken;
+  const botToken = getIntakeBotToken();
   try {
     await fetch(`${TELEGRAM_API}/bot${botToken}/answerCallbackQuery`, {
       method: 'POST',
@@ -253,7 +258,8 @@ async function handleCallback(query: TelegramCallbackQuery): Promise<void> {
  * Register the intake webhook with Telegram.
  */
 export async function registerIntakeWebhook(): Promise<void> {
-  const { botToken, webhookSecret } = config.telegramIntake;
+  const botToken = getIntakeBotToken();
+  const { webhookSecret } = config.telegramIntake;
   if (!botToken) return;
 
   const webhookUrl = `${config.app.url}/api/telegram/intake-webhook`;

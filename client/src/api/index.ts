@@ -272,6 +272,21 @@ export async function testProvider(provider: string): Promise<{ success: boolean
   return res.json();
 }
 
+// --- Models ---
+
+export interface ModelInfo {
+  id: string;
+  displayName: string;
+  created: string;
+  provider: string;
+}
+
+export async function fetchModels(): Promise<Record<string, ModelInfo[]>> {
+  const res = await authFetch(`${BASE}/models`);
+  if (!res.ok) throw new Error(`Failed to fetch models`);
+  return res.json();
+}
+
 // --- API Usage ---
 
 export interface UsageSummaryRow {

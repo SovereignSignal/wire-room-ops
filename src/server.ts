@@ -34,7 +34,7 @@ import { processRawEntries } from './jobs/process-raw';
 import { databaseRouter } from './routes/database';
 import { runEnrichment } from './jobs/enrichment';
 import { validateForApproval } from './services/approval-guard';
-import { ensureApiProviderTables, refreshProviderCache, getAllProviders, upsertProvider, testProviderConnection } from './services/api-provider';
+import { ensureApiProviderTables, refreshProviderCache, getAllProviders, upsertProvider, testProviderConnection, getCachedProvider } from './services/api-provider';
 import { ensureApiUsageTables, getUsageSummary, getUsageTimeline, getRecentUsage, getModelPricing, upsertModelPricing } from './services/api-usage';
 
 const app = express();
@@ -2763,7 +2763,7 @@ app.post('/api/admin/classify-backfill', requireAuth, async (req: Request, res: 
 
 // --- API Providers ---
 
-const KNOWN_PROVIDERS = new Set(['grok', 'anthropic', 'firecrawl', 'perplexity', 'resend']);
+const KNOWN_PROVIDERS = new Set(['grok', 'anthropic', 'firecrawl', 'perplexity', 'resend', 'telegram', 'telegram-intake']);
 
 // GET /api/providers — list all providers (masked keys)
 app.get('/api/providers', requireAuth, async (_req: Request, res: Response) => {
@@ -3055,7 +3055,8 @@ export async function startServer(): Promise<void> {
   }
 
   // Register Telegram intake webhook if configured
-  if (config.telegramIntake.botToken) {
+  const intakeToken = getCachedProvider('telegram-intake')?.api_key || config.telegramIntake.botToken;
+  if (intakeToken) {
     try {
       await registerIntakeWebhook();
     } catch (error) {

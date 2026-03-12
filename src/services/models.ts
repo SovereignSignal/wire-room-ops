@@ -1,10 +1,11 @@
 import { config } from '../config';
+import { getCachedProvider } from './api-provider';
 
 export interface ModelInfo {
   id: string;
   displayName: string;
   created: Date;
-  provider: 'grok' | 'anthropic';
+  provider: string;
 }
 
 interface GrokModelResponse {
@@ -37,9 +38,14 @@ export async function getGrokModels(): Promise<ModelInfo[]> {
   }
 
   try {
-    const response = await fetch('https://api.x.ai/v1/models', {
+    const provider = getCachedProvider('grok');
+    const apiKey = provider?.api_key || config.apis.grok.apiKey;
+    if (!apiKey) return getDefaultGrokModels();
+    const baseUrl = provider?.base_url || 'https://api.x.ai/v1';
+
+    const response = await fetch(`${baseUrl}/models`, {
       headers: {
-        'Authorization': `Bearer ${config.apis.grok.apiKey}`,
+        'Authorization': `Bearer ${apiKey}`,
       },
     });
 
@@ -79,9 +85,13 @@ export async function getAnthropicModels(): Promise<ModelInfo[]> {
   }
 
   try {
+    const provider = getCachedProvider('anthropic');
+    const apiKey = provider?.api_key || config.apis.anthropic.apiKey;
+    if (!apiKey) return getDefaultAnthropicModels();
+
     const response = await fetch('https://api.anthropic.com/v1/models', {
       headers: {
-        'x-api-key': config.apis.anthropic.apiKey,
+        'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
       },
     });
@@ -175,11 +185,20 @@ function getDefaultAnthropicModels(): ModelInfo[] {
   ];
 }
 
-export async function getAllModels(): Promise<{ grok: ModelInfo[]; anthropic: ModelInfo[] }> {
+function getPerplexityModels(): ModelInfo[] {
+  return [
+    { id: 'sonar-deep-research', displayName: 'Sonar Deep Research', created: new Date('2025-02-01'), provider: 'perplexity' },
+    { id: 'sonar-reasoning-pro', displayName: 'Sonar Reasoning Pro', created: new Date('2025-01-15'), provider: 'perplexity' },
+    { id: 'sonar-pro', displayName: 'Sonar Pro', created: new Date('2025-01-01'), provider: 'perplexity' },
+    { id: 'sonar', displayName: 'Sonar', created: new Date('2024-12-01'), provider: 'perplexity' },
+  ];
+}
+
+export async function getAllModels(): Promise<Record<string, ModelInfo[]>> {
   const [grok, anthropic] = await Promise.all([
     getGrokModels(),
     getAnthropicModels(),
   ]);
 
-  return { grok, anthropic };
+  return { grok, anthropic, perplexity: getPerplexityModels() };
 }

@@ -65,6 +65,18 @@ const PROVIDER_DEFAULTS: Record<string, { displayName: string; envKey: () => str
     baseUrl: () => null,
     defaultModel: null,
   },
+  telegram: {
+    displayName: 'Telegram (Distribution)',
+    envKey: () => config.telegram.botToken,
+    baseUrl: () => null,
+    defaultModel: null,
+  },
+  'telegram-intake': {
+    displayName: 'Telegram (Intake)',
+    envKey: () => config.telegramIntake.botToken,
+    baseUrl: () => null,
+    defaultModel: null,
+  },
 };
 
 // ---- In-memory cache ----
@@ -270,6 +282,14 @@ export async function testProviderConnection(provider: string): Promise<{ succes
           headers: { 'Authorization': `Bearer ${cached.api_key}` },
         });
         if (res.status === 401 || res.status === 403) throw new Error('Invalid API key');
+        return { success: true, latencyMs: Date.now() - start };
+      }
+
+      case 'telegram':
+      case 'telegram-intake': {
+        const res = await fetch(`https://api.telegram.org/bot${cached.api_key}/getMe`);
+        const data = await res.json() as { ok: boolean; description?: string };
+        if (!data.ok) throw new Error(data.description || 'Invalid bot token');
         return { success: true, latencyMs: Date.now() - start };
       }
 
