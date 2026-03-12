@@ -1632,7 +1632,7 @@ Write a 2-4 sentence newsletter summary. Lead with the organization/program name
         'Authorization': `Bearer ${config.apis.grok.apiKey}`,
       },
       body: JSON.stringify({
-        model: 'grok-3-fast',
+        model: 'grok-4.20-beta-0309-non-reasoning',
         messages: [{ role: 'user', content: prompt }],
         max_tokens: 200,
         temperature: 0.3,

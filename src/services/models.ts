@@ -115,15 +115,23 @@ export async function getAnthropicModels(): Promise<ModelInfo[]> {
 
 function formatGrokModelName(id: string): string {
   // Convert model ID to display name
-  // e.g., "grok-4-1-fast-reasoning" -> "Grok 4.1 Fast (Reasoning)"
-  const parts = id.replace('grok-', '').split('-');
+  // e.g., "grok-4-1-fast-reasoning"        -> "Grok 4.1 Fast (Reasoning)"
+  // e.g., "grok-4.20-beta-0309-non-reasoning" -> "Grok 4.20 Beta (Non-Reasoning)"
+  const withoutPrefix = id.replace('grok-', '');
+  const parts = withoutPrefix.split('-');
 
   let version = '';
   let suffix = '';
+  let isBeta = false;
 
   for (const part of parts) {
-    if (/^\d+$/.test(part)) {
+    if (/^\d+\.\d+$/.test(part)) {
+      // Dotted version like "4.20"
+      version = part;
+    } else if (/^\d+$/.test(part)) {
       version += (version ? '.' : '') + part;
+    } else if (part === 'beta') {
+      isBeta = true;
     } else if (part === 'fast') {
       suffix += ' Fast';
     } else if (part === 'mini') {
@@ -135,10 +143,14 @@ function formatGrokModelName(id: string): string {
     } else if (part === 'code') {
       suffix += ' Code';
     }
+    // skip date stamps like "0309"
   }
 
   if (id.includes('non-reasoning')) {
     suffix = suffix.replace(' (Reasoning)', '') + ' (Non-Reasoning)';
+  }
+  if (isBeta) {
+    suffix = ' Beta' + suffix;
   }
 
   return `Grok ${version}${suffix}`.trim();
@@ -146,6 +158,8 @@ function formatGrokModelName(id: string): string {
 
 function getDefaultGrokModels(): ModelInfo[] {
   return [
+    { id: 'grok-4.20-beta-0309-non-reasoning', displayName: 'Grok 4.20 Beta (Non-Reasoning)', created: new Date(), provider: 'grok' },
+    { id: 'grok-4.20-beta-0309-reasoning', displayName: 'Grok 4.20 Beta (Reasoning)', created: new Date(), provider: 'grok' },
     { id: 'grok-4-1-fast-reasoning', displayName: 'Grok 4.1 Fast (Reasoning)', created: new Date(), provider: 'grok' },
     { id: 'grok-4-1-fast-non-reasoning', displayName: 'Grok 4.1 Fast (Non-Reasoning)', created: new Date(), provider: 'grok' },
     { id: 'grok-3', displayName: 'Grok 3', created: new Date(), provider: 'grok' },
