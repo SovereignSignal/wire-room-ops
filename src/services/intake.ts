@@ -204,11 +204,17 @@ function parseStructuredText(text: string): RawScanResult[] {
       continue;
     }
 
-    // Match link/URL line
-    const linkMatch = line.match(/^(?:Link|URL|Source|Website):\s*(https?:\/\/\S+)/i);
+    // Match link/URL line (including "Direct URL", "Program URL" from updated prompts)
+    const linkMatch = line.match(/^(?:Link|URL|Source|Website|Direct URL|Program URL):\s*(https?:\/\/\S+)/i);
     if (linkMatch && currentEntry) {
       const u = linkMatch[1].trim();
-      if (isUsefulUrl(u)) currentEntry.sourceUrl = u;
+      if (isUsefulUrl(u)) {
+        // "Program URL" is more specific than "Post URL" — always prefer it
+        const isProgramUrl = /^(?:Program URL|Direct URL)/i.test(line);
+        if (isProgramUrl || !currentEntry.sourceUrl) {
+          currentEntry.sourceUrl = u;
+        }
+      }
       continue;
     }
 
@@ -350,7 +356,7 @@ function parseLenientNumberedList(text: string): RawScanResult[] {
       }
 
       // URL patterns
-      const urlMatch = line.match(/(?:Link|URL|Source|Website|More info|Apply|Details):\s*(https?:\/\/\S+)/i);
+      const urlMatch = line.match(/(?:Link|URL|Source|Website|More info|Apply|Details|Direct URL|Program URL):\s*(https?:\/\/\S+)/i);
       if (urlMatch) {
         const u = urlMatch[1].trim();
         if (isUsefulUrl(u)) currentEntry.sourceUrl = u;
