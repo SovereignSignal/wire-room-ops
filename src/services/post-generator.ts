@@ -118,6 +118,11 @@ function cleanDescription(desc: string): string {
   cleaned = cleaned.replace(/\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun),?\s+\d{1,2}\s+\w{3}\s+\d{4}\s+[\d:]+\s*\w*\b/g, '');
   // Strip "Details" footer
   cleaned = cleaned.replace(/\bDetails\s*$/i, '');
+  // Strip stray numbered prefixes (e.g. "16." on its own or at start of line)
+  cleaned = cleaned.replace(/(?:^|\n)\s*\d{1,3}\.\s*(?:\n|$)/g, '\n');
+  cleaned = cleaned.replace(/^\d{1,3}\.\s+/, '');
+  // Strip "Total: N results..." footer lines from batch intake
+  cleaned = cleaned.replace(/\bTotal:\s*\d+\s*results?\b[^\n]*/gi, '');
   // Strip URLs (we'll add the link separately)
   cleaned = stripUrls(cleaned);
   // Collapse whitespace and newlines
@@ -155,9 +160,17 @@ function cleanEntry(entry: EntryInput): EntryInput & { bestLink: string } {
     ? entry.amount
     : null;
 
+  // Strip the name from the start of the description to avoid duplication in posts
+  let finalDesc = cleanedDesc;
+  if (cleanedName && finalDesc) {
+    // Case-insensitive check: if description starts with the name (possibly followed by punctuation)
+    const namePattern = cleanedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    finalDesc = finalDesc.replace(new RegExp(`^${namePattern}[:\\s—–-]*`, 'i'), '').trim();
+  }
+
   return {
     name: cleanedName || entry.name,
-    description: cleanedDesc || 'Grant opportunity — see link for details.',
+    description: finalDesc || 'Grant opportunity — see link for details.',
     amount: cleanedAmount,
     deadline: cleanedDeadline,
     sourceUrl: entry.sourceUrl,
@@ -199,6 +212,7 @@ function buildPrompt(entry: ReturnType<typeof cleanEntry>, wire: string): string
   parts.push('');
   parts.push('- Write in clear, direct language — like a knowledgeable analyst briefing a colleague');
   parts.push('- The summary should ADD context beyond just restating the name — explain scope, eligibility, or significance');
+  parts.push('- Do NOT repeat the title/name in the summary body — the title is already on its own line above');
   parts.push('- Use <b> for the title only. Use <a href="...">Source</a> for the link');
   parts.push('- Only include 💰 and ⏰ on the details line (not scattered through text)');
   parts.push('- If no amount/deadline, skip the details line entirely');
@@ -216,7 +230,10 @@ function buildFallbackPosts(entry: ReturnType<typeof cleanEntry>): GeneratedPost
   if (sentenceEnd > 0 && sentenceEnd < 200) {
     shortDesc = shortDesc.substring(0, sentenceEnd + 1);
   } else if (shortDesc.length > 120) {
-    shortDesc = shortDesc.substring(0, 120) + '…';
+    // Truncate at word boundary to avoid mid-word cuts
+    const truncated = shortDesc.substring(0, 120);
+    const lastSpace = truncated.lastIndexOf(' ');
+    shortDesc = (lastSpace > 60 ? truncated.substring(0, lastSpace) : truncated) + '…';
   }
 
   // Tweet
