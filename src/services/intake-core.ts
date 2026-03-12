@@ -56,43 +56,50 @@ const pendingEntries = new Map<string, PendingEntry>();
 
 const DEFAULT_WIRE_KEYWORDS: Record<string, string[]> = {
   crypto: [
-    // Generic crypto/web3 terms
-    'grant', 'protocol', 'defi', 'web3', 'blockchain', 'crypto', 'token', 'staking',
+    // Crypto/web3 specific terms (no generic terms like 'grant', 'bounty', 'hackathon')
+    'protocol', 'defi', 'web3', 'blockchain', 'crypto', 'token', 'staking',
     'decentralized', 'on-chain', 'on chain', 'smart contract', 'nft', 'dao', 'dex', 'dapp',
     'wallet', 'l1', 'l2', 'layer 2', 'layer2', 'mainnet', 'testnet', 'ecosystem fund',
-    'bounty', 'hackathon', 'retro funding', 'retroactive', 'airdrop',
+    'retro funding', 'retroactive', 'airdrop', 'tokenomics', 'liquidity',
     // Major L1/L2 chains and protocols
     'ethereum', 'solana', 'avalanche', 'avax', 'sui', 'aptos', 'near', 'cosmos',
     'polkadot', 'cardano', 'algorand', 'hedera', 'stellar', 'tron', 'fantom',
     'arbitrum', 'optimism', 'base', 'polygon', 'matic', 'bnb', 'bsc', 'linea',
     'scroll', 'zksync', 'starknet', 'mantle', 'mode', 'blast', 'sonic',
+    'ton', 'celo', 'monad', 'stacks', 'bitcoin',
     // Major protocols / orgs
     'uniswap', 'aave', 'chainlink', 'gitcoin', 'ethereum foundation', 'ef grant',
     'sia', 'filecoin', 'ipfs', 'arweave', 'the graph', 'ens', 'safe',
     'compound', 'curve', 'maker', 'makerdao', 'sky', 'lido', 'eigenlayer',
     'celestia', 'hyperliquid', 'drift', 'jupiter', 'jito', 'magic eden',
+    'pyth', 'nosana',
   ],
   ai: [
     // Specific orgs / products (high signal)
     'openai', 'anthropic', 'google deepmind', 'deepmind', 'hugging face', 'huggingface',
     'meta ai', 'stability ai', 'mistral', 'cohere', 'perplexity', 'claude', 'gemini',
+    'nvidia', 'amd', 'vector institute', 'mila', 'allen institute',
     // Core AI/ML terminology
     'artificial intelligence', 'machine learning', 'deep learning', 'neural network',
     'neural', 'llm', 'gpt', 'foundation model', 'transformer', 'large language model',
     'large language', 'generative ai', 'computer vision', 'nlp',
     'natural language processing', 'reinforcement learning',
+    'robotics', 'robot', 'data science', 'autonomous',
     // AI safety / alignment / governance
     'ai safety', 'ai alignment', 'ai governance', 'ai ethics', 'ai risk',
     'alignment research', 'agi',
     // Broad but distinctive AI terms
     'ai', 'ml', 'ai research', 'ai fellowship', 'ai workforce',
     'ai impact', 'ai challenge', 'ai grant', 'ai hackathon', 'ai accelerator',
+    'ai agent', 'ai agents', 'ai startup', 'ai tool', 'ai tools',
   ],
   oss: [
     'open source', 'open-source', 'foss', 'libre', 'free software',
     'github', 'apache', 'linux', 'linux foundation', 'cncf', 'mozilla',
     'sovereign tech', 'nlnet', 'oss', 'gnu', 'creative commons',
     'open collective', 'fiscal sponsor', 'open infrastructure',
+    'maintainer', 'maintainers', 'contributor', 'contributors',
+    'open data', 'debian', 'freebsd', 'r consortium',
   ],
 };
 
@@ -118,7 +125,11 @@ function getKeywordsForWire(wire: string): string[] {
  */
 function buildKeywordRegex(keywords: string[]): RegExp | null {
   if (keywords.length === 0) return null;
-  const escaped = keywords.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  // Sort longest-first so multi-word phrases match before shorter substrings
+  // (e.g. "ai agents" matches before "ai" in regex alternation)
+  const escaped = keywords
+    .sort((a, b) => b.length - a.length)
+    .map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
   return new RegExp(`\\b(${escaped.join('|')})\\b`, 'i');
 }
 
