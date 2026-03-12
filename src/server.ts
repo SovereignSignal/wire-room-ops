@@ -34,6 +34,8 @@ import { processRawEntries } from './jobs/process-raw';
 import { databaseRouter } from './routes/database';
 import { runEnrichment } from './jobs/enrichment';
 import { validateForApproval } from './services/approval-guard';
+import { ensureApiProviderTables, refreshProviderCache, getAllProviders, upsertProvider, testProviderConnection } from './services/api-provider';
+import { ensureApiUsageTables, getUsageSummary, getUsageTimeline, getRecentUsage, getModelPricing, upsertModelPricing } from './services/api-usage';
 
 const app = express();
 const privyJwks = jwksClient({
@@ -2759,6 +2761,150 @@ app.post('/api/admin/classify-backfill', requireAuth, async (req: Request, res: 
   }
 });
 
+// --- API Providers ---
+
+const KNOWN_PROVIDERS = new Set(['grok', 'anthropic', 'firecrawl', 'perplexity', 'resend']);
+
+// GET /api/providers — list all providers (masked keys)
+app.get('/api/providers', requireAuth, async (_req: Request, res: Response) => {
+  try {
+    const providers = await getAllProviders();
+    const masked = providers.map(p => ({
+      ...p,
+      api_key: p.api_key ? (p.api_key.length > 8 ? '****' + p.api_key.slice(-4) : '****') : '',
+    }));
+    res.json(masked);
+  } catch (error) {
+    console.error('[Providers] Failed to list:', error);
+    res.status(500).json({ error: 'Failed to list providers' });
+  }
+});
+
+// PUT /api/providers/:provider — upsert provider config
+app.put('/api/providers/:provider', requireAuth, async (req: Request, res: Response) => {
+  const { provider } = req.params;
+  if (!KNOWN_PROVIDERS.has(provider)) {
+    res.status(400).json({ error: `Unknown provider: ${provider}` });
+    return;
+  }
+  const { api_key, base_url, default_model, enabled, display_name } = req.body;
+
+  // Skip masked values (user didn't change the key)
+  const cleanKey = api_key && typeof api_key === 'string' && api_key.startsWith('****') ? undefined : api_key;
+
+  try {
+    const result = await upsertProvider(provider, {
+      api_key: cleanKey,
+      base_url,
+      default_model,
+      enabled,
+      display_name,
+    });
+    res.json({
+      ...result,
+      api_key: result.api_key ? (result.api_key.length > 8 ? '****' + result.api_key.slice(-4) : '****') : '',
+    });
+  } catch (error) {
+    console.error('[Providers] Failed to upsert:', error);
+    res.status(500).json({ error: 'Failed to update provider' });
+  }
+});
+
+// POST /api/providers/:provider/test — test connection
+app.post('/api/providers/:provider/test', requireAuth, async (req: Request, res: Response) => {
+  if (!KNOWN_PROVIDERS.has(req.params.provider)) {
+    res.status(400).json({ success: false, error: `Unknown provider: ${req.params.provider}` });
+    return;
+  }
+  try {
+    const result = await testProviderConnection(req.params.provider);
+    res.json(result);
+  } catch (error) {
+    console.error('[Providers] Test failed:', error);
+    res.status(500).json({ success: false, error: 'Test request failed' });
+  }
+});
+
+// --- API Usage ---
+
+// GET /api/usage/summary — aggregated usage
+app.get('/api/usage/summary', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const days = Math.min(Math.max(Number(req.query.days) || 7, 1), 90);
+    const rows = await getUsageSummary({
+      days,
+      provider: req.query.provider as string | undefined,
+      purpose: req.query.purpose as string | undefined,
+      wire: req.query.wire as string | undefined,
+    });
+    res.json(rows);
+  } catch (error) {
+    console.error('[Usage] Summary failed:', error);
+    res.status(500).json({ error: 'Failed to fetch usage summary' });
+  }
+});
+
+// GET /api/usage/timeline — daily rollup for charts
+app.get('/api/usage/timeline', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const days = Math.min(Math.max(Number(req.query.days) || 7, 1), 90);
+    const rows = await getUsageTimeline({
+      days,
+      provider: req.query.provider as string | undefined,
+      granularity: req.query.granularity === 'hour' ? 'hour' : 'day',
+    });
+    res.json(rows);
+  } catch (error) {
+    console.error('[Usage] Timeline failed:', error);
+    res.status(500).json({ error: 'Failed to fetch usage timeline' });
+  }
+});
+
+// GET /api/usage/recent — last N raw log entries
+app.get('/api/usage/recent', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const rows = await getRecentUsage({
+      limit: Number(req.query.limit) || 50,
+      provider: req.query.provider as string | undefined,
+    });
+    res.json(rows);
+  } catch (error) {
+    console.error('[Usage] Recent failed:', error);
+    res.status(500).json({ error: 'Failed to fetch recent usage' });
+  }
+});
+
+// --- Model Pricing ---
+
+// GET /api/pricing — list all model pricing
+app.get('/api/pricing', requireAuth, async (_req: Request, res: Response) => {
+  try {
+    const rows = await getModelPricing();
+    res.json(rows);
+  } catch (error) {
+    console.error('[Pricing] Failed to list:', error);
+    res.status(500).json({ error: 'Failed to fetch pricing' });
+  }
+});
+
+// PUT /api/pricing/:provider/:model — update pricing for a model
+app.put('/api/pricing/:provider/:model', requireAuth, async (req: Request, res: Response) => {
+  const { provider, model } = req.params;
+  const { input_cost_per_1m, output_cost_per_1m, per_request_cost } = req.body;
+
+  try {
+    const result = await upsertModelPricing(provider, model, {
+      input_cost_per_1m,
+      output_cost_per_1m,
+      per_request_cost,
+    });
+    res.json(result);
+  } catch (error) {
+    console.error('[Pricing] Failed to update:', error);
+    res.status(500).json({ error: 'Failed to update pricing' });
+  }
+});
+
 // Database introspection API
 app.use('/api/database', requireAuth, databaseRouter);
 
@@ -2828,6 +2974,16 @@ export async function startServer(): Promise<void> {
     await ensureIntegrationConfigTable();
   } catch (error) {
     console.error('Integration config table migration failed (non-fatal):', error);
+  }
+
+  // Ensure API provider + usage tables exist
+  try {
+    await ensureApiProviderTables();
+    await ensureApiUsageTables();
+    await refreshProviderCache();
+    console.log('[Startup] API provider & usage tables ready');
+  } catch (error) {
+    console.error('API provider/usage table initialization failed (non-fatal):', error);
   }
 
   // Initialize the scheduler (loads config from database)

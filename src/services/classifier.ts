@@ -8,6 +8,8 @@
 
 import { config } from '../config';
 import type { Pool } from 'pg';
+import { logApiUsage } from './api-usage';
+import { getCachedProvider } from './api-provider';
 
 export type Classification = 'GRANT' | 'EXPIRED' | 'NEWS' | 'NOISE' | 'UNCHECKED';
 
@@ -79,15 +81,21 @@ export async function classifyEntry(entry: {
   wire: string;
 }): Promise<ClassificationResult> {
   const prompt = buildClassificationPrompt(entry);
+  const classifyModel = 'grok-4.20-beta-0309-non-reasoning';
 
-  const response = await fetch(`${config.apis.grok.baseUrl}/chat/completions`, {
+  const provider = getCachedProvider('grok');
+  const apiKey = provider?.api_key || config.apis.grok.apiKey;
+  const baseUrl = provider?.base_url || config.apis.grok.baseUrl;
+  const start = Date.now();
+
+  const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${config.apis.grok.apiKey}`,
+      'Authorization': `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: 'grok-4.20-beta-0309-non-reasoning',
+      model: classifyModel,
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 300,
       temperature: 0.1,
@@ -96,11 +104,18 @@ export async function classifyEntry(entry: {
 
   if (!response.ok) {
     const errorText = await response.text();
+    logApiUsage({ provider: 'grok', model: classifyModel, purpose: 'classify', wire: entry.wire, duration_ms: Date.now() - start, success: false, error_message: `${response.status}` });
     throw new Error(`Grok API error: ${response.status} - ${errorText}`);
   }
 
-  const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+  const data = await response.json() as { choices?: Array<{ message?: { content?: string } }>; usage?: { prompt_tokens?: number; completion_tokens?: number } };
   const content = data.choices?.[0]?.message?.content;
+
+  logApiUsage({
+    provider: 'grok', model: classifyModel, purpose: 'classify', wire: entry.wire,
+    duration_ms: Date.now() - start,
+    tokens_in: data.usage?.prompt_tokens, tokens_out: data.usage?.completion_tokens,
+  });
 
   if (!content) {
     return { classification: 'UNCHECKED', reason: 'empty_response', qualityScore: 0, scoreReason: '', extracted: {} };

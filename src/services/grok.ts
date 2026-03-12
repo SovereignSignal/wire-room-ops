@@ -2,6 +2,8 @@ import { config } from '../config';
 import { getBrand } from '../config/brand';
 import { DatabaseEntry } from '../types';
 import type { ToolType } from '../types/intake';
+import { logApiUsage } from './api-usage';
+import { getCachedProvider } from './api-provider';
 
 function buildGrokPrompt(): string {
   const brand = getBrand();
@@ -48,14 +50,20 @@ export async function summarizeWithGrok(entry: DatabaseEntry, model?: string): P
     .replace('{existing_summary}', entry.quick_summary)
     .replace('{url}', entry.url);
 
-  const response = await fetch(`${config.apis.grok.baseUrl}/chat/completions`, {
+  const provider = getCachedProvider('grok');
+  const apiKey = provider?.api_key || config.apis.grok.apiKey;
+  const baseUrl = provider?.base_url || config.apis.grok.baseUrl;
+  const useModel = model || DEFAULT_GROK_MODEL;
+  const start = Date.now();
+
+  const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${config.apis.grok.apiKey}`,
+      'Authorization': `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: model || DEFAULT_GROK_MODEL,
+      model: useModel,
       messages: [
         {
           role: 'user',
@@ -69,14 +77,20 @@ export async function summarizeWithGrok(entry: DatabaseEntry, model?: string): P
 
   if (!response.ok) {
     const errorText = await response.text();
+    logApiUsage({ provider: 'grok', model: useModel, purpose: 'summarize', duration_ms: Date.now() - start, success: false, error_message: `${response.status}` });
     throw new Error(`Grok API error: ${response.status} - ${errorText}`);
   }
 
-  const data = await response.json() as GrokResponse;
-  
+  const data = await response.json() as GrokResponse & { usage?: { prompt_tokens?: number; completion_tokens?: number } };
+
   if (!data.choices?.[0]?.message?.content) {
     throw new Error('Grok API returned empty response');
   }
+
+  logApiUsage({
+    provider: 'grok', model: useModel, purpose: 'summarize', duration_ms: Date.now() - start,
+    tokens_in: data.usage?.prompt_tokens, tokens_out: data.usage?.completion_tokens,
+  });
 
   return data.choices[0].message.content.trim();
 }
@@ -109,13 +123,17 @@ export async function executeScanPrompt(
     fullPrompt += `\n\nRespond using this format:\n${options.responseFormat}`;
   }
 
+  const provider = getCachedProvider('grok');
+  const apiKey = provider?.api_key || config.apis.grok.apiKey;
+  const baseUrl = (provider?.base_url || config.apis.grok.baseUrl).replace(/\/v1$/, '');
+  const start = Date.now();
+
   // Use the Responses API with x_search tool for real-time X.com scanning
-  const baseUrl = config.apis.grok.baseUrl.replace(/\/v1$/, '');
   const response = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${config.apis.grok.apiKey}`,
+      'Authorization': `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
       model,
@@ -126,6 +144,7 @@ export async function executeScanPrompt(
 
   if (!response.ok) {
     const errorText = await response.text();
+    logApiUsage({ provider: 'grok', model, purpose: 'scan', duration_ms: Date.now() - start, success: false, error_message: `${response.status}` });
     throw new Error(`Grok API error: ${response.status} - ${errorText}`);
   }
 
@@ -150,6 +169,11 @@ export async function executeScanPrompt(
   const totalTokens = data.usage
     ? (data.usage.input_tokens || 0) + (data.usage.output_tokens || 0)
     : undefined;
+
+  logApiUsage({
+    provider: 'grok', model, purpose: 'scan', duration_ms: Date.now() - start,
+    tokens_in: data.usage?.input_tokens, tokens_out: data.usage?.output_tokens,
+  });
 
   return {
     content: textContent.trim(),

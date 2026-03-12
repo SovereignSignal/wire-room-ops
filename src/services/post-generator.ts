@@ -6,6 +6,7 @@
 import { getClient } from './anthropic';
 import type { GeneratedPosts } from '../types/intake';
 import { escapeHtml } from '../utils/html';
+import { logApiUsage } from './api-usage';
 
 const MODEL = 'claude-sonnet-4-6-20250627';
 
@@ -269,6 +270,7 @@ export async function generatePosts(
   // Clean all entry fields before generation
   const cleaned = cleanEntry(entry);
 
+  const start = Date.now();
   try {
     const anthropic = getClient();
     const prompt = buildPrompt(cleaned, wire);
@@ -284,6 +286,12 @@ export async function generatePosts(
       throw new Error('No text content in response');
     }
 
+    logApiUsage({
+      provider: 'anthropic', model: MODEL, purpose: 'post-gen', wire,
+      duration_ms: Date.now() - start,
+      tokens_in: message.usage?.input_tokens, tokens_out: message.usage?.output_tokens,
+    });
+
     // Parse JSON from response (strip markdown fences if present)
     const raw = textBlock.text.trim().replace(/^```json?\n?/, '').replace(/\n?```$/, '');
     const parsed = JSON.parse(raw) as { tweet?: string; telegram?: string };
@@ -297,6 +305,11 @@ export async function generatePosts(
 
     return { tweet, telegram: parsed.telegram };
   } catch (error) {
+    logApiUsage({
+      provider: 'anthropic', model: MODEL, purpose: 'post-gen', wire,
+      duration_ms: Date.now() - start, success: false,
+      error_message: error instanceof Error ? error.message : String(error),
+    });
     console.error('[PostGenerator] AI generation failed, using fallback:', error);
     return buildFallbackPosts(cleaned);
   }

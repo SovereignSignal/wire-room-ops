@@ -5,6 +5,8 @@ import { DatabaseEntry } from '../types';
 import { scrapeUrl, isScrapableUrl, truncateContent } from './scraper';
 import type { RawScanResult, ToolType } from '../types/intake';
 import { getAnthropicModels } from './models';
+import { logApiUsage } from './api-usage';
+import { getCachedProvider } from './api-provider';
 
 // Prompt builders — read brand at call time so env var overrides work without restart
 
@@ -69,12 +71,16 @@ BAD EXAMPLE (too vague):
 }
 
 let client: Anthropic | null = null;
+let clientApiKey: string = '';
 
 export function getClient(): Anthropic {
-  if (!client) {
-    client = new Anthropic({
-      apiKey: config.apis.anthropic.apiKey,
-    });
+  const provider = getCachedProvider('anthropic');
+  const apiKey = provider?.api_key || config.apis.anthropic.apiKey;
+
+  // Recreate client if key changed (e.g. switched from env to DB)
+  if (!client || apiKey !== clientApiKey) {
+    client = new Anthropic({ apiKey });
+    clientApiKey = apiKey;
   }
   return client;
 }
@@ -171,14 +177,16 @@ async function resolvePreferredAnthropicModel(explicitModel?: string): Promise<s
 
 async function createMessageWithFallback(
   content: string,
-  options?: { model?: string; maxTokens?: number }
-): Promise<{ model: string; text: string }> {
+  options?: { model?: string; maxTokens?: number; purpose?: string }
+): Promise<{ model: string; text: string; usage?: { input_tokens: number; output_tokens: number } }> {
   const anthropic = getClient();
   const candidateModels = await resolvePreferredAnthropicModel(options?.model);
   const maxTokens = options?.maxTokens || 1200;
+  const purpose = options?.purpose || 'summarize';
   let lastError: unknown;
 
   for (const model of candidateModels) {
+    const start = Date.now();
     try {
       const message = await anthropic.messages.create({
         model,
@@ -191,8 +199,20 @@ async function createMessageWithFallback(
         throw new Error('Anthropic API returned no text content');
       }
 
-      return { model: message.model || model, text };
+      const usage = message.usage ? { input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens } : undefined;
+      logApiUsage({
+        provider: 'anthropic', model: message.model || model, purpose,
+        duration_ms: Date.now() - start,
+        tokens_in: usage?.input_tokens, tokens_out: usage?.output_tokens,
+      });
+
+      return { model: message.model || model, text, usage };
     } catch (error) {
+      logApiUsage({
+        provider: 'anthropic', model, purpose,
+        duration_ms: Date.now() - start, success: false,
+        error_message: error instanceof Error ? error.message : String(error),
+      });
       lastError = error;
       const message = error instanceof Error ? error.message : String(error);
       if (
@@ -316,6 +336,7 @@ export async function summarizeWithOpus(entry: DatabaseEntry, model?: string): P
   const { text } = await createMessageWithFallback(prompt, {
     model: model || DEFAULT_ANTHROPIC_MODEL,
     maxTokens: 500,
+    purpose: 'summarize',
   });
 
   let result = text;
@@ -342,6 +363,7 @@ export async function reviewScanPrompt(params: {
   const { model, text } = await createMessageWithFallback(request, {
     model: params.model,
     maxTokens: 1800,
+    purpose: 'prompt-review',
   });
 
   const parsed = extractJsonObject(text);

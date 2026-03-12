@@ -229,3 +229,113 @@ export async function updateSchedule(id: string, updates: Partial<Omit<ScheduleR
   }
   return res.json();
 }
+
+// --- API Providers ---
+
+export interface ProviderResponse {
+  provider: string;
+  display_name: string;
+  api_key: string; // masked
+  base_url: string | null;
+  default_model: string | null;
+  enabled: boolean;
+  source: 'db' | 'env';
+}
+
+export async function fetchProviders(): Promise<ProviderResponse[]> {
+  const res = await authFetch(`${BASE}/providers`);
+  if (!res.ok) throw new Error(`Failed to fetch providers: ${res.status}`);
+  return res.json();
+}
+
+export async function updateProvider(provider: string, data: {
+  api_key?: string;
+  base_url?: string | null;
+  default_model?: string | null;
+  enabled?: boolean;
+}): Promise<ProviderResponse> {
+  const res = await authFetch(`${BASE}/providers/${provider}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to update provider: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function testProvider(provider: string): Promise<{ success: boolean; latencyMs: number; error?: string }> {
+  const res = await authFetch(`${BASE}/providers/${provider}/test`, { method: 'POST' });
+  if (!res.ok) throw new Error(`Test request failed: ${res.status}`);
+  return res.json();
+}
+
+// --- API Usage ---
+
+export interface UsageSummaryRow {
+  provider: string;
+  purpose: string;
+  calls: number;
+  tokens_in: number;
+  tokens_out: number;
+  estimated_cost_usd: number;
+  errors: number;
+}
+
+export async function fetchUsageSummary(params: { days?: number; provider?: string; purpose?: string; wire?: string } = {}): Promise<UsageSummaryRow[]> {
+  const q = new URLSearchParams(
+    Object.fromEntries(Object.entries(params).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)]))
+  ).toString();
+  const res = await authFetch(`${BASE}/usage/summary${q ? '?' + q : ''}`);
+  if (!res.ok) throw new Error(`Failed to fetch usage: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchUsageTimeline(params: { days?: number; provider?: string; granularity?: string } = {}): Promise<any[]> {
+  const q = new URLSearchParams(
+    Object.fromEntries(Object.entries(params).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)]))
+  ).toString();
+  const res = await authFetch(`${BASE}/usage/timeline${q ? '?' + q : ''}`);
+  if (!res.ok) throw new Error(`Failed to fetch timeline: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchRecentUsage(limit = 20): Promise<any[]> {
+  const res = await authFetch(`${BASE}/usage/recent?limit=${limit}`);
+  if (!res.ok) throw new Error(`Failed to fetch recent usage: ${res.status}`);
+  return res.json();
+}
+
+// --- Model Pricing ---
+
+export interface ModelPricingRow {
+  id: number;
+  provider: string;
+  model: string;
+  input_cost_per_1m: number;
+  output_cost_per_1m: number;
+  per_request_cost: number | null;
+  updated_at: string;
+}
+
+export async function fetchModelPricing(): Promise<ModelPricingRow[]> {
+  const res = await authFetch(`${BASE}/pricing`);
+  if (!res.ok) throw new Error(`Failed to fetch pricing: ${res.status}`);
+  return res.json();
+}
+
+export async function updateModelPricing(provider: string, model: string, data: {
+  input_cost_per_1m?: number;
+  output_cost_per_1m?: number;
+  per_request_cost?: number | null;
+}): Promise<ModelPricingRow> {
+  const res = await authFetch(`${BASE}/pricing/${encodeURIComponent(provider)}/${encodeURIComponent(model)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error(`Failed to update pricing: ${res.status}`);
+  return res.json();
+}

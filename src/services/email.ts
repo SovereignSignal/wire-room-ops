@@ -4,6 +4,7 @@ import { getBrand } from '../config/brand';
 import { ProcessingStats } from '../types';
 import { escapeHtml } from '../utils/html';
 import type { ScanExecutionResult } from '../jobs/scan-execution';
+import { logApiUsage } from './api-usage';
 
 let resend: Resend | null = null;
 
@@ -12,6 +13,18 @@ function getResend(): Resend {
     resend = new Resend(config.email.resendApiKey);
   }
   return resend;
+}
+
+async function sendWithTracking(params: Parameters<Resend['emails']['send']>[0]): Promise<void> {
+  const client = getResend();
+  const start = Date.now();
+  try {
+    await client.emails.send(params);
+    logApiUsage({ provider: 'resend', model: 'email', purpose: 'email', duration_ms: Date.now() - start });
+  } catch (error) {
+    logApiUsage({ provider: 'resend', model: 'email', purpose: 'email', duration_ms: Date.now() - start, success: false, error_message: error instanceof Error ? error.message : String(error) });
+    throw error;
+  }
 }
 
 function formatDateRange(start: Date, end: Date): string {
@@ -28,7 +41,6 @@ export async function sendNotificationEmail(
   stats: ProcessingStats,
   dateRange: { start: Date; end: Date }
 ): Promise<void> {
-  const client = getResend();
   const dateRangeStr = formatDateRange(dateRange.start, dateRange.end);
 
   const htmlContent = `
@@ -153,7 +165,7 @@ Week of ${dateRangeStr}
 The Wire Room
   `.trim();
 
-  await client.emails.send({
+  await sendWithTracking({
     from: config.email.fromEmail,
     to: config.email.notificationEmail,
     subject: `Weekly Summaries Ready - ${dateRangeStr}`,
@@ -163,7 +175,6 @@ The Wire Room
 }
 
 export async function sendTestAlertEmail(): Promise<void> {
-  const client = getResend();
   const now = new Date();
   const timestamp = now.toLocaleString('en-US', {
     weekday: 'long',
@@ -243,7 +254,7 @@ The Wire Room
 
   console.log(`[Email] Sending test alert to: ${config.email.notificationEmail}`);
 
-  await client.emails.send({
+  await sendWithTracking({
     from: config.email.fromEmail,
     to: config.email.notificationEmail,
     subject: 'Test Alert - The Wire Room',
@@ -255,7 +266,6 @@ The Wire Room
 }
 
 export async function sendScheduledJobFailureEmail(errorMessage: string, jobStartTime: Date, recipients?: string[]): Promise<void> {
-  const client = getResend();
   const timestamp = jobStartTime.toLocaleString('en-US', {
     weekday: 'long',
     year: 'numeric',
@@ -351,7 +361,7 @@ The Wire Room
   const to = recipients && recipients.length > 0 ? recipients : config.email.notificationEmail;
   console.log(`[Email] Sending scheduled job failure notification to: ${Array.isArray(to) ? to.join(', ') : to}`);
 
-  await client.emails.send({
+  await sendWithTracking({
     from: config.email.fromEmail,
     to,
     subject: 'Wire Room Ops - Scheduled Job Failed',
@@ -363,8 +373,6 @@ The Wire Room
 }
 
 export async function sendResendLinkEmail(email: string, downloadUrl: string, filename: string): Promise<void> {
-  const client = getResend();
-
   console.log(`[Email] Sending resend link email to: ${email}`);
 
   const htmlContent = `
@@ -422,7 +430,7 @@ Download: ${downloadUrl}
 This link expires in 24 hours.
   `.trim();
 
-  await client.emails.send({
+  await sendWithTracking({
     from: config.email.fromEmail,
     to: email,
     subject: 'The Wire Room - Fresh Download Link',
@@ -438,7 +446,6 @@ export async function sendScanDigestEmail(
   dashboardUrl: string,
   recipients?: string[]
 ): Promise<void> {
-  const client = getResend();
   const now = new Date();
   const dateStr = now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   const { intakeSummary, perPrompt, totalResults, promptsExecuted, promptsFailed, totalDurationMs } = scanResult;
@@ -657,7 +664,7 @@ The Wire Room
   const to = recipients && recipients.length > 0 ? recipients : config.email.notificationEmail;
   console.log(`[Email] Sending scan digest to: ${Array.isArray(to) ? to.join(', ') : to}`);
 
-  await client.emails.send({
+  await sendWithTracking({
     from: config.email.fromEmail,
     to,
     subject: `Daily Scan Digest - ${dateStr} | ${intakeSummary.newUnique} new finds`,
@@ -683,7 +690,6 @@ export async function sendDailyDigestEmail(
   recipients?: string[],
   topFinds?: TopFindEntry[]
 ): Promise<void> {
-  const client = getResend();
   const brand = getBrand();
   const reviewUrl = `${dashboardUrl.replace(/\/$/, '')}/queue`;
 
@@ -793,7 +799,7 @@ ${brand.name} | ${brand.url}`;
   const pendingLabel = digest.totalPendingReview > 0 ? ` | ${digest.totalPendingReview} pending` : '';
   const to = recipients && recipients.length > 0 ? recipients : config.email.notificationEmail;
 
-  await client.emails.send({
+  await sendWithTracking({
     from: `${brand.fromName} <${config.email.fromEmail}>`,
     to,
     subject: `${brand.name} Digest — ${digest.date} | ${digest.totalNewUnique} new${pendingLabel}`,

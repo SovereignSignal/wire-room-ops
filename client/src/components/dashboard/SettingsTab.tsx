@@ -3,6 +3,8 @@ import { SourcesTab } from './SourcesTab';
 import { DistributionTab } from './DistributionTab';
 import { IntegrationsTab } from './IntegrationsTab';
 import { DailyDigestCard } from './DailyDigestCard';
+import { ProvidersTab } from './ProvidersTab';
+import { UsageTab } from './UsageTab';
 import { VerticalStats, WireCounts } from '@/types';
 
 interface SettingsTabProps {
@@ -12,11 +14,13 @@ interface SettingsTabProps {
   onNavigateToQueue: (wire: string) => void;
 }
 
-type SettingsSection = 'sources' | 'distribution' | 'integrations' | 'email';
+type SettingsSection = 'sources' | 'distribution' | 'integrations' | 'email' | 'providers' | 'usage';
 
 const SECTIONS: { key: SettingsSection; label: string; icon: string; description: string }[] = [
   { key: 'sources', label: 'SOURCES', icon: '🛰️', description: 'Wire health & scan metrics' },
   { key: 'distribution', label: 'DISTRIBUTION', icon: '📢', description: 'Telegram, Discord, Slack channels' },
+  { key: 'providers', label: 'API PROVIDERS', icon: '🔑', description: 'API keys & credentials' },
+  { key: 'usage', label: 'USAGE', icon: '📊', description: 'API costs & token usage' },
   { key: 'integrations', label: 'INTEGRATIONS', icon: '🔗', description: 'Notion CRM sync' },
   { key: 'email', label: 'EMAIL', icon: '📧', description: 'Daily digest schedule' },
 ];
@@ -60,6 +64,12 @@ export function SettingsTab({ verticals, stats, wireCounts, onNavigateToQueue }:
         )}
         {activeSection === 'distribution' && (
           <DistributionTab verticals={verticals} />
+        )}
+        {activeSection === 'providers' && (
+          <ProvidersTab />
+        )}
+        {activeSection === 'usage' && (
+          <UsageTab />
         )}
         {activeSection === 'integrations' && (
           <IntegrationsTab />

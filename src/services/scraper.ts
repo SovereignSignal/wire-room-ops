@@ -1,5 +1,7 @@
 import { config } from '../config';
 import { sleep } from '../utils/async';
+import { logApiUsage } from './api-usage';
+import { getCachedProvider } from './api-provider';
 
 export interface ScrapeResult {
   success: boolean;
@@ -148,11 +150,16 @@ export async function scrapeUrl(url: string): Promise<ScrapeResult> {
 }
 
 async function scrapeWithFirecrawl(url: string): Promise<ScrapeResult> {
-  const response = await fetch(`${config.apis.firecrawl.baseUrl}/scrape`, {
+  const provider = getCachedProvider('firecrawl');
+  const apiKey = provider?.api_key || config.apis.firecrawl.apiKey;
+  const baseUrl = provider?.base_url || config.apis.firecrawl.baseUrl;
+  const start = Date.now();
+
+  const response = await fetch(`${baseUrl}/scrape`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${config.apis.firecrawl.apiKey}`,
+      'Authorization': `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
       url,
@@ -164,12 +171,14 @@ async function scrapeWithFirecrawl(url: string): Promise<ScrapeResult> {
 
   if (!response.ok) {
     const errorText = await response.text();
+    logApiUsage({ provider: 'firecrawl', model: 'scrape', purpose: 'scrape', duration_ms: Date.now() - start, success: false, error_message: `${response.status}` });
     throw new Error(`Firecrawl API error: ${response.status} - ${errorText}`);
   }
 
   const data = await response.json() as FirecrawlResponse;
 
   if (!data.success) {
+    logApiUsage({ provider: 'firecrawl', model: 'scrape', purpose: 'scrape', duration_ms: Date.now() - start, success: false, error_message: data.error || 'unsuccessful' });
     return {
       success: false,
       content: '',
@@ -181,6 +190,7 @@ async function scrapeWithFirecrawl(url: string): Promise<ScrapeResult> {
   const content = data.data?.markdown || data.data?.content || '';
 
   if (!content || content.trim().length < 50) {
+    logApiUsage({ provider: 'firecrawl', model: 'scrape', purpose: 'scrape', duration_ms: Date.now() - start, success: false, error_message: 'empty content' });
     return {
       success: false,
       content: '',
@@ -188,6 +198,8 @@ async function scrapeWithFirecrawl(url: string): Promise<ScrapeResult> {
       error: 'Firecrawl returned empty or insufficient content',
     };
   }
+
+  logApiUsage({ provider: 'firecrawl', model: 'scrape', purpose: 'scrape', duration_ms: Date.now() - start });
 
   return {
     success: true,

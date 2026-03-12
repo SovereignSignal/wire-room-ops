@@ -9,6 +9,8 @@
 
 import { config } from '../config';
 import { getBrand } from '../config/brand';
+import { logApiUsage } from './api-usage';
+import { getCachedProvider } from './api-provider';
 
 const PERPLEXITY_BASE_URL = 'https://api.perplexity.ai';
 
@@ -28,14 +30,17 @@ export async function executePerplexityScan(
   promptText: string,
   options?: { model?: string }
 ): Promise<{ content: string; model: string; tokensUsed?: number }> {
-  const apiKey = process.env.PERPLEXITY_API_KEY;
+  const provider = getCachedProvider('perplexity');
+  const apiKey = provider?.api_key || process.env.PERPLEXITY_API_KEY;
   if (!apiKey) {
     throw new Error('PERPLEXITY_API_KEY not set in environment');
   }
 
   const model = options?.model || DEFAULT_PERPLEXITY_MODEL;
+  const baseUrl = provider?.base_url || PERPLEXITY_BASE_URL;
+  const start = Date.now();
 
-  const response = await fetch(`${PERPLEXITY_BASE_URL}/chat/completions`, {
+  const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -61,6 +66,7 @@ export async function executePerplexityScan(
 
   if (!response.ok) {
     const errorText = await response.text();
+    logApiUsage({ provider: 'perplexity', model, purpose: 'scan', duration_ms: Date.now() - start, success: false, error_message: `${response.status}` });
     throw new Error(`Perplexity API error: ${response.status} - ${errorText}`);
   }
 
@@ -70,6 +76,11 @@ export async function executePerplexityScan(
   if (!content) {
     throw new Error('Perplexity API returned empty response');
   }
+
+  logApiUsage({
+    provider: 'perplexity', model, purpose: 'scan', duration_ms: Date.now() - start,
+    tokens_in: data.usage?.prompt_tokens, tokens_out: data.usage?.completion_tokens,
+  });
 
   const tokensUsed = data.usage?.total_tokens;
 
