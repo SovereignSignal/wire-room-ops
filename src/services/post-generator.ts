@@ -188,14 +188,21 @@ function buildPrompt(entry: ReturnType<typeof cleanEntry>, wire: string): string
   parts.push('- Punchy, informative, no hashtags');
   parts.push('- Lead with what makes this interesting (amount, org, deadline)');
   parts.push('');
-  parts.push('Rules for telegram:');
-  parts.push('- EXACTLY two lines, nothing more:');
-  parts.push('  Line 1: One sentence summary (plain text, no emoji, no label, no hashtags)');
-  parts.push('  Line 2: The link (bare URL, no "Learn more →" prefix)');
-  parts.push('- The sentence should say what it is and why it matters in plain language');
-  parts.push('- Include the amount naturally in the sentence if provided (e.g. "$22k recurring fund")');
-  parts.push('- NO name header, NO emoji, NO "Amount:" label, NO "Deadline:" label, NO "Learn more →"');
-  parts.push('- NO extra blank lines, NO brackets, NO hashtags, NO HTML');
+  parts.push('Rules for telegram (use Telegram HTML formatting):');
+  parts.push('- Structure:');
+  parts.push('  Line 1: <b>Title</b> — a clean, descriptive title (not the raw entry name)');
+  parts.push('  Line 2: blank');
+  parts.push('  Lines 3+: 2-3 sentence summary explaining what this is, who it\'s for, and why it matters');
+  parts.push('  Line after summary: blank');
+  parts.push('  Details line (if amount or deadline): e.g. "💰 $3M  |  ⏰ April 15, 2026"');
+  parts.push('  Last line: 🔗 <a href="URL">Source</a>');
+  parts.push('');
+  parts.push('- Write in clear, direct language — like a knowledgeable analyst briefing a colleague');
+  parts.push('- The summary should ADD context beyond just restating the name — explain scope, eligibility, or significance');
+  parts.push('- Use <b> for the title only. Use <a href="...">Source</a> for the link');
+  parts.push('- Only include 💰 and ⏰ on the details line (not scattered through text)');
+  parts.push('- If no amount/deadline, skip the details line entirely');
+  parts.push('- NO hashtags, NO @mentions, NO markdown, NO code blocks');
 
   return parts.join('\n');
 }
@@ -217,12 +224,23 @@ function buildFallbackPosts(entry: ReturnType<typeof cleanEntry>): GeneratedPost
   const deadline = entry.deadline ? ` — deadline ${entry.deadline}` : '';
   const tweet = `${entry.name}${amount}${deadline}: ${shortDesc} ${entry.bestLink}`.substring(0, 280);
 
-  // Telegram — one-liner summary + link on separate line
-  const parts = [entry.name];
-  if (entry.amount) parts.push(`— ${entry.amount}`);
-  if (entry.deadline) parts.push(`— deadline ${entry.deadline}`);
-  const telegramLine1 = parts.join(' ');
-  const telegram = `${telegramLine1}\n${entry.bestLink}`;
+  // Telegram — structured HTML post
+  const tgParts: string[] = [];
+  tgParts.push(`<b>${escapeHtml(entry.name)}</b>`);
+  tgParts.push('');
+  if (shortDesc !== entry.name) {
+    tgParts.push(escapeHtml(shortDesc));
+    tgParts.push('');
+  }
+  const detailBits: string[] = [];
+  if (entry.amount) detailBits.push(`💰 ${escapeHtml(entry.amount)}`);
+  if (entry.deadline) detailBits.push(`⏰ ${escapeHtml(entry.deadline)}`);
+  if (detailBits.length > 0) {
+    tgParts.push(detailBits.join('  |  '));
+    tgParts.push('');
+  }
+  tgParts.push(`🔗 <a href="${escapeHtml(entry.bestLink)}">Source</a>`);
+  const telegram = tgParts.join('\n');
 
   return { tweet, telegram };
 }

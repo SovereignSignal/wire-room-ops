@@ -87,7 +87,7 @@ export async function classifyEntry(entry: {
       'Authorization': `Bearer ${config.apis.grok.apiKey}`,
     },
     body: JSON.stringify({
-      model: 'grok-3',
+      model: 'grok-4-2-fast-non-reasoning',
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 300,
       temperature: 0.1,
