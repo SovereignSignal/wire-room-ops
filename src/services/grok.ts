@@ -40,8 +40,8 @@ interface GrokResponse {
   }>;
 }
 
-// Default model if none specified - using reasoning variant for highest quality
-const DEFAULT_GROK_MODEL = 'grok-4-2-fast-non-reasoning';
+// Default model if none specified - grok-4.20 non-reasoning: ~2x faster than grok-4.1, same quality
+const DEFAULT_GROK_MODEL = 'grok-4.20-beta-0309-non-reasoning';
 
 export async function summarizeWithGrok(entry: DatabaseEntry, model?: string): Promise<string> {
   const prompt = buildGrokPrompt()
@@ -82,7 +82,7 @@ export async function summarizeWithGrok(entry: DatabaseEntry, model?: string): P
 }
 
 // Default model for scan prompts — uses Responses API with x_search tool
-const DEFAULT_SCAN_MODEL = 'grok-4-2-fast';
+const DEFAULT_SCAN_MODEL = 'grok-4.20-beta-0309-non-reasoning';
 
 // Response format for the /v1/responses endpoint
 interface ResponsesAPIOutput {
