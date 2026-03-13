@@ -171,14 +171,44 @@ export async function runDailyIntake(
 
   progress(`Inserted ${insertedIds.length} raw entries`, 25);
 
-  // ---- Phase 2: Dedup ----
-  progress('Running deduplication...', 30);
-  let duplicatesFound = 0;
-  const uniqueEntryIds: number[] = [];
+  // ---- Phase 1.5: Gate 1 — Archive entries without usable source URLs ----
+  // Must run BEFORE dedup so URL-less entries never pollute seen_urls/seen_names
+  let archivedNoUrl = 0;
+  const validIndices: number[] = [];
 
   for (let i = 0; i < allResults.length; i++) {
     const item = allResults[i];
     const entryId = insertedIds[i];
+    const url = item.result.sourceUrl;
+
+    if (!url || url.trim() === '' || !isUsefulUrl(url)) {
+      await pool.query(
+        `UPDATE scan_entries
+         SET status = 'archived',
+             metadata = COALESCE(metadata, '{}'::jsonb) || '{"archived_reason": "no_source_url"}'::jsonb
+         WHERE id = $1`,
+        [entryId]
+      );
+      archivedNoUrl++;
+    } else {
+      validIndices.push(i);
+    }
+  }
+
+  if (archivedNoUrl > 0) {
+    console.log(`[DailyIntake] Archived ${archivedNoUrl} entries with no source URL`);
+  }
+
+  progress(`Gate 1: ${archivedNoUrl} archived (no URL), ${validIndices.length} continue`, 28);
+
+  // ---- Phase 2: Dedup (only entries with valid URLs) ----
+  progress('Running deduplication...', 30);
+  let duplicatesFound = 0;
+  const uniqueEntryIds: number[] = [];
+
+  for (const idx of validIndices) {
+    const item = allResults[idx];
+    const entryId = insertedIds[idx];
 
     const dedupResult = await checkDuplicate(
       pool,
@@ -220,9 +250,9 @@ export async function runDailyIntake(
     }
 
     // Progress update every 10 entries
-    if (i % 10 === 0) {
-      const pct = 30 + Math.round((i / allResults.length) * 30);
-      progress(`Dedup: ${i + 1}/${allResults.length} (${duplicatesFound} dupes so far)`, pct);
+    if (duplicatesFound % 10 === 0 && duplicatesFound > 0) {
+      const pct = 30 + Math.round((validIndices.indexOf(idx) / validIndices.length) * 30);
+      progress(`Dedup: ${validIndices.indexOf(idx) + 1}/${validIndices.length} (${duplicatesFound} dupes so far)`, pct);
     }
   }
 
@@ -239,8 +269,6 @@ export async function runDailyIntake(
   const { classifyEntry } = await import('../services/classifier');
   const classificationFailures: number[] = [];
 
-  let archivedNoUrl = 0;
-
   for (const entryId of uniqueEntryIds) {
     // Fetch the entry for classification + scoring
     const entryRes = await pool.query(
@@ -248,19 +276,6 @@ export async function runDailyIntake(
       [entryId]
     );
     const entry = entryRes.rows[0];
-
-    // Gate 1.5: Entries without a usable source URL don't belong in the queue
-    if (!entry.source_url || entry.source_url.trim() === '' || !isUsefulUrl(entry.source_url)) {
-      await pool.query(
-        `UPDATE scan_entries
-         SET status = 'archived',
-             metadata = COALESCE(metadata, '{}'::jsonb) || '{"archived_reason": "no_source_url"}'::jsonb
-         WHERE id = $1`,
-        [entryId]
-      );
-      archivedNoUrl++;
-      continue;
-    }
 
     // Gate 2: LLM classification + quality scoring (single call)
     let qualityScore = 0;
@@ -359,9 +374,6 @@ export async function runDailyIntake(
   const avgScore =
     uniqueEntryIds.length > 0 ? totalScore / uniqueEntryIds.length : 0;
 
-  if (archivedNoUrl > 0) {
-    console.log(`[DailyIntake] Archived ${archivedNoUrl} entries with no source URL`);
-  }
   progress(`Scoring complete: ${highQualityCount} high quality entries`, 85);
 
   // ---- Phase 4: Build Summary ----
