@@ -175,7 +175,8 @@ function parseStructuredText(text: string): RawScanResult[] {
   let currentEntry: Partial<RawScanResult> | null = null;
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
+    // Strip leading markdown heading markers (### 1. → 1.)
+    const line = lines[i].trim().replace(/^#{1,4}\s+/, '');
 
     // Match entry header: "1. **Program Name** — Description" or "**[Org] — Name**"
     // Also handles "**Org — Program Name**" (separator inside bold)
@@ -355,7 +356,8 @@ function parseLenientNumberedList(text: string): RawScanResult[] {
   let currentEntry: Partial<RawScanResult> | null = null;
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
+    // Strip leading markdown heading markers (### 1. → 1.)
+    const line = lines[i].trim().replace(/^#{1,4}\s+/, '');
     if (!line) continue;
 
     // Match numbered entry: "1. Name - Description" or "1) Name: Description"

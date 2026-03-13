@@ -10,6 +10,7 @@ import { config } from '../config';
 import type { Pool } from 'pg';
 import { logApiUsage } from './api-usage';
 import { getCachedProvider } from './api-provider';
+import { computeOperatorSignals, formatSignalsForPrompt } from './operator-signals';
 
 export type Classification = 'GRANT' | 'EXPIRED' | 'NEWS' | 'NOISE' | 'UNCHECKED';
 
@@ -34,7 +35,7 @@ function buildClassificationPrompt(entry: {
   description: string;
   source_url: string;
   wire: string;
-}): string {
+}, operatorGuidance?: string): string {
   return `You are an intelligence analyst for a grants and funding intelligence feed. Classify AND score this entry. The entry is currently tagged for the "${entry.wire}" wire but you should verify this is correct — if the content is clearly about a different domain (e.g., an AI grant tagged as crypto), note it in your reason.
 
 Name: ${entry.name}
@@ -68,7 +69,7 @@ Score ranges:
 - 40-59: Moderate — decent source or content but missing key details, or mid-tier org with good info
 - 20-39: Low — unknown source, thin content, small or questionable opportunity
 - 0-19: Noise — hype/shill, spam, irrelevant, or completely empty content
-
+${operatorGuidance ? '\n' + operatorGuidance + '\n' : ''}
 Also extract if available: amount, deadline, eligibility, summary.
 
 Also extract entity tags: 1-5 short labels for the organizations, protocols, platforms, or projects specifically named in this entry. Use canonical names (e.g., "Ethereum Foundation" not "EF", "Gitcoin" not "Gitcoin Grants"). Only include entities directly relevant — not generic terms like "blockchain" or "web3". If a specific chain (Ethereum, Solana) is mentioned, include it.
@@ -83,7 +84,15 @@ export async function classifyEntry(entry: {
   source_url: string;
   wire: string;
 }): Promise<ClassificationResult> {
-  const prompt = buildClassificationPrompt(entry);
+  // Fetch operator signals (cached, non-blocking on failure)
+  let operatorGuidance = '';
+  try {
+    const signals = await computeOperatorSignals(entry.wire);
+    operatorGuidance = formatSignalsForPrompt(signals);
+  } catch (err) {
+    console.error('[Classifier] Failed to fetch operator signals:', err);
+  }
+  const prompt = buildClassificationPrompt(entry, operatorGuidance);
   const classifyModel = 'grok-4.20-beta-0309-non-reasoning';
 
   const provider = getCachedProvider('grok');
