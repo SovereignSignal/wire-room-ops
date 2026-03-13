@@ -17,7 +17,8 @@ import { runDailyIntake, getDailyQueue, getIntakeStats } from './jobs/daily-inta
 import { getPool, getDistributionConfigs, upsertDistributionConfig, getDistributionLogs, getDistributionStatusBulk, getDistributionStatusForEntries, getDistributionChannels, getDistributionChannelById, createDistributionChannel, updateDistributionChannel, deleteDistributionChannel, insertApprovedSummary } from './db';
 import { executeScanPrompt } from './services/grok';
 import { executePerplexityScan } from './services/perplexity';
-import { runOrgExtraction, getOrgProfiles, getOrgById, getEntriesByOrg, ensureOrgProfilesTable, extractOrgFromName, upsertOrgProfile, linkEntryToOrg } from './services/org-extractor';
+import { runOrgExtraction, getOrgProfiles, getOrgById, getEntriesByOrg, ensureOrgProfilesTable, extractOrgFromName, upsertOrgProfile, linkEntryToOrg, findSimilarOrg } from './services/org-extractor';
+import { mergeOrgs, archiveOrg } from './services/org-merge';
 import { enrichSingleOrg, enrichBatch, computeDerivedFields } from './services/org-enricher';
 import { ensureIntegrationConfigTable, getIntegrationConfigs, getIntegrationById, upsertIntegration, updateIntegration, deleteIntegration, validateNotionToken, validateNotionDatabase, syncOrgsToNotion } from './services/notion-sync';
 import { withRetry } from './services/processor';
@@ -1797,19 +1798,26 @@ app.post('/api/scan/entries/bulk-action', requireAuth, async (req: Request, res:
           });
         }
 
-        // Fire-and-forget org linking + enrichment
+        // Fire-and-forget org linking + enrichment (with fuzzy dedup)
         if (!row.org_id) {
-          setImmediate(() => {
-            const orgName = extractOrgFromName(row.name);
-            if (orgName) {
-              upsertOrgProfile(orgName, row.wire, row.scan_date?.toISOString?.()?.split('T')[0])
-                .then(orgId => {
-                  linkEntryToOrg(row.id, orgId);
-                  enrichSingleOrg(orgId).catch(err =>
-                    console.error(`[OrgEnrich] Bulk approve failed for entry ${row.id}:`, err)
-                  );
-                })
-                .catch(err => console.error(`[OrgLink] Bulk approve failed for entry ${row.id}:`, err));
+          setImmediate(async () => {
+            try {
+              const orgName = extractOrgFromName(row.name);
+              if (!orgName) return;
+              // Check for similar existing org before creating new
+              const similar = await findSimilarOrg(orgName);
+              let orgId: number;
+              if (similar) {
+                orgId = similar.id;
+              } else {
+                orgId = await upsertOrgProfile(orgName, row.wire, row.scan_date?.toISOString?.()?.split('T')[0]);
+              }
+              await linkEntryToOrg(row.id, orgId);
+              await enrichSingleOrg(orgId).catch(err =>
+                console.error(`[OrgEnrich] Bulk approve failed for entry ${row.id}:`, err)
+              );
+            } catch (err) {
+              console.error(`[OrgLink] Bulk approve failed for entry ${row.id}:`, err);
             }
           });
         }
@@ -1930,19 +1938,26 @@ app.post('/api/scan/entries/:id/action', requireAuth, async (req: Request, res: 
         });
       }
 
-      // Fire-and-forget org linking + enrichment
+      // Fire-and-forget org linking + enrichment (with fuzzy dedup)
       if (!row.org_id) {
-        setImmediate(() => {
-          const orgName = extractOrgFromName(row.name);
-          if (orgName) {
-            upsertOrgProfile(orgName, row.wire, row.scan_date?.toISOString?.()?.split('T')[0])
-              .then(orgId => {
-                linkEntryToOrg(entryId, orgId);
-                enrichSingleOrg(orgId).catch(err =>
-                  console.error(`[OrgEnrich] Single approve failed for entry ${entryId}:`, err)
-                );
-              })
-              .catch(err => console.error(`[OrgLink] Single approve failed for entry ${entryId}:`, err));
+        setImmediate(async () => {
+          try {
+            const orgName = extractOrgFromName(row.name);
+            if (!orgName) return;
+            // Check for similar existing org before creating new
+            const similar = await findSimilarOrg(orgName);
+            let orgId: number;
+            if (similar) {
+              orgId = similar.id;
+            } else {
+              orgId = await upsertOrgProfile(orgName, row.wire, row.scan_date?.toISOString?.()?.split('T')[0]);
+            }
+            await linkEntryToOrg(entryId, orgId);
+            await enrichSingleOrg(orgId).catch(err =>
+              console.error(`[OrgEnrich] Single approve failed for entry ${entryId}:`, err)
+            );
+          } catch (err) {
+            console.error(`[OrgLink] Single approve failed for entry ${entryId}:`, err);
           }
         });
       }
@@ -2001,6 +2016,39 @@ app.post('/api/orgs/extract', requireAuth, async (req: Request, res: Response) =
   } catch (err) {
     console.error('[API] Org extraction failed:', err);
     res.status(500).json({ error: 'Org extraction failed' });
+  }
+});
+
+// API: Merge two orgs (source into target)
+app.post('/api/orgs/merge', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { sourceId, targetId } = req.body;
+    const sId = parseInt(sourceId, 10);
+    const tId = parseInt(targetId, 10);
+    if (isNaN(sId) || isNaN(tId)) {
+      res.status(400).json({ error: 'sourceId and targetId must be valid integers' });
+      return;
+    }
+    const result = await mergeOrgs(sId, tId);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Unknown error';
+    console.error('[API] Org merge failed:', err);
+    res.status(500).json({ error: msg });
+  }
+});
+
+// API: Archive (delete) an org
+app.delete('/api/orgs/:id', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const orgId = parseInt(req.params.id, 10);
+    if (isNaN(orgId)) { res.status(400).json({ error: 'Invalid org ID' }); return; }
+    const result = await archiveOrg(orgId);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Unknown error';
+    console.error('[API] Org archive failed:', err);
+    res.status(500).json({ error: msg });
   }
 });
 
@@ -2907,6 +2955,25 @@ app.post('/api/admin/clean-orgs', requireAuth, async (_req: Request, res: Respon
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';
     console.error('[Admin] Org cleanup failed:', error);
+    res.status(500).json({ error: errorMsg });
+  }
+});
+
+// API: LLM-powered org deduplication
+app.post('/api/admin/dedup-orgs', requireAuth, async (_req: Request, res: Response) => {
+  if (!rateLimit('dedup-orgs', 1, 30 * 60 * 1000)) {
+    res.status(429).json({ error: 'Dedup recently run. Please wait 30 minutes.' });
+    return;
+  }
+
+  try {
+    const { runOrgDedup } = await import('./migrations/dedup-org-profiles');
+    const pool = getPool();
+    const result = await runOrgDedup(pool);
+    res.json(result);
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[Admin] Org dedup failed:', error);
     res.status(500).json({ error: errorMsg });
   }
 });

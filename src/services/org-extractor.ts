@@ -91,12 +91,124 @@ const ORG_ALIASES: Record<string, string> = {
 };
 
 // ============================================================
+// Prevention guards — reject bad candidates before they become orgs
+// ============================================================
+
+/**
+ * Detect person names: "Firstname Lastname" or "Otto Kekäläinen (LF Advocate)"
+ * Returns false for names containing known org suffixes.
+ */
+function looksLikePersonName(candidate: string): boolean {
+  const ORG_SUFFIXES = /\b(foundation|labs?|inc|corp|dao|protocol|network|fund|ventures|capital|institute|consortium|alliance|council|agency|committee|group)\b/i;
+  if (ORG_SUFFIXES.test(candidate)) return false;
+  const PERSON = /^[A-Z][a-z\u00C0-\u00FF]+ (?:[A-Z]\. )?[A-Z][a-z\u00C0-\u00FF]+(?:\s*\(.*\))?$/;
+  return PERSON.test(candidate);
+}
+
+/**
+ * Detect event/program names: "Season 7 Nominations", "Official Launch", etc.
+ */
+function looksLikeEventOrProgram(candidate: string): boolean {
+  const PATTERNS = [
+    /\b(season|nominations?|launch|update|announcement|recap|roundup|cycle)\b/i,
+    /\b(week|day|summit|conference)\s+\d/i,
+    /^(official|introducing|presenting|announcing)\b/i,
+  ];
+  return PATTERNS.some(p => p.test(candidate));
+}
+
+/**
+ * Detect junk org names: too short, all-caps abbreviations not in alias map.
+ */
+function isJunkOrgName(candidate: string): boolean {
+  if (candidate.length <= 3) return true;
+  if (candidate.length <= 4 && /^[A-Z\/]+$/.test(candidate) && !ORG_ALIASES[candidate.toLowerCase()]) return true;
+  return false;
+}
+
+// ============================================================
+// Fuzzy matching against existing orgs
+// ============================================================
+
+/**
+ * Normalize a string for comparison: strip non-alphanum, lowercase.
+ */
+function normalizeForComparison(s: string): string {
+  return s.replace(/[^a-z0-9]/gi, '').toLowerCase();
+}
+
+/**
+ * Tokenize a name for overlap comparison.
+ */
+function tokenize(s: string): Set<string> {
+  return new Set(
+    s.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(t => t.length > 0)
+  );
+}
+
+/**
+ * Find a similar existing org by normalized exact match, alias match,
+ * substring containment, or token overlap.
+ */
+export async function findSimilarOrg(candidateName: string): Promise<{ id: number; name: string } | null> {
+  const pool = getPool();
+  const { rows: orgs } = await pool.query(`SELECT id, name, aliases FROM org_profiles`);
+  if (orgs.length === 0) return null;
+
+  const normCandidate = normalizeForComparison(candidateName);
+  const candidateTokens = tokenize(candidateName);
+
+  for (const org of orgs) {
+    // 1. Exact match after normalization
+    if (normalizeForComparison(org.name) === normCandidate) {
+      return { id: org.id, name: org.name };
+    }
+
+    // 1b. Check aliases
+    const aliases: string[] = org.aliases || [];
+    for (const alias of aliases) {
+      if (normalizeForComparison(alias) === normCandidate) {
+        return { id: org.id, name: org.name };
+      }
+    }
+  }
+
+  for (const org of orgs) {
+    // 2. Substring containment (min 4 chars to avoid "AI" matching "ARIA")
+    const normOrg = normalizeForComparison(org.name);
+    if (normCandidate.length >= 4 && normOrg.length >= 4) {
+      if (normOrg.includes(normCandidate) || normCandidate.includes(normOrg)) {
+        return { id: org.id, name: org.name };
+      }
+    }
+  }
+
+  for (const org of orgs) {
+    // 3. Token overlap >= 70% of shorter set with >= 2 shared tokens
+    const orgTokens = tokenize(org.name);
+    const shorter = Math.min(candidateTokens.size, orgTokens.size);
+    if (shorter < 2) continue;
+
+    let shared = 0;
+    for (const t of candidateTokens) {
+      if (orgTokens.has(t)) shared++;
+    }
+    if (shared >= 2 && shared / shorter >= 0.7) {
+      return { id: org.id, name: org.name };
+    }
+  }
+
+  return null;
+}
+
+// ============================================================
 // Pattern-based org extraction
 // ============================================================
 
 /**
  * Extract org name from an entry name using common patterns.
  * Returns the extracted org name or null if no pattern matches.
+ * Applies prevention guards to reject persons, events, and junk.
  */
 export function extractOrgFromName(entryName: string): string | null {
   const name = entryName.trim();
@@ -110,7 +222,9 @@ export function extractOrgFromName(entryName: string): string | null {
   if (separatorMatch) {
     const candidate = separatorMatch[1].trim();
     if (candidate.length >= 2 && candidate.length <= 60 && !candidate.match(/^\d/)) {
-      return normalizeOrgName(candidate);
+      const normalized = normalizeOrgName(candidate);
+      if (passesGuards(normalized)) return normalized;
+      return null;
     }
   }
 
@@ -119,7 +233,9 @@ export function extractOrgFromName(entryName: string): string | null {
   if (colonMatch && !xHandle) {
     const candidate = colonMatch[1].trim();
     if (candidate.length >= 2 && candidate.length <= 40) {
-      return normalizeOrgName(candidate);
+      const normalized = normalizeOrgName(candidate);
+      if (passesGuards(normalized)) return normalized;
+      return null;
     }
   }
 
@@ -128,11 +244,22 @@ export function extractOrgFromName(entryName: string): string | null {
   for (const [alias, canonical] of Object.entries(ORG_ALIASES)) {
     if (lowerName.startsWith(alias + ' ') || lowerName.startsWith(alias + ':') ||
         lowerName.startsWith(alias + ' —') || lowerName === alias) {
-      return canonical;
+      return canonical; // Known aliases always pass guards
     }
   }
 
   return null;
+}
+
+/**
+ * Run all prevention guards on a candidate org name.
+ * Returns true if the candidate should be accepted.
+ */
+function passesGuards(candidate: string): boolean {
+  if (isJunkOrgName(candidate)) return false;
+  if (looksLikePersonName(candidate)) return false;
+  if (looksLikeEventOrProgram(candidate)) return false;
+  return true;
 }
 
 /**
@@ -316,6 +443,10 @@ export async function ensureOrgProfilesTable(): Promise<void> {
   await pool.query(`ALTER TABLE org_profiles ADD COLUMN IF NOT EXISTS avg_quality_score NUMERIC(5,1)`);
   await pool.query(`ALTER TABLE org_profiles ADD COLUMN IF NOT EXISTS enriched_at TIMESTAMPTZ`);
 
+  // Dedup & intelligence columns
+  await pool.query(`ALTER TABLE org_profiles ADD COLUMN IF NOT EXISTS parent_org_id INTEGER REFERENCES org_profiles(id)`);
+  await pool.query(`ALTER TABLE org_profiles ADD COLUMN IF NOT EXISTS aliases TEXT[] DEFAULT '{}'`);
+
   // Add org_id to scan_entries if not exists
   try {
     await pool.query(`ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS org_id INTEGER REFERENCES org_profiles(id)`);
@@ -419,9 +550,18 @@ export async function runOrgExtraction(): Promise<{
       const entry = entries.find(e => e.id === extraction.entryId);
       if (!entry) continue;
 
-      // Check if org exists
-      const existingId = orgMap.get(extraction.orgName.toLowerCase());
+      // Check if org exists (exact match first, then fuzzy)
+      let existingId = orgMap.get(extraction.orgName.toLowerCase());
       let orgId: number;
+
+      // Try fuzzy match if no exact match
+      if (!existingId) {
+        const similar = await findSimilarOrg(extraction.orgName);
+        if (similar) {
+          existingId = similar.id;
+          console.log(`[OrgExtractor] Fuzzy matched "${extraction.orgName}" → "${similar.name}" (id=${similar.id})`);
+        }
+      }
 
       if (existingId) {
         // Update existing org
