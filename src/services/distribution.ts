@@ -115,6 +115,7 @@ export async function distributeEntries(wire: string): Promise<DistributeResult>
         await logDistribution({
           entryId: entry.id,
           channel: mc.channel as DistributionChannel,
+          channelId: mc.id,
           wire,
           status: 'failed',
           errorMessage: errorMsg,
@@ -150,6 +151,7 @@ async function dispatchToManagedChannel(
       await logDistribution({
         entryId: entry.id,
         channel: 'telegram',
+        channelId: mc.id,
         wire: mc.wire,
         status: 'skipped',
         errorMessage: !token ? 'bot_token not set' : 'target_id not configured',
@@ -161,6 +163,7 @@ async function dispatchToManagedChannel(
     await logDistribution({
       entryId: entry.id,
       channel: 'telegram',
+      channelId: mc.id,
       wire: mc.wire,
       status: result ? 'success' : 'failed',
       postText: posts.telegram,
@@ -176,6 +179,7 @@ async function dispatchToManagedChannel(
       await logDistribution({
         entryId: entry.id,
         channel: 'discord',
+        channelId: mc.id,
         wire: mc.wire,
         status: 'skipped',
         errorMessage: !token ? 'bot_token not set' : 'target_id (channel ID) not configured',
@@ -187,6 +191,7 @@ async function dispatchToManagedChannel(
     await logDistribution({
       entryId: entry.id,
       channel: 'discord',
+      channelId: mc.id,
       wire: mc.wire,
       status: result ? 'success' : 'failed',
       postText: posts.telegram,
@@ -202,6 +207,7 @@ async function dispatchToManagedChannel(
       await logDistribution({
         entryId: entry.id,
         channel: 'slack',
+        channelId: mc.id,
         wire: mc.wire,
         status: 'skipped',
         errorMessage: 'webhook_url not set',
@@ -220,6 +226,7 @@ async function dispatchToManagedChannel(
       await logDistribution({
         entryId: entry.id,
         channel: 'slack',
+        channelId: mc.id,
         wire: mc.wire,
         status: ok ? 'success' : 'failed',
         postText: posts.telegram,
@@ -231,6 +238,7 @@ async function dispatchToManagedChannel(
       await logDistribution({
         entryId: entry.id,
         channel: 'slack',
+        channelId: mc.id,
         wire: mc.wire,
         status: 'failed',
         errorMessage: errorMsg,

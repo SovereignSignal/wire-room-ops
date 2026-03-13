@@ -190,6 +190,7 @@ export interface DistributionLog {
   id: number;
   entryId: number;
   channel: DistributionChannel;
+  channelId: string | null;
   wire: string;
   status: DistributionStatus;
   postText: string | null;

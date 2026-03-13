@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { SourcesTab } from './SourcesTab';
+import { ScanPromptsTab } from './ScanPromptsTab';
 import { DistributionTab } from './DistributionTab';
 import { IntegrationsTab } from './IntegrationsTab';
 import { DailyDigestCard } from './DailyDigestCard';
@@ -14,10 +15,11 @@ interface SettingsTabProps {
   onNavigateToQueue: (wire: string) => void;
 }
 
-type SettingsSection = 'sources' | 'distribution' | 'integrations' | 'email' | 'providers' | 'usage';
+type SettingsSection = 'sources' | 'prompts' | 'distribution' | 'integrations' | 'email' | 'providers' | 'usage';
 
 const SECTIONS: { key: SettingsSection; label: string; icon: string; description: string }[] = [
   { key: 'sources', label: 'SOURCES', icon: '🛰️', description: 'Wire health & scan metrics' },
+  { key: 'prompts', label: 'SCAN PROMPTS', icon: '🔍', description: 'Prompt config & testing' },
   { key: 'distribution', label: 'DISTRIBUTION', icon: '📢', description: 'Telegram, Discord, Slack channels' },
   { key: 'providers', label: 'API PROVIDERS', icon: '🔑', description: 'API keys & credentials' },
   { key: 'usage', label: 'USAGE', icon: '📊', description: 'API costs & token usage' },
@@ -61,6 +63,9 @@ export function SettingsTab({ verticals, stats, wireCounts, onNavigateToQueue }:
       <div className="min-h-[400px]">
         {activeSection === 'sources' && (
           <SourcesTab stats={stats} wireCounts={wireCounts} onNavigateToQueue={onNavigateToQueue} />
+        )}
+        {activeSection === 'prompts' && (
+          <ScanPromptsTab verticals={verticals} />
         )}
         {activeSection === 'distribution' && (
           <DistributionTab verticals={verticals} />

@@ -1,4 +1,4 @@
-import { ScanEntry, WireCounts, DbStats, DbTableResponse } from '@/types';
+import { ScanEntry, WireCounts, DbStats, DbTableResponse, ScanPrompt } from '@/types';
 
 const BASE = "/api";
 
@@ -368,5 +368,101 @@ export async function updateModelPricing(provider: string, model: string, data: 
     body: JSON.stringify(data),
   });
   if (!res.ok) throw new Error(`Failed to update pricing: ${res.status}`);
+  return res.json();
+}
+
+// --- Scan Prompts API ---
+
+export async function fetchScanPrompts(wire?: string): Promise<ScanPrompt[]> {
+  const q = wire ? `?wire=${encodeURIComponent(wire)}` : '';
+  const res = await authFetch(`${BASE}/scan/prompts${q}`);
+  if (!res.ok) throw new Error(`Failed to fetch scan prompts: ${res.status}`);
+  return res.json();
+}
+
+export async function createScanPrompt(data: {
+  wire: string;
+  label: string;
+  promptText: string;
+  responseFormat?: string;
+  toolType?: string;
+  variant?: string;
+  isActive?: boolean;
+}): Promise<ScanPrompt> {
+  const res = await authFetch(`${BASE}/scan/prompts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to create prompt: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function updateScanPrompt(id: string, data: Partial<{
+  wire: string;
+  label: string;
+  promptText: string;
+  responseFormat: string | null;
+  toolType: string;
+  variant: string | null;
+  isActive: boolean;
+}>): Promise<ScanPrompt> {
+  const res = await authFetch(`${BASE}/scan/prompts/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to update prompt: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function deleteScanPrompt(id: string): Promise<void> {
+  const res = await authFetch(`${BASE}/scan/prompts/${id}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error(`Failed to delete prompt: ${res.status}`);
+}
+
+export async function testScanPrompt(id: string): Promise<{
+  success: boolean;
+  content: string;
+  parsedResults: any[];
+  parsedCount: number;
+  model: string;
+  tokensUsed: number;
+}> {
+  const res = await authFetch(`${BASE}/scan/prompts/${id}/test`, { method: 'POST' });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Test failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function testUnsavedPrompt(data: {
+  promptText: string;
+  responseFormat?: string;
+  toolType?: string;
+}): Promise<{
+  success: boolean;
+  content: string;
+  parsedResults: any[];
+  parsedCount: number;
+  model: string;
+  tokensUsed: number;
+}> {
+  const res = await authFetch(`${BASE}/scan/prompts/test`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Test failed: ${res.status}`);
+  }
   return res.json();
 }

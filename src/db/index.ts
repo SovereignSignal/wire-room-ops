@@ -1296,15 +1296,22 @@ export async function ensureDistributionTables(): Promise<void> {
     await client.query(`ALTER TABLE distribution_logs DROP CONSTRAINT IF EXISTS distribution_logs_channel_check`);
     await client.query(`ALTER TABLE distribution_logs ADD CONSTRAINT distribution_logs_channel_check CHECK (channel IN ('telegram', 'discord', 'slack', 'x', 'newsletter'))`);
 
+    // Add channel_id column to track which managed channel instance was used
+    // (nullable — legacy/config-based distribution doesn't have a channel_id)
+    await client.query(`ALTER TABLE distribution_logs ADD COLUMN IF NOT EXISTS channel_id UUID`);
+
     // Indexes
     await client.query(`CREATE INDEX IF NOT EXISTS idx_dist_logs_entry ON distribution_logs(entry_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_dist_logs_wire_channel ON distribution_logs(wire, channel)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_dist_logs_status ON distribution_logs(status)`);
 
-    // Unique partial index prevents double-posts: only one pending/success log per entry+channel
+    // Replace old unique index that only used (entry_id, channel) —
+    // this broke multi-channel distribution (two Telegram channels collide on same entry_id + 'telegram').
+    // New index includes channel_id so each managed channel instance gets its own log row.
+    await client.query(`DROP INDEX IF EXISTS idx_dist_logs_no_dupes`);
     await client.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_dist_logs_no_dupes
-      ON distribution_logs(entry_id, channel)
+      ON distribution_logs(entry_id, channel, COALESCE(channel_id, '00000000-0000-0000-0000-000000000000'))
       WHERE status IN ('pending', 'success')
     `);
 
@@ -1350,6 +1357,7 @@ function parseDistributionLogRow(row: any): DistributionLog {
     id: row.id,
     entryId: row.entry_id,
     channel: row.channel,
+    channelId: row.channel_id || null,
     wire: row.wire,
     status: row.status,
     postText: row.post_text || null,
@@ -1420,15 +1428,17 @@ export async function logDistribution(params: {
   postText?: string;
   externalId?: string;
   errorMessage?: string;
+  channelId?: string;
 }): Promise<DistributionLog> {
   const pool = getPool();
   const result = await pool.query(`
-    INSERT INTO distribution_logs (entry_id, channel, wire, status, post_text, external_id, error_message)
-    VALUES ($1, $2, $3, $4, $5, $6, $7)
+    INSERT INTO distribution_logs (entry_id, channel, channel_id, wire, status, post_text, external_id, error_message)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
     RETURNING *
   `, [
     params.entryId,
     params.channel,
+    params.channelId || null,
     params.wire,
     params.status,
     params.postText || null,

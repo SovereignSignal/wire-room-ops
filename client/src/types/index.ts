@@ -122,3 +122,17 @@ export interface DbStats {
   intake_runs: { total: number; last_run: string | null };
   distribution_log: { total: number; sent_24h: number };
 }
+
+export interface ScanPrompt {
+  id: string;
+  wire: string;
+  label: string;
+  promptText: string;
+  responseFormat: string | null;
+  variant: string | null;
+  toolType: 'x_search' | 'web_search' | 'perplexity';
+  isActive: boolean;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
