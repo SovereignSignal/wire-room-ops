@@ -125,7 +125,9 @@ export async function runScanExecution(
       const scanResult = await withRetry(
         () => {
           if (prompt.toolType === 'perplexity') {
-            return executePerplexityScan(prompt.promptText);
+            return executePerplexityScan(prompt.promptText, {
+              responseFormat: prompt.responseFormat,
+            });
           }
           return executeScanPrompt(prompt.promptText, {
             responseFormat: prompt.responseFormat,

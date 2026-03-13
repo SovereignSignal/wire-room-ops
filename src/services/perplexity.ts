@@ -28,7 +28,7 @@ const DEFAULT_PERPLEXITY_MODEL = 'sonar-pro';
 
 export async function executePerplexityScan(
   promptText: string,
-  options?: { model?: string }
+  options?: { model?: string; responseFormat?: string | null }
 ): Promise<{ content: string; model: string; tokensUsed?: number }> {
   const provider = getCachedProvider('perplexity');
   const apiKey = provider?.api_key || process.env.PERPLEXITY_API_KEY;
@@ -39,6 +39,12 @@ export async function executePerplexityScan(
   const model = options?.model || DEFAULT_PERPLEXITY_MODEL;
   const baseUrl = provider?.base_url || PERPLEXITY_BASE_URL;
   const start = Date.now();
+
+  // Append response format instructions if provided (same pattern as Grok)
+  let fullPrompt = promptText;
+  if (options?.responseFormat) {
+    fullPrompt += `\n\nRespond using this format:\n${options.responseFormat}`;
+  }
 
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
@@ -51,11 +57,11 @@ export async function executePerplexityScan(
       messages: [
         {
           role: 'system',
-          content: `You are a research assistant scanning the web for ${getBrand().contentType}. Return only factual, sourced results. For each result include the organization, description, amount if known, deadline if known, and URL.`,
+          content: `You are a research assistant scanning the web for ${getBrand().contentType}. Return only factual, sourced results.\n\nFor each result, use this format:\n1. **Program Name** — Description including funding amount\nDeadline: [date, "Rolling", or "None listed"]\nProgram URL: [direct link to program page]\n\nBold names with **, number results, include direct URLs.`,
         },
         {
           role: 'user',
-          content: promptText,
+          content: fullPrompt,
         },
       ],
       max_tokens: 2000,

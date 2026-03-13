@@ -882,6 +882,13 @@ export async function ensureScanPromptsTable(): Promise<void> {
       CHECK (tool_type IN ('x_search', 'web_search'))
   `);
 
+  // Phase 3b migration: expand tool_type to include perplexity
+  await pool.query(`ALTER TABLE scan_prompts DROP CONSTRAINT IF EXISTS scan_prompts_tool_type_check`);
+  await pool.query(`
+    ALTER TABLE scan_prompts ADD CONSTRAINT scan_prompts_tool_type_check
+      CHECK (tool_type IN ('x_search', 'web_search', 'perplexity'))
+  `);
+
   // Gate 2 migration: classification columns on scan_entries
   await pool.query(`ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS classification TEXT DEFAULT 'UNCHECKED'`);
   await pool.query(`ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS classification_reason TEXT`);
@@ -895,6 +902,29 @@ export async function ensureScanPromptsTable(): Promise<void> {
   // Multi-wire support: wires[] stores all applicable wires, wire stays as the primary
   await pool.query(`ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS wires TEXT[] DEFAULT '{}'`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_wires ON scan_entries USING GIN(wires)`);
+
+  // Data migration: set response_format on prompts that have it NULL
+  const defaultResponseFormat = `For each result, use this exact format:
+
+1. **Program Name** — Brief description including funding amount if known
+Deadline: [specific date, "Rolling", or "None listed"]
+Program URL: [direct link to the program/application page]
+
+Rules:
+- Number each result sequentially
+- Bold the program name with ** markers
+- "Program URL" must be the direct link to the actual program page — not a tweet or social post
+- If you only have a social media post URL, also look for the direct program link mentioned in the post
+- Include funding amount in description (e.g. "$50K", "$1M")
+- Use specific dates for deadlines when available`;
+
+  const { rowCount } = await pool.query(
+    `UPDATE scan_prompts SET response_format = $1 WHERE response_format IS NULL`,
+    [defaultResponseFormat]
+  );
+  if (rowCount && rowCount > 0) {
+    console.log(`[DB] Set response_format on ${rowCount} prompts that had NULL`);
+  }
 
   console.log('[DB] Scan prompts table ready (Phase 2+3 migrations applied, Gate 2 columns added)');
 }

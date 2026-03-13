@@ -16,6 +16,7 @@ import { buildSubmission, buildBatchSubmission } from './services/intake';
 import { runDailyIntake, getDailyQueue, getIntakeStats } from './jobs/daily-intake';
 import { getPool, getDistributionConfigs, upsertDistributionConfig, getDistributionLogs, getDistributionStatusBulk, getDistributionStatusForEntries, getDistributionChannels, getDistributionChannelById, createDistributionChannel, updateDistributionChannel, deleteDistributionChannel, insertApprovedSummary } from './db';
 import { executeScanPrompt } from './services/grok';
+import { executePerplexityScan } from './services/perplexity';
 import { runOrgExtraction, getOrgProfiles, getOrgById, getEntriesByOrg, ensureOrgProfilesTable, extractOrgFromName, upsertOrgProfile, linkEntryToOrg } from './services/org-extractor';
 import { ensureIntegrationConfigTable, getIntegrationConfigs, getIntegrationById, upsertIntegration, updateIntegration, deleteIntegration, validateNotionToken, validateNotionDatabase, syncOrgsToNotion } from './services/notion-sync';
 import { withRetry } from './services/processor';
@@ -1225,7 +1226,7 @@ function normalizePromptLabPayload(body: Record<string, unknown>): {
     label: typeof body.label === 'string' ? body.label : undefined,
     promptText: typeof body.promptText === 'string' ? body.promptText.trim() : '',
     responseFormat: typeof body.responseFormat === 'string' ? body.responseFormat : undefined,
-    toolType: body.toolType === 'web_search' ? 'web_search' : 'x_search',
+    toolType: body.toolType === 'web_search' ? 'web_search' : body.toolType === 'perplexity' ? 'perplexity' : 'x_search',
     parsedResults: Array.isArray(body.parsedResults) ? body.parsedResults as RawScanResult[] : undefined,
     testOutput: typeof body.testOutput === 'string' ? body.testOutput : undefined,
   };
@@ -1236,10 +1237,17 @@ async function executePromptLabTest(input: {
   responseFormat?: string | null;
   toolType: ToolType;
 }) {
-  const result = await withRetry(() => executeScanPrompt(input.promptText, {
-    responseFormat: input.responseFormat,
-    toolType: input.toolType,
-  }));
+  const result = await withRetry(() => {
+    if (input.toolType === 'perplexity') {
+      return executePerplexityScan(input.promptText, {
+        responseFormat: input.responseFormat,
+      });
+    }
+    return executeScanPrompt(input.promptText, {
+      responseFormat: input.responseFormat,
+      toolType: input.toolType,
+    });
+  });
   const parsedResults = parseStructuredOutput(result.content);
   return {
     success: true,
