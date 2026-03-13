@@ -30,13 +30,104 @@ async function sendWithTracking(params: Parameters<Resend['emails']['send']>[0])
 }
 
 function formatDateRange(start: Date, end: Date): string {
-  const options: Intl.DateTimeFormatOptions = { 
-    month: 'short', 
+  const options: Intl.DateTimeFormatOptions = {
+    month: 'short',
     day: 'numeric',
     year: 'numeric'
   };
   return `${start.toLocaleDateString('en-US', options)} - ${end.toLocaleDateString('en-US', options)}`;
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Shared email theme — matches WireOps dashboard aesthetic
+// ────────────────────────────────────────────────────────────────────────────
+
+const E = {
+  bg:        '#0a0a0f',
+  card:      '#111118',
+  border:    '#1e1e2e',
+  cyan:      '#00eaff',
+  text:      '#e2e2e8',
+  muted:     '#6b6b7b',
+  dim:       '#44445a',
+  error:     '#ef5350',
+  success:   '#4caf50',
+  warn:      '#f5a623',
+  font:      "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+};
+
+function emailShell(title: string, subtitle: string, bodyHtml: string, maxWidth = 540): string {
+  const brand = getBrand();
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtml(title)}</title>
+</head>
+<body style="margin:0;padding:0;background-color:${E.bg};font-family:${E.font};">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:${E.bg};">
+    <tr>
+      <td align="center" style="padding:40px 20px;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:${maxWidth}px;background-color:${E.card};border:1px solid ${E.border};border-radius:12px;">
+          <tr>
+            <td style="padding:40px;">
+              <!-- Header -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-bottom:28px;">
+                <tr>
+                  <td style="text-align:center;">
+                    <p style="margin:0 0 4px;font-size:22px;font-weight:700;letter-spacing:4px;text-transform:uppercase;">
+                      <span style="color:${E.text};">WIRE</span><span style="color:${E.cyan};">OPS</span>
+                    </p>
+                    <p style="margin:0;color:${E.muted};font-size:11px;letter-spacing:2px;text-transform:uppercase;">${escapeHtml(subtitle)}</p>
+                  </td>
+                </tr>
+              </table>
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-bottom:28px;">
+                <tr><td style="height:1px;background:linear-gradient(to right,transparent,${E.cyan}40,transparent);font-size:0;">&nbsp;</td></tr>
+              </table>
+              <!-- Body -->
+              ${bodyHtml}
+            </td>
+          </tr>
+        </table>
+        <p style="margin:24px 0 0;color:${E.dim};font-size:11px;letter-spacing:1px;text-transform:uppercase;">${escapeHtml(brand.name)}</p>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`.trim();
+}
+
+function emailBtn(href: string, label: string, color = E.cyan): string {
+  const textColor = color === E.cyan ? E.bg : '#ffffff';
+  return `<table role="presentation" cellspacing="0" cellpadding="0" width="100%">
+  <tr><td align="center">
+    <table role="presentation" cellspacing="0" cellpadding="0">
+      <tr>
+        <td style="background-color:${color};border-radius:6px;">
+          <a href="${escapeHtml(href)}" target="_blank" style="display:inline-block;padding:12px 28px;color:${textColor};font-size:14px;font-weight:600;text-decoration:none;letter-spacing:0.5px;">${escapeHtml(label)}</a>
+        </td>
+      </tr>
+    </table>
+  </td></tr>
+</table>`;
+}
+
+function emailStatBox(rows: string[]): string {
+  const rowsHtml = rows.map(r => `<p style="margin:0 0 6px;color:${E.text};font-size:14px;">${r}</p>`).join('');
+  return `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:${E.bg};border:1px solid ${E.border};border-radius:8px;margin-bottom:24px;">
+  <tr><td style="padding:16px 20px;">${rowsHtml}</td></tr>
+</table>`;
+}
+
+function emailSectionLabel(label: string): string {
+  return `<p style="margin:0 0 10px;color:${E.cyan};font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:1.5px;">${escapeHtml(label)}</p>`;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Email templates
+// ────────────────────────────────────────────────────────────────────────────
 
 export async function sendNotificationEmail(
   downloadUrl: string,
@@ -45,110 +136,28 @@ export async function sendNotificationEmail(
 ): Promise<void> {
   const dateRangeStr = formatDateRange(dateRange.start, dateRange.end);
 
-  const htmlContent = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Weekly Summaries Ready - The Wire Room</title>
-</head>
-<body style="margin: 0; padding: 0; background-color: #0d0d0d; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
-  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #0d0d0d;">
-    <tr>
-      <td align="center" style="padding: 40px 20px;">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 520px; background-color: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 16px;">
-          <tr>
-            <td style="padding: 40px;">
-              <!-- Logo -->
-              <h1 style="margin: 0 0 8px; font-size: 24px; font-weight: 700; text-align: center;">
-                <span style="color: #ffffff;">The</span> <span style="color: #f5a623;">Wire</span> <span style="color: #ffffff;">Room</span>
-              </h1>
-              <p style="margin: 0 0 24px; color: #999999; font-size: 14px; text-align: center;">Newsletter Automation</p>
+  const body = `
+    <h2 style="margin:0 0 12px;color:${E.text};font-size:18px;font-weight:600;">Weekly Summaries Ready</h2>
+    <p style="margin:0 0 24px;color:${E.muted};font-size:14px;line-height:1.5;">Your summaries for this week are ready for review.</p>
+    ${emailSectionLabel('This Week')}
+    ${emailStatBox([
+      `<strong style="color:${E.cyan};">${stats.totalEntries}</strong> entries processed`,
+      `<span style="color:${E.muted};">${stats.xcomEntries} from X.com (via Grok)</span>`,
+      `<span style="color:${E.muted};">${stats.otherEntries} from other sources (via Claude)</span>`,
+      ...(stats.failedProcessing > 0 ? [`<span style="color:${E.error};">${stats.failedProcessing} entries need manual review</span>`] : []),
+    ])}
+    ${emailBtn(downloadUrl, 'Download Markdown File')}
+    <p style="margin:12px 0 0;color:${E.dim};font-size:12px;text-align:center;">This link requires dashboard authentication.</p>
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top:28px;border-top:1px solid ${E.border};">
+      <tr><td style="padding-top:20px;text-align:center;"><p style="margin:0;color:${E.dim};font-size:12px;">Week of ${escapeHtml(dateRangeStr)}</p></td></tr>
+    </table>`;
 
-              <!-- Header -->
-              <h2 style="margin: 0 0 16px; color: #ffffff; font-size: 20px; font-weight: 600;">
-                Weekly Summaries Ready
-              </h2>
-              <p style="margin: 0 0 24px; color: #cccccc; font-size: 15px; line-height: 1.5;">
-                Your Wire Room summaries for this week are ready for review.
-              </p>
-
-              <!-- Stats Box -->
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #0d0d0d; border: 1px solid #2a2a2a; border-radius: 12px; margin-bottom: 24px;">
-                <tr>
-                  <td style="padding: 20px;">
-                    <p style="margin: 0 0 12px; color: #f5a623; font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">
-                      This Week's Stats
-                    </p>
-                    <p style="margin: 0 0 8px; color: #ffffff; font-size: 15px;">
-                      <strong style="color: #f5a623;">${stats.totalEntries}</strong> entries processed
-                    </p>
-                    <p style="margin: 0 0 8px; color: #999999; font-size: 14px;">
-                      ${stats.xcomEntries} from X.com (via Grok)
-                    </p>
-                    <p style="margin: 0; color: #999999; font-size: 14px;">
-                      ${stats.otherEntries} from other sources (via Claude)
-                    </p>
-                    ${stats.failedProcessing > 0 ? `
-                    <p style="margin: 8px 0 0; color: #ef5350; font-size: 14px;">
-                      ${stats.failedProcessing} entries need manual review
-                    </p>
-                    ` : ''}
-                  </td>
-                </tr>
-              </table>
-
-              <!-- Button -->
-              <table role="presentation" cellspacing="0" cellpadding="0" width="100%">
-                <tr>
-                  <td align="center">
-                    <table role="presentation" cellspacing="0" cellpadding="0">
-                      <tr>
-                        <td style="background-color: #f5a623; border-radius: 8px;">
-                          <a href="${escapeHtml(downloadUrl)}" target="_blank" style="display: inline-block; padding: 14px 28px; color: #0d0d0d; font-size: 15px; font-weight: 600; text-decoration: none;">
-                            Download Markdown File
-                          </a>
-                        </td>
-                      </tr>
-                    </table>
-                  </td>
-                </tr>
-              </table>
-
-              <p style="margin: 16px 0 0; color: #666666; font-size: 13px; text-align: center;">
-                This link requires dashboard authentication.
-              </p>
-
-              <!-- Footer -->
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top: 32px; border-top: 1px solid #2a2a2a;">
-                <tr>
-                  <td style="padding-top: 24px; text-align: center;">
-                    <p style="margin: 0; color: #666666; font-size: 13px;">
-                      Week of ${dateRangeStr}
-                    </p>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-        </table>
-
-        <!-- Bottom text -->
-        <p style="margin: 24px 0 0; color: #666666; font-size: 12px;">
-          The Wire Room
-        </p>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>
-  `.trim();
+  const htmlContent = emailShell('Weekly Summaries Ready', 'Newsletter Automation', body);
 
   const textContent = `
-The Wire Room - Weekly Summaries Ready
+WIREOPS - Weekly Summaries Ready
 
-Your Wire Room summaries for this week are ready for review.
+Your summaries for this week are ready for review.
 
 THIS WEEK'S STATS
 -----------------
@@ -164,7 +173,6 @@ ${downloadUrl}
 
 ---
 Week of ${dateRangeStr}
-The Wire Room
   `.trim();
 
   await sendWithTracking({
@@ -188,70 +196,24 @@ export async function sendTestAlertEmail(): Promise<void> {
     timeZoneName: 'short',
   });
 
-  const htmlContent = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Test Alert - The Wire Room</title>
-</head>
-<body style="margin: 0; padding: 0; background-color: #0d0d0d; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
-  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #0d0d0d;">
-    <tr>
-      <td align="center" style="padding: 40px 20px;">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 480px; background-color: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 16px;">
-          <tr>
-            <td style="padding: 48px 40px; text-align: center;">
-              <!-- Logo -->
-              <h1 style="margin: 0 0 8px; font-size: 28px; font-weight: 700;">
-                <span style="color: #ffffff;">The</span> <span style="color: #f5a623;">Wire</span> <span style="color: #ffffff;">Room</span>
-              </h1>
-              <p style="margin: 0 0 32px; color: #999999; font-size: 16px;">Test Alert</p>
+  const body = `
+    <div style="text-align:center;">
+      <div style="margin-bottom:20px;font-size:40px;">&#x1F6F0;&#xFE0F;</div>
+      <h2 style="margin:0 0 12px;color:${E.success};font-size:18px;font-weight:600;letter-spacing:0.5px;">Signal Confirmed</h2>
+      <p style="margin:0 0 24px;color:${E.text};font-size:14px;line-height:1.6;">
+        Email alerts are operational. If you received this, your scheduled notifications will work properly.
+      </p>
+      <p style="margin:0;color:${E.dim};font-size:12px;font-family:monospace;">${escapeHtml(timestamp)}</p>
+    </div>`;
 
-              <!-- Success Icon -->
-              <div style="margin-bottom: 24px; font-size: 48px;">✅</div>
-
-              <!-- Message -->
-              <h2 style="margin: 0 0 16px; color: #4caf50; font-size: 20px; font-weight: 600;">
-                Email Alerts Are Working!
-              </h2>
-              <p style="margin: 0 0 24px; color: #cccccc; font-size: 15px; line-height: 1.6;">
-                This is a test alert to verify that your email notifications are configured correctly.
-                If you received this email, your scheduled alerts will work properly.
-              </p>
-
-              <!-- Timestamp -->
-              <p style="margin: 0; color: #666666; font-size: 13px;">
-                Sent at: ${timestamp}
-              </p>
-            </td>
-          </tr>
-        </table>
-
-        <!-- Bottom text -->
-        <p style="margin: 24px 0 0; color: #666666; font-size: 12px;">
-          The Wire Room
-        </p>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>
-  `.trim();
+  const htmlContent = emailShell('Test Alert', 'System Check', body, 480);
 
   const textContent = `
-The Wire Room - Test Alert
+WIREOPS - Signal Confirmed
 
-Email Alerts Are Working!
-
-This is a test alert to verify that your email notifications are configured correctly.
-If you received this email, your scheduled alerts will work properly.
+Email alerts are operational. If you received this, your scheduled notifications will work properly.
 
 Sent at: ${timestamp}
-
----
-The Wire Room
   `.trim();
 
   console.log(`[Email] Sending test alert to: ${config.email.notificationEmail}`);
@@ -259,7 +221,7 @@ The Wire Room
   await sendWithTracking({
     from: config.email.fromEmail,
     to: config.email.notificationEmail,
-    subject: 'Test Alert - The Wire Room',
+    subject: 'WireOps - Signal Confirmed',
     html: htmlContent,
     text: textContent,
   });
@@ -278,86 +240,36 @@ export async function sendScheduledJobFailureEmail(errorMessage: string, jobStar
     timeZoneName: 'short',
   });
 
-  const htmlContent = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Scheduled Job Failed - The Wire Room</title>
-</head>
-<body style="margin: 0; padding: 0; background-color: #0d0d0d; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
-  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #0d0d0d;">
-    <tr>
-      <td align="center" style="padding: 40px 20px;">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 520px; background-color: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 16px;">
-          <tr>
-            <td style="padding: 48px 40px; text-align: center;">
-              <!-- Logo -->
-              <h1 style="margin: 0 0 8px; font-size: 28px; font-weight: 700;">
-                <span style="color: #ffffff;">The</span> <span style="color: #f5a623;">Wire</span> <span style="color: #ffffff;">Room</span>
-              </h1>
-              <p style="margin: 0 0 32px; color: #999999; font-size: 16px;">Scheduled Job Alert</p>
+  const body = `
+    <div style="text-align:center;">
+      <div style="margin-bottom:20px;font-size:40px;">&#x26A0;&#xFE0F;</div>
+      <h2 style="margin:0 0 12px;color:${E.error};font-size:18px;font-weight:600;letter-spacing:0.5px;">Scheduled Job Failed</h2>
+      <p style="margin:0 0 24px;color:${E.text};font-size:14px;line-height:1.6;">
+        A scheduled job failed to complete. Check the dashboard or server logs for details.
+      </p>
+    </div>
+    ${emailSectionLabel('Error')}
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:${E.bg};border:1px solid ${E.error}33;border-radius:8px;margin-bottom:24px;">
+      <tr><td style="padding:16px 20px;">
+        <p style="margin:0;color:${E.text};font-size:13px;font-family:monospace;word-break:break-word;">${escapeHtml(errorMessage)}</p>
+      </td></tr>
+    </table>
+    <p style="margin:0;color:${E.dim};font-size:12px;text-align:center;font-family:monospace;">Job started: ${escapeHtml(timestamp)}</p>`;
 
-              <!-- Error Icon -->
-              <div style="margin-bottom: 24px; font-size: 48px;">⚠️</div>
-
-              <!-- Message -->
-              <h2 style="margin: 0 0 16px; color: #ef5350; font-size: 20px; font-weight: 600;">
-                Scheduled Job Failed
-              </h2>
-              <p style="margin: 0 0 24px; color: #cccccc; font-size: 15px; line-height: 1.6;">
-                The scheduled weekly summary job failed to complete. Please check the dashboard or server logs for more details.
-              </p>
-
-              <!-- Error Details Box -->
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #0d0d0d; border: 1px solid rgba(239, 83, 80, 0.3); border-radius: 12px; margin-bottom: 24px;">
-                <tr>
-                  <td style="padding: 20px;">
-                    <p style="margin: 0 0 8px; color: #ef5350; font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">
-                      Error Message
-                    </p>
-                    <p style="margin: 0; color: #ffffff; font-size: 14px; font-family: monospace; word-break: break-word;">
-                      ${escapeHtml(errorMessage)}
-                    </p>
-                  </td>
-                </tr>
-              </table>
-
-              <!-- Timestamp -->
-              <p style="margin: 0; color: #666666; font-size: 13px;">
-                Job started at: ${timestamp}
-              </p>
-            </td>
-          </tr>
-        </table>
-
-        <!-- Bottom text -->
-        <p style="margin: 24px 0 0; color: #666666; font-size: 12px;">
-          The Wire Room
-        </p>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>
-  `.trim();
+  const htmlContent = emailShell('Scheduled Job Failed', 'Alert', body);
 
   const textContent = `
-The Wire Room - Scheduled Job Failed
+WIREOPS - Scheduled Job Failed
 
-The scheduled weekly summary job failed to complete.
+A scheduled job failed to complete.
 
-ERROR MESSAGE
--------------
+ERROR
+-----
 ${errorMessage}
 
 Job started at: ${timestamp}
 
-Please check the dashboard or server logs for more details.
-
----
-The Wire Room
+Check the dashboard or server logs for details.
   `.trim();
 
   const to = recipients && recipients.length > 0 ? recipients : config.email.notificationEmail;
@@ -366,7 +278,7 @@ The Wire Room
   await sendWithTracking({
     from: config.email.fromEmail,
     to,
-    subject: 'Wire Room Ops - Scheduled Job Failed',
+    subject: 'WireOps - Scheduled Job Failed',
     html: htmlContent,
     text: textContent,
   });
@@ -377,53 +289,17 @@ The Wire Room
 export async function sendResendLinkEmail(email: string, downloadUrl: string, filename: string): Promise<void> {
   console.log(`[Email] Sending resend link email to: ${email}`);
 
-  const htmlContent = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>New Download Link - The Wire Room</title>
-</head>
-<body style="margin: 0; padding: 0; background-color: #0d0d0d; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
-  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #0d0d0d;">
-    <tr>
-      <td align="center" style="padding: 40px 20px;">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 520px; background-color: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 16px;">
-          <tr>
-            <td style="padding: 48px 40px; text-align: center;">
-              <h1 style="margin: 0 0 8px; font-size: 28px; font-weight: 700;">
-                <span style="color: #ffffff;">The</span> <span style="color: #f5a623;">Wire</span> <span style="color: #ffffff;">Room</span>
-              </h1>
-              <p style="margin: 0 0 32px; color: #999999; font-size: 16px;">Fresh Download Link</p>
+  const body = `
+    <h2 style="margin:0 0 12px;color:${E.text};font-size:18px;font-weight:600;">Fresh Download Link</h2>
+    <p style="margin:0 0 6px;color:${E.muted};font-size:13px;">File:</p>
+    <p style="margin:0 0 28px;color:${E.cyan};font-size:13px;font-family:monospace;">${escapeHtml(filename)}</p>
+    ${emailBtn(downloadUrl, 'Download File')}
+    <p style="margin:16px 0 0;color:${E.dim};font-size:12px;text-align:center;">This link expires in 24 hours.</p>`;
 
-              <h2 style="margin: 0 0 16px; color: #ffffff; font-size: 20px; font-weight: 600;">
-                Your new download link is ready
-              </h2>
-              <p style="margin: 0 0 8px; color: #999999; font-size: 14px;">File:</p>
-              <p style="margin: 0 0 32px; color: #f5a623; font-size: 14px; font-family: monospace;">${escapeHtml(filename)}</p>
-
-              <a href="${escapeHtml(downloadUrl)}" style="display: inline-block; background-color: #f5a623; color: #0d0d0d; padding: 16px 32px; text-decoration: none; border-radius: 8px; font-size: 16px; font-weight: 600;">
-                Download File
-              </a>
-
-              <p style="margin: 32px 0 0; color: #666666; font-size: 12px;">
-                This link expires in 24 hours.
-              </p>
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>
-  `.trim();
+  const htmlContent = emailShell('Download Link', 'File Delivery', body, 480);
 
   const textContent = `
-The Wire Room - Fresh Download Link
-
-Your new download link is ready.
+WIREOPS - Fresh Download Link
 
 File: ${filename}
 
@@ -435,7 +311,7 @@ This link expires in 24 hours.
   await sendWithTracking({
     from: config.email.fromEmail,
     to: email,
-    subject: 'The Wire Room - Fresh Download Link',
+    subject: 'WireOps - Fresh Download Link',
     html: htmlContent,
     text: textContent,
   });
@@ -461,36 +337,37 @@ export async function sendScanDigestEmail(
   if (topFinds.length > 0) {
     const rows = topFinds.map(entry => {
       const score = entry.qualityScore ?? 0;
-      const scoreColor = score >= 60 ? '#4caf50' : score >= 40 ? '#f5a623' : '#ef5350';
+      const scoreColor = score >= 60 ? E.success : score >= 40 ? E.warn : E.error;
       const name = escapeHtml(entry.name);
       const nameCell = entry.sourceUrl
-        ? `<a href="${escapeHtml(entry.sourceUrl)}" style="color: #ffffff; text-decoration: underline;">${name}</a>`
+        ? `<a href="${escapeHtml(entry.sourceUrl)}" style="color:${E.cyan};text-decoration:underline;">${name}</a>`
         : name;
       const amount = entry.amount ? escapeHtml(entry.amount) : '\u2014';
       const deadline = entry.deadline ? escapeHtml(entry.deadline) : '\u2014';
       const wire = escapeHtml(entry.wire);
 
       return `<tr>
-        <td style="padding: 8px 6px; border-bottom: 1px solid #2a2a2a; text-align: center;">
-          <span style="display: inline-block; background-color: ${scoreColor}; color: #0d0d0d; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 700;">${score}</span>
+        <td style="padding:8px 6px;border-bottom:1px solid ${E.border};text-align:center;">
+          <span style="display:inline-block;background-color:${scoreColor};color:${E.bg};padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;">${score}</span>
         </td>
-        <td style="padding: 8px 6px; border-bottom: 1px solid #2a2a2a; color: #ffffff; font-size: 14px;">${nameCell}</td>
-        <td style="padding: 8px 6px; border-bottom: 1px solid #2a2a2a; color: #cccccc; font-size: 13px;">${amount}</td>
-        <td style="padding: 8px 6px; border-bottom: 1px solid #2a2a2a; color: #cccccc; font-size: 13px;">${deadline}</td>
-        <td style="padding: 8px 6px; border-bottom: 1px solid #2a2a2a; text-align: center;">
-          <span style="display: inline-block; background-color: #2a2a2a; color: #999999; padding: 2px 6px; border-radius: 4px; font-size: 11px;">${wire}</span>
+        <td style="padding:8px 6px;border-bottom:1px solid ${E.border};color:${E.text};font-size:13px;">${nameCell}</td>
+        <td style="padding:8px 6px;border-bottom:1px solid ${E.border};color:${E.muted};font-size:12px;">${amount}</td>
+        <td style="padding:8px 6px;border-bottom:1px solid ${E.border};color:${E.muted};font-size:12px;">${deadline}</td>
+        <td style="padding:8px 6px;border-bottom:1px solid ${E.border};text-align:center;">
+          <span style="display:inline-block;background-color:${E.border};color:${E.muted};padding:2px 6px;border-radius:4px;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;">${wire}</span>
         </td>
       </tr>`;
     }).join('');
 
     topFindsHtml = `
-      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-bottom: 24px;">
+      ${emailSectionLabel('Top Finds')}
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-bottom:24px;">
         <tr>
-          <th style="padding: 8px 6px; text-align: center; color: #f5a623; font-size: 12px; font-weight: 600; text-transform: uppercase; border-bottom: 2px solid #2a2a2a;">Score</th>
-          <th style="padding: 8px 6px; text-align: left; color: #f5a623; font-size: 12px; font-weight: 600; text-transform: uppercase; border-bottom: 2px solid #2a2a2a;">Name</th>
-          <th style="padding: 8px 6px; text-align: left; color: #f5a623; font-size: 12px; font-weight: 600; text-transform: uppercase; border-bottom: 2px solid #2a2a2a;">Amount</th>
-          <th style="padding: 8px 6px; text-align: left; color: #f5a623; font-size: 12px; font-weight: 600; text-transform: uppercase; border-bottom: 2px solid #2a2a2a;">Deadline</th>
-          <th style="padding: 8px 6px; text-align: center; color: #f5a623; font-size: 12px; font-weight: 600; text-transform: uppercase; border-bottom: 2px solid #2a2a2a;">Wire</th>
+          <th style="padding:8px 6px;text-align:center;color:${E.cyan};font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid ${E.border};">Score</th>
+          <th style="padding:8px 6px;text-align:left;color:${E.cyan};font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid ${E.border};">Name</th>
+          <th style="padding:8px 6px;text-align:left;color:${E.cyan};font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid ${E.border};">Amount</th>
+          <th style="padding:8px 6px;text-align:left;color:${E.cyan};font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid ${E.border};">Deadline</th>
+          <th style="padding:8px 6px;text-align:center;color:${E.cyan};font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid ${E.border};">Wire</th>
         </tr>
         ${rows}
       </table>`;
@@ -502,16 +379,16 @@ export async function sendScanDigestEmail(
       return `  [${score}] ${e.name} | ${amount} | ${deadline} | ${e.wire}`;
     }).join('\n');
   } else {
-    topFindsHtml = '<p style="color: #999999; font-size: 14px; font-style: italic;">No entries met the quality threshold today.</p>';
+    topFindsHtml = `<p style="color:${E.muted};font-size:13px;font-style:italic;">No entries met the quality threshold today.</p>`;
     topFindsText = '  No entries met the quality threshold today.';
   }
 
   // Build per-prompt summary lines
   const promptLines = perPrompt.map(p => {
     if (p.error) {
-      return `<p style="margin: 0 0 4px; color: #ef5350; font-size: 13px;">${escapeHtml(p.label)}: FAILED</p>`;
+      return `<p style="margin:0 0 4px;color:${E.error};font-size:12px;font-family:monospace;">${escapeHtml(p.label)}: FAILED</p>`;
     }
-    return `<p style="margin: 0 0 4px; color: #cccccc; font-size: 13px;">${escapeHtml(p.label)}: ${p.resultCount} results (${Math.round(p.durationMs / 1000)}s)</p>`;
+    return `<p style="margin:0 0 4px;color:${E.muted};font-size:12px;font-family:monospace;">${escapeHtml(p.label)}: ${p.resultCount} results (${Math.round(p.durationMs / 1000)}s)</p>`;
   }).join('');
 
   const promptLinesText = perPrompt.map(p => {
@@ -519,125 +396,38 @@ export async function sendScanDigestEmail(
     return `  ${p.label}: ${p.resultCount} results (${Math.round(p.durationMs / 1000)}s)`;
   }).join('\n');
 
-  // Failures line (optional)
   const failuresHtml = promptsFailed > 0
-    ? `<p style="margin: 8px 0 0; color: #ef5350; font-size: 14px;">${promptsFailed} prompt(s) failed</p>`
+    ? `<p style="margin:8px 0 0;color:${E.error};font-size:13px;">${promptsFailed} prompt(s) failed</p>`
     : '';
 
   const reviewUrl = `${dashboardUrl.replace(/\/$/, '')}/queue`;
 
-  const htmlContent = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Daily Scan Digest - The Wire Room</title>
-</head>
-<body style="margin: 0; padding: 0; background-color: #0d0d0d; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
-  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #0d0d0d;">
-    <tr>
-      <td align="center" style="padding: 40px 20px;">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 600px; background-color: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 16px;">
-          <tr>
-            <td style="padding: 40px;">
-              <!-- Logo -->
-              <h1 style="margin: 0 0 8px; font-size: 24px; font-weight: 700; text-align: center;">
-                <span style="color: #ffffff;">The</span> <span style="color: #f5a623;">Wire</span> <span style="color: #ffffff;">Room</span>
-              </h1>
-              <p style="margin: 0 0 24px; color: #999999; font-size: 14px; text-align: center;">Daily Scan Digest</p>
+  const body = `
+    <h2 style="margin:0 0 16px;color:${E.text};font-size:18px;font-weight:600;">Scan Results for ${escapeHtml(dateStr)}</h2>
+    ${emailSectionLabel('Scan Stats')}
+    ${emailStatBox([
+      `<strong style="color:${E.cyan};">${totalResults}</strong> results across <strong style="color:${E.cyan};">${promptsExecuted}</strong> prompts`,
+      `<span style="color:${E.muted};">${intakeSummary.newUnique} unique finds, ${intakeSummary.duplicatesFound} duplicates filtered</span>`,
+      `<span style="color:${E.muted};">${intakeSummary.highQualityCount} high quality (score &ge; 60)</span>`,
+      `<span style="color:${E.dim};">Duration: ${durationSec}s</span>`,
+      ...(promptsFailed > 0 ? [`<span style="color:${E.error};">${promptsFailed} prompt(s) failed</span>`] : []),
+    ])}
+    ${topFindsHtml}
+    ${emailSectionLabel('Per-Prompt Breakdown')}
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:${E.bg};border:1px solid ${E.border};border-radius:8px;margin-bottom:24px;">
+      <tr><td style="padding:14px 20px;">${promptLines}</td></tr>
+    </table>
+    ${emailBtn(reviewUrl, 'Review Queue')}
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top:28px;border-top:1px solid ${E.border};">
+      <tr><td style="padding-top:20px;text-align:center;">
+        <p style="margin:0;color:${E.dim};font-size:11px;">You're receiving this because scan-execution completed. Manage schedules on your dashboard.</p>
+      </td></tr>
+    </table>`;
 
-              <!-- Header -->
-              <h2 style="margin: 0 0 16px; color: #ffffff; font-size: 20px; font-weight: 600;">
-                Scan Results for ${dateStr}
-              </h2>
-
-              <!-- Stats Box -->
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #0d0d0d; border: 1px solid #2a2a2a; border-radius: 12px; margin-bottom: 24px;">
-                <tr>
-                  <td style="padding: 20px;">
-                    <p style="margin: 0 0 12px; color: #f5a623; font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">
-                      Scan Stats
-                    </p>
-                    <p style="margin: 0 0 8px; color: #ffffff; font-size: 15px;">
-                      <strong style="color: #f5a623;">${totalResults}</strong> results scanned across <strong style="color: #f5a623;">${promptsExecuted}</strong> prompts
-                    </p>
-                    <p style="margin: 0 0 8px; color: #999999; font-size: 14px;">
-                      ${intakeSummary.newUnique} unique finds, ${intakeSummary.duplicatesFound} duplicates filtered
-                    </p>
-                    <p style="margin: 0 0 8px; color: #999999; font-size: 14px;">
-                      ${intakeSummary.highQualityCount} high quality (score &ge; 60)
-                    </p>
-                    <p style="margin: 0; color: #999999; font-size: 14px;">
-                      Duration: ${durationSec}s
-                    </p>
-                    ${failuresHtml}
-                  </td>
-                </tr>
-              </table>
-
-              <!-- Top Finds -->
-              <p style="margin: 0 0 12px; color: #f5a623; font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">
-                Top Finds
-              </p>
-              ${topFindsHtml}
-
-              <!-- Per-Prompt Summary -->
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #0d0d0d; border: 1px solid #2a2a2a; border-radius: 12px; margin-bottom: 24px;">
-                <tr>
-                  <td style="padding: 16px 20px;">
-                    <p style="margin: 0 0 8px; color: #f5a623; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">
-                      Per-Prompt Breakdown
-                    </p>
-                    ${promptLines}
-                  </td>
-                </tr>
-              </table>
-
-              <!-- CTA Button -->
-              <table role="presentation" cellspacing="0" cellpadding="0" width="100%">
-                <tr>
-                  <td align="center">
-                    <table role="presentation" cellspacing="0" cellpadding="0">
-                      <tr>
-                        <td style="background-color: #f5a623; border-radius: 8px;">
-                          <a href="${escapeHtml(reviewUrl)}" target="_blank" style="display: inline-block; padding: 14px 28px; color: #0d0d0d; font-size: 15px; font-weight: 600; text-decoration: none;">
-                            Review Queue
-                          </a>
-                        </td>
-                      </tr>
-                    </table>
-                  </td>
-                </tr>
-              </table>
-
-              <!-- Footer -->
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top: 32px; border-top: 1px solid #2a2a2a;">
-                <tr>
-                  <td style="padding-top: 24px; text-align: center;">
-                    <p style="margin: 0; color: #666666; font-size: 13px;">
-                      You're receiving this because scan-execution completed. Manage schedules on your dashboard.
-                    </p>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-        </table>
-
-        <!-- Bottom text -->
-        <p style="margin: 24px 0 0; color: #666666; font-size: 12px;">
-          The Wire Room
-        </p>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>
-  `.trim();
+  const htmlContent = emailShell('Daily Scan Digest', 'Scan Digest', body, 600);
 
   const textContent = `
-The Wire Room - Daily Scan Digest
+WIREOPS - Daily Scan Digest
 
 Scan Results for ${dateStr}
 
@@ -660,7 +450,6 @@ Review Queue: ${reviewUrl}
 
 ---
 You're receiving this because scan-execution completed. Manage schedules on your dashboard.
-The Wire Room
   `.trim();
 
   const to = recipients && recipients.length > 0 ? recipients : config.email.notificationEmail;
@@ -698,11 +487,11 @@ export async function sendDailyDigestEmail(
   // Wire breakdown rows
   const wireRows = digest.wires.map(w =>
     `<tr>
-      <td style="padding:8px 10px;border-bottom:1px solid #e5e7eb;font-size:14px;text-transform:capitalize;">${escapeHtml(w.wire)}</td>
-      <td style="padding:8px 10px;border-bottom:1px solid #e5e7eb;font-size:14px;text-align:center;">${w.scansRun}</td>
-      <td style="padding:8px 10px;border-bottom:1px solid #e5e7eb;font-size:14px;text-align:center;">${w.newUnique}</td>
-      <td style="padding:8px 10px;border-bottom:1px solid #e5e7eb;font-size:14px;text-align:center;">${w.recentlyApproved}</td>
-      <td style="padding:8px 10px;border-bottom:1px solid #e5e7eb;font-size:14px;text-align:center;font-weight:${w.pendingReview > 0 ? '700' : '400'};">${w.pendingReview}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid ${E.border};font-size:13px;color:${E.text};text-transform:uppercase;letter-spacing:0.5px;">${escapeHtml(w.wire)}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid ${E.border};font-size:13px;color:${E.muted};text-align:center;">${w.scansRun}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid ${E.border};font-size:13px;color:${E.text};text-align:center;">${w.newUnique}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid ${E.border};font-size:13px;color:${E.muted};text-align:center;">${w.recentlyApproved}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid ${E.border};font-size:13px;color:${w.pendingReview > 0 ? E.cyan : E.muted};text-align:center;font-weight:${w.pendingReview > 0 ? '700' : '400'};">${w.pendingReview}</td>
     </tr>`
   ).join('');
 
@@ -715,77 +504,65 @@ export async function sendDailyDigestEmail(
   let topFindsText = '';
   if (topFinds && topFinds.length > 0) {
     const rows = topFinds.slice(0, 5).map(e => {
+      const scoreColor = e.quality_score >= 60 ? E.success : e.quality_score >= 40 ? E.warn : E.error;
       const nameCell = e.source_url
-        ? `<a href="${escapeHtml(e.source_url)}" style="color:${escapeHtml(brand.color)};text-decoration:none;">${escapeHtml(e.name)}</a>`
+        ? `<a href="${escapeHtml(e.source_url)}" style="color:${E.cyan};text-decoration:none;">${escapeHtml(e.name)}</a>`
         : escapeHtml(e.name);
       return `<tr>
-        <td style="padding:7px 10px;border-bottom:1px solid #e5e7eb;font-size:13px;text-align:center;font-weight:700;">${e.quality_score}</td>
-        <td style="padding:7px 10px;border-bottom:1px solid #e5e7eb;font-size:13px;">${nameCell}</td>
-        <td style="padding:7px 10px;border-bottom:1px solid #e5e7eb;font-size:13px;">${e.amount ? escapeHtml(e.amount) : '—'}</td>
-        <td style="padding:7px 10px;border-bottom:1px solid #e5e7eb;font-size:13px;">${e.deadline ? escapeHtml(e.deadline) : '—'}</td>
-        <td style="padding:7px 10px;border-bottom:1px solid #e5e7eb;font-size:12px;text-transform:capitalize;">${escapeHtml(e.wire)}</td>
+        <td style="padding:7px 10px;border-bottom:1px solid ${E.border};font-size:12px;text-align:center;">
+          <span style="display:inline-block;background-color:${scoreColor};color:${E.bg};padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;">${e.quality_score}</span>
+        </td>
+        <td style="padding:7px 10px;border-bottom:1px solid ${E.border};font-size:12px;color:${E.text};">${nameCell}</td>
+        <td style="padding:7px 10px;border-bottom:1px solid ${E.border};font-size:12px;color:${E.muted};">${e.amount ? escapeHtml(e.amount) : '\u2014'}</td>
+        <td style="padding:7px 10px;border-bottom:1px solid ${E.border};font-size:12px;color:${E.muted};">${e.deadline ? escapeHtml(e.deadline) : '\u2014'}</td>
+        <td style="padding:7px 10px;border-bottom:1px solid ${E.border};font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:${E.muted};">${escapeHtml(e.wire)}</td>
       </tr>`;
     }).join('');
     topFindsHtml = `
-      <h3 style="margin:24px 0 10px;font-size:14px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#6b7280;">Top Pending</h3>
-      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #e5e7eb;border-radius:6px;overflow:hidden;">
+      ${emailSectionLabel('Top Pending')}
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-bottom:24px;">
         <tr>
-          <th style="padding:8px 10px;font-size:11px;font-weight:600;text-transform:uppercase;color:#6b7280;border-bottom:2px solid #e5e7eb;background:#f9fafb;text-align:center;">Score</th>
-          <th style="padding:8px 10px;font-size:11px;font-weight:600;text-transform:uppercase;color:#6b7280;border-bottom:2px solid #e5e7eb;background:#f9fafb;text-align:left;">Name</th>
-          <th style="padding:8px 10px;font-size:11px;font-weight:600;text-transform:uppercase;color:#6b7280;border-bottom:2px solid #e5e7eb;background:#f9fafb;text-align:left;">Amount</th>
-          <th style="padding:8px 10px;font-size:11px;font-weight:600;text-transform:uppercase;color:#6b7280;border-bottom:2px solid #e5e7eb;background:#f9fafb;text-align:left;">Deadline</th>
-          <th style="padding:8px 10px;font-size:11px;font-weight:600;text-transform:uppercase;color:#6b7280;border-bottom:2px solid #e5e7eb;background:#f9fafb;text-align:left;">Wire</th>
+          <th style="padding:8px 10px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:${E.cyan};border-bottom:1px solid ${E.border};text-align:center;">Score</th>
+          <th style="padding:8px 10px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:${E.cyan};border-bottom:1px solid ${E.border};text-align:left;">Name</th>
+          <th style="padding:8px 10px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:${E.cyan};border-bottom:1px solid ${E.border};text-align:left;">Amount</th>
+          <th style="padding:8px 10px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:${E.cyan};border-bottom:1px solid ${E.border};text-align:left;">Deadline</th>
+          <th style="padding:8px 10px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:${E.cyan};border-bottom:1px solid ${E.border};text-align:left;">Wire</th>
         </tr>
         ${rows}
       </table>`;
     topFindsText = '\nTOP PENDING\n-----------\n' + topFinds.slice(0, 5).map(e =>
-      `  [${e.quality_score}] ${e.name} | ${e.amount || '—'} | ${e.deadline || '—'} | ${e.wire}`
+      `  [${e.quality_score}] ${e.name} | ${e.amount || '\u2014'} | ${e.deadline || '\u2014'} | ${e.wire}`
     ).join('\n');
   }
 
-  // HTML — neutral, no forced dark/light theme
-  const htmlContent = `<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
-<body style="margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.5;">
-<table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-  <tr><td align="center" style="padding:32px 16px;">
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:580px;">
-      <tr><td style="padding-bottom:20px;border-bottom:2px solid ${escapeHtml(brand.color)};">
-        <p style="margin:0;font-size:20px;font-weight:700;">${escapeHtml(brand.name)}</p>
-        <p style="margin:4px 0 0;font-size:13px;color:#6b7280;">${escapeHtml(brand.tagline)} — Daily Digest — ${escapeHtml(digest.date)}</p>
-      </td></tr>
-      <tr><td style="padding:20px 0 8px;">
-        <p style="margin:0;">${digest.totalNewUnique} new finds today. ${digest.totalPendingReview > 0 ? `<strong>${digest.totalPendingReview} pending review.</strong>` : 'Queue is clear.'}</p>
-      </td></tr>
-      <tr><td style="padding-top:16px;">
-        <h3 style="margin:0 0 10px;font-size:14px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#6b7280;">By Wire</h3>
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #e5e7eb;border-radius:6px;overflow:hidden;">
-          <tr>
-            <th style="padding:8px 10px;font-size:11px;font-weight:600;text-transform:uppercase;color:#6b7280;border-bottom:2px solid #e5e7eb;background:#f9fafb;text-align:left;">Wire</th>
-            <th style="padding:8px 10px;font-size:11px;font-weight:600;text-transform:uppercase;color:#6b7280;border-bottom:2px solid #e5e7eb;background:#f9fafb;text-align:center;">Scans</th>
-            <th style="padding:8px 10px;font-size:11px;font-weight:600;text-transform:uppercase;color:#6b7280;border-bottom:2px solid #e5e7eb;background:#f9fafb;text-align:center;">New</th>
-            <th style="padding:8px 10px;font-size:11px;font-weight:600;text-transform:uppercase;color:#6b7280;border-bottom:2px solid #e5e7eb;background:#f9fafb;text-align:center;">Approved</th>
-            <th style="padding:8px 10px;font-size:11px;font-weight:600;text-transform:uppercase;color:#6b7280;border-bottom:2px solid #e5e7eb;background:#f9fafb;text-align:center;">Pending</th>
-          </tr>
-          ${wireRows}
-        </table>
-      </td></tr>
-      ${topFindsHtml ? `<tr><td>${topFindsHtml}</td></tr>` : ''}
-      <tr><td style="padding:24px 0 0;text-align:center;">
-        ${digest.totalPendingReview > 0
-          ? `<a href="${escapeHtml(reviewUrl)}" style="display:inline-block;padding:12px 28px;background-color:${escapeHtml(brand.color)};color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;border-radius:6px;">Review Queue (${digest.totalPendingReview})</a>`
-          : `<a href="${escapeHtml(dashboardUrl)}" style="display:inline-block;padding:12px 28px;border:1px solid #d1d5db;color:#374151;font-size:14px;font-weight:600;text-decoration:none;border-radius:6px;">Open Dashboard</a>`}
-      </td></tr>
-      <tr><td style="padding-top:28px;margin-top:28px;border-top:1px solid #e5e7eb;">
-        <p style="margin:0;font-size:12px;color:#9ca3af;text-align:center;">${escapeHtml(brand.name)} — one digest per day</p>
-      </td></tr>
-    </table>
-  </td></tr>
-</table>
-</body></html>`;
+  const summaryLine = `${digest.totalNewUnique} new finds today. ${digest.totalPendingReview > 0 ? `<strong style="color:${E.cyan};">${digest.totalPendingReview} pending review.</strong>` : 'Queue is clear.'}`;
 
-  const textContent = `${brand.name} — Daily Digest ${digest.date}
+  const body = `
+    <p style="margin:0 0 24px;color:${E.text};font-size:15px;">${summaryLine}</p>
+    ${emailSectionLabel('By Wire')}
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:${E.bg};border:1px solid ${E.border};border-radius:8px;margin-bottom:24px;">
+      <tr>
+        <th style="padding:8px 10px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:${E.cyan};border-bottom:1px solid ${E.border};text-align:left;">Wire</th>
+        <th style="padding:8px 10px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:${E.cyan};border-bottom:1px solid ${E.border};text-align:center;">Scans</th>
+        <th style="padding:8px 10px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:${E.cyan};border-bottom:1px solid ${E.border};text-align:center;">New</th>
+        <th style="padding:8px 10px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:${E.cyan};border-bottom:1px solid ${E.border};text-align:center;">Approved</th>
+        <th style="padding:8px 10px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:${E.cyan};border-bottom:1px solid ${E.border};text-align:center;">Pending</th>
+      </tr>
+      ${wireRows}
+    </table>
+    ${topFindsHtml}
+    ${digest.totalPendingReview > 0
+      ? emailBtn(reviewUrl, `Review Queue (${digest.totalPendingReview})`)
+      : emailBtn(dashboardUrl, 'Open Dashboard', E.border)}
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top:28px;border-top:1px solid ${E.border};">
+      <tr><td style="padding-top:20px;text-align:center;">
+        <p style="margin:0;color:${E.dim};font-size:11px;">${escapeHtml(brand.name)} \u2014 one digest per day</p>
+      </td></tr>
+    </table>`;
+
+  const htmlContent = emailShell(`Daily Digest \u2014 ${digest.date}`, 'Daily Digest', body, 600);
+
+  const textContent = `WIREOPS - Daily Digest ${digest.date}
 
 ${digest.totalNewUnique} new finds. ${digest.totalPendingReview > 0 ? `${digest.totalPendingReview} pending review.` : 'Queue is clear.'}
 
@@ -804,7 +581,7 @@ ${brand.name} | ${brand.url}`;
   await sendWithTracking({
     from: `${brand.fromName} <${config.email.fromEmail}>`,
     to,
-    subject: `${brand.name} Digest — ${digest.date} | ${digest.totalNewUnique} new${pendingLabel}`,
+    subject: `${brand.name} Digest \u2014 ${digest.date} | ${digest.totalNewUnique} new${pendingLabel}`,
     html: htmlContent,
     text: textContent,
   });
