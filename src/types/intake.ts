@@ -6,7 +6,7 @@
 // Wire values are dynamic (driven by feeds table), so we use string
 
 // Which prompt variant produced this result
-export type PromptVariant = 'A' | 'B' | 'C' | 'N';
+export type PromptVariant = 'A' | 'B' | 'C' | 'W' | 'P' | 'N';
 
 // Prompt strategy labels (for human readability)
 export type PromptStrategy = 'Action' | 'Landscape' | 'Open Sweep';

@@ -58,14 +58,15 @@ export interface ScanExecutionResult {
 // Variant inference
 // ============================================================
 
-const VARIANT_MAP: PromptVariant[] = ['A', 'B', 'C'];
+const VALID_VARIANTS: PromptVariant[] = ['A', 'B', 'C', 'W', 'P', 'N'];
+const FALLBACK_VARIANTS: PromptVariant[] = ['A', 'B', 'C'];
 
 function resolveVariant(prompt: ScanPromptRecord): PromptVariant {
-  if (prompt.variant && VARIANT_MAP.includes(prompt.variant as PromptVariant)) {
+  if (prompt.variant && VALID_VARIANTS.includes(prompt.variant as PromptVariant)) {
     return prompt.variant as PromptVariant;
   }
   // Infer from sortOrder: 0→A, 1→B, 2→C, wrap around
-  return VARIANT_MAP[prompt.sortOrder % 3];
+  return FALLBACK_VARIANTS[prompt.sortOrder % 3];
 }
 
 function isQuotaExhaustedError(message: string): boolean {

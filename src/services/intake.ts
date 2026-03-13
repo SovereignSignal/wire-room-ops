@@ -177,24 +177,64 @@ function parseStructuredText(text: string): RawScanResult[] {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
 
-    // Match entry header: "1. **Program Name** — Description"
+    // Match entry header: "1. **Program Name** — Description" or "**[Org] — Name**"
+    // Also handles "**Org — Program Name**" (separator inside bold)
     const headerMatch = line.match(
       /^\d+\.\s+\*\*(.+?)\*\*\s*[—\-–:]\s*(.+)/
-    );
+    ) || line.match(
+      /^\*\*\[?(.+?)\]?\*\*\s*[—\-–:]\s*(.+)/
+    ) || (() => {
+      // Handle "**Org — Program Name**" where separator is inside bold
+      const fullBold = line.match(/^\*\*(.+?)\*\*\s*$/);
+      if (fullBold) {
+        const inner = fullBold[1];
+        // Use full bold text as name, no description from header
+        if (inner.search(/\s*[—\-–]\s+/) > 0) {
+          return [line, inner, ''];
+        }
+      }
+      return null;
+    })();
     if (headerMatch) {
       if (currentEntry && currentEntry.name) {
         results.push(currentEntry as RawScanResult);
       }
       const name = stripMarkdownArtifacts(headerMatch[1].trim());
-      const description = stripMarkdownArtifacts(headerMatch[2].trim());
+      const desc = headerMatch[2] ? stripMarkdownArtifacts(headerMatch[2].replace(/\*+$/, '').trim()) : '';
       currentEntry = {
         name,
-        description,
-        amount: extractAmount(description),
+        description: desc,
+        amount: extractAmount(desc),
         deadline: null,
         sourceUrl: '',
       };
       continue;
+    }
+
+    // Match bracket-wrapped metadata: [Key details: ...], [Direct URL: ...], [Date: ...]
+    if (currentEntry && /^\[/.test(line)) {
+      // [Direct URL: https://...] or [URL: https://...]
+      const bracketUrlMatch = line.match(/^\[(?:Direct URL|Program URL|URL|Link|Source):\s*(https?:\/\/\S+)/i);
+      if (bracketUrlMatch) {
+        const u = bracketUrlMatch[1].replace(/[)\].,;:]+$/, '');
+        if (isUsefulUrl(u)) currentEntry.sourceUrl = u;
+        continue;
+      }
+      // [Key details: ...] — add to description
+      const keyDetailsMatch = line.match(/^\[Key details?:\s*(.+)/i);
+      if (keyDetailsMatch) {
+        const details = keyDetailsMatch[1].replace(/\]$/, '').trim();
+        currentEntry.description = (currentEntry.description || '') + ' ' + stripMarkdownArtifacts(details);
+        if (!currentEntry.amount) currentEntry.amount = extractAmount(details);
+        // Extract deadline from key details
+        const dlMatch = details.match(/(?:deadline|due|closes|apply by)[:\s]+([^.\]]+)/i);
+        if (dlMatch && !currentEntry.deadline) {
+          currentEntry.deadline = normalizeDeadline(stripMarkdownArtifacts(dlMatch[1].trim()));
+        }
+        continue;
+      }
+      // [Date: ...] — skip
+      if (/^\[Date:/i.test(line)) continue;
     }
 
     // Match deadline line
@@ -410,7 +450,7 @@ function parseXPostFormat(text: string): RawScanResult[] {
   content = content.replace(/\[@(\w+)\]\([^)]*\)/g, '@$1');
 
   const parseHeader = (rawLine: string): { author: string; title: string } | null => {
-    const line = rawLine.trim().replace(/^\d+\.\s+/, '').replace(/^[-*]\s+/, '');
+    const line = rawLine.trim().replace(/^\d+\.\s+/, '').replace(/^[-*]\s+/, '').replace(/\*{2,}/g, '');
 
     // @Handle — Title
     const atHandle = line.match(/^@([A-Za-z0-9_]{1,40})\s*[\u2014\u2013\-]\s+(.+)/);
@@ -463,6 +503,17 @@ function parseXPostFormat(text: string): RawScanResult[] {
 
     for (let i = 1; i < lines.length; i++) {
       const line = lines[i];
+
+      // Bracket-wrapped metadata lines: [Direct URL: ...], [Date: ...], [Key details: ...]
+      const bracketUrlMatch = line.match(/^\[(?:Direct URL|Program URL|URL|Link|Source):\s*(https?:\/\/\S+)/i);
+      if (bracketUrlMatch) {
+        const u = bracketUrlMatch[1].replace(/[)\].,;:]+$/, '');
+        if (isUsefulUrl(u)) sourceUrl = u;
+        continue;
+      }
+
+      // [Date: ...] bracket lines — skip
+      if (/^\[Date:/i.test(line)) continue;
 
       // URL line (standalone or as markdown link) — match any URL, not just X.com
       const urlMatch = line.match(/https?:\/\/\S+/);
