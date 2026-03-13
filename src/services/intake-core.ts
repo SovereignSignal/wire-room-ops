@@ -10,7 +10,7 @@
  */
 
 import { getPool, getAllFeeds } from '../db';
-import { checkDuplicate, registerSeen } from '../services/dedup';
+import { checkDuplicate } from '../services/dedup';
 import { classifyEntry } from '../services/classifier';
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -351,11 +351,9 @@ export async function processIntakeMessage(
         submittedBy: msg.senderId,
         scanSource,
       });
-      try {
-        await registerSeen(getPool(), { id, sourceUrl: primaryUrl, name, wire, scanDate });
-      } catch (regError) {
-        console.error('[IntakeCore] registerSeen failed (non-fatal):', regError);
-      }
+      // Don't registerSeen here — processRawEntries handles registration after dedup passes.
+      // Registering at intake caused a self-match bug where processRawEntries' second dedup
+      // pass would find the entry's own URL in seen_urls and mark it as duplicate of itself.
       // Fire-and-forget classification so entry gets scored before next intake run
       setImmediate(() => classifyAndQueue(id, name, text, primaryUrl, wire));
       return {
@@ -393,11 +391,7 @@ export async function processIntakeMessage(
       submittedBy: msg.senderId,
       scanSource,
     });
-    try {
-      await registerSeen(getPool(), { id, sourceUrl: primaryUrl, name, wire: fallbackWire, scanDate });
-    } catch (regError) {
-      console.error('[IntakeCore] registerSeen failed (non-fatal):', regError);
-    }
+    // Don't registerSeen here — processRawEntries handles it (see comment above)
     // Fire-and-forget classification so entry gets scored before next intake run
     setImmediate(() => classifyAndQueue(id, name, text, primaryUrl, fallbackWire));
     return {
@@ -438,11 +432,7 @@ export async function completeWireSelection(
 
   try {
     const id = await insertEntry({ ...entry, wire });
-    try {
-      await registerSeen(getPool(), { id, sourceUrl: entry.sourceUrl, name: entry.name, wire, scanDate: entry.scanDate });
-    } catch (regError) {
-      console.error('[IntakeCore] registerSeen failed (non-fatal):', regError);
-    }
+    // Don't registerSeen here — processRawEntries handles it (see self-match bug comment above)
     // Fire-and-forget classification
     setImmediate(() => classifyAndQueue(id, entry.name, entry.description, entry.sourceUrl, wire));
     return {
@@ -596,11 +586,7 @@ export async function processBatchMessage(
         submittedBy: msg.senderId,
         scanSource,
       });
-      try {
-        await registerSeen(getPool(), { id, sourceUrl: entry.sourceUrl, name: entry.name, wire: resolvedWire, scanDate });
-      } catch (regError) {
-        // non-fatal
-      }
+      // Don't registerSeen here — processRawEntries handles it (see self-match bug fix)
       result.inserted++;
       result.entries.push({ name: entry.name, wire: resolvedWire, id });
     } catch (err) {

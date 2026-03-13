@@ -2733,6 +2733,41 @@ app.post('/api/admin/run-migration', requireAuth, async (_req: Request, res: Res
   }
 });
 
+// API: Recover self-duplicated entries (entries where duplicate_of_id = own id)
+// This fixes a bug where intake registered entries in seen_urls before processRawEntries ran,
+// causing them to match themselves during the second dedup pass.
+app.post('/api/admin/recover-self-dupes', requireAuth, async (req: Request, res: Response) => {
+  if (!rateLimit('recover-self-dupes', 1, 10 * 60 * 1000)) {
+    res.status(429).json({ error: 'Recently run. Please wait 10 minutes.' });
+    return;
+  }
+  try {
+    const pool = getPool();
+    // Find entries that were marked as duplicates of themselves
+    const selfDupes = await pool.query(
+      `SELECT id FROM scan_entries WHERE status = 'duplicate' AND duplicate_of_id = id`
+    );
+    if (selfDupes.rows.length === 0) {
+      res.json({ recovered: 0, message: 'No self-duplicated entries found' });
+      return;
+    }
+    const ids = selfDupes.rows.map((r: { id: number }) => r.id);
+    // Clean up seen_urls and seen_names so reprocessing doesn't re-duplicate
+    await pool.query(`DELETE FROM seen_urls WHERE first_seen_entry_id = ANY($1)`, [ids]);
+    await pool.query(`DELETE FROM seen_names WHERE entry_id = ANY($1)`, [ids]);
+    // Reset to raw so processRawEntries can reprocess correctly
+    await pool.query(
+      `UPDATE scan_entries SET status = 'raw', duplicate_of_id = NULL, duplicate_reason = NULL WHERE id = ANY($1)`,
+      [ids]
+    );
+    console.log(`[Admin] Recovered ${ids.length} self-duplicated entries: ${ids.join(', ')}`);
+    res.json({ recovered: ids.length, ids });
+  } catch (error) {
+    console.error('[Admin] recover-self-dupes error:', error);
+    res.status(500).json({ error: 'Recovery failed' });
+  }
+});
+
 // API: Backfill classification for UNCHECKED entries
 app.post('/api/admin/classify-backfill', requireAuth, async (req: Request, res: Response) => {
   if (!rateLimit('classify-backfill', 3, 5 * 60 * 1000)) {
