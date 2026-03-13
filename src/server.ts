@@ -2768,6 +2768,35 @@ app.post('/api/admin/recover-self-dupes', requireAuth, async (req: Request, res:
   }
 });
 
+// API: Clean up seen records for archived entries (removes stale dedup blockers)
+app.post('/api/admin/clean-stale-seen', requireAuth, async (req: Request, res: Response) => {
+  if (!rateLimit('clean-stale-seen', 1, 10 * 60 * 1000)) {
+    res.status(429).json({ error: 'Recently run. Please wait 10 minutes.' });
+    return;
+  }
+  try {
+    const pool = getPool();
+    // Find archived entries that have seen_names/seen_urls records (should never happen with the fix)
+    const staleNames = await pool.query(
+      `DELETE FROM seen_names WHERE entry_id IN (
+        SELECT id FROM scan_entries WHERE status = 'archived'
+      ) RETURNING entry_id`
+    );
+    const staleUrls = await pool.query(
+      `DELETE FROM seen_urls WHERE first_seen_entry_id IN (
+        SELECT id FROM scan_entries WHERE status = 'archived'
+      ) RETURNING first_seen_entry_id`
+    );
+    const cleanedNames = staleNames.rowCount || 0;
+    const cleanedUrls = staleUrls.rowCount || 0;
+    console.log(`[Admin] Cleaned stale seen records: ${cleanedNames} names, ${cleanedUrls} urls`);
+    res.json({ cleanedNames, cleanedUrls });
+  } catch (error) {
+    console.error('[Admin] clean-stale-seen error:', error);
+    res.status(500).json({ error: 'Cleanup failed' });
+  }
+});
+
 // API: Backfill classification for UNCHECKED entries
 app.post('/api/admin/classify-backfill', requireAuth, async (req: Request, res: Response) => {
   if (!rateLimit('classify-backfill', 3, 5 * 60 * 1000)) {
