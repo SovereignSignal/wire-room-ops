@@ -33,7 +33,7 @@ export const config = {
   email: {
     resendApiKey: process.env.RESEND_API_KEY || '',
     notificationEmail: process.env.NOTIFICATION_EMAIL || '',
-    fromEmail: process.env.FROM_EMAIL || 'noreply@thewireroom.xyz',
+    fromEmail: process.env.FROM_EMAIL || 'noreply@resend.sovereignsignal.com',
   },
   
   privy: {
