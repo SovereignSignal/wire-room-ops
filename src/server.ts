@@ -18,6 +18,7 @@ import { getPool, getDistributionConfigs, upsertDistributionConfig, getDistribut
 import { executeScanPrompt } from './services/grok';
 import { executePerplexityScan } from './services/perplexity';
 import { runOrgExtraction, getOrgProfiles, getOrgById, getEntriesByOrg, ensureOrgProfilesTable, extractOrgFromName, upsertOrgProfile, linkEntryToOrg } from './services/org-extractor';
+import { enrichSingleOrg, enrichBatch, computeDerivedFields } from './services/org-enricher';
 import { ensureIntegrationConfigTable, getIntegrationConfigs, getIntegrationById, upsertIntegration, updateIntegration, deleteIntegration, validateNotionToken, validateNotionDatabase, syncOrgsToNotion } from './services/notion-sync';
 import { withRetry } from './services/processor';
 import { runScanExecution } from './jobs/scan-execution';
@@ -1793,13 +1794,18 @@ app.post('/api/scan/entries/bulk-action', requireAuth, async (req: Request, res:
           });
         }
 
-        // Fire-and-forget org linking
+        // Fire-and-forget org linking + enrichment
         if (!row.org_id) {
           setImmediate(() => {
             const orgName = extractOrgFromName(row.name);
             if (orgName) {
               upsertOrgProfile(orgName, row.wire, row.scan_date?.toISOString?.()?.split('T')[0])
-                .then(orgId => linkEntryToOrg(row.id, orgId))
+                .then(orgId => {
+                  linkEntryToOrg(row.id, orgId);
+                  enrichSingleOrg(orgId).catch(err =>
+                    console.error(`[OrgEnrich] Bulk approve failed for entry ${row.id}:`, err)
+                  );
+                })
                 .catch(err => console.error(`[OrgLink] Bulk approve failed for entry ${row.id}:`, err));
             }
           });
@@ -1918,13 +1924,18 @@ app.post('/api/scan/entries/:id/action', requireAuth, async (req: Request, res: 
         });
       }
 
-      // Fire-and-forget org linking
+      // Fire-and-forget org linking + enrichment
       if (!row.org_id) {
         setImmediate(() => {
           const orgName = extractOrgFromName(row.name);
           if (orgName) {
             upsertOrgProfile(orgName, row.wire, row.scan_date?.toISOString?.()?.split('T')[0])
-              .then(orgId => linkEntryToOrg(entryId, orgId))
+              .then(orgId => {
+                linkEntryToOrg(entryId, orgId);
+                enrichSingleOrg(orgId).catch(err =>
+                  console.error(`[OrgEnrich] Single approve failed for entry ${entryId}:`, err)
+                );
+              })
               .catch(err => console.error(`[OrgLink] Single approve failed for entry ${entryId}:`, err));
           }
         });
@@ -2875,6 +2886,46 @@ app.post('/api/admin/tag-backfill', requireAuth, async (req: Request, res: Respo
   }
 });
 
+// API: One-time org_profiles cleanup (remove bad data)
+app.post('/api/admin/clean-orgs', requireAuth, async (_req: Request, res: Response) => {
+  if (!rateLimit('clean-orgs', 1, 30 * 60 * 1000)) {
+    res.status(429).json({ error: 'Cleanup recently run. Please wait 30 minutes.' });
+    return;
+  }
+
+  try {
+    const { runOrgCleanup } = await import('./migrations/cleanup-org-profiles');
+    const pool = getPool();
+    const result = await runOrgCleanup(pool);
+    res.json(result);
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[Admin] Org cleanup failed:', error);
+    res.status(500).json({ error: errorMsg });
+  }
+});
+
+// API: Batch-enrich org profiles via LLM
+app.post('/api/admin/enrich-orgs', requireAuth, async (req: Request, res: Response) => {
+  if (!rateLimit('enrich-orgs', 1, 10 * 60 * 1000)) {
+    res.status(429).json({ error: 'Enrichment recently run. Please wait 10 minutes.' });
+    return;
+  }
+
+  try {
+    const limit = Math.min(Math.max(Number(req.body?.limit) || 50, 1), 200);
+    const force = req.body?.force === true;
+    const result = await enrichBatch({ force, limit });
+    // Also recompute derived fields after enrichment
+    const derived = await computeDerivedFields();
+    res.json({ ...result, derivedFieldsUpdated: derived.updated });
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[Admin] Org enrichment failed:', error);
+    res.status(500).json({ error: errorMsg });
+  }
+});
+
 // --- API Providers ---
 
 const KNOWN_PROVIDERS = new Set(['grok', 'anthropic', 'firecrawl', 'perplexity', 'resend', 'telegram', 'telegram-intake']);
@@ -3079,6 +3130,10 @@ export async function startServer(): Promise<void> {
   // Ensure org_profiles table exists (Gate 2.5)
   try {
     await ensureOrgProfilesTable();
+    // Fire-and-forget: recompute derived fields (avg_quality_score, tier) on startup
+    computeDerivedFields().catch(err =>
+      console.error('[Startup] computeDerivedFields failed (non-fatal):', err)
+    );
   } catch (error) {
     console.error('Org profiles table migration failed (non-fatal):', error);
   }

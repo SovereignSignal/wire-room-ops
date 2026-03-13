@@ -308,6 +308,14 @@ export async function ensureOrgProfilesTable(): Promise<void> {
     )
   `);
 
+  // Add new enrichment columns
+  await pool.query(`ALTER TABLE org_profiles ADD COLUMN IF NOT EXISTS twitter TEXT`);
+  await pool.query(`ALTER TABLE org_profiles ADD COLUMN IF NOT EXISTS org_type TEXT`);
+  await pool.query(`ALTER TABLE org_profiles ADD COLUMN IF NOT EXISTS source_type TEXT`);
+  await pool.query(`ALTER TABLE org_profiles ADD COLUMN IF NOT EXISTS tier TEXT`);
+  await pool.query(`ALTER TABLE org_profiles ADD COLUMN IF NOT EXISTS avg_quality_score NUMERIC(5,1)`);
+  await pool.query(`ALTER TABLE org_profiles ADD COLUMN IF NOT EXISTS enriched_at TIMESTAMPTZ`);
+
   // Add org_id to scan_entries if not exists
   try {
     await pool.query(`ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS org_id INTEGER REFERENCES org_profiles(id)`);

@@ -288,9 +288,15 @@ async function queryAllNotionPages(token: string, databaseId: string): Promise<N
 
 /**
  * Build Notion properties object for an org profile.
- * Uses standard property names — Notion DB should have these columns.
+ * Mapped to match the actual "Sov's Orgs" Notion database properties.
  */
 function buildOrgProperties(org: any): Record<string, any> {
+  // Capitalize wire names for Notion multi_select: crypto→Crypto, ai→AI, oss→OSS
+  const capitalizeWire = (w: string): string => {
+    const map: Record<string, string> = { crypto: 'Crypto', ai: 'AI', oss: 'OSS' };
+    return map[w.toLowerCase()] || w;
+  };
+
   const props: Record<string, any> = {
     Name: { title: [{ text: { content: org.name } }] },
   };
@@ -299,32 +305,40 @@ function buildOrgProperties(org: any): Record<string, any> {
     props['Website'] = { url: org.website };
   }
 
+  if (org.twitter) {
+    props['Twitter'] = { url: org.twitter };
+  }
+
   if (org.wires && org.wires.length > 0) {
-    props['Wires'] = { multi_select: org.wires.map((w: string) => ({ name: w })) };
-  }
-
-  if (org.entry_count !== undefined) {
-    props['Entries'] = { number: org.entry_count };
-  }
-
-  if (org.first_seen) {
-    props['First Seen'] = { date: { start: org.first_seen.toISOString?.()?.split('T')[0] || org.first_seen } };
-  }
-
-  if (org.last_seen) {
-    props['Last Seen'] = { date: { start: org.last_seen.toISOString?.()?.split('T')[0] || org.last_seen } };
-  }
-
-  if (org.description) {
-    props['Description'] = { rich_text: [{ text: { content: org.description.substring(0, 2000) } }] };
+    props['Wire'] = { multi_select: org.wires.map((w: string) => ({ name: capitalizeWire(w) })) };
   }
 
   if (org.tags && org.tags.length > 0) {
     props['Tags'] = { multi_select: org.tags.map((t: string) => ({ name: t })) };
   }
 
-  if (org.total_funding) {
-    props['Total Funding'] = { rich_text: [{ text: { content: org.total_funding } }] };
+  if (org.entry_count !== undefined) {
+    props['Items Sourced'] = { number: org.entry_count };
+  }
+
+  if (org.avg_quality_score !== null && org.avg_quality_score !== undefined) {
+    props['Quality Score'] = { number: Math.round(parseFloat(org.avg_quality_score)) };
+  }
+
+  if (org.last_seen) {
+    props['Last Checked'] = { date: { start: org.last_seen.toISOString?.()?.split('T')[0] || org.last_seen } };
+  }
+
+  if (org.org_type) {
+    props['Type'] = { select: { name: org.org_type } };
+  }
+
+  if (org.source_type) {
+    props['Source Type'] = { select: { name: org.source_type } };
+  }
+
+  if (org.tier) {
+    props['Tier'] = { select: { name: org.tier } };
   }
 
   return props;
