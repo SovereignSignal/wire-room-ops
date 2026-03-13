@@ -64,14 +64,19 @@ export async function checkDuplicate(
   }
 
   // Layer 2: Fuzzy name match
-  const nameResult = await checkNameMatch(
-    pool,
-    entry.name,
-    entry.wire,
-    lookbackDays
-  );
-  if (nameResult.isDuplicate) {
-    return nameResult;
+  // Skip name dedup for auto-generated "Manual: ..." names — these are bare URL
+  // submissions where the name is derived from the domain/path, not real program names.
+  // Dedup for these relies solely on Layer 1 (URL exact match).
+  if (!entry.name.startsWith('Manual:')) {
+    const nameResult = await checkNameMatch(
+      pool,
+      entry.name,
+      entry.wire,
+      lookbackDays
+    );
+    if (nameResult.isDuplicate) {
+      return nameResult;
+    }
   }
 
   // No match found

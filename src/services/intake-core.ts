@@ -220,7 +220,24 @@ function buildName(text: string, url: string | null): string {
   }
   if (url) {
     try {
-      const domain = new URL(url).hostname.replace('www.', '');
+      const parsed = new URL(url);
+      const domain = parsed.hostname.replace('www.', '');
+      // For X/Twitter URLs, include the handle to avoid "Manual: x.com" collisions
+      // e.g. "Manual: x.com/ethereumfndn/status/123..." → unique per tweet
+      if (domain === 'x.com' || domain === 'twitter.com') {
+        const pathParts = parsed.pathname.split('/').filter(Boolean);
+        if (pathParts.length >= 1) {
+          const handle = pathParts[0];
+          const statusId = pathParts.length >= 3 ? pathParts[2].substring(0, 10) : '';
+          return `Manual: x.com/${handle}${statusId ? `/status/${statusId}...` : ''}`;
+        }
+      }
+      // For other URLs, include meaningful path segments for uniqueness
+      const pathSegments = parsed.pathname.split('/').filter(s => s.length > 0);
+      if (pathSegments.length > 0) {
+        const slug = pathSegments.slice(-2).join('/');
+        return `Manual: ${domain}/${slug}`.slice(0, 120);
+      }
       return `Manual: ${domain}`;
     } catch {
       return 'Manual submission';
