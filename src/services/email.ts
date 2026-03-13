@@ -5,14 +5,16 @@ import { ProcessingStats } from '../types';
 import { escapeHtml } from '../utils/html';
 import type { ScanExecutionResult } from '../jobs/scan-execution';
 import { logApiUsage } from './api-usage';
-
-let resend: Resend | null = null;
+import { getCachedProvider } from './api-provider';
 
 function getResend(): Resend {
-  if (!resend) {
-    resend = new Resend(config.email.resendApiKey);
+  // Check provider cache first (Settings > API Providers UI), fall back to env var
+  const provider = getCachedProvider('resend');
+  const apiKey = provider?.api_key || config.email.resendApiKey;
+  if (!apiKey) {
+    throw new Error('Resend API key not configured. Set RESEND_API_KEY or configure via Settings > API Providers.');
   }
-  return resend;
+  return new Resend(apiKey);
 }
 
 async function sendWithTracking(params: Parameters<Resend['emails']['send']>[0]): Promise<void> {

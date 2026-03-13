@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Clock, Mail, Save, Loader2 } from 'lucide-react';
+import { Clock, Mail, Save, Loader2, TestTube } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -42,6 +42,7 @@ export function DailyDigestCard() {
   const [recipients, setRecipients] = useState('');
   const [dirty, setDirty] = useState(false);
   const [sendingDigest, setSendingDigest] = useState(false);
+  const [testingEmail, setTestingEmail] = useState(false);
   const { toast } = useToast();
 
   const loadDigest = useCallback(async () => {
@@ -112,6 +113,23 @@ export function DailyDigestCard() {
       toast({ title: 'Error', description: 'Could not reach server' });
     } finally {
       setSendingDigest(false);
+    }
+  };
+
+  const handleTestEmail = async () => {
+    setTestingEmail(true);
+    try {
+      const res = await fetch('/api/test-alert', { method: 'POST', credentials: 'include' });
+      const data = await res.json() as { success: boolean; message?: string; error?: string };
+      if (res.ok && data.success) {
+        toast({ title: 'Test email sent', description: data.message || 'Check your inbox' });
+      } else {
+        toast({ title: 'Test failed', description: data.error || 'Unknown error' });
+      }
+    } catch {
+      toast({ title: 'Error', description: 'Could not reach server' });
+    } finally {
+      setTestingEmail(false);
     }
   };
 
@@ -225,6 +243,17 @@ export function DailyDigestCard() {
         >
           {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
           {saving ? 'SAVING...' : dirty ? 'SAVE CHANGES' : 'SAVED'}
+        </Button>
+        <Button
+          onClick={handleTestEmail}
+          disabled={testingEmail}
+          variant="outline"
+          size="sm"
+          className="gap-1.5 font-display text-[10px] tracking-wider"
+          title="Send a test email to verify Resend is working"
+        >
+          {testingEmail ? <Loader2 className="w-3 h-3 animate-spin" /> : <TestTube className="w-3 h-3" />}
+          {testingEmail ? 'TESTING...' : 'TEST EMAIL'}
         </Button>
         <Button
           onClick={handleSendDigest}

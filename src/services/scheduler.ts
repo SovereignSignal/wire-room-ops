@@ -336,6 +336,7 @@ function createJobExecutor(schedule: ScheduleConfig) {
 
         const digest = await runDailyDigest(pool);
         const topFinds = digest.totalPendingReview > 0 ? await getTopPendingFinds(pool, 5) : [];
+        console.log(`[Scheduler] Daily digest: hasActivity=${digest.hasActivity}, newUnique=${digest.totalNewUnique}, pending=${digest.totalPendingReview}`);
 
         if (digest.hasActivity) {
           try {
