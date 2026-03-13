@@ -70,6 +70,16 @@ export async function updateEntryWire(id: number | string, wire: string) {
   return res.json();
 }
 
+export async function updateEntryWires(id: number | string, wires: string[]) {
+  const res = await authFetch(`${BASE}/scan/entries/${id}/wire`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ wires }),
+  });
+  if (!res.ok) throw new Error(`Failed to update wires: ${res.status}`);
+  return res.json();
+}
+
 export async function fetchStats() {
   const res = await authFetch(`${BASE}/dashboard/stats`);
   if (!res.ok) throw new Error(`Failed to fetch stats: ${res.status}`);
@@ -85,7 +95,13 @@ export async function fetchFeeds(): Promise<{ key: string; displayName: string }
 export async function fetchWires(): Promise<{ key: string; displayName: string; color?: string }[]> {
   const res = await authFetch(`${BASE}/wires`);
   if (!res.ok) return []; // fail open — return empty so UI degrades gracefully
-  return res.json();
+  const data = await res.json();
+  // Normalize: API may return { wire } or { key } depending on version
+  return data.map((w: any) => ({
+    key: w.key || w.wire,
+    displayName: w.displayName || w.key || w.wire,
+    color: w.color,
+  }));
 }
 
 export async function classifyQueue(wire?: string): Promise<{ classified: number; errors: number; durationMs: number }> {

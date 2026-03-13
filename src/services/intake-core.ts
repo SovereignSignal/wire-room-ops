@@ -11,6 +11,7 @@
 
 import { getPool, getAllFeeds } from '../db';
 import { checkDuplicate, registerSeen } from '../services/dedup';
+import { classifyEntry } from '../services/classifier';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Public types
@@ -243,7 +244,7 @@ async function insertEntry(entry: {
   status?: string;
 }): Promise<number> {
   const pool = getPool();
-  const status = entry.status ?? 'queued'; // Manually curated entries go straight to queued
+  const status = entry.status ?? 'raw'; // Raw entries flow through the classification pipeline
   const res = await pool.query(
     `INSERT INTO scan_entries
      (name, description, source_url, wire, prompt_variant, scan_source, scan_date, status, submitted_by)
@@ -252,6 +253,44 @@ async function insertEntry(entry: {
     [entry.name, entry.description, entry.sourceUrl, entry.wire, entry.scanSource, entry.scanDate, status, entry.submittedBy]
   );
   return res.rows[0].id;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Post-insert classification (fire-and-forget)
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Classify a newly-inserted raw entry and promote it to 'queued'.
+ * Runs async — caller does not wait for completion.
+ */
+async function classifyAndQueue(entryId: number, name: string, description: string, sourceUrl: string, wire: string): Promise<void> {
+  try {
+    const result = await classifyEntry({ name, description, source_url: sourceUrl, wire });
+    const pool = getPool();
+    await pool.query(
+      `UPDATE scan_entries
+       SET quality_score = $1, quality_breakdown = $2, status = 'queued',
+           classification = $3, classification_reason = $4,
+           metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
+           tags = $6
+       WHERE id = $7 AND status = 'raw'`,
+      [
+        result.qualityScore,
+        JSON.stringify({ scoreReason: result.scoreReason }),
+        result.classification,
+        result.reason,
+        JSON.stringify(result.extracted),
+        result.tags,
+        entryId,
+      ]
+    );
+    console.log(`[IntakeCore] Classified entry #${entryId}: ${result.classification} (score: ${result.qualityScore})`);
+  } catch (err) {
+    // Fallback: promote to queued with score 0 so it's still visible
+    console.error(`[IntakeCore] Classification failed for entry #${entryId}, queuing with score 0:`, err);
+    const pool = getPool();
+    await pool.query(`UPDATE scan_entries SET status = 'queued' WHERE id = $1 AND status = 'raw'`, [entryId]);
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -317,6 +356,8 @@ export async function processIntakeMessage(
       } catch (regError) {
         console.error('[IntakeCore] registerSeen failed (non-fatal):', regError);
       }
+      // Fire-and-forget classification so entry gets scored before next intake run
+      setImmediate(() => classifyAndQueue(id, name, text, primaryUrl, wire));
       return {
         status: 'inserted',
         entryId: id,
@@ -357,6 +398,8 @@ export async function processIntakeMessage(
     } catch (regError) {
       console.error('[IntakeCore] registerSeen failed (non-fatal):', regError);
     }
+    // Fire-and-forget classification so entry gets scored before next intake run
+    setImmediate(() => classifyAndQueue(id, name, text, primaryUrl, fallbackWire));
     return {
       status: 'inserted',
       entryId: id,
@@ -400,6 +443,8 @@ export async function completeWireSelection(
     } catch (regError) {
       console.error('[IntakeCore] registerSeen failed (non-fatal):', regError);
     }
+    // Fire-and-forget classification
+    setImmediate(() => classifyAndQueue(id, entry.name, entry.description, entry.sourceUrl, wire));
     return {
       status: 'inserted',
       entryId: id,

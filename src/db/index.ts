@@ -398,6 +398,7 @@ export async function saveScheduleConfig(config: Omit<StoredScheduleConfig, 'id'
 }
 
 export interface WireInfo {
+  key: string;
   wire: string;
   displayName: string;
   entryCount: number;
@@ -444,6 +445,7 @@ export async function getAvailableWires(): Promise<WireInfo[]> {
   const counts = await getEntryCountsByWire();
 
   return feeds.map(f => ({
+    key: f.key,
     wire: f.key,
     displayName: f.displayName,
     entryCount: counts[f.key] || 0,
@@ -885,6 +887,14 @@ export async function ensureScanPromptsTable(): Promise<void> {
   await pool.query(`ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS classification_reason TEXT`);
   await pool.query(`ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_classification ON scan_entries(classification) WHERE status IN ('queued','approved')`);
+
+  // Entity tags migration
+  await pool.query(`ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT '{}'`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_tags ON scan_entries USING GIN(tags)`);
+
+  // Multi-wire support: wires[] stores all applicable wires, wire stays as the primary
+  await pool.query(`ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS wires TEXT[] DEFAULT '{}'`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_wires ON scan_entries USING GIN(wires)`);
 
   console.log('[DB] Scan prompts table ready (Phase 2+3 migrations applied, Gate 2 columns added)');
 }

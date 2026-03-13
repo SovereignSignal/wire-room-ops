@@ -18,6 +18,7 @@ export interface ClassificationResult {
   reason: string;
   qualityScore: number;
   scoreReason: string;
+  tags: string[];
   extracted: {
     amount?: string;
     deadline?: string;
@@ -70,8 +71,10 @@ Score ranges:
 
 Also extract if available: amount, deadline, eligibility, summary.
 
+Also extract entity tags: 1-5 short labels for the organizations, protocols, platforms, or projects specifically named in this entry. Use canonical names (e.g., "Ethereum Foundation" not "EF", "Gitcoin" not "Gitcoin Grants"). Only include entities directly relevant — not generic terms like "blockchain" or "web3". If a specific chain (Ethereum, Solana) is mentioned, include it.
+
 Respond in JSON only, no markdown:
-{"classification":"GRANT","quality_score":72,"score_reason":"Linux Foundation mentorship program — credible org, actionable for OSS contributors, clear structure","reason":"Open application for LFX Mentorship 2026","extracted":{"amount":"$6,000 stipend","deadline":"April 15 2026","eligibility":"Open source contributors","summary":"One sentence."}}`;
+{"classification":"GRANT","quality_score":72,"score_reason":"Linux Foundation mentorship program — credible org, actionable for OSS contributors, clear structure","reason":"Open application for LFX Mentorship 2026","tags":["Linux Foundation","LFX Mentorship"],"extracted":{"amount":"$6,000 stipend","deadline":"April 15 2026","eligibility":"Open source contributors","summary":"One sentence."}}`;
 }
 
 export async function classifyEntry(entry: {
@@ -97,7 +100,7 @@ export async function classifyEntry(entry: {
     body: JSON.stringify({
       model: classifyModel,
       messages: [{ role: 'user', content: prompt }],
-      max_tokens: 300,
+      max_tokens: 400,
       temperature: 0.1,
     }),
   });
@@ -118,7 +121,7 @@ export async function classifyEntry(entry: {
   });
 
   if (!content) {
-    return { classification: 'UNCHECKED', reason: 'empty_response', qualityScore: 0, scoreReason: '', extracted: {} };
+    return { classification: 'UNCHECKED', reason: 'empty_response', qualityScore: 0, scoreReason: '', tags: [], extracted: {} };
   }
 
   try {
@@ -134,11 +137,15 @@ export async function classifyEntry(entry: {
       ? Math.max(0, Math.min(100, Math.round(parsed.quality_score)))
       : 0;
 
+    const rawTags = Array.isArray(parsed.tags) ? parsed.tags : [];
+    const tags = rawTags.filter((t: unknown): t is string => typeof t === 'string' && t.length > 0 && t.length <= 60).slice(0, 5);
+
     return {
       classification,
       reason: String(parsed.reason || ''),
       qualityScore,
       scoreReason: String(parsed.score_reason || ''),
+      tags,
       extracted: {
         amount: parsed.extracted?.amount || undefined,
         deadline: parsed.extracted?.deadline || undefined,
@@ -147,7 +154,7 @@ export async function classifyEntry(entry: {
       },
     };
   } catch {
-    return { classification: 'UNCHECKED', reason: 'parse_error', qualityScore: 0, scoreReason: '', extracted: {} };
+    return { classification: 'UNCHECKED', reason: 'parse_error', qualityScore: 0, scoreReason: '', tags: [], extracted: {} };
   }
 }
 
@@ -179,14 +186,16 @@ export async function classifyBatch(
                classification_reason = $2,
                quality_score = $3,
                quality_breakdown = $4,
-               metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb
-           WHERE id = $6`,
+               metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
+               tags = $6
+           WHERE id = $7`,
           [
             result.classification,
             result.reason,
             result.qualityScore,
             JSON.stringify({ scoreReason: result.scoreReason }),
             JSON.stringify(result.extracted),
+            result.tags,
             entry.id,
           ]
         );
@@ -212,4 +221,94 @@ export async function classifyBatch(
 
   console.log(`[Classifier] Batch complete: ${classified} classified, ${errors} errors`);
   return { classified, errors };
+}
+
+/**
+ * Lightweight batch tag extraction — processes up to 10 entries per Grok call.
+ * Only extracts entity tags, does not re-classify or re-score.
+ */
+export async function tagBatch(
+  entries: Array<{ id: number; name: string; description: string; wire: string }>,
+  pool: Pool,
+  options?: { batchSize?: number; delayMs?: number }
+): Promise<{ tagged: number; errors: number }> {
+  const batchSize = options?.batchSize || 10;
+  const delayMs = options?.delayMs || 500;
+  let tagged = 0;
+  let errors = 0;
+
+  const provider = getCachedProvider('grok');
+  const apiKey = provider?.api_key || config.apis.grok.apiKey;
+  const baseUrl = provider?.base_url || config.apis.grok.baseUrl;
+  const tagModel = 'grok-4.20-beta-0309-non-reasoning';
+
+  for (let i = 0; i < entries.length; i += batchSize) {
+    const chunk = entries.slice(i, i + batchSize);
+
+    const entryLines = chunk.map((e, idx) =>
+      `${idx + 1}. [ID:${e.id}] Name: "${e.name}" | Desc: "${(e.description || '').slice(0, 200)}"`
+    ).join('\n');
+
+    const prompt = `Extract 1-5 entity tags per entry (org names, protocols, platforms, projects). Use canonical names (e.g., "Ethereum Foundation" not "EF"). Only include specifically named entities — not generic terms like "blockchain" or "web3". Return JSON array only, no markdown:\n[{"id":123,"tags":["Gitcoin","Ethereum"]}, ...]\n\n${entryLines}`;
+
+    try {
+      const start = Date.now();
+      const response = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: tagModel,
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 400,
+          temperature: 0.1,
+        }),
+      });
+
+      if (!response.ok) {
+        logApiUsage({ provider: 'grok', model: tagModel, purpose: 'tag-backfill', wire: chunk[0].wire, duration_ms: Date.now() - start, success: false, error_message: `${response.status}` });
+        errors += chunk.length;
+        continue;
+      }
+
+      const data = await response.json() as { choices?: Array<{ message?: { content?: string } }>; usage?: { prompt_tokens?: number; completion_tokens?: number } };
+      const content = data.choices?.[0]?.message?.content;
+
+      logApiUsage({
+        provider: 'grok', model: tagModel, purpose: 'tag-backfill', wire: chunk[0].wire,
+        duration_ms: Date.now() - start,
+        tokens_in: data.usage?.prompt_tokens, tokens_out: data.usage?.completion_tokens,
+      });
+
+      if (!content) {
+        errors += chunk.length;
+        continue;
+      }
+
+      const cleaned = content.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '').trim();
+      const results = JSON.parse(cleaned) as Array<{ id: number; tags: unknown[] }>;
+
+      for (const r of results) {
+        const tags = Array.isArray(r.tags)
+          ? r.tags.filter((t: unknown): t is string => typeof t === 'string' && t.length > 0 && t.length <= 60).slice(0, 5)
+          : [];
+        if (tags.length > 0) {
+          await pool.query(`UPDATE scan_entries SET tags = $1 WHERE id = $2`, [tags, r.id]);
+          tagged++;
+        }
+      }
+    } catch (err) {
+      console.error('[Classifier] Tag batch failed:', err);
+      errors += chunk.length;
+    }
+
+    if (i + batchSize < entries.length) {
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  }
+
+  console.log(`[Classifier] Tag backfill complete: ${tagged} tagged, ${errors} errors`);
+  return { tagged, errors };
 }

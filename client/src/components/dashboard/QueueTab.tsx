@@ -7,7 +7,7 @@ import { FilterBar } from './FilterBar';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Button } from '@/components/ui/button';
 import { ExternalLink, CheckCircle, Archive, ChevronDown } from 'lucide-react';
-import { updateEntryWire, fetchWires } from '@/api';
+import { updateEntryWires, fetchWires } from '@/api';
 
 const classificationStyles: Record<string, string> = {
   GRANT: 'border-green-500/50 text-green-400 bg-green-500/10',
@@ -106,9 +106,15 @@ function ExpandableDescription({ text }: { text: string }) {
   );
 }
 
-function WireSelector({ wire, entryId, onWireChange, availableWires = [] }: { wire: string; entryId: string; onWireChange: (id: string, wire: string) => void; availableWires?: { key: string; displayName: string }[] }) {
-  // Fall back to just showing current wire if no list loaded yet
+function WireSelector({ wire, wires, entryId, onWiresChange, availableWires = [] }: {
+  wire: string;
+  wires?: string[];
+  entryId: string;
+  onWiresChange: (id: string, wires: string[]) => void;
+  availableWires?: { key: string; displayName: string }[];
+}) {
   const options = availableWires.length > 0 ? availableWires.map(w => w.key) : [wire];
+  const selected = (wires && wires.length > 0) ? wires : [wire];
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -121,36 +127,51 @@ function WireSelector({ wire, entryId, onWireChange, availableWires = [] }: { wi
     return () => document.removeEventListener('mousedown', handleClick);
   }, [open]);
 
-  const colorClass = wireColors[wire.toLowerCase()] || 'bg-muted text-muted-foreground border-border hover:bg-muted/80';
+  const toggleWire = (w: string) => {
+    let next: string[];
+    if (selected.includes(w)) {
+      next = selected.filter(s => s !== w);
+      if (next.length === 0) return; // must have at least one
+    } else {
+      next = [...selected, w];
+    }
+    onWiresChange(entryId, next);
+  };
+
+  const primaryColor = wireColors[selected[0]?.toLowerCase()] || 'bg-muted text-muted-foreground border-border hover:bg-muted/80';
 
   return (
     <div ref={ref} className="relative inline-block">
       <button
         onClick={(e) => { e.stopPropagation(); setOpen(!open); }}
-        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-display font-medium border uppercase tracking-wider transition-colors cursor-pointer ${colorClass}`}
+        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-display font-medium border uppercase tracking-wider transition-colors cursor-pointer ${primaryColor}`}
       >
-        {wire}
+        {selected.length > 1 ? `${selected[0]} +${selected.length - 1}` : selected[0]}
         <ChevronDown className="w-2.5 h-2.5 opacity-60" />
       </button>
       {open && (
-        <div className="absolute z-50 mt-1 left-0 bg-card border border-border rounded-md shadow-lg py-1 min-w-[90px]">
-          {options.map(w => (
-            <button
-              key={w}
-              onClick={(e) => {
-                e.stopPropagation();
-                if (w !== wire) onWireChange(entryId, w);
-                setOpen(false);
-              }}
-              className={`w-full text-left px-3 py-1.5 text-[10px] font-display uppercase tracking-wider transition-colors ${
-                w === wire 
-                  ? 'bg-primary/10 text-primary' 
-                  : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
-              }`}
-            >
-              {w}
-            </button>
-          ))}
+        <div className="absolute z-50 mt-1 left-0 bg-card border border-border rounded-md shadow-lg py-1 min-w-[110px]">
+          {options.map(w => {
+            const isSelected = selected.includes(w);
+            return (
+              <button
+                key={w}
+                onClick={(e) => { e.stopPropagation(); toggleWire(w); }}
+                className={`w-full text-left px-3 py-1.5 text-[10px] font-display uppercase tracking-wider transition-colors flex items-center gap-2 ${
+                  isSelected
+                    ? 'bg-primary/10 text-primary'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+                }`}
+              >
+                <span className={`w-3 h-3 rounded-sm border flex items-center justify-center text-[8px] ${
+                  isSelected ? 'bg-primary border-primary text-primary-foreground' : 'border-muted-foreground/40'
+                }`}>
+                  {isSelected && '✓'}
+                </span>
+                {w}
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
@@ -185,12 +206,12 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
     dateStatus: 'all',
   });
 
-  const handleWireChange = async (entryId: string, newWire: string) => {
+  const handleWiresChange = async (entryId: string, newWires: string[]) => {
     try {
-      await updateEntryWire(entryId, newWire);
-      onEntryUpdated?.(entryId, { wire: newWire });
+      await updateEntryWires(entryId, newWires);
+      onEntryUpdated?.(entryId, { wire: newWires[0], wires: newWires });
     } catch (err) {
-      console.error('Failed to update wire:', err);
+      console.error('Failed to update wires:', err);
     }
   };
 
@@ -346,7 +367,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
             {/* Row 2: Badges + Amount/Deadline */}
             <div className="flex items-center gap-1.5 mt-2 flex-wrap">
               <div onClick={(e) => e.stopPropagation()}>
-                <WireSelector wire={entry.wire} entryId={entry.id} onWireChange={handleWireChange} availableWires={availableWires} />
+                <WireSelector wire={entry.wire} wires={entry.wires} entryId={entry.id} onWiresChange={handleWiresChange} availableWires={availableWires} />
               </div>
               <ClassificationBadge classification={entry.classification} />
               <ScoreBadge score={entry.quality_score} />
@@ -356,6 +377,9 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
               {entry.deadline && (
                 <span className="text-[10px] font-mono text-muted-foreground">⏰ {entry.deadline}</span>
               )}
+              {entry.tags && entry.tags.length > 0 && entry.tags.map((tag, i) => (
+                <span key={i} className="text-[10px] px-1.5 py-0.5 rounded-full border border-purple-500/30 text-purple-400 bg-purple-500/10">{tag}</span>
+              ))}
             </div>
 
             {/* Row 3: Action buttons — always visible, full width */}
@@ -423,9 +447,16 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                   {entry.description && (
                     <ExpandableDescription text={entry.description} />
                   )}
+                  {entry.tags && entry.tags.length > 0 && (
+                    <div className="flex gap-1 mt-1 flex-wrap">
+                      {entry.tags.map((tag, i) => (
+                        <span key={i} className="text-[10px] px-1.5 py-0.5 rounded-full border border-purple-500/30 text-purple-400 bg-purple-500/10">{tag}</span>
+                      ))}
+                    </div>
+                  )}
                 </td>
                 <td onClick={(e) => e.stopPropagation()}>
-                  <WireSelector wire={entry.wire} entryId={entry.id} onWireChange={handleWireChange} availableWires={availableWires} />
+                  <WireSelector wire={entry.wire} wires={entry.wires} entryId={entry.id} onWiresChange={handleWiresChange} availableWires={availableWires} />
                 </td>
                 <td>
                   <ClassificationBadge classification={entry.classification} />

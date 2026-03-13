@@ -6,7 +6,8 @@ export interface ScanEntry {
   id: string;
   name: string;
   description: string;
-  wire: string; // vertical/beat
+  wire: string; // primary vertical/beat
+  wires?: string[]; // all applicable wires (multi-pick)
   quality_score: number;
   amount: string;
   deadline: string;
@@ -18,6 +19,7 @@ export interface ScanEntry {
   distribution_channels?: string[];
   classification?: Classification;
   classification_reason?: string;
+  tags?: string[];
   metadata?: {
     amount?: string;
     deadline?: string;

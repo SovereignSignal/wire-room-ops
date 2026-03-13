@@ -125,6 +125,10 @@ export async function syncSummariesToScanEntries(
       const amount = amounts.length > 0 ? amounts[0] : null;
       const deadline = deadlines.length > 0 ? deadlines[0] : null;
 
+      // Extract org/protocol entity tags from tele-sum's entities
+      const orgs = entities.orgs || entities.protocols || [];
+      const tags = Array.isArray(orgs) ? orgs.filter((t: unknown): t is string => typeof t === 'string').slice(0, 5) : [];
+
       const wire = await inferWire(row.title, row.description || '', row.wire);
 
       // Insert as approved scan_entry
@@ -132,8 +136,8 @@ export async function syncSummariesToScanEntries(
         INSERT INTO scan_entries (
           name, description, source_url, amount, deadline,
           wire, prompt_variant, scan_source, scan_date,
-          status, quality_score, created_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, 'N', 'telegram', $7, 'approved', 85, $8)
+          status, quality_score, tags, created_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, 'N', 'telegram', $7, 'approved', 85, $8, $9)
       `, [
         row.title,
         row.description || '',
@@ -142,6 +146,7 @@ export async function syncSummariesToScanEntries(
         deadline,
         wire,
         new Date(row.created_at).toISOString().split('T')[0], // scan_date
+        tags,
         row.created_at, // preserve original timestamp
       ]);
 

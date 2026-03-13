@@ -1740,7 +1740,7 @@ app.post('/api/scan/entries/bulk-action', requireAuth, async (req: Request, res:
     const result = await pool.query(
       `UPDATE scan_entries SET status = $1, updated_at = NOW()
        WHERE id = ANY($2)
-       RETURNING id, status, wire, name, description, enriched_summary, quality_score, amount, deadline, source_url, org_id, scan_date`,
+       RETURNING id, status, wire, name, description, enriched_summary, quality_score, amount, deadline, source_url, org_id, scan_date, tags`,
       [newStatus, entryIds]
     );
 
@@ -1760,6 +1760,7 @@ app.post('/api/scan/entries/bulk-action', requireAuth, async (req: Request, res:
               amounts: row.amount ? [row.amount] : [],
               deadlines: row.deadline ? [row.deadline] : [],
               source_url: row.source_url,
+              orgs: row.tags || [],
             },
           });
           summaryIds[row.id] = sid;
@@ -1859,7 +1860,7 @@ app.post('/api/scan/entries/:id/action', requireAuth, async (req: Request, res: 
 
     const result = await pool.query(
       `UPDATE scan_entries SET status = $1, updated_at = NOW() WHERE id = $2
-       RETURNING id, status, wire, name, description, enriched_summary, quality_score, amount, deadline, source_url, org_id, scan_date`,
+       RETURNING id, status, wire, name, description, enriched_summary, quality_score, amount, deadline, source_url, org_id, scan_date, tags`,
       [newStatus, entryId]
     );
 
@@ -1885,6 +1886,7 @@ app.post('/api/scan/entries/:id/action', requireAuth, async (req: Request, res: 
             amounts: row.amount ? [row.amount] : [],
             deadlines: row.deadline ? [row.deadline] : [],
             source_url: row.source_url,
+            orgs: row.tags || [],
           },
         });
       } catch (err) {
@@ -2141,25 +2143,30 @@ app.patch('/api/scan/entries/:id/wire', requireAuth, async (req: Request, res: R
     return;
   }
 
-  const { wire } = req.body;
-  if (!wire || typeof wire !== 'string') {
-    res.status(400).json({ error: 'Missing or invalid wire' });
+  // Accept either { wire: 'crypto' } (legacy) or { wires: ['crypto', 'ai'] } (multi-pick)
+  const { wire, wires } = req.body;
+  const wireArray: string[] = Array.isArray(wires) ? wires.filter((w: unknown) => typeof w === 'string') : (wire ? [wire] : []);
+
+  if (wireArray.length === 0) {
+    res.status(400).json({ error: 'At least one wire is required' });
     return;
   }
 
   try {
-    // Validate against active wires from DB
+    // Validate all wires against active feeds
     const activeWires = await getAvailableWires();
-    const validWireKeys = activeWires.map((w: any) => w.key || w);
-    if (!validWireKeys.includes(wire)) {
-      res.status(400).json({ error: `Invalid wire "${wire}". Must be one of: ${validWireKeys.join(', ')}` });
+    const validWireKeys = activeWires.map((w: any) => w.key || w.wire);
+    const invalid = wireArray.filter(w => !validWireKeys.includes(w));
+    if (invalid.length > 0) {
+      res.status(400).json({ error: `Invalid wire(s): ${invalid.join(', ')}. Must be one of: ${validWireKeys.join(', ')}` });
       return;
     }
 
+    const primaryWire = wireArray[0];
     const pool = getPool();
     const result = await pool.query(
-      `UPDATE scan_entries SET wire = $1, updated_at = NOW() WHERE id = $2 RETURNING id, wire`,
-      [wire, entryId]
+      `UPDATE scan_entries SET wire = $1, wires = $2, updated_at = NOW() WHERE id = $3 RETURNING id, wire, wires`,
+      [primaryWire, wireArray, entryId]
     );
 
     if (result.rows.length === 0) {
@@ -2167,7 +2174,7 @@ app.patch('/api/scan/entries/:id/wire', requireAuth, async (req: Request, res: R
       return;
     }
 
-    res.json({ success: true, wire: result.rows[0].wire });
+    res.json({ success: true, wire: result.rows[0].wire, wires: result.rows[0].wires });
   } catch (error) {
     console.error('Failed to update entry wire:', error);
     res.status(500).json({ error: 'Failed to update wire' });
@@ -2757,6 +2764,41 @@ app.post('/api/admin/classify-backfill', requireAuth, async (req: Request, res: 
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';
     console.error('[ClassifyBackfill] Failed:', error);
+    res.status(500).json({ error: errorMsg });
+  }
+});
+
+// API: Backfill entity tags for entries missing them
+app.post('/api/admin/tag-backfill', requireAuth, async (req: Request, res: Response) => {
+  if (!rateLimit('tag-backfill', 3, 5 * 60 * 1000)) {
+    res.status(429).json({ error: 'Tag backfill recently run. Please wait a few minutes.' });
+    return;
+  }
+
+  try {
+    const pool = getPool();
+    const limit = Math.min(Math.max(Number(req.body?.limit) || 100, 1), 500);
+
+    const result = await pool.query(
+      `SELECT id, name, description, wire FROM scan_entries
+       WHERE (tags IS NULL OR tags = '{}') AND status IN ('queued', 'approved')
+       ORDER BY status DESC, created_at DESC
+       LIMIT $1`,
+      [limit]
+    );
+
+    if (result.rows.length === 0) {
+      res.json({ processed: 0, tagged: 0, errors: 0 });
+      return;
+    }
+
+    const { tagBatch } = await import('./services/classifier');
+    const stats = await tagBatch(result.rows, pool);
+
+    res.json({ processed: result.rows.length, ...stats });
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[TagBackfill] Failed:', error);
     res.status(500).json({ error: errorMsg });
   }
 });

@@ -277,14 +277,16 @@ export async function runDailyIntake(
         `UPDATE scan_entries
          SET quality_score = $1, quality_breakdown = $2, status = 'queued',
              classification = $3, classification_reason = $4,
-             metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb
-         WHERE id = $6`,
+             metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
+             tags = $6
+         WHERE id = $7`,
         [
           qualityScore,
           JSON.stringify({ scoreReason: classResult.scoreReason }),
           classResult.classification,
           classResult.reason,
           JSON.stringify(classResult.extracted),
+          classResult.tags,
           entryId,
         ]
       );
@@ -329,14 +331,16 @@ export async function runDailyIntake(
           `UPDATE scan_entries
            SET quality_score = $1, quality_breakdown = $2,
                classification = $3, classification_reason = $4,
-               metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb
-           WHERE id = $6`,
+               metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
+               tags = $6
+           WHERE id = $7`,
           [
             classResult.qualityScore,
             JSON.stringify({ scoreReason: classResult.scoreReason }),
             classResult.classification,
             classResult.reason,
             JSON.stringify(classResult.extracted),
+            classResult.tags,
             entryId,
           ]
         );
