@@ -464,10 +464,11 @@ function parseXPostFormat(text: string): RawScanResult[] {
     for (let i = 1; i < lines.length; i++) {
       const line = lines[i];
 
-      // X.com URL (standalone or as markdown link)
-      const urlMatch = line.match(/https?:\/\/(x\.com|twitter\.com)\/\S+/);
+      // URL line (standalone or as markdown link) — match any URL, not just X.com
+      const urlMatch = line.match(/https?:\/\/\S+/);
       if (urlMatch && line.replace(urlMatch[0], '').trim().length < 5) {
-        sourceUrl = urlMatch[0].replace(/[)\].,;:]+$/, '');
+        const u = urlMatch[0].replace(/[)\].,;:]+$/, '');
+        if (!sourceUrl || u.match(/x\.com|twitter\.com/)) sourceUrl = u;
         continue;
       }
 
@@ -496,6 +497,17 @@ function parseXPostFormat(text: string): RawScanResult[] {
         .replace(/\s*[\[\(].+$/, '')  // strip anything in brackets after date
         .trim();
       deadline = normalizeDeadline(cleaned);
+    }
+
+    // Fallback: extract URL from body lines if none found on standalone URL line
+    if (!sourceUrl) {
+      for (const bl of bodyLines) {
+        const embedded = bl.match(/(https?:\/\/\S+)/);
+        if (embedded) {
+          const u = embedded[1].replace(/[)\].,;:]+$/, '');
+          if (isUsefulUrl(u)) { sourceUrl = u; break; }
+        }
+      }
     }
 
     results.push({
