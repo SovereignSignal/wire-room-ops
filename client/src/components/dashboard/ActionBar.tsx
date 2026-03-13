@@ -1,14 +1,15 @@
 import { Button } from '@/components/ui/button';
-import { CheckCircle, Archive, X } from 'lucide-react';
+import { CheckCircle, Archive, X, EyeOff } from 'lucide-react';
 
 interface ActionBarProps {
   selectedCount: number;
   onApprove: () => void;
+  onQuietApprove: () => void;
   onArchive: () => void;
   onClear: () => void;
 }
 
-export function ActionBar({ selectedCount, onApprove, onArchive, onClear }: ActionBarProps) {
+export function ActionBar({ selectedCount, onApprove, onQuietApprove, onArchive, onClear }: ActionBarProps) {
   if (selectedCount === 0) return null;
 
   return (
@@ -28,6 +29,15 @@ export function ActionBar({ selectedCount, onApprove, onArchive, onClear }: Acti
         >
           <CheckCircle className="w-3.5 h-3.5" />
           APPROVE
+        </Button>
+        <Button
+          size="sm"
+          onClick={onQuietApprove}
+          title="Approve without distributing"
+          className="gap-1.5 bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 font-display text-[10px] tracking-wider"
+        >
+          <EyeOff className="w-3.5 h-3.5" />
+          QUIET
         </Button>
         <Button
           size="sm"

@@ -159,6 +159,7 @@ export async function searchForumDiscussions(
           sourceUrl: item.url,
           amount: extractAmount(combinedText),
           deadline: null,
+          sourcePublishedAt: item.createdAt || null,
         });
       }
 

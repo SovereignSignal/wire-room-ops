@@ -26,6 +26,8 @@ export interface ScanEntry {
     eligibility?: string;
     summary?: string;
   };
+  source_published_at?: string | null;
+  distributable?: boolean;
 }
 
 export interface IntakeRun {

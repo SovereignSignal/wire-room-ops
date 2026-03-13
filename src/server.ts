@@ -1681,7 +1681,7 @@ Write a 2-4 sentence newsletter summary. Lead with the organization/program name
 
 // API: Bulk action on multiple entries (approve/decline/reviewlater/restore)
 app.post('/api/scan/entries/bulk-action', requireAuth, async (req: Request, res: Response) => {
-  const { ids, action } = req.body;
+  const { ids, action, quiet } = req.body;
 
   if (!Array.isArray(ids) || ids.length === 0) {
     res.status(400).json({ error: 'ids must be a non-empty array' });
@@ -1745,12 +1745,13 @@ app.post('/api/scan/entries/bulk-action', requireAuth, async (req: Request, res:
       }
     }
 
-    // Bulk update status
+    // Bulk update status (+ distributable flag on quiet approve)
+    const distributable = quiet ? false : true;
     const result = await pool.query(
-      `UPDATE scan_entries SET status = $1, updated_at = NOW()
-       WHERE id = ANY($2)
+      `UPDATE scan_entries SET status = $1, distributable = $2, updated_at = NOW()
+       WHERE id = ANY($3)
        RETURNING id, status, wire, name, description, enriched_summary, quality_score, amount, deadline, source_url, org_id, scan_date, tags`,
-      [newStatus, entryIds]
+      [newStatus, distributable, entryIds]
     );
 
     const updated = result.rows;
@@ -1777,12 +1778,14 @@ app.post('/api/scan/entries/bulk-action', requireAuth, async (req: Request, res:
           console.error(`[BulkApprove] Failed to write summary for entry ${row.id}:`, err);
         }
 
-        // Fire-and-forget distribution per entry
-        setImmediate(() => {
-          distributeEntry(row.id, row.wire).catch(err => {
-            console.error(`[Distribution] Auto-distribute after bulk approve failed for entry ${row.id}:`, err);
+        // Fire-and-forget distribution per entry (skip if quiet approve)
+        if (!quiet) {
+          setImmediate(() => {
+            distributeEntry(row.id, row.wire).catch(err => {
+              console.error(`[Distribution] Auto-distribute after bulk approve failed for entry ${row.id}:`, err);
+            });
           });
-        });
+        }
 
         // Fire-and-forget auto-summarize if enriched_summary is missing/thin
         if (!row.enriched_summary || row.enriched_summary.length < 60) {
@@ -1828,7 +1831,7 @@ app.post('/api/scan/entries/:id/action', requireAuth, async (req: Request, res: 
     return;
   }
 
-  const { action } = req.body;
+  const { action, quiet } = req.body;
   const actionMap: Record<string, string> = {
     approve: 'approved',
     decline: 'declined',
@@ -1872,10 +1875,11 @@ app.post('/api/scan/entries/:id/action', requireAuth, async (req: Request, res: 
       }
     }
 
+    const distributable = quiet ? false : true;
     const result = await pool.query(
-      `UPDATE scan_entries SET status = $1, updated_at = NOW() WHERE id = $2
+      `UPDATE scan_entries SET status = $1, distributable = $2, updated_at = NOW() WHERE id = $3
        RETURNING id, status, wire, name, description, enriched_summary, quality_score, amount, deadline, source_url, org_id, scan_date, tags`,
-      [newStatus, entryId]
+      [newStatus, distributable, entryId]
     );
 
     if (result.rows.length === 0) {
@@ -1907,12 +1911,14 @@ app.post('/api/scan/entries/:id/action', requireAuth, async (req: Request, res: 
         console.error(`[Approve] Failed to write summary for entry ${entryId}:`, err);
       }
 
-      // Fire-and-forget distribution
-      setImmediate(() => {
-        distributeEntry(entryId, row.wire).catch(err => {
-          console.error(`[Distribution] Auto-distribute after approve failed for entry ${entryId}:`, err);
+      // Fire-and-forget distribution (skip if quiet approve)
+      if (!quiet) {
+        setImmediate(() => {
+          distributeEntry(entryId, row.wire).catch(err => {
+            console.error(`[Distribution] Auto-distribute after approve failed for entry ${entryId}:`, err);
+          });
         });
-      });
+      }
 
       // Fire-and-forget auto-summarize if enriched_summary is missing/thin
       if (!row.enriched_summary || row.enriched_summary.length < 60) {

@@ -377,7 +377,7 @@ export async function distributeEntry(entryId: number, wire: string): Promise<Di
 
   const pool = getPool();
   const entryResult = await pool.query(
-    `SELECT * FROM scan_entries WHERE id = $1 AND status = 'approved'`,
+    `SELECT * FROM scan_entries WHERE id = $1 AND status = 'approved' AND distributable IS NOT FALSE`,
     [entryId]
   );
 

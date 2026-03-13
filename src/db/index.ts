@@ -903,6 +903,10 @@ export async function ensureScanPromptsTable(): Promise<void> {
   await pool.query(`ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS wires TEXT[] DEFAULT '{}'`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_scan_entries_wires ON scan_entries USING GIN(wires)`);
 
+  // Source publish date + quiet approve support
+  await pool.query(`ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS source_published_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS distributable BOOLEAN DEFAULT TRUE`);
+
   // Data migration: set response_format on prompts that have it NULL
   const defaultResponseFormat = `For each result, use this exact format:
 
@@ -1439,6 +1443,7 @@ export async function getUndistributedEntries(
     FROM scan_entries se
     WHERE se.wire = $1
       AND se.status = 'approved'
+      AND se.distributable IS NOT FALSE
       AND NOT EXISTS (
         SELECT 1 FROM distribution_logs dl
         WHERE dl.entry_id = se.id

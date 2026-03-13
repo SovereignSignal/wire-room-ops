@@ -6,7 +6,7 @@ import { ActionBar } from './ActionBar';
 import { FilterBar } from './FilterBar';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Button } from '@/components/ui/button';
-import { ExternalLink, CheckCircle, Archive, ChevronDown } from 'lucide-react';
+import { ExternalLink, CheckCircle, Archive, ChevronDown, EyeOff } from 'lucide-react';
 import { updateEntryWires, fetchWires } from '@/api';
 
 const classificationStyles: Record<string, string> = {
@@ -184,11 +184,12 @@ interface QueueTabProps {
   onUpdateStatus: (ids: string[], status: ScanEntry['status']) => void;
   onViewDetails: (entry: ScanEntry) => void;
   onSingleAction?: (id: string, status: ScanEntry['status']) => void;
+  onQuietApprove: (ids: string[]) => void;
   onEntryUpdated?: (id: string, updates: Partial<ScanEntry>) => void;
   onRefresh?: () => void;
 }
 
-export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, onSingleAction, onEntryUpdated, onRefresh }: QueueTabProps) {
+export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, onSingleAction, onQuietApprove, onEntryUpdated, onRefresh }: QueueTabProps) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [wireFilter, setWireFilter] = useState<string | null>(null);
   const [classificationFilter, setClassificationFilter] = useState<string | null>(null);
@@ -380,6 +381,11 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
               {entry.tags && entry.tags.length > 0 && entry.tags.map((tag, i) => (
                 <span key={i} className="text-[10px] px-1.5 py-0.5 rounded-full border border-purple-500/30 text-purple-400 bg-purple-500/10">{tag}</span>
               ))}
+              {entry.source_published_at && (
+                <span className="text-[9px] font-mono text-muted-foreground/70">
+                  src: {new Date(entry.source_published_at).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}
+                </span>
+              )}
             </div>
 
             {/* Row 3: Action buttons — always visible, full width */}
@@ -390,7 +396,16 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                 className="flex-1 gap-1.5 bg-status-success/20 text-status-success border border-status-success/30 hover:bg-status-success/30 font-display text-[11px] tracking-wider h-9"
               >
                 <CheckCircle className="w-4 h-4 shrink-0" />
-                APPROVE
+                OK
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => onQuietApprove([entry.id])}
+                title="Approve without distributing"
+                className="flex-1 gap-1.5 bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 font-display text-[11px] tracking-wider h-9"
+              >
+                <EyeOff className="w-4 h-4 shrink-0" />
+                Q
               </Button>
               <Button
                 size="sm"
@@ -454,6 +469,11 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                       ))}
                     </div>
                   )}
+                  {entry.source_published_at && (
+                    <span className="text-[9px] font-mono text-muted-foreground/70 mt-0.5 inline-block">
+                      src: {new Date(entry.source_published_at).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}
+                    </span>
+                  )}
                 </td>
                 <td onClick={(e) => e.stopPropagation()}>
                   <WireSelector wire={entry.wire} wires={entry.wires} entryId={entry.id} onWiresChange={handleWiresChange} availableWires={availableWires} />
@@ -491,7 +511,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                   })()}
                 </td>
                 <td onClick={(e) => e.stopPropagation()}>
-                  <div className="flex items-center gap-2 whitespace-nowrap">
+                  <div className="flex items-center gap-1.5 whitespace-nowrap">
                     <Button
                       size="sm"
                       onClick={() => (onSingleAction ?? ((id, s) => onUpdateStatus([id], s)))(entry.id, 'approved')}
@@ -499,6 +519,15 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                     >
                       <CheckCircle className="w-3 h-3 shrink-0" />
                       OK
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={() => onQuietApprove([entry.id])}
+                      title="Approve without distributing"
+                      className="gap-1 bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 font-display text-[10px] tracking-wider h-7 px-2"
+                    >
+                      <EyeOff className="w-3 h-3 shrink-0" />
+                      Q
                     </Button>
                     <Button
                       size="sm"
@@ -527,6 +556,10 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
       <ActionBar
         selectedCount={selectedIds.size}
         onApprove={() => handleAction('approved')}
+        onQuietApprove={() => {
+          onQuietApprove(Array.from(selectedIds));
+          setSelectedIds(new Set());
+        }}
         onArchive={() => handleAction('archived')}
         onClear={() => setSelectedIds(new Set())}
       />

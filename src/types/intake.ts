@@ -40,6 +40,7 @@ export interface RawScanResult {
   deadline: string | null;    // "Rolling", "None listed", or a date string
   sourceUrl: string;          // The X post URL or web page URL
   amount: string | null;      // Dollar amount if mentioned, raw string
+  sourcePublishedAt?: string | null;  // ISO date from source (e.g. forum post date)
 }
 
 /**
@@ -78,6 +79,8 @@ export interface ScanEntry {
   duplicateOfId: number | null;     // Points to the original if this is a dupe
   duplicateReason: string | null;   // Why it was flagged as duplicate
   submittedBy: string | null;       // Who submitted (e.g. 'telegram:12345', 'email:user@example.com')
+  sourcePublishedAt: Date | null;   // When the source was originally published
+  distributable: boolean;           // Whether this entry should be included in distribution
   createdAt: Date;
   updatedAt: Date;
 }

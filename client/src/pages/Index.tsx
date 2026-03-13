@@ -9,7 +9,7 @@ import { SettingsTab } from '@/components/dashboard/SettingsTab';
 // ReviewTab removed — approve/decline now inline in QueueTab
 import { Starfield } from '@/components/dashboard/Starfield';
 import { EntryDetailsSheet } from '@/components/dashboard/EntryDetailsSheet';
-import { fetchEntries, updateEntryStatus, bulkUpdateEntryStatus, fetchStats, fetchFeeds, fetchWireCounts } from '@/api';
+import { fetchEntries, updateEntryStatus, bulkUpdateEntryStatus, quietApproveEntry, bulkQuietApprove, fetchStats, fetchFeeds, fetchWireCounts } from '@/api';
 import { ScanEntry, VerticalStats, WireCounts } from '@/types';
 import { useToast } from '@/hooks/use-toast';
 
@@ -136,6 +136,24 @@ const Index = () => {
     }
   };
 
+  const handleQuietApprove = async (ids: string[]) => {
+    try {
+      if (ids.length === 1) {
+        await quietApproveEntry(ids[0]);
+      } else {
+        await bulkQuietApprove(ids);
+      }
+      toast({
+        title: `${ids.length} item${ids.length > 1 ? 's' : ''} quietly approved`,
+        description: 'Added to database without distribution',
+      });
+      await loadData();
+    } catch (err) {
+      console.error('Failed to quiet approve:', err);
+      toast({ title: 'Error', description: 'Failed to quiet approve entries' });
+    }
+  };
+
   if (loading) {
     return (
       <>
@@ -178,6 +196,7 @@ const Index = () => {
             onUpdateStatus={handleUpdateStatus}
             onViewDetails={setSelectedEntry}
             onSingleAction={(id, status) => handleUpdateStatus([id], status)}
+            onQuietApprove={handleQuietApprove}
             onEntryUpdated={(id, updates) => {
               setQueueEntries(prev => prev.map(e => e.id === id ? { ...e, ...updates } : e));
             }}

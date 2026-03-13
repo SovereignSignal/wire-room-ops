@@ -90,7 +90,7 @@ export async function runDailyIntake(
 
   // Flatten all results from all submissions
   const allResults: Array<{
-    result: { name: string; description: string; deadline: string | null; sourceUrl: string; amount: string | null };
+    result: { name: string; description: string; deadline: string | null; sourceUrl: string; amount: string | null; sourcePublishedAt?: string | null };
     wire: string;
     promptVariant: PromptVariant;
     scanSource: ScanSource;
@@ -121,7 +121,7 @@ export async function runDailyIntake(
 
   // Build batched multi-row INSERT (chunks of 50 to stay within param limits)
   const BATCH_SIZE = 50;
-  const COLS_PER_ROW = 14;
+  const COLS_PER_ROW = 15;
 
   for (let batchStart = 0; batchStart < allResults.length; batchStart += BATCH_SIZE) {
     const batch = allResults.slice(batchStart, batchStart + BATCH_SIZE);
@@ -135,7 +135,7 @@ export async function runDailyIntake(
       const offset = i * COLS_PER_ROW;
 
       valueClauses.push(
-        `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8}, $${offset + 9}, $${offset + 10}, $${offset + 11}, $${offset + 12}, 'raw', $${offset + 13}, $${offset + 14})`
+        `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8}, $${offset + 9}, $${offset + 10}, $${offset + 11}, $${offset + 12}, 'raw', $${offset + 13}, $${offset + 14}, $${offset + 15})`
       );
       values.push(
         item.result.name,
@@ -152,13 +152,14 @@ export async function runDailyIntake(
         item.scanDate,
         item.promptId || null,
         item.submittedBy || null,
+        item.result.sourcePublishedAt || null,
       );
     }
 
     const res = await pool.query(
       `INSERT INTO scan_entries
        (name, description, source_url, amount, amount_numeric, amount_currency,
-        deadline, deadline_parsed, wire, prompt_variant, scan_source, scan_date, status, prompt_id, submitted_by)
+        deadline, deadline_parsed, wire, prompt_variant, scan_source, scan_date, status, prompt_id, submitted_by, source_published_at)
        VALUES ${valueClauses.join(', ')}
        RETURNING id`,
       values

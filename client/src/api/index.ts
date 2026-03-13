@@ -60,6 +60,26 @@ export async function bulkUpdateEntryStatus(ids: (number | string)[], status: st
   return res.json();
 }
 
+export async function quietApproveEntry(id: number | string) {
+  const res = await authFetch(`${BASE}/scan/entries/${id}/action`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: 'approve', quiet: true }),
+  });
+  if (!res.ok) throw new Error(`Failed to quiet approve entry: ${res.status}`);
+  return res.json();
+}
+
+export async function bulkQuietApprove(ids: (number | string)[]) {
+  const res = await authFetch(`${BASE}/scan/entries/bulk-action`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids, action: 'approve', quiet: true }),
+  });
+  if (!res.ok) throw new Error(`Failed to bulk quiet approve: ${res.status}`);
+  return res.json();
+}
+
 export async function updateEntryWire(id: number | string, wire: string) {
   const res = await authFetch(`${BASE}/scan/entries/${id}/wire`, {
     method: "PATCH",
