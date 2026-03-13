@@ -1,14 +1,27 @@
-import { ReactNode } from 'react';
+import { ReactNode, useState, useEffect } from 'react';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ThemeToggle } from './ThemeToggle';
-import { LogOut } from 'lucide-react';
+import { LogOut, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+
+function formatTimeAgo(date: Date): string {
+  const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (seconds < 10) return 'just now';
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ago`;
+}
 
 interface DashboardLayoutProps {
   children: ReactNode;
   activeTab: string;
   onTabChange: (tab: string) => void;
   queueCount: number;
+  lastUpdated: Date | null;
+  refreshing: boolean;
+  onRefresh: () => void;
 }
 
 async function handleLogout() {
@@ -16,12 +29,22 @@ async function handleLogout() {
   window.location.href = '/';
 }
 
-export function DashboardLayout({ 
-  children, 
-  activeTab, 
+export function DashboardLayout({
+  children,
+  activeTab,
   onTabChange,
   queueCount,
+  lastUpdated,
+  refreshing,
+  onRefresh,
 }: DashboardLayoutProps) {
+  // Re-render the "ago" label every 15s so it stays current
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setTick(n => n + 1), 15_000);
+    return () => clearInterval(t);
+  }, []);
+
   return (
     <div className="min-h-screen">
       {/* Header */}
@@ -46,6 +69,19 @@ export function DashboardLayout({
                 <span className="w-2 h-2 rounded-full bg-status-success signal-pulse" />
                 <span className="text-xs text-muted-foreground font-mono">ARRAY ONLINE</span>
               </div>
+              <button
+                onClick={onRefresh}
+                disabled={refreshing}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[10px] sm:text-xs font-mono text-muted-foreground hover:text-foreground hover:bg-primary/10 border border-transparent hover:border-primary/30 transition-all disabled:opacity-50"
+                title={lastUpdated ? `Last synced: ${lastUpdated.toLocaleTimeString()}` : 'Refresh data'}
+              >
+                <RefreshCw className={`w-3 h-3 sm:w-3.5 sm:h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+                {lastUpdated ? (
+                  <span className="hidden sm:inline">{formatTimeAgo(lastUpdated)}</span>
+                ) : (
+                  <span className="hidden sm:inline">SYNC</span>
+                )}
+              </button>
               <ThemeToggle />
               <Button
                 variant="ghost"

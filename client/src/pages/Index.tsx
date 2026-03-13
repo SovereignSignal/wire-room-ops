@@ -22,6 +22,8 @@ const Index = () => {
   const [verticals, setVerticals] = useState<string[]>([]);
   const [selectedEntry, setSelectedEntry] = useState<ScanEntry | null>(null);
   const [loading, setLoading] = useState(true);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const { toast } = useToast();
 
   const loadData = useCallback(async () => {
@@ -86,13 +88,20 @@ const Index = () => {
       if (failedCount > 0) {
         toast({ title: 'Warning', description: `${failedCount} data source(s) failed to load` });
       }
+      setLastUpdated(new Date());
     } catch (err) {
       console.error('Failed to load data:', err);
       toast({ title: 'Error', description: 'Failed to load dashboard data' });
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, [toast]);
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await loadData();
+  }, [loadData]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -100,7 +109,10 @@ const Index = () => {
   useEffect(() => {
     const interval = setInterval(() => {
       fetchEntries({ status: 'queued' })
-        .then(entries => setQueueEntries(entries))
+        .then(entries => {
+          setQueueEntries(entries);
+          setLastUpdated(new Date());
+        })
         .catch(() => {/* silent — stale data is fine */});
     }, 60_000);
     return () => clearInterval(interval);
@@ -147,6 +159,9 @@ const Index = () => {
         activeTab={activeTab}
         onTabChange={setActiveTab}
         queueCount={queueEntries.length}
+        lastUpdated={lastUpdated}
+        refreshing={refreshing}
+        onRefresh={handleRefresh}
       >
         {activeTab === 'overview' && (
           <OverviewTab
