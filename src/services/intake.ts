@@ -175,11 +175,14 @@ function parseStructuredText(text: string): RawScanResult[] {
   let currentEntry: Partial<RawScanResult> | null = null;
 
   for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i].trim();
     // Strip leading markdown heading markers (### 1. → 1.)
-    const line = lines[i].trim().replace(/^#{1,4}\s+/, '');
+    const wasHeading = /^#{1,4}\s+/.test(rawLine);
+    const line = rawLine.replace(/^#{1,4}\s+/, '');
 
     // Match entry header: "1. **Program Name** — Description" or "**[Org] — Name**"
     // Also handles "**Org — Program Name**" (separator inside bold)
+    // Also handles bare heading lines: "### Name (details)" from x_search output
     const headerMatch = line.match(
       /^\d+\.\s+\*\*(.+?)\*\*\s*[—\-–:]\s*(.+)/
     ) || line.match(
@@ -193,6 +196,14 @@ function parseStructuredText(text: string): RawScanResult[] {
         if (inner.search(/\s*[—\-–]\s+/) > 0) {
           return [line, inner, ''];
         }
+      }
+      // Handle bare heading lines: "### Name — Desc" or "### Name (details)"
+      // Only treat as header if original line was a markdown heading
+      if (wasHeading && line.length > 3 && line.length < 200) {
+        const sepMatch = line.match(/^(.+?)\s*[—\-–:]\s+(.+)/);
+        if (sepMatch) return [line, sepMatch[1], sepMatch[2]];
+        // Bare heading with no separator — use whole line as name
+        return [line, line, ''];
       }
       return null;
     })();
