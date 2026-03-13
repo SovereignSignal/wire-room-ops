@@ -427,6 +427,40 @@ export async function deleteScanPrompt(id: string): Promise<void> {
   if (!res.ok) throw new Error(`Failed to delete prompt: ${res.status}`);
 }
 
+// --- Forum Scan API ---
+
+export async function runForumScan(wire?: string): Promise<{ jobId: string }> {
+  const res = await authFetch(`${BASE}/forum/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(wire ? { wire } : {}),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `Forum scan failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+export function subscribeToJob(jobId: string, onUpdate: (data: any) => void, onDone: () => void): () => void {
+  const es = new EventSource(`${BASE}/job/${jobId}/progress`);
+  es.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      onUpdate(data);
+      if (data.status === 'completed' || data.status === 'failed') {
+        es.close();
+        onDone();
+      }
+    } catch { /* ignore parse errors */ }
+  };
+  es.onerror = () => {
+    es.close();
+    onDone();
+  };
+  return () => es.close();
+}
+
 export async function testScanPrompt(id: string): Promise<{
   success: boolean;
   content: string;

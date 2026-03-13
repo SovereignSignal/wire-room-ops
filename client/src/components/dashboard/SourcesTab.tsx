@@ -1,7 +1,9 @@
+import { useState } from 'react';
 import { VerticalStats, WireCounts } from '@/types';
-import { FileStack, Copy, TrendingUp, Wifi, AlertTriangle, Star, ArrowRight } from 'lucide-react';
+import { FileStack, Copy, TrendingUp, Wifi, AlertTriangle, Star, ArrowRight, Search, Loader2 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { Button } from '@/components/ui/button';
+import { runForumScan, subscribeToJob } from '@/api';
 
 interface SourcesTabProps {
   stats: VerticalStats[];
@@ -31,6 +33,42 @@ function qualityConfig(score: number): { color: string; label: string; bg: strin
 }
 
 export function SourcesTab({ stats, wireCounts, onNavigateToQueue }: SourcesTabProps) {
+  const [forumStatus, setForumStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
+  const [forumProgress, setForumProgress] = useState('');
+  const [forumResult, setForumResult] = useState('');
+
+  const handleForumScan = async () => {
+    setForumStatus('running');
+    setForumProgress('Starting forum scan...');
+    setForumResult('');
+    try {
+      const { jobId } = await runForumScan();
+      subscribeToJob(
+        jobId,
+        (data) => {
+          if (data.message) setForumProgress(data.message);
+          if (data.status === 'completed') {
+            const r = data.result;
+            setForumResult(
+              r ? `${r.totalResults} found, ${r.intakeSummary?.newUnique ?? 0} unique, ${r.intakeSummary?.highQualityCount ?? 0} high quality` : 'Complete'
+            );
+            setForumStatus('done');
+          }
+          if (data.status === 'failed') {
+            setForumResult(data.error || 'Scan failed');
+            setForumStatus('error');
+          }
+        },
+        () => {
+          if (forumStatus === 'running') setForumStatus('done');
+        }
+      );
+    } catch (err: any) {
+      setForumResult(err.message || 'Failed to start');
+      setForumStatus('error');
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -170,6 +208,48 @@ export function SourcesTab({ stats, wireCounts, onNavigateToQueue }: SourcesTabP
         })}
 
 
+      </div>
+
+      {/* Forum Scan */}
+      <div className="stat-card">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded bg-primary/10 border border-primary/20 flex items-center justify-center">
+              <Search className="w-4 h-4 text-primary" />
+            </div>
+            <div>
+              <h3 className="font-display font-semibold text-sm tracking-wider uppercase">Forum Scan</h3>
+              <p className="text-[10px] text-muted-foreground font-mono">
+                discuss.watch — 150+ Discourse forums
+              </p>
+            </div>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleForumScan}
+            disabled={forumStatus === 'running'}
+            className="gap-1.5 font-display text-[10px] tracking-wider"
+          >
+            {forumStatus === 'running' ? (
+              <><Loader2 className="w-3 h-3 animate-spin" /> SCANNING...</>
+            ) : (
+              <><Search className="w-3 h-3" /> RUN SCAN</>
+            )}
+          </Button>
+        </div>
+        {(forumProgress || forumResult) && (
+          <div className="mt-3 pt-3 border-t border-border/50">
+            {forumStatus === 'running' && (
+              <p className="text-[11px] text-muted-foreground font-mono">{forumProgress}</p>
+            )}
+            {forumResult && (
+              <p className={`text-[11px] font-mono ${forumStatus === 'error' ? 'text-destructive' : 'text-status-success'}`}>
+                {forumResult}
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
       {stats.length === 0 && (
