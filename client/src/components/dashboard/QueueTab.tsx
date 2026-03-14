@@ -423,20 +423,20 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
         <table className="ops-table">
           <thead>
             <tr>
-              <th className="w-10">
-                <Checkbox 
+              <th className="w-8">
+                <Checkbox
                   checked={selectedIds.size === filteredEntries.length && filteredEntries.length > 0}
                   onCheckedChange={toggleSelectAll}
                   className="border-primary/50 data-[state=checked]:bg-primary data-[state=checked]:border-primary"
                 />
               </th>
               <th className="w-auto">Name</th>
-              <th className="w-24">Wire</th>
-              <th className="w-32">Classification</th>
-              <th className="w-20">Score</th>
-              <th className="w-24">Date</th>
-              <th className="w-24">Source</th>
-              <th className="w-32">Actions</th>
+              <th className="w-20">Wire</th>
+              <th className="w-16">Class</th>
+              <th className="w-14">Score</th>
+              <th className="w-16">Date</th>
+              <th className="w-16">Src</th>
+              <th className="w-36">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -497,7 +497,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                         rel="noopener noreferrer"
                         onClick={(e) => e.stopPropagation()}
                         title={isX ? 'Open X post' : 'Open source'}
-                        className="inline-flex items-center gap-1 px-2 py-1 rounded border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 text-[10px] font-mono font-medium transition-colors whitespace-nowrap"
+                        className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 text-[9px] font-mono font-medium transition-colors whitespace-nowrap"
                       >
                         <ExternalLink className="w-3 h-3 shrink-0" />
                         {isX ? 'X' : getSourceLabel(href)}
@@ -506,32 +506,31 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                   })()}
                 </td>
                 <td onClick={(e) => e.stopPropagation()}>
-                  <div className="flex items-center gap-1.5 whitespace-nowrap">
+                  <div className="flex items-center gap-1">
                     <Button
                       size="sm"
                       onClick={() => (onSingleAction ?? ((id, s) => onUpdateStatus([id], s)))(entry.id, 'approved')}
-                      className="gap-1 bg-status-success/20 text-status-success border border-status-success/30 hover:bg-status-success/30 font-display text-[10px] tracking-wider h-7 px-2.5"
+                      title="Approve"
+                      className="bg-status-success/20 text-status-success border border-status-success/30 hover:bg-status-success/30 h-7 w-7 p-0"
                     >
-                      <CheckCircle className="w-3 h-3 shrink-0" />
-                      OK
+                      <CheckCircle className="w-3.5 h-3.5" />
                     </Button>
                     <Button
                       size="sm"
                       onClick={() => onQuietApprove([entry.id])}
-                      title="Approve without distributing"
-                      className="gap-1 bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 font-display text-[10px] tracking-wider h-7 px-2"
+                      title="Quiet approve (no distribution)"
+                      className="bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 h-7 w-7 p-0"
                     >
-                      <EyeOff className="w-3 h-3 shrink-0" />
-                      Q
+                      <EyeOff className="w-3.5 h-3.5" />
                     </Button>
                     <Button
                       size="sm"
                       variant="secondary"
                       onClick={() => (onSingleAction ?? ((id, s) => onUpdateStatus([id], s)))(entry.id, 'archived')}
-                      className="gap-1 font-display text-[10px] tracking-wider h-7 px-2.5"
+                      title="Skip / Archive"
+                      className="h-7 w-7 p-0"
                     >
-                      <Archive className="w-3 h-3 shrink-0" />
-                      SKIP
+                      <Archive className="w-3.5 h-3.5" />
                     </Button>
                   </div>
                 </td>
