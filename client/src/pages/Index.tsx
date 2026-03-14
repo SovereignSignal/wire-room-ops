@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback } from 'react';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { OverviewTab } from '@/components/dashboard/OverviewTab';
 import { QueueTab } from '@/components/dashboard/QueueTab';
-import { PublishedTab } from '@/components/dashboard/PublishedTab';
 
 import { DatabaseTab } from '@/components/dashboard/DatabaseTab';
 import { ScanPromptsTab } from '@/components/dashboard/ScanPromptsTab';
@@ -207,14 +206,7 @@ const Index = () => {
             onRefresh={loadData}
           />
         )}
-        {activeTab === 'published' && (
-          <PublishedTab
-            entries={approvedEntries}
-            verticals={verticals}
-            onViewDetails={setSelectedEntry}
-          />
-        )}
-        {activeTab === 'database' && (
+{activeTab === 'database' && (
           <DatabaseTab />
         )}
         {activeTab === 'settings' && (
