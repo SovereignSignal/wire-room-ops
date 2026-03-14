@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useToast } from '@/hooks/use-toast';
 import { ScanPrompt } from '@/types';
 import {
@@ -37,6 +37,7 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
   } | null>(null);
   const [testResultExpanded, setTestResultExpanded] = useState(false);
   const { toast } = useToast();
+  const formRef = useRef<HTMLDivElement>(null);
 
   // Form state
   const [formWire, setFormWire] = useState('');
@@ -86,6 +87,7 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
     setFormActive(p.isActive);
     setEditingId(p.id);
     setShowForm(true);
+    setTimeout(() => formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
   };
 
   const handleSubmit = async () => {
@@ -335,7 +337,7 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
 
       {/* Add/Edit Form */}
       {showForm && (
-        <div className="border border-primary/30 rounded-lg bg-card/80 p-6 space-y-5">
+        <div ref={formRef} className="border border-primary/30 rounded-lg bg-card/80 p-6 space-y-5">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-display tracking-wider glow-text">
               {editingId ? 'EDIT PROMPT' : 'NEW PROMPT'}

@@ -103,15 +103,22 @@ export function DashboardLayout({
         <div className="container overflow-x-auto scrollbar-hide">
           <Tabs value={activeTab} onValueChange={onTabChange}>
             <TabsList className="h-12 bg-transparent border-none gap-1 sm:gap-2 flex-nowrap w-max sm:w-auto">
-              <TabsTrigger 
-                value="overview" 
+              <TabsTrigger
+                value="overview"
                 className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-1.5 px-2.5 sm:px-4 font-display text-[10px] sm:text-xs tracking-wider whitespace-nowrap"
               >
                 <span className="text-sm">👁️</span>
                 OVERVIEW
               </TabsTrigger>
-              <TabsTrigger 
-                value="queue" 
+              <TabsTrigger
+                value="scans"
+                className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-1.5 px-2.5 sm:px-4 font-display text-[10px] sm:text-xs tracking-wider whitespace-nowrap"
+              >
+                <span className="text-sm">🔍</span>
+                SCANS
+              </TabsTrigger>
+              <TabsTrigger
+                value="queue"
                 className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-1.5 px-2.5 sm:px-4 font-display text-[10px] sm:text-xs tracking-wider whitespace-nowrap"
               >
                 <span className="text-sm">📡</span>

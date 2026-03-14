@@ -5,6 +5,7 @@ import { QueueTab } from '@/components/dashboard/QueueTab';
 import { PublishedTab } from '@/components/dashboard/PublishedTab';
 
 import { DatabaseTab } from '@/components/dashboard/DatabaseTab';
+import { ScanPromptsTab } from '@/components/dashboard/ScanPromptsTab';
 import { SettingsTab } from '@/components/dashboard/SettingsTab';
 // ReviewTab removed — approve/decline now inline in QueueTab
 import { Starfield } from '@/components/dashboard/Starfield';
@@ -181,6 +182,9 @@ const Index = () => {
         refreshing={refreshing}
         onRefresh={handleRefresh}
       >
+        {activeTab === 'scans' && (
+          <ScanPromptsTab verticals={verticals} />
+        )}
         {activeTab === 'overview' && (
           <OverviewTab
             queueEntries={queueEntries}
