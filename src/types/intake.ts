@@ -6,16 +6,16 @@
 // Wire values are dynamic (driven by feeds table), so we use string
 
 // Which prompt variant produced this result
-export type PromptVariant = 'A' | 'B' | 'C' | 'W' | 'P' | 'N';
+export type PromptVariant = 'A' | 'B' | 'C' | 'W' | 'P' | 'N' | 'S';
 
 // Prompt strategy labels (for human readability)
-export type PromptStrategy = 'Action' | 'Landscape' | 'Open Sweep';
+export type PromptStrategy = 'Action' | 'Landscape' | 'Open Sweep' | 'Community';
 
 // Which Grok tool to use for scan execution
-export type ToolType = 'x_search' | 'web_search' | 'perplexity';
+export type ToolType = 'x_search' | 'web_search' | 'perplexity' | 'community';
 
 // Where the result came from
-export type ScanSource = 'x-scan' | 'web-search' | 'telegram' | 'telegram-intake' | 'manual-intake' | 'email' | 'forum';
+export type ScanSource = 'x-scan' | 'web-search' | 'community' | 'telegram' | 'telegram-intake' | 'manual-intake' | 'email' | 'forum';
 
 // Processing state for scan results as they move through the pipeline
 export type ScanStatus =

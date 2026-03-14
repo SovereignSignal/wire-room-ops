@@ -650,7 +650,7 @@ export async function ensureScanTables(): Promise<void> {
     deadline TEXT,
     deadline_parsed DATE,
     wire TEXT NOT NULL,
-    prompt_variant TEXT NOT NULL CHECK (prompt_variant IN ('A', 'B', 'C', 'N', 'W', 'P')),
+    prompt_variant TEXT NOT NULL CHECK (prompt_variant IN ('A', 'B', 'C', 'N', 'W', 'P', 'S')),
     scan_source TEXT NOT NULL DEFAULT 'x-scan',
     scan_date DATE NOT NULL,
     status TEXT NOT NULL DEFAULT 'raw'
@@ -749,14 +749,14 @@ export async function ensureScanTables(): Promise<void> {
   `);
   await client.query(`
     ALTER TABLE scan_entries ADD CONSTRAINT scan_entries_scan_source_check
-      CHECK (scan_source IN ('x-scan', 'web-search', 'telegram', 'telegram-intake', 'manual-intake', 'email', 'forum'))
+      CHECK (scan_source IN ('x-scan', 'web-search', 'community', 'telegram', 'telegram-intake', 'manual-intake', 'email', 'forum'))
   `);
   await client.query(`
     ALTER TABLE scan_entries DROP CONSTRAINT IF EXISTS scan_entries_prompt_variant_check
   `);
   await client.query(`
     ALTER TABLE scan_entries ADD CONSTRAINT scan_entries_prompt_variant_check
-      CHECK (prompt_variant IN ('A', 'B', 'C', 'N', 'W', 'P'))
+      CHECK (prompt_variant IN ('A', 'B', 'C', 'N', 'W', 'P', 'S'))
   `);
   await client.query(`
     ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS submitted_by TEXT
@@ -886,8 +886,18 @@ export async function ensureScanPromptsTable(): Promise<void> {
   await pool.query(`ALTER TABLE scan_prompts DROP CONSTRAINT IF EXISTS scan_prompts_tool_type_check`);
   await pool.query(`
     ALTER TABLE scan_prompts ADD CONSTRAINT scan_prompts_tool_type_check
-      CHECK (tool_type IN ('x_search', 'web_search', 'perplexity'))
+      CHECK (tool_type IN ('x_search', 'web_search', 'perplexity', 'community'))
   `);
+
+  // Phase 4 migration: expand variant constraint to include 'S' (community), 'W', 'P', 'N'
+  await pool.query(`ALTER TABLE scan_prompts DROP CONSTRAINT IF EXISTS scan_prompts_variant_check`);
+  await pool.query(`
+    ALTER TABLE scan_prompts ADD CONSTRAINT scan_prompts_variant_check
+      CHECK (variant IN ('A', 'B', 'C', 'W', 'P', 'N', 'S'))
+  `);
+
+  // Phase 4 migration: add community_signals JSONB column for community pulse metadata
+  await pool.query(`ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS community_signals JSONB`);
 
   // Gate 2 migration: classification columns on scan_entries
   await pool.query(`ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS classification TEXT DEFAULT 'UNCHECKED'`);

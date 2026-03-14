@@ -21,6 +21,7 @@ import type {
 import { getAllScanPrompts, ScanPromptRecord } from '../db';
 import { executeScanPrompt } from '../services/grok';
 import { executePerplexityScan } from '../services/perplexity';
+import { executeCommunityScan } from '../services/community';
 import { parseStructuredOutput } from '../services/intake';
 import { withRetry } from '../services/processor';
 import { runDailyIntake } from './daily-intake';
@@ -58,7 +59,7 @@ export interface ScanExecutionResult {
 // Variant inference
 // ============================================================
 
-const VALID_VARIANTS: PromptVariant[] = ['A', 'B', 'C', 'W', 'P', 'N'];
+const VALID_VARIANTS: PromptVariant[] = ['A', 'B', 'C', 'W', 'P', 'N', 'S'];
 const FALLBACK_VARIANTS: PromptVariant[] = ['A', 'B', 'C'];
 
 function resolveVariant(prompt: ScanPromptRecord): PromptVariant {
@@ -129,6 +130,11 @@ export async function runScanExecution(
               responseFormat: prompt.responseFormat,
             });
           }
+          if (prompt.toolType === 'community') {
+            return executeCommunityScan(prompt.promptText, {
+              wire: prompt.wire,
+            });
+          }
           return executeScanPrompt(prompt.promptText, {
             responseFormat: prompt.responseFormat,
             toolType: prompt.toolType,
@@ -148,9 +154,11 @@ export async function runScanExecution(
       }
 
       // Build submission
-      const source: ScanSource = prompt.toolType === 'perplexity' || prompt.toolType === 'web_search'
-        ? 'web-search'
-        : 'x-scan';
+      const source: ScanSource =
+        prompt.toolType === 'community' ? 'community' :
+        prompt.toolType === 'perplexity' || prompt.toolType === 'web_search'
+          ? 'web-search'
+          : 'x-scan';
       submissions.push({
         wire: prompt.wire,
         promptVariant: variant,
