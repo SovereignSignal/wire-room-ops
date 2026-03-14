@@ -129,7 +129,7 @@ function sanitizeResult(result: RawScanResult): RawScanResult {
     description = '';
   }
 
-  return { name: name.trim(), description, amount, deadline, sourceUrl };
+  return { name: name.trim(), description, amount, deadline, sourceUrl, sourcePublishedAt: result.sourcePublishedAt };
 }
 
 // ============================================================

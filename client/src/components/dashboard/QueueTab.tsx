@@ -483,17 +483,14 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                   <ScoreBadge score={entry.quality_score} />
                 </td>
                 <td className="px-2">
-                  {(() => {
-                    const dateStr = entry.source_published_at || entry.created_at;
-                    if (!dateStr) return <span className="text-muted-foreground/50 text-xs">—</span>;
-                    const isSource = !!entry.source_published_at;
-                    return (
-                      <span className={`text-[10px] font-mono whitespace-nowrap ${isSource ? 'text-muted-foreground' : 'text-muted-foreground/60'}`}
-                        title={isSource ? `Source: ${new Date(dateStr).toLocaleDateString()}` : `Added: ${new Date(dateStr).toLocaleDateString()}`}>
-                        {new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                      </span>
-                    );
-                  })()}
+                  {entry.source_published_at ? (
+                    <span className="text-[10px] font-mono text-muted-foreground whitespace-nowrap"
+                      title={`Source: ${new Date(entry.source_published_at).toLocaleDateString()}`}>
+                      {new Date(entry.source_published_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' })}
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground/40 text-[10px]">—</span>
+                  )}
                 </td>
                 <td className="px-2" onClick={(e) => e.stopPropagation()}>
                   {(() => {
