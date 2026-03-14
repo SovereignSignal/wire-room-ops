@@ -513,6 +513,22 @@ export async function testScanPrompt(id: string): Promise<{
   return res.json();
 }
 
+export async function runScanPrompt(id: string): Promise<{
+  success: boolean;
+  parsedCount: number;
+  newUnique: number;
+  duplicatesFound: number;
+  highQualityCount: number;
+  model: string;
+}> {
+  const res = await authFetch(`${BASE}/scan/prompts/${id}/run`, { method: 'POST' });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Run failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function testUnsavedPrompt(data: {
   promptText: string;
   responseFormat?: string;

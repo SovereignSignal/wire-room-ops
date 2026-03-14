@@ -6,7 +6,7 @@ import {
   createScanPrompt,
   updateScanPrompt,
   deleteScanPrompt,
-  testScanPrompt,
+  runScanPrompt,
   fetchSchedules,
   updateSchedule,
   fetchPromptResults,
@@ -67,16 +67,15 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
   const [loading, setLoading] = useState(true);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [testing, setTesting] = useState<string | null>(null);
-  const [testResult, setTestResult] = useState<{
+  const [running, setRunning] = useState<string | null>(null);
+  const [runResult, setRunResult] = useState<{
     promptId: string;
     parsedCount: number;
+    newUnique: number;
+    duplicatesFound: number;
+    highQualityCount: number;
     model: string;
-    tokensUsed: number;
-    parsedResults: any[];
-    content: string;
   } | null>(null);
-  const [testResultExpanded, setTestResultExpanded] = useState(false);
   const { toast } = useToast();
 
   // Form state
@@ -227,32 +226,35 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
     try {
       await deleteScanPrompt(id);
       toast({ title: 'Deleted', description: 'Prompt removed' });
-      if (testResult?.promptId === id) setTestResult(null);
+      if (runResult?.promptId === id) setRunResult(null);
       await loadData();
     } catch {
       toast({ title: 'Error', description: 'Failed to delete prompt' });
     }
   };
 
-  const handleTest = async (id: string) => {
-    setTesting(id);
-    setTestResult(null);
+  const handleRun = async (id: string) => {
+    setRunning(id);
+    setRunResult(null);
     try {
-      const result = await testScanPrompt(id);
-      setTestResult({
+      const result = await runScanPrompt(id);
+      setRunResult({
         promptId: id,
         parsedCount: result.parsedCount,
+        newUnique: result.newUnique,
+        duplicatesFound: result.duplicatesFound,
+        highQualityCount: result.highQualityCount,
         model: result.model,
-        tokensUsed: result.tokensUsed,
-        parsedResults: result.parsedResults,
-        content: result.content,
       });
-      setTestResultExpanded(false);
-      toast({ title: 'Test Complete', description: `${result.parsedCount} result${result.parsedCount !== 1 ? 's' : ''} parsed` });
+      toast({
+        title: 'Scan Complete',
+        description: `${result.parsedCount} found, ${result.newUnique} new, ${result.duplicatesFound} dupes`,
+      });
+      await loadData();
     } catch (error) {
-      toast({ title: 'Test Failed', description: error instanceof Error ? error.message : 'Unknown error' });
+      toast({ title: 'Scan Failed', description: error instanceof Error ? error.message : 'Unknown error' });
     } finally {
-      setTesting(null);
+      setRunning(null);
     }
   };
 
@@ -387,11 +389,11 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
                     <td className="px-4 py-3 text-right">
                       <div className="flex items-center justify-end gap-2">
                         <button
-                          onClick={() => handleTest(p.id)}
-                          disabled={testing === p.id}
-                          className="px-2 py-1 text-[10px] font-display tracking-wider border border-border rounded hover:bg-card/80 transition-colors disabled:opacity-50"
+                          onClick={() => handleRun(p.id)}
+                          disabled={running === p.id}
+                          className="px-2 py-1 text-[10px] font-display tracking-wider border border-primary/30 text-primary rounded hover:bg-primary/10 transition-colors disabled:opacity-50"
                         >
-                          {testing === p.id ? '...' : 'TEST'}
+                          {running === p.id ? '...' : 'RUN'}
                         </button>
                         <button
                           onClick={() => openEditSheet(p)}
@@ -415,53 +417,22 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
         </div>
       )}
 
-      {/* Test Result */}
-      {testResult && (
-        <div className="border border-primary/20 rounded-lg bg-card/60 p-4 space-y-3">
+      {/* Run Result */}
+      {runResult && (
+        <div className="border border-primary/20 rounded-lg bg-card/60 p-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <h4 className="text-xs font-display tracking-wider text-primary">TEST RESULTS</h4>
+              <h4 className="text-xs font-display tracking-wider text-primary">SCAN RESULTS</h4>
               <span className="text-xs text-muted-foreground font-mono">
-                {testResult.parsedCount} parsed &middot; {testResult.model} &middot; {testResult.tokensUsed.toLocaleString()} tokens
+                {runResult.parsedCount} found &middot; {runResult.newUnique} new &middot; {runResult.duplicatesFound} dupes &middot; {runResult.highQualityCount} high quality
               </span>
             </div>
             <button
-              onClick={() => setTestResult(null)}
+              onClick={() => setRunResult(null)}
               className="text-xs text-muted-foreground hover:text-foreground transition-colors"
             >
               Dismiss
             </button>
-          </div>
-
-          {testResult.parsedResults.length > 0 && (
-            <div className="space-y-1">
-              {testResult.parsedResults.slice(0, 10).map((r: any, i: number) => (
-                <div key={i} className="text-xs font-mono text-muted-foreground flex items-baseline gap-2">
-                  <span className="text-primary/60 w-4 text-right flex-shrink-0">{i + 1}.</span>
-                  <span className="truncate">{r.name || r.title || '(untitled)'}</span>
-                </div>
-              ))}
-              {testResult.parsedResults.length > 10 && (
-                <p className="text-[10px] text-muted-foreground pl-6">
-                  ...and {testResult.parsedResults.length - 10} more
-                </p>
-              )}
-            </div>
-          )}
-
-          <div>
-            <button
-              onClick={() => setTestResultExpanded(!testResultExpanded)}
-              className="text-[10px] font-display tracking-wider text-muted-foreground hover:text-foreground transition-colors"
-            >
-              {testResultExpanded ? '▾ HIDE RAW OUTPUT' : '▸ SHOW RAW OUTPUT'}
-            </button>
-            {testResultExpanded && (
-              <pre className="mt-2 p-3 bg-background border border-border rounded text-[11px] font-mono text-muted-foreground overflow-x-auto max-h-80 overflow-y-auto whitespace-pre-wrap">
-                {testResult.content.slice(0, 3000)}
-                {testResult.content.length > 3000 && '\n\n... (truncated)'}
-              </pre>
-            )}
           </div>
         </div>
       )}

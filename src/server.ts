@@ -1353,6 +1353,83 @@ app.post('/api/scan/prompts/:id/test', requireAuth, async (req: Request, res: Re
   }
 });
 
+// API: Run a single scan prompt through full pipeline (execute → parse → intake → queue)
+app.post('/api/scan/prompts/:id/run', requireAuth, async (req: Request, res: Response) => {
+  const { id } = req.params;
+  if (!id || !isValidUuid(id)) {
+    res.status(400).json({ error: 'Invalid prompt ID' });
+    return;
+  }
+
+  if (!rateLimit(`scan-prompt-run-${id}`, 2, 5 * 60 * 1000)) {
+    res.status(429).json({ error: 'This prompt was recently run. Max 2 per 5 minutes.' });
+    return;
+  }
+
+  try {
+    const prompt = await getScanPromptById(id);
+    if (!prompt) {
+      res.status(404).json({ error: 'Prompt not found' });
+      return;
+    }
+
+    // Execute the prompt
+    const scanResult = await withRetry(
+      () => {
+        if (prompt.toolType === 'perplexity') {
+          return executePerplexityScan(prompt.promptText, {
+            responseFormat: prompt.responseFormat,
+          });
+        }
+        return executeScanPrompt(prompt.promptText, {
+          responseFormat: prompt.responseFormat,
+          toolType: prompt.toolType,
+        });
+      },
+      2
+    );
+
+    const parsed = parseStructuredOutput(scanResult.content);
+    const today = new Date().toISOString().split('T')[0];
+
+    // Determine variant
+    const VALID_VARIANTS = ['A', 'B', 'C', 'W', 'P', 'N', 'S'];
+    const variant = (prompt.variant && VALID_VARIANTS.includes(prompt.variant)) ? prompt.variant : 'A';
+
+    // Determine source
+    const source = prompt.toolType === 'perplexity' || prompt.toolType === 'web_search'
+      ? 'web-search' as const
+      : 'x-scan' as const;
+
+    // Run through intake pipeline
+    const pool = getPool();
+    const submission = {
+      wire: prompt.wire,
+      promptVariant: variant as any,
+      scanDate: today,
+      source,
+      results: parsed,
+      promptId: prompt.id,
+    };
+
+    const intakeSummary = await runDailyIntake(pool, [submission]);
+
+    console.log(`[PromptRun] "${prompt.label}" → ${parsed.length} parsed, ${intakeSummary.newUnique} new, ${intakeSummary.highQualityCount} high quality`);
+
+    res.json({
+      success: true,
+      parsedCount: parsed.length,
+      newUnique: intakeSummary.newUnique,
+      duplicatesFound: intakeSummary.duplicatesFound,
+      highQualityCount: intakeSummary.highQualityCount,
+      model: scanResult.model || 'unknown',
+    });
+  } catch (error) {
+    console.error('Scan prompt run failed:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Run failed' });
+  }
+});
+
 // ============================================================
 // Phase 2: Automated Scan Execution + Queue Actions + Stats
 // ============================================================
