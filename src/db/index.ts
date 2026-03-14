@@ -922,15 +922,17 @@ export async function ensureScanPromptsTable(): Promise<void> {
 
 1. **Program Name** — Brief description including funding amount if known
 Deadline: [specific date, "Rolling", or "None listed"]
-Program URL: [direct link to the program/application page]
+Source URL: [the X post or announcement URL where you found this]
 
 Rules:
+- Only include NEW opportunities announced or posted in the last 7 days
+- Do NOT include evergreen/generic program pages — only specific recent announcements
 - Number each result sequentially
 - Bold the program name with ** markers
-- "Program URL" must be the direct link to the actual program page — not a tweet or social post
-- If you only have a social media post URL, also look for the direct program link mentioned in the post
+- "Source URL" must be the actual X post, tweet, or article where the opportunity was announced
 - Include funding amount in description (e.g. "$50K", "$1M")
-- Use specific dates for deadlines when available`;
+- Use specific dates for deadlines when available
+- Skip results where you cannot find a specific recent announcement URL`;
 
   const { rowCount } = await pool.query(
     `UPDATE scan_prompts SET response_format = $1 WHERE response_format IS NULL`,
@@ -938,6 +940,15 @@ Rules:
   );
   if (rowCount && rowCount > 0) {
     console.log(`[DB] Set response_format on ${rowCount} prompts that had NULL`);
+  }
+
+  // Migration: update prompts using old "Program URL" format to new "Source URL" format
+  const { rowCount: updatedCount } = await pool.query(
+    `UPDATE scan_prompts SET response_format = $1 WHERE response_format LIKE '%Program URL%not a tweet%'`,
+    [defaultResponseFormat]
+  );
+  if (updatedCount && updatedCount > 0) {
+    console.log(`[DB] Updated ${updatedCount} prompts from old "Program URL" format to new "Source URL" format`);
   }
 
   console.log('[DB] Scan prompts table ready (Phase 2+3 migrations applied, Gate 2 columns added)');
