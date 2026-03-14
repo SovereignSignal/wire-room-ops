@@ -974,6 +974,36 @@ Rules:
     console.log(`[DB] Stripped conflicting inline format instructions from ${strippedCount} prompt texts`);
   }
 
+  // Migration v5: relax recency constraints in prompt texts
+  // "Last 7 days only." was causing Grok to self-reject valid active programs.
+  // Replace with softer recency guidance that still prioritizes recent activity
+  // but includes currently active/open programs.
+  const recencyFixes = [
+    {
+      find: 'Last 7 days only.',
+      replace: 'Prioritize activity from the last 14 days, but also include programs with currently open applications regardless of announcement date.',
+    },
+    {
+      find: 'anything older than 7 days.',
+      replace: 'programs that have already closed or expired.',
+    },
+    {
+      find: 'anything older than 7 days',
+      replace: 'programs that have already closed or expired',
+    },
+  ];
+  let recencyFixCount = 0;
+  for (const fix of recencyFixes) {
+    const { rowCount: rc } = await pool.query(
+      `UPDATE scan_prompts SET prompt_text = REPLACE(prompt_text, $1, $2) WHERE prompt_text LIKE $3`,
+      [fix.find, fix.replace, `%${fix.find}%`]
+    );
+    if (rc && rc > 0) recencyFixCount += rc;
+  }
+  if (recencyFixCount > 0) {
+    console.log(`[DB] Relaxed recency constraints in ${recencyFixCount} prompt texts`);
+  }
+
   console.log('[DB] Scan prompts table ready (Phase 2+3 migrations applied, Gate 2 columns added)');
 }
 
