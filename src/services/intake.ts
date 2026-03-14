@@ -180,21 +180,53 @@ function parseStructuredText(text: string): RawScanResult[] {
     const wasHeading = /^#{1,4}\s+/.test(rawLine);
     const line = rawLine.replace(/^#{1,4}\s+/, '');
 
-    // Match entry header: "1. **Program Name** — Description" or "**[Org] — Name**"
-    // Also handles "**Org — Program Name**" (separator inside bold)
-    // Also handles bare heading lines: "### Name (details)" from x_search output
+    // Check metadata lines BEFORE header detection to avoid false header matches
+    // on lines like "**Deadline**: Rolling" or "**Source URL**: https://..."
+    if (currentEntry) {
+      // Deadline (handles **bold** markers in any position)
+      const earlyDeadline = line.match(/^\*{0,2}(?:Deadline|Due|Closes|Date)\*{0,2}:?\*{0,2}\s+(.+)/i);
+      if (earlyDeadline) {
+        currentEntry.deadline = normalizeDeadline(stripMarkdownArtifacts(earlyDeadline[1].trim()));
+        continue;
+      }
+      // URL (handles **bold** markers in any position)
+      const earlyUrl = line.match(/^\*{0,2}(?:Link|URL|Source|Source URL|Website|Direct URL|Program URL)\*{0,2}:?\*{0,2}\s+(https?:\/\/\S+)/i);
+      if (earlyUrl) {
+        const u = earlyUrl[1].trim();
+        if (isUsefulUrl(u)) {
+          const isSourceUrl = /Source/i.test(line);
+          if (isSourceUrl || !currentEntry.sourceUrl) {
+            currentEntry.sourceUrl = u;
+          }
+        }
+        continue;
+      }
+    }
+
+    // Match entry header in order of specificity:
+    // 1. "1. **Program Name** — Description" (standard format)
+    // 2. "**N. Name —** Description" (number+separator inside bold)
+    // 3. "**N. Name** — Description" (number inside bold)
+    // 4. "**Name** — Description" (no number, bold name)
+    // 5. "**Org — Program Name**" (separator inside bold, no desc after)
+    // 6. "### Name — Desc" (bare markdown heading)
     const headerMatch = line.match(
       /^\d+\.\s+\*\*(.+?)\*\*\s*[—\-–:]\s*(.+)/
     ) || line.match(
+      /^\*\*\d+[\.\)]\s*(.+?)\s*[—\-–]\*\*\s*(.+)/
+    ) || line.match(
+      /^\*\*\d+[\.\)]\s*(.+?)\*\*\s*[—\-–:]\s*(.+)/
+    ) || line.match(
       /^\*\*\[?(.+?)\]?\*\*\s*[—\-–:]\s*(.+)/
     ) || (() => {
-      // Handle "**Org — Program Name**" where separator is inside bold
+      // Handle "**Org — Program Name**" where separator is inside bold, no desc after
       const fullBold = line.match(/^\*\*(.+?)\*\*\s*$/);
       if (fullBold) {
         const inner = fullBold[1];
-        // Use full bold text as name, no description from header
-        if (inner.search(/\s*[—\-–]\s+/) > 0) {
-          return [line, inner, ''];
+        // Strip leading number: "1. Name" → "Name"
+        const stripped = inner.replace(/^\d+[\.\)]\s*/, '');
+        if (stripped.search(/\s*[—\-–]\s+/) > 0) {
+          return [line, stripped, ''];
         }
       }
       // Handle bare heading lines: "### Name — Desc" or "### Name (details)"
@@ -249,20 +281,19 @@ function parseStructuredText(text: string): RawScanResult[] {
       if (/^\[Date:/i.test(line)) continue;
     }
 
-    // Match deadline line
-    const deadlineMatch = line.match(/^(?:Deadline|Due|Closes|Date):\s*(.+)/i);
+    // Deadline/URL already checked above (before header detection)
+    // These fallbacks catch lines when no currentEntry existed during early check
+    const deadlineMatch = line.match(/^\*{0,2}(?:Deadline|Due|Closes|Date)\*{0,2}:?\*{0,2}\s+(.+)/i);
     if (deadlineMatch && currentEntry) {
       currentEntry.deadline = normalizeDeadline(stripMarkdownArtifacts(deadlineMatch[1].trim()));
       continue;
     }
 
-    // Match link/URL line (including "Source URL", "Direct URL" from updated prompts)
-    const linkMatch = line.match(/^(?:Link|URL|Source|Source URL|Website|Direct URL|Program URL):\s*(https?:\/\/\S+)/i);
+    const linkMatch = line.match(/^\*{0,2}(?:Link|URL|Source|Source URL|Website|Direct URL|Program URL)\*{0,2}:?\*{0,2}\s+(https?:\/\/\S+)/i);
     if (linkMatch && currentEntry) {
       const u = linkMatch[1].trim();
       if (isUsefulUrl(u)) {
-        // "Source URL" is the preferred label — always use it; otherwise only set if empty
-        const isSourceUrl = /^(?:Source URL|Source):/i.test(line);
+        const isSourceUrl = /Source/i.test(line);
         if (isSourceUrl || !currentEntry.sourceUrl) {
           currentEntry.sourceUrl = u;
         }
@@ -394,22 +425,22 @@ function parseLenientNumberedList(text: string): RawScanResult[] {
     }
 
     if (currentEntry) {
-      // Deadline patterns
-      const deadlineMatch = line.match(/(?:Deadline|Due|Closes|Date|Expires|Apply by):\s*(.+)/i);
+      // Deadline patterns (handles optional ** bold markers: "**Deadline:**" or "**Deadline**:")
+      const deadlineMatch = line.match(/\*{0,2}(?:Deadline|Due|Closes|Date|Expires|Apply by)\*{0,2}:?\*{0,2}\s+(.+)/i);
       if (deadlineMatch) {
         currentEntry.deadline = normalizeDeadline(stripMarkdownArtifacts(deadlineMatch[1].trim()));
         continue;
       }
 
-      // Amount on its own line
-      const amountMatch = line.match(/(?:Amount|Funding|Grant|Prize|Award|Value):\s*(.+)/i);
+      // Amount on its own line (handles optional ** bold markers)
+      const amountMatch = line.match(/\*{0,2}(?:Amount|Funding|Grant|Prize|Award|Value)\*{0,2}:?\*{0,2}\s+(.+)/i);
       if (amountMatch && !currentEntry.amount) {
         currentEntry.amount = extractAmount(amountMatch[1]) || amountMatch[1].trim();
         continue;
       }
 
-      // URL patterns
-      const urlMatch = line.match(/(?:Link|URL|Source|Source URL|Website|More info|Apply|Details|Direct URL|Program URL):\s*(https?:\/\/\S+)/i);
+      // URL patterns (handles optional ** bold markers: "**Source URL:**")
+      const urlMatch = line.match(/\*{0,2}(?:Link|URL|Source|Source URL|Website|More info|Apply|Details|Direct URL|Program URL)\*{0,2}:?\*{0,2}\s+(https?:\/\/\S+)/i);
       if (urlMatch) {
         const u = urlMatch[1].trim();
         if (isUsefulUrl(u)) currentEntry.sourceUrl = u;
