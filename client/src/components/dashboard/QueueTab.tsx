@@ -372,9 +372,11 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
               </div>
               <ClassificationBadge classification={entry.classification} />
               <ScoreBadge score={entry.quality_score} />
-              <span className="text-[10px] font-mono text-muted-foreground">
-                {new Date(entry.source_published_at || entry.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-              </span>
+              {entry.source_published_at && (
+                <span className="text-[10px] font-mono text-muted-foreground">
+                  {new Date(entry.source_published_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                </span>
+              )}
               {entry.tags && entry.tags.length > 0 && entry.tags.map((tag, i) => (
                 <span key={i} className="text-[10px] px-1.5 py-0.5 rounded-full border border-purple-500/30 text-purple-400 bg-purple-500/10">{tag}</span>
               ))}
@@ -481,9 +483,13 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                   <ScoreBadge score={entry.quality_score} />
                 </td>
                 <td>
-                  <span className="text-xs font-mono text-muted-foreground whitespace-nowrap" title={entry.source_published_at ? `Source: ${new Date(entry.source_published_at).toLocaleDateString()}` : `Added: ${new Date(entry.created_at).toLocaleDateString()}`}>
-                    {new Date(entry.source_published_at || entry.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                  </span>
+                  {entry.source_published_at ? (
+                    <span className="text-xs font-mono text-muted-foreground whitespace-nowrap" title={`Source: ${new Date(entry.source_published_at).toLocaleDateString()}`}>
+                      {new Date(entry.source_published_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground/50 text-xs">—</span>
+                  )}
                 </td>
                 <td onClick={(e) => e.stopPropagation()}>
                   {(() => {
