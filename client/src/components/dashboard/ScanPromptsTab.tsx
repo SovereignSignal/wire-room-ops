@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useToast } from '@/hooks/use-toast';
-import { ScanPrompt } from '@/types';
+import { ScanPrompt, ScanEntry } from '@/types';
 import {
   fetchScanPrompts,
   createScanPrompt,
@@ -8,6 +8,8 @@ import {
   deleteScanPrompt,
   testScanPrompt,
   fetchSchedules,
+  updateSchedule,
+  fetchPromptResults,
   ScheduleResponse,
 } from '@/api';
 import {
@@ -50,6 +52,15 @@ function formatNextRun(dateStr: string): string {
   return `in ${days}d`;
 }
 
+const STATUS_COLORS: Record<string, string> = {
+  queued: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
+  approved: 'bg-green-500/20 text-green-400 border-green-500/30',
+  archived: 'bg-muted/20 text-muted-foreground border-border',
+  raw: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+  duplicate: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
+  declined: 'bg-red-500/20 text-red-400 border-red-500/30',
+};
+
 export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
   const [prompts, setPrompts] = useState<ScanPrompt[]>([]);
   const [schedules, setSchedules] = useState<ScheduleResponse[]>([]);
@@ -77,6 +88,19 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
   const [formResponseFormat, setFormResponseFormat] = useState('');
   const [formActive, setFormActive] = useState(true);
 
+  // Schedule editing state
+  const [scheduleHour, setScheduleHour] = useState(0);
+  const [scheduleMinute, setScheduleMinute] = useState(0);
+  const [scheduleFrequency, setScheduleFrequency] = useState(12);
+  const [scheduleEnabled, setScheduleEnabled] = useState(true);
+  const [scheduleSaving, setScheduleSaving] = useState(false);
+  const [scheduleEditing, setScheduleEditing] = useState(false);
+
+  // Recent results state
+  const [promptResults, setPromptResults] = useState<ScanEntry[]>([]);
+  const [promptResultsTotal, setPromptResultsTotal] = useState(0);
+  const [resultsLoading, setResultsLoading] = useState(false);
+
   const loadData = useCallback(async () => {
     try {
       const [promptsData, schedulesData] = await Promise.all([
@@ -94,9 +118,24 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
 
   useEffect(() => { loadData(); }, [loadData]);
 
+  // Load results when editing a prompt
+  const loadPromptResults = useCallback(async (promptId: string) => {
+    setResultsLoading(true);
+    try {
+      const data = await fetchPromptResults(promptId, 25);
+      setPromptResults(data.entries);
+      setPromptResultsTotal(data.total);
+    } catch {
+      setPromptResults([]);
+      setPromptResultsTotal(0);
+    } finally {
+      setResultsLoading(false);
+    }
+  }, []);
+
   // Get schedule info for a wire
   const getWireSchedule = (wire: string): ScheduleResponse | undefined => {
-    return schedules.find(s => s.wire === wire && s.scheduleType === 'scan-execution' && s.enabled);
+    return schedules.find(s => s.wire === wire && s.scheduleType === 'scan-execution');
   };
 
   const resetForm = () => {
@@ -108,6 +147,9 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
     setFormResponseFormat('');
     setFormActive(true);
     setEditingId(null);
+    setScheduleEditing(false);
+    setPromptResults([]);
+    setPromptResultsTotal(0);
   };
 
   const openAddSheet = () => {
@@ -124,7 +166,20 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
     setFormResponseFormat(p.responseFormat || '');
     setFormActive(p.isActive);
     setEditingId(p.id);
+    setScheduleEditing(false);
     setSheetOpen(true);
+
+    // Load schedule state
+    const sched = getWireSchedule(p.wire);
+    if (sched) {
+      setScheduleHour(sched.hour);
+      setScheduleMinute(sched.minute);
+      setScheduleFrequency(sched.frequencyHours || 12);
+      setScheduleEnabled(sched.enabled);
+    }
+
+    // Load recent results
+    loadPromptResults(p.id);
   };
 
   const handleSubmit = async () => {
@@ -207,6 +262,30 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
       await loadData();
     } catch {
       toast({ title: 'Error', description: 'Failed to update prompt' });
+    }
+  };
+
+  const handleScheduleSave = async () => {
+    const sched = editingPrompt ? getWireSchedule(editingPrompt.wire) : undefined;
+    if (!sched) return;
+
+    setScheduleSaving(true);
+    try {
+      await updateSchedule(sched.id, {
+        hour: scheduleHour,
+        minute: scheduleMinute,
+        frequencyHours: scheduleFrequency,
+        enabled: scheduleEnabled,
+      });
+      toast({ title: 'Schedule Updated', description: `${sched.name} schedule saved` });
+      setScheduleEditing(false);
+      // Refresh schedules to get updated nextRun
+      const schedulesData = await fetchSchedules().catch(() => [] as ScheduleResponse[]);
+      setSchedules(schedulesData);
+    } catch (error) {
+      toast({ title: 'Error', description: error instanceof Error ? error.message : 'Failed to update schedule' });
+    } finally {
+      setScheduleSaving(false);
     }
   };
 
@@ -397,31 +476,129 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
               </SheetTitle>
             </SheetHeader>
 
-            {/* Schedule info banner */}
+            {/* Schedule section — editable */}
             {(editingId || formWire) && (
-              <div className="bg-muted/20 border border-border rounded-lg p-3 space-y-1">
-                <p className="text-[10px] font-display tracking-widest text-muted-foreground">SCHEDULE INFO</p>
+              <div className="bg-muted/20 border border-border rounded-lg p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <p className="text-[10px] font-display tracking-widest text-muted-foreground">SCHEDULE</p>
+                  {sheetSchedule && !scheduleEditing && (
+                    <button
+                      onClick={() => setScheduleEditing(true)}
+                      className="text-[10px] font-display tracking-wider text-primary hover:text-primary/80 transition-colors"
+                    >
+                      EDIT
+                    </button>
+                  )}
+                </div>
+
                 {sheetSchedule ? (
-                  <>
-                    <p className="text-xs text-foreground">
-                      <span className="text-muted-foreground">Schedule:</span> {sheetSchedule.name}
-                      {sheetSchedule.enabled ? (
-                        <span className="ml-2 text-status-success text-[10px]">ENABLED</span>
-                      ) : (
-                        <span className="ml-2 text-muted-foreground text-[10px]">DISABLED</span>
+                  scheduleEditing ? (
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={() => setScheduleEnabled(!scheduleEnabled)}
+                          className={`relative w-10 h-5 rounded-full transition-colors ${
+                            scheduleEnabled ? 'bg-primary' : 'bg-muted'
+                          }`}
+                        >
+                          <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                            scheduleEnabled ? 'left-5' : 'left-0.5'
+                          }`} />
+                        </button>
+                        <span className="text-xs text-muted-foreground">
+                          {scheduleEnabled ? 'Schedule enabled' : 'Schedule paused'}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2">
+                        <div>
+                          <label className="block text-[10px] font-display tracking-widest text-muted-foreground mb-1">START HOUR</label>
+                          <select
+                            value={scheduleHour}
+                            onChange={e => setScheduleHour(Number(e.target.value))}
+                            className="w-full px-2 py-1.5 text-xs bg-background border border-border rounded focus:border-primary/50 focus:outline-none font-mono"
+                          >
+                            {Array.from({ length: 24 }, (_, i) => (
+                              <option key={i} value={i}>{String(i).padStart(2, '0')}:00</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-display tracking-widest text-muted-foreground mb-1">MINUTE</label>
+                          <select
+                            value={scheduleMinute}
+                            onChange={e => setScheduleMinute(Number(e.target.value))}
+                            className="w-full px-2 py-1.5 text-xs bg-background border border-border rounded focus:border-primary/50 focus:outline-none font-mono"
+                          >
+                            {[0, 15, 30, 45].map(m => (
+                              <option key={m} value={m}>:{String(m).padStart(2, '0')}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-display tracking-widest text-muted-foreground mb-1">EVERY</label>
+                          <select
+                            value={scheduleFrequency}
+                            onChange={e => setScheduleFrequency(Number(e.target.value))}
+                            className="w-full px-2 py-1.5 text-xs bg-background border border-border rounded focus:border-primary/50 focus:outline-none font-mono"
+                          >
+                            {[1, 2, 3, 4, 6, 8, 12, 24].map(h => (
+                              <option key={h} value={h}>{h === 24 ? 'Daily' : `${h}h`}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={handleScheduleSave}
+                          disabled={scheduleSaving}
+                          className="px-3 py-1 text-[10px] font-display tracking-wider bg-primary text-primary-foreground rounded hover:bg-primary/90 transition-colors disabled:opacity-50"
+                        >
+                          {scheduleSaving ? 'SAVING...' : 'SAVE SCHEDULE'}
+                        </button>
+                        <button
+                          onClick={() => {
+                            setScheduleEditing(false);
+                            // Reset to original values
+                            if (sheetSchedule) {
+                              setScheduleHour(sheetSchedule.hour);
+                              setScheduleMinute(sheetSchedule.minute);
+                              setScheduleFrequency(sheetSchedule.frequencyHours || 12);
+                              setScheduleEnabled(sheetSchedule.enabled);
+                            }
+                          }}
+                          className="px-3 py-1 text-[10px] font-display tracking-wider border border-border rounded hover:bg-card/80 transition-colors"
+                        >
+                          CANCEL
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <p className="text-xs text-foreground">
+                        <span className="text-muted-foreground">Schedule:</span> {sheetSchedule.name}
+                        {sheetSchedule.enabled ? (
+                          <span className="ml-2 text-status-success text-[10px]">ENABLED</span>
+                        ) : (
+                          <span className="ml-2 text-muted-foreground text-[10px]">DISABLED</span>
+                        )}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Runs every {sheetSchedule.frequencyHours || 24}h starting at {String(sheetSchedule.hour).padStart(2, '0')}:{String(sheetSchedule.minute).padStart(2, '0')} UTC
+                      </p>
+                      {sheetSchedule.nextRun && (
+                        <p className="text-xs text-muted-foreground">
+                          Next run: {new Date(sheetSchedule.nextRun).toLocaleString()} ({formatNextRun(sheetSchedule.nextRun)})
+                        </p>
                       )}
-                    </p>
-                    {sheetSchedule.nextRun && (
-                      <p className="text-xs text-muted-foreground">
-                        Next run: {new Date(sheetSchedule.nextRun).toLocaleString()} ({formatNextRun(sheetSchedule.nextRun)})
-                      </p>
-                    )}
-                    {editingPrompt?.lastRunAt && (
-                      <p className="text-xs text-muted-foreground">
-                        Last run: {timeAgo(editingPrompt.lastRunAt)}
-                      </p>
-                    )}
-                  </>
+                      {editingPrompt?.lastRunAt && (
+                        <p className="text-xs text-muted-foreground">
+                          Last run: {timeAgo(editingPrompt.lastRunAt)}
+                        </p>
+                      )}
+                    </>
+                  )
                 ) : (
                   <p className="text-xs text-muted-foreground/60">No scan-execution schedule configured for this wire.</p>
                 )}
@@ -537,6 +714,73 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
                 CANCEL
               </button>
             </div>
+
+            {/* Recent Results Section */}
+            {editingId && (
+              <div className="pt-4 border-t border-border space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-[10px] font-display tracking-widest text-muted-foreground">
+                    RECENT RESULTS
+                    {promptResultsTotal > 0 && (
+                      <span className="ml-2 text-foreground">({promptResultsTotal} total)</span>
+                    )}
+                  </p>
+                  {!resultsLoading && editingId && (
+                    <button
+                      onClick={() => loadPromptResults(editingId)}
+                      className="text-[10px] font-display tracking-wider text-primary hover:text-primary/80 transition-colors"
+                    >
+                      REFRESH
+                    </button>
+                  )}
+                </div>
+
+                {resultsLoading ? (
+                  <p className="text-xs text-muted-foreground animate-pulse">Loading results...</p>
+                ) : promptResults.length === 0 ? (
+                  <p className="text-xs text-muted-foreground/60">No results found for this prompt.</p>
+                ) : (
+                  <div className="space-y-1">
+                    {promptResults.map((entry) => (
+                      <div
+                        key={entry.id}
+                        className="flex items-start gap-2 py-1.5 border-b border-border/30 last:border-0"
+                      >
+                        <span className={`flex-shrink-0 mt-0.5 inline-flex items-center px-1.5 py-0 rounded text-[9px] font-display tracking-wider border ${
+                          STATUS_COLORS[entry.status] || STATUS_COLORS.raw
+                        }`}>
+                          {entry.status === 'approved' ? 'APR' :
+                           entry.status === 'queued' ? 'QUE' :
+                           entry.status === 'archived' ? 'ARC' :
+                           entry.status === 'duplicate' ? 'DUP' :
+                           entry.status === 'declined' ? 'DEC' :
+                           entry.status.slice(0, 3).toUpperCase()}
+                        </span>
+                        {entry.quality_score > 0 && (
+                          <span className={`flex-shrink-0 mt-0.5 text-[9px] font-mono w-5 text-right ${
+                            entry.quality_score >= 70 ? 'text-green-400' :
+                            entry.quality_score >= 40 ? 'text-yellow-400' : 'text-muted-foreground'
+                          }`}>
+                            {entry.quality_score}
+                          </span>
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs truncate">{entry.name || '(untitled)'}</p>
+                          <p className="text-[10px] text-muted-foreground/60 font-mono">
+                            {entry.created_at ? timeAgo(entry.created_at) : ''}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                    {promptResultsTotal > promptResults.length && (
+                      <p className="text-[10px] text-muted-foreground/60 text-center pt-1">
+                        Showing {promptResults.length} of {promptResultsTotal}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </SheetContent>
       </Sheet>

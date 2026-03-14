@@ -12,6 +12,22 @@ async function authFetch(url: string, init?: RequestInit): Promise<Response> {
   return res;
 }
 
+export async function fetchPromptResults(promptId: string, limit = 20): Promise<{ entries: ScanEntry[]; total: number }> {
+  const q = new URLSearchParams({ promptId, limit: String(limit) }).toString();
+  const res = await authFetch(`${BASE}/scan/entries?${q}`);
+  if (!res.ok) throw new Error(`Failed to fetch prompt results: ${res.status}`);
+  const data = await res.json();
+  return {
+    entries: (data.entries || []).map((e: any) => ({
+      ...e,
+      id: String(e.id),
+      wire: e.wire || '',
+      quality_score: Number(e.quality_score) || 0,
+    })),
+    total: data.total || 0,
+  };
+}
+
 export async function fetchEntries(params: { status?: string; wire?: string; limit?: number } = {}): Promise<ScanEntry[]> {
   const effectiveParams = { limit: 500, ...params };
   const q = new URLSearchParams(
