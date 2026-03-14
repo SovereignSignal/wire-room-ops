@@ -137,4 +137,5 @@ export interface ScanPrompt {
   sortOrder: number;
   createdAt: string;
   updatedAt: string;
+  lastRunAt: string | null;
 }

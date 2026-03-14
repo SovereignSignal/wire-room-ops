@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useToast } from '@/hooks/use-toast';
 import { ScanPrompt } from '@/types';
 import {
@@ -7,7 +7,15 @@ import {
   updateScanPrompt,
   deleteScanPrompt,
   testScanPrompt,
+  fetchSchedules,
+  ScheduleResponse,
 } from '@/api';
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet';
 
 interface ScanPromptsTabProps {
   verticals: string[];
@@ -19,12 +27,34 @@ const TOOL_TYPES = [
   { value: 'perplexity', label: 'Perplexity', icon: '🔮' },
 ];
 
-const VARIANTS = ['A', 'B', 'C'];
+const VARIANTS = ['A', 'B', 'C', 'W', 'P'];
+
+function timeAgo(dateStr: string): string {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+function formatNextRun(dateStr: string): string {
+  const diff = new Date(dateStr).getTime() - Date.now();
+  if (diff < 0) return 'overdue';
+  const mins = Math.floor(diff / 60000);
+  if (mins < 60) return `in ${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `in ${hours}h`;
+  const days = Math.floor(hours / 24);
+  return `in ${days}d`;
+}
 
 export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
   const [prompts, setPrompts] = useState<ScanPrompt[]>([]);
+  const [schedules, setSchedules] = useState<ScheduleResponse[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showForm, setShowForm] = useState(false);
+  const [sheetOpen, setSheetOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [testing, setTesting] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{
@@ -37,7 +67,6 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
   } | null>(null);
   const [testResultExpanded, setTestResultExpanded] = useState(false);
   const { toast } = useToast();
-  const formRef = useRef<HTMLDivElement>(null);
 
   // Form state
   const [formWire, setFormWire] = useState('');
@@ -48,10 +77,14 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
   const [formResponseFormat, setFormResponseFormat] = useState('');
   const [formActive, setFormActive] = useState(true);
 
-  const loadPrompts = useCallback(async () => {
+  const loadData = useCallback(async () => {
     try {
-      const data = await fetchScanPrompts();
-      setPrompts(data);
+      const [promptsData, schedulesData] = await Promise.all([
+        fetchScanPrompts(),
+        fetchSchedules().catch(() => [] as ScheduleResponse[]),
+      ]);
+      setPrompts(promptsData);
+      setSchedules(schedulesData);
     } catch {
       toast({ title: 'Error', description: 'Failed to load scan prompts' });
     } finally {
@@ -59,7 +92,12 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
     }
   }, [toast]);
 
-  useEffect(() => { loadPrompts(); }, [loadPrompts]);
+  useEffect(() => { loadData(); }, [loadData]);
+
+  // Get schedule info for a wire
+  const getWireSchedule = (wire: string): ScheduleResponse | undefined => {
+    return schedules.find(s => s.wire === wire && s.scheduleType === 'scan-execution' && s.enabled);
+  };
 
   const resetForm = () => {
     setFormWire(verticals[0] || '');
@@ -72,12 +110,12 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
     setEditingId(null);
   };
 
-  const openAddForm = () => {
+  const openAddSheet = () => {
     resetForm();
-    setShowForm(true);
+    setSheetOpen(true);
   };
 
-  const openEditForm = (p: ScanPrompt) => {
+  const openEditSheet = (p: ScanPrompt) => {
     setFormWire(p.wire);
     setFormLabel(p.label);
     setFormToolType(p.toolType);
@@ -86,8 +124,7 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
     setFormResponseFormat(p.responseFormat || '');
     setFormActive(p.isActive);
     setEditingId(p.id);
-    setShowForm(true);
-    setTimeout(() => formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
+    setSheetOpen(true);
   };
 
   const handleSubmit = async () => {
@@ -122,9 +159,9 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
         await createScanPrompt(body);
         toast({ title: 'Created', description: 'Prompt created' });
       }
-      setShowForm(false);
+      setSheetOpen(false);
       resetForm();
-      await loadPrompts();
+      await loadData();
     } catch (error) {
       toast({ title: 'Error', description: error instanceof Error ? error.message : 'Failed to save' });
     }
@@ -136,7 +173,7 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
       await deleteScanPrompt(id);
       toast({ title: 'Deleted', description: 'Prompt removed' });
       if (testResult?.promptId === id) setTestResult(null);
-      await loadPrompts();
+      await loadData();
     } catch {
       toast({ title: 'Error', description: 'Failed to delete prompt' });
     }
@@ -167,13 +204,17 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
   const handleToggleActive = async (p: ScanPrompt) => {
     try {
       await updateScanPrompt(p.id, { isActive: !p.isActive });
-      await loadPrompts();
+      await loadData();
     } catch {
       toast({ title: 'Error', description: 'Failed to update prompt' });
     }
   };
 
   const toolInfo = (type: string) => TOOL_TYPES.find(t => t.value === type) || TOOL_TYPES[0];
+
+  // Get the editing prompt's schedule info for the sheet
+  const editingPrompt = editingId ? prompts.find(p => p.id === editingId) : null;
+  const sheetSchedule = editingPrompt ? getWireSchedule(editingPrompt.wire) : formWire ? getWireSchedule(formWire) : undefined;
 
   if (loading) {
     return (
@@ -197,7 +238,7 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
           </p>
         </div>
         <button
-          onClick={openAddForm}
+          onClick={openAddSheet}
           className="px-4 py-2 text-xs font-display tracking-wider bg-primary/10 text-primary border border-primary/30 rounded hover:bg-primary/20 transition-colors self-start sm:self-auto"
         >
           + ADD PROMPT
@@ -205,7 +246,7 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
       </div>
 
       {/* Prompt table */}
-      {prompts.length === 0 && !showForm ? (
+      {prompts.length === 0 ? (
         <div className="border border-dashed border-border rounded-lg p-12 text-center">
           <div className="text-4xl mb-3">🔍</div>
           <p className="text-sm text-muted-foreground">No scan prompts configured yet.</p>
@@ -213,70 +254,83 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
         </div>
       ) : (
         <div className="border border-border rounded-lg overflow-x-auto">
-          <table className="w-full min-w-[700px]">
+          <table className="w-full min-w-[800px]">
             <thead>
               <tr className="bg-card/80 border-b border-border">
                 <th className="text-left text-[10px] font-display tracking-widest text-muted-foreground px-4 py-3">LABEL</th>
-                <th className="text-left text-[10px] font-display tracking-widest text-muted-foreground px-4 py-3">WIRE</th>
-                <th className="text-left text-[10px] font-display tracking-widest text-muted-foreground px-4 py-3">TOOL</th>
-                <th className="text-left text-[10px] font-display tracking-widest text-muted-foreground px-4 py-3">VARIANT</th>
-                <th className="text-center text-[10px] font-display tracking-widest text-muted-foreground px-4 py-3">STATUS</th>
+                <th className="text-left text-[10px] font-display tracking-widest text-muted-foreground px-3 py-3">WIRE</th>
+                <th className="text-left text-[10px] font-display tracking-widest text-muted-foreground px-3 py-3">TOOL</th>
+                <th className="text-center text-[10px] font-display tracking-widest text-muted-foreground px-3 py-3">STATUS</th>
+                <th className="text-left text-[10px] font-display tracking-widest text-muted-foreground px-3 py-3">LAST RUN</th>
+                <th className="text-left text-[10px] font-display tracking-widest text-muted-foreground px-3 py-3">NEXT RUN</th>
                 <th className="text-right text-[10px] font-display tracking-widest text-muted-foreground px-4 py-3">ACTIONS</th>
               </tr>
             </thead>
             <tbody>
-              {prompts.map(p => (
-                <tr key={p.id} className="border-b border-border/50 hover:bg-card/40 transition-colors">
-                  <td className="px-4 py-3 text-sm font-medium">{p.label}</td>
-                  <td className="px-4 py-3 text-sm">
-                    <span className="inline-flex items-center px-2 py-0.5 rounded bg-card border border-border text-xs font-mono">
-                      {p.wire}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-sm">
-                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-card border border-border text-xs">
-                      {toolInfo(p.toolType).icon} {toolInfo(p.toolType).label}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-sm font-mono text-muted-foreground">{p.variant || '—'}</td>
-                  <td className="px-4 py-3 text-center">
-                    <button
-                      onClick={() => handleToggleActive(p)}
-                      className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-display tracking-wider border transition-colors ${
-                        p.isActive
-                          ? 'bg-status-success/10 text-status-success border-status-success/30'
-                          : 'bg-muted/10 text-muted-foreground border-border'
-                      }`}
-                    >
-                      <span className={`w-1.5 h-1.5 rounded-full ${p.isActive ? 'bg-status-success' : 'bg-muted-foreground'}`} />
-                      {p.isActive ? 'ACTIVE' : 'DISABLED'}
-                    </button>
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    <div className="flex items-center justify-end gap-2">
+              {prompts.map(p => {
+                const schedule = getWireSchedule(p.wire);
+                return (
+                  <tr key={p.id} className="border-b border-border/50 hover:bg-card/40 transition-colors">
+                    <td className="px-4 py-3 text-sm font-medium">{p.label}</td>
+                    <td className="px-3 py-3 text-sm">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded bg-card border border-border text-xs font-mono">
+                        {p.wire}
+                      </span>
+                    </td>
+                    <td className="px-3 py-3 text-sm">
+                      <span className="inline-flex items-center gap-1 text-xs">
+                        {toolInfo(p.toolType).icon} {toolInfo(p.toolType).label}
+                      </span>
+                    </td>
+                    <td className="px-3 py-3 text-center">
                       <button
-                        onClick={() => handleTest(p.id)}
-                        disabled={testing === p.id}
-                        className="px-2 py-1 text-[10px] font-display tracking-wider border border-border rounded hover:bg-card/80 transition-colors disabled:opacity-50"
+                        onClick={() => handleToggleActive(p)}
+                        className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-display tracking-wider border transition-colors ${
+                          p.isActive
+                            ? 'bg-status-success/10 text-status-success border-status-success/30'
+                            : 'bg-muted/10 text-muted-foreground border-border'
+                        }`}
                       >
-                        {testing === p.id ? '...' : 'TEST'}
+                        <span className={`w-1.5 h-1.5 rounded-full ${p.isActive ? 'bg-status-success' : 'bg-muted-foreground'}`} />
+                        {p.isActive ? 'ACTIVE' : 'OFF'}
                       </button>
-                      <button
-                        onClick={() => openEditForm(p)}
-                        className="px-2 py-1 text-[10px] font-display tracking-wider border border-border rounded hover:bg-card/80 transition-colors"
-                      >
-                        EDIT
-                      </button>
-                      <button
-                        onClick={() => handleDelete(p.id)}
-                        className="px-2 py-1 text-[10px] font-display tracking-wider border border-red-500/30 text-red-400 rounded hover:bg-red-500/10 transition-colors"
-                      >
-                        DEL
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                    <td className="px-3 py-3 text-xs font-mono text-muted-foreground">
+                      {p.lastRunAt ? timeAgo(p.lastRunAt) : <span className="text-muted-foreground/40">never</span>}
+                    </td>
+                    <td className="px-3 py-3 text-xs font-mono text-muted-foreground">
+                      {schedule?.nextRun ? (
+                        formatNextRun(schedule.nextRun)
+                      ) : (
+                        <span className="text-muted-foreground/40">no schedule</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          onClick={() => handleTest(p.id)}
+                          disabled={testing === p.id}
+                          className="px-2 py-1 text-[10px] font-display tracking-wider border border-border rounded hover:bg-card/80 transition-colors disabled:opacity-50"
+                        >
+                          {testing === p.id ? '...' : 'TEST'}
+                        </button>
+                        <button
+                          onClick={() => openEditSheet(p)}
+                          className="px-2 py-1 text-[10px] font-display tracking-wider border border-primary/30 text-primary rounded hover:bg-primary/10 transition-colors"
+                        >
+                          EDIT
+                        </button>
+                        <button
+                          onClick={() => handleDelete(p.id)}
+                          className="px-2 py-1 text-[10px] font-display tracking-wider border border-red-500/30 text-red-400 rounded hover:bg-red-500/10 transition-colors"
+                        >
+                          DEL
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -300,7 +354,6 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
             </button>
           </div>
 
-          {/* Parsed result names */}
           {testResult.parsedResults.length > 0 && (
             <div className="space-y-1">
               {testResult.parsedResults.slice(0, 10).map((r: any, i: number) => (
@@ -317,7 +370,6 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
             </div>
           )}
 
-          {/* Collapsible raw output */}
           <div>
             <button
               onClick={() => setTestResultExpanded(!testResultExpanded)}
@@ -335,136 +387,159 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
         </div>
       )}
 
-      {/* Add/Edit Form */}
-      {showForm && (
-        <div ref={formRef} className="border border-primary/30 rounded-lg bg-card/80 p-6 space-y-5">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-display tracking-wider glow-text">
-              {editingId ? 'EDIT PROMPT' : 'NEW PROMPT'}
-            </h3>
-            <button
-              onClick={() => { setShowForm(false); resetForm(); }}
-              className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-            >
-              Close
-            </button>
-          </div>
+      {/* Slide-out Edit/Add Sheet */}
+      <Sheet open={sheetOpen} onOpenChange={(open) => { if (!open) { setSheetOpen(false); resetForm(); } }}>
+        <SheetContent className="w-full sm:max-w-md md:max-w-lg border-l border-border bg-card overflow-y-auto">
+          <div className="pt-6 space-y-6">
+            <SheetHeader>
+              <SheetTitle className="font-display tracking-wider text-base">
+                {editingId ? 'EDIT PROMPT' : 'NEW PROMPT'}
+              </SheetTitle>
+            </SheetHeader>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Wire */}
-            <div>
-              <label className="block text-[10px] font-display tracking-widest text-muted-foreground mb-1.5">WIRE</label>
-              <select
-                value={formWire}
-                onChange={e => setFormWire(e.target.value)}
-                className="w-full px-3 py-2 text-sm bg-background border border-border rounded focus:border-primary/50 focus:outline-none"
-              >
-                <option value="">Select wire...</option>
-                {verticals.map(v => (
-                  <option key={v} value={v}>{v}</option>
-                ))}
-              </select>
+            {/* Schedule info banner */}
+            {(editingId || formWire) && (
+              <div className="bg-muted/20 border border-border rounded-lg p-3 space-y-1">
+                <p className="text-[10px] font-display tracking-widest text-muted-foreground">SCHEDULE INFO</p>
+                {sheetSchedule ? (
+                  <>
+                    <p className="text-xs text-foreground">
+                      <span className="text-muted-foreground">Schedule:</span> {sheetSchedule.name}
+                      {sheetSchedule.enabled ? (
+                        <span className="ml-2 text-status-success text-[10px]">ENABLED</span>
+                      ) : (
+                        <span className="ml-2 text-muted-foreground text-[10px]">DISABLED</span>
+                      )}
+                    </p>
+                    {sheetSchedule.nextRun && (
+                      <p className="text-xs text-muted-foreground">
+                        Next run: {new Date(sheetSchedule.nextRun).toLocaleString()} ({formatNextRun(sheetSchedule.nextRun)})
+                      </p>
+                    )}
+                    {editingPrompt?.lastRunAt && (
+                      <p className="text-xs text-muted-foreground">
+                        Last run: {timeAgo(editingPrompt.lastRunAt)}
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-xs text-muted-foreground/60">No scan-execution schedule configured for this wire.</p>
+                )}
+              </div>
+            )}
+
+            {/* Form fields */}
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[10px] font-display tracking-widest text-muted-foreground mb-1.5">WIRE</label>
+                  <select
+                    value={formWire}
+                    onChange={e => setFormWire(e.target.value)}
+                    className="w-full px-3 py-2 text-sm bg-background border border-border rounded focus:border-primary/50 focus:outline-none"
+                  >
+                    <option value="">Select wire...</option>
+                    {verticals.map(v => (
+                      <option key={v} value={v}>{v}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-display tracking-widest text-muted-foreground mb-1.5">VARIANT</label>
+                  <select
+                    value={formVariant}
+                    onChange={e => setFormVariant(e.target.value)}
+                    className="w-full px-3 py-2 text-sm bg-background border border-border rounded focus:border-primary/50 focus:outline-none"
+                  >
+                    <option value="">(none)</option>
+                    {VARIANTS.map(v => (
+                      <option key={v} value={v}>{v}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-display tracking-widest text-muted-foreground mb-1.5">LABEL</label>
+                <input
+                  type="text"
+                  value={formLabel}
+                  onChange={e => setFormLabel(e.target.value)}
+                  placeholder="e.g. AI A — Action Scan"
+                  className="w-full px-3 py-2 text-sm bg-background border border-border rounded focus:border-primary/50 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-display tracking-widest text-muted-foreground mb-1.5">TOOL TYPE</label>
+                <select
+                  value={formToolType}
+                  onChange={e => setFormToolType(e.target.value)}
+                  className="w-full px-3 py-2 text-sm bg-background border border-border rounded focus:border-primary/50 focus:outline-none"
+                >
+                  {TOOL_TYPES.map(t => (
+                    <option key={t.value} value={t.value}>{t.icon} {t.label}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-display tracking-widest text-muted-foreground mb-1.5">PROMPT TEXT</label>
+                <textarea
+                  value={formPromptText}
+                  onChange={e => setFormPromptText(e.target.value)}
+                  placeholder="Enter the scan prompt..."
+                  rows={8}
+                  className="w-full px-3 py-2 text-sm bg-background border border-border rounded focus:border-primary/50 focus:outline-none font-mono resize-y"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-display tracking-widest text-muted-foreground mb-1.5">
+                  RESPONSE FORMAT <span className="text-muted-foreground/60">(optional)</span>
+                </label>
+                <textarea
+                  value={formResponseFormat}
+                  onChange={e => setFormResponseFormat(e.target.value)}
+                  placeholder="Optional format instructions..."
+                  rows={3}
+                  className="w-full px-3 py-2 text-sm bg-background border border-border rounded focus:border-primary/50 focus:outline-none font-mono resize-y"
+                />
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setFormActive(!formActive)}
+                  className={`relative w-10 h-5 rounded-full transition-colors ${
+                    formActive ? 'bg-primary' : 'bg-muted'
+                  }`}
+                >
+                  <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                    formActive ? 'left-5' : 'left-0.5'
+                  }`} />
+                </button>
+                <span className="text-xs text-muted-foreground">{formActive ? 'Active' : 'Disabled'}</span>
+              </div>
             </div>
 
-            {/* Label */}
-            <div>
-              <label className="block text-[10px] font-display tracking-widest text-muted-foreground mb-1.5">LABEL</label>
-              <input
-                type="text"
-                value={formLabel}
-                onChange={e => setFormLabel(e.target.value)}
-                placeholder="e.g. Crypto Grants X Search"
-                className="w-full px-3 py-2 text-sm bg-background border border-border rounded focus:border-primary/50 focus:outline-none"
-              />
-            </div>
-
-            {/* Tool Type */}
-            <div>
-              <label className="block text-[10px] font-display tracking-widest text-muted-foreground mb-1.5">TOOL TYPE</label>
-              <select
-                value={formToolType}
-                onChange={e => setFormToolType(e.target.value)}
-                className="w-full px-3 py-2 text-sm bg-background border border-border rounded focus:border-primary/50 focus:outline-none"
-              >
-                {TOOL_TYPES.map(t => (
-                  <option key={t.value} value={t.value}>{t.icon} {t.label}</option>
-                ))}
-              </select>
-            </div>
-
-            {/* Variant */}
-            <div>
-              <label className="block text-[10px] font-display tracking-widest text-muted-foreground mb-1.5">VARIANT</label>
-              <select
-                value={formVariant}
-                onChange={e => setFormVariant(e.target.value)}
-                className="w-full px-3 py-2 text-sm bg-background border border-border rounded focus:border-primary/50 focus:outline-none"
-              >
-                <option value="">(none)</option>
-                {VARIANTS.map(v => (
-                  <option key={v} value={v}>{v}</option>
-                ))}
-              </select>
-            </div>
-
-            {/* Prompt Text */}
-            <div className="md:col-span-2">
-              <label className="block text-[10px] font-display tracking-widest text-muted-foreground mb-1.5">PROMPT TEXT</label>
-              <textarea
-                value={formPromptText}
-                onChange={e => setFormPromptText(e.target.value)}
-                placeholder="Enter the scan prompt..."
-                rows={8}
-                className="w-full px-3 py-2 text-sm bg-background border border-border rounded focus:border-primary/50 focus:outline-none font-mono resize-y"
-              />
-            </div>
-
-            {/* Response Format */}
-            <div className="md:col-span-2">
-              <label className="block text-[10px] font-display tracking-widest text-muted-foreground mb-1.5">
-                RESPONSE FORMAT <span className="text-muted-foreground/60">(optional)</span>
-              </label>
-              <textarea
-                value={formResponseFormat}
-                onChange={e => setFormResponseFormat(e.target.value)}
-                placeholder="Optional format instructions for the model..."
-                rows={3}
-                className="w-full px-3 py-2 text-sm bg-background border border-border rounded focus:border-primary/50 focus:outline-none font-mono resize-y"
-              />
-            </div>
-
-            {/* Active toggle */}
-            <div className="flex items-center gap-3 md:col-span-2">
+            {/* Actions */}
+            <div className="flex items-center gap-3 pt-2 border-t border-border">
               <button
-                onClick={() => setFormActive(!formActive)}
-                className={`relative w-10 h-5 rounded-full transition-colors ${
-                  formActive ? 'bg-primary' : 'bg-muted'
-                }`}
+                onClick={handleSubmit}
+                className="px-6 py-2 text-xs font-display tracking-wider bg-primary text-primary-foreground rounded hover:bg-primary/90 transition-colors"
               >
-                <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
-                  formActive ? 'left-5' : 'left-0.5'
-                }`} />
+                {editingId ? 'UPDATE' : 'CREATE'}
               </button>
-              <span className="text-xs text-muted-foreground">{formActive ? 'Active' : 'Disabled'}</span>
+              <button
+                onClick={() => { setSheetOpen(false); resetForm(); }}
+                className="px-6 py-2 text-xs font-display tracking-wider border border-border rounded hover:bg-card/80 transition-colors"
+              >
+                CANCEL
+              </button>
             </div>
           </div>
-
-          <div className="flex items-center gap-3 pt-2">
-            <button
-              onClick={handleSubmit}
-              className="px-6 py-2 text-xs font-display tracking-wider bg-primary text-primary-foreground rounded hover:bg-primary/90 transition-colors"
-            >
-              {editingId ? 'UPDATE' : 'CREATE'}
-            </button>
-            <button
-              onClick={() => { setShowForm(false); resetForm(); }}
-              className="px-6 py-2 text-xs font-display tracking-wider border border-border rounded hover:bg-card/80 transition-colors"
-            >
-              CANCEL
-            </button>
-          </div>
-        </div>
-      )}
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

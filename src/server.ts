@@ -1090,7 +1090,25 @@ app.get('/api/scan/prompts', requireAuth, async (req: Request, res: Response) =>
 
   try {
     const prompts = await getAllScanPrompts(wire || undefined, activeOnly ?? undefined);
-    res.json(prompts);
+
+    // Enrich with last run timestamps from scan_entries
+    const pool = getPool();
+    const lastRunResult = await pool.query(
+      `SELECT prompt_id, MAX(created_at) as last_run_at
+       FROM scan_entries WHERE prompt_id IS NOT NULL
+       GROUP BY prompt_id`
+    );
+    const lastRunMap = new Map<string, string>();
+    for (const row of lastRunResult.rows) {
+      lastRunMap.set(String(row.prompt_id), row.last_run_at);
+    }
+
+    const enriched = prompts.map((p: any) => ({
+      ...p,
+      lastRunAt: lastRunMap.get(p.id) || null,
+    }));
+
+    res.json(enriched);
   } catch (error) {
     console.error('Failed to fetch scan prompts:', error);
     res.status(500).json({ error: 'Failed to fetch scan prompts' });
