@@ -1,16 +1,19 @@
 /**
  * Community Pulse Service
  *
- * Searches Reddit, Hacker News, and Polymarket for community signal
- * on a given topic. Returns results formatted for the existing
- * parseStructuredOutput() pipeline — zero changes needed downstream.
+ * Searches Reddit and Hacker News for community signal on funding/grants
+ * topics. Returns results formatted for the existing parseStructuredOutput()
+ * pipeline — zero changes needed downstream.
  *
  * All APIs are free, public, and require no authentication.
  *
  * Sources:
  * - Reddit: public JSON search API (reddit.com/search.json)
  * - Hacker News: Algolia search API (hn.algolia.com)
- * - Polymarket: Gamma events API (gamma-api.polymarket.com)
+ *
+ * NOTE: Polymarket intentionally excluded. Prediction markets surface
+ * political/geopolitical speculation, not funding opportunities.
+ * Polymarket is used in the Macro Brief (via last30days), not here.
  */
 
 import { logApiUsage } from './api-usage';
@@ -39,23 +42,94 @@ interface HNStory {
   createdAt: string;
 }
 
-interface PolymarketEvent {
-  title: string;
-  slug: string;
-  volume: number;
-  liquidity: number;
-  outcomes: string[];
-  outcomePrices: string[];
-  endDate: string | null;
-  url: string;
-}
-
 interface CommunityResult {
   name: string;
   description: string;
   sourceUrl: string;
-  engagement: number; // normalized engagement score for sorting
-  source: 'reddit' | 'hackernews' | 'polymarket';
+  engagement: number;
+  source: 'reddit' | 'hackernews';
+  relevanceScore: number; // 0-1, how relevant to funding/grants
+}
+
+// ============================================================
+// Relevance keywords — results must match at least one
+// ============================================================
+
+const FUNDING_KEYWORDS = [
+  'grant', 'grants', 'funding', 'fund', 'funded',
+  'bounty', 'bounties', 'reward', 'prize',
+  'fellowship', 'scholarship', 'stipend',
+  'accelerator', 'incubator',
+  'rfp', 'rfa', 'open call',
+  'retroactive', 'retropgf', 'rpgf',
+  'treasury', 'allocation',
+  'sponsorship', 'sponsor',
+  'hackathon', 'hack',
+  'developer program', 'builder program',
+  'ecosystem fund', 'ecosystem grant',
+  'foundation', 'endowment',
+  'apply', 'application', 'deadline',
+  'airdrop', 'incentive', 'incentives',
+];
+
+// Wire-specific keywords for additional relevance
+const WIRE_KEYWORDS: Record<string, string[]> = {
+  crypto: [
+    'defi', 'dao', 'protocol', 'blockchain', 'ethereum', 'solana',
+    'optimism', 'arbitrum', 'base', 'polygon', 'uniswap', 'aave',
+    'compound', 'maker', 'gitcoin', 'public goods', 'web3',
+    'onchain', 'on-chain', 'smart contract', 'token',
+  ],
+  ai: [
+    'machine learning', 'deep learning', 'nlp', 'llm', 'neural',
+    'artificial intelligence', 'ai safety', 'alignment',
+    'nsf', 'darpa', 'nih', 'openai', 'anthropic', 'google deepmind',
+    'research lab', 'compute grant', 'gpu', 'training',
+  ],
+  oss: [
+    'open source', 'open-source', 'foss', 'libre',
+    'github sponsors', 'linux foundation', 'apache', 'cncf',
+    'sovereign tech', 'nlnet', 'mozilla', 'outreachy',
+    'maintainer', 'contributor', 'upstream',
+    'gsoc', 'google summer', 'lfx mentorship',
+  ],
+};
+
+/**
+ * Score relevance of a result to funding/grants topics.
+ * Returns 0-1 score. Results below threshold are filtered out.
+ */
+function scoreRelevance(text: string, wire: string): number {
+  const lower = text.toLowerCase();
+  let score = 0;
+  let matches = 0;
+
+  // Check funding keywords (high weight)
+  for (const kw of FUNDING_KEYWORDS) {
+    if (lower.includes(kw)) {
+      score += 0.3;
+      matches++;
+      if (matches >= 3) break; // Cap contribution
+    }
+  }
+
+  // Check wire-specific keywords (medium weight)
+  const wireKws = WIRE_KEYWORDS[wire] || [];
+  let wireMatches = 0;
+  for (const kw of wireKws) {
+    if (lower.includes(kw)) {
+      score += 0.15;
+      wireMatches++;
+      if (wireMatches >= 3) break;
+    }
+  }
+
+  // Bonus for having both funding + wire keywords
+  if (matches > 0 && wireMatches > 0) {
+    score += 0.2;
+  }
+
+  return Math.min(score, 1.0);
 }
 
 // ============================================================
@@ -64,9 +138,57 @@ interface CommunityResult {
 
 const REDDIT_USER_AGENT = 'wire-room-ops/1.0 (community-pulse)';
 
-async function searchReddit(topic: string, limit = 20): Promise<RedditThread[]> {
+// Targeted subreddits per wire for focused search
+const WIRE_SUBREDDITS: Record<string, string[]> = {
+  crypto: [
+    'ethereum', 'defi', 'ethfinance', 'CryptoCurrency',
+    'ethdev', 'solana', 'cosmosnetwork', 'web3',
+  ],
+  ai: [
+    'MachineLearning', 'artificial', 'LocalLLaMA',
+    'MLQuestions', 'deeplearning', 'LanguageTechnology',
+  ],
+  oss: [
+    'opensource', 'linux', 'programming', 'selfhosted',
+    'github', 'webdev', 'devops',
+  ],
+};
+
+async function searchReddit(topic: string, wire: string, limit = 25): Promise<RedditThread[]> {
+  const allResults: RedditThread[] = [];
+
+  // Strategy: run two searches in parallel
+  // 1. Global search with funding-specific terms
+  // 2. Targeted subreddit search for wire-specific communities
+  const subreddits = WIRE_SUBREDDITS[wire] || [];
+  const subredditQuery = subreddits.length > 0
+    ? `(${subreddits.slice(0, 4).map(s => `subreddit:${s}`).join(' OR ')}) (grant OR funding OR bounty OR program)`
+    : topic;
+
+  const searches = [
+    // Global search — funding-focused
+    fetchReddit(`${topic} (grant OR funding OR bounty OR hackathon)`, limit),
+    // Subreddit-targeted search
+    fetchReddit(subredditQuery, Math.min(limit, 15)),
+  ];
+
+  const [global, targeted] = await Promise.all(searches);
+
+  // Merge and deduplicate by permalink
+  const seen = new Set<string>();
+  for (const thread of [...global, ...targeted]) {
+    if (!seen.has(thread.permalink)) {
+      seen.add(thread.permalink);
+      allResults.push(thread);
+    }
+  }
+
+  return allResults;
+}
+
+async function fetchReddit(query: string, limit: number): Promise<RedditThread[]> {
   const params = new URLSearchParams({
-    q: topic,
+    q: query,
     sort: 'relevance',
     t: 'month',
     limit: String(limit),
@@ -111,7 +233,7 @@ async function searchReddit(topic: string, limit = 20): Promise<RedditThread[]> 
       url: child.data.url,
       permalink: `https://www.reddit.com${child.data.permalink}`,
       createdUtc: child.data.created_utc,
-      selftext: (child.data.selftext || '').substring(0, 200),
+      selftext: (child.data.selftext || '').substring(0, 300),
     }));
   } catch (error) {
     console.warn(`[Community] Reddit search failed: ${error}`);
@@ -123,12 +245,35 @@ async function searchReddit(topic: string, limit = 20): Promise<RedditThread[]> 
 // Hacker News Algolia API
 // ============================================================
 
-async function searchHN(topic: string, limit = 10): Promise<HNStory[]> {
+async function searchHN(topic: string, wire: string, limit = 15): Promise<HNStory[]> {
   const thirtyDaysAgo = Math.floor(Date.now() / 1000) - 30 * 24 * 60 * 60;
+
+  // Run two HN searches: topic-general and funding-specific
+  const searches = [
+    fetchHN(`${topic} (grant OR funding OR program)`, limit, thirtyDaysAgo),
+    fetchHN(`${topic} (open source OR developer) (fund OR sponsor OR bounty)`, Math.min(limit, 10), thirtyDaysAgo),
+  ];
+
+  const [general, funding] = await Promise.all(searches);
+
+  // Merge and deduplicate
+  const seen = new Set<string>();
+  const results: HNStory[] = [];
+  for (const story of [...general, ...funding]) {
+    if (!seen.has(story.storyUrl)) {
+      seen.add(story.storyUrl);
+      results.push(story);
+    }
+  }
+
+  return results;
+}
+
+async function fetchHN(query: string, limit: number, sinceTimestamp: number): Promise<HNStory[]> {
   const params = new URLSearchParams({
-    query: topic,
+    query,
     tags: 'story',
-    numericFilters: `created_at_i>${thirtyDaysAgo}`,
+    numericFilters: `created_at_i>${sinceTimestamp}`,
     hitsPerPage: String(limit),
   });
 
@@ -170,108 +315,50 @@ async function searchHN(topic: string, limit = 10): Promise<HNStory[]> {
 }
 
 // ============================================================
-// Polymarket Gamma API
+// Result building with relevance filtering
 // ============================================================
-
-async function searchPolymarket(topic: string, limit = 8): Promise<PolymarketEvent[]> {
-  // Gamma API for event search — public, no auth
-  const url = `https://gamma-api.polymarket.com/events?closed=false&limit=${limit}&q=${encodeURIComponent(topic)}`;
-
-  try {
-    const response = await fetch(url, {
-      headers: { 'User-Agent': 'wire-room-ops/1.0' },
-      signal: AbortSignal.timeout(10000),
-    });
-
-    if (!response.ok) {
-      console.warn(`[Community] Polymarket returned ${response.status}`);
-      return [];
-    }
-
-    const events = await response.json() as Array<{
-      title: string;
-      slug: string;
-      volume: number;
-      liquidity: number;
-      markets: Array<{
-        outcomePrices: string;
-        outcomes: string;
-      }>;
-      endDate: string | null;
-    }>;
-
-    return events.map((event) => {
-      let outcomes: string[] = [];
-      let outcomePrices: string[] = [];
-
-      // Markets contain the outcome data
-      if (event.markets && event.markets.length > 0) {
-        const market = event.markets[0];
-        try {
-          outcomes = typeof market.outcomes === 'string'
-            ? JSON.parse(market.outcomes) : (market.outcomes || []);
-          outcomePrices = typeof market.outcomePrices === 'string'
-            ? JSON.parse(market.outcomePrices) : (market.outcomePrices || []);
-        } catch {
-          // Ignore parse errors
-        }
-      }
-
-      return {
-        title: event.title,
-        slug: event.slug,
-        volume: event.volume || 0,
-        liquidity: event.liquidity || 0,
-        outcomes,
-        outcomePrices,
-        endDate: event.endDate,
-        url: `https://polymarket.com/event/${event.slug}`,
-      };
-    });
-  } catch (error) {
-    console.warn(`[Community] Polymarket search failed: ${error}`);
-    return [];
-  }
-}
-
-// ============================================================
-// Result formatting
-// ============================================================
-
-function formatVolume(volume: number): string {
-  if (volume >= 1_000_000) return `$${(volume / 1_000_000).toFixed(1)}M`;
-  if (volume >= 1_000) return `$${(volume / 1_000).toFixed(0)}K`;
-  return `$${volume.toFixed(0)}`;
-}
 
 function formatDate(timestamp: number): string {
   return new Date(timestamp * 1000).toISOString().split('T')[0];
 }
 
+const RELEVANCE_THRESHOLD = 0.2; // Minimum relevance score to include
+
 function buildCommunityResults(
   reddit: RedditThread[],
   hn: HNStory[],
-  polymarket: PolymarketEvent[],
+  wire: string,
 ): CommunityResult[] {
   const results: CommunityResult[] = [];
 
-  // Reddit → CommunityResult
+  // Reddit → CommunityResult with relevance scoring
   for (const thread of reddit) {
+    const fullText = `${thread.title} ${thread.selftext} ${thread.subreddit}`;
+    const relevance = scoreRelevance(fullText, wire);
+
+    if (relevance < RELEVANCE_THRESHOLD) continue; // Filter irrelevant
+
     const engagement = thread.score + thread.numComments * 2;
     results.push({
       name: `[Reddit] r/${thread.subreddit}: "${thread.title}"`,
       description:
         `Reddit thread with ${thread.score} upvotes and ${thread.numComments} comments (${formatDate(thread.createdUtc)}). ` +
-        (thread.selftext ? thread.selftext.substring(0, 150) + '...' : 'Link post — discussion in comments.'),
+        (thread.selftext ? thread.selftext.substring(0, 200) + '...' : 'Link post — discussion in comments.'),
       sourceUrl: thread.permalink,
       engagement,
       source: 'reddit',
+      relevanceScore: relevance,
     });
   }
 
-  // HN → CommunityResult
+  // HN → CommunityResult with relevance scoring
   for (const story of hn) {
-    const engagement = story.points + story.numComments * 3; // HN comments are higher signal
+    const fullText = `${story.title} ${story.url || ''}`;
+    const relevance = scoreRelevance(fullText, wire);
+
+    if (relevance < RELEVANCE_THRESHOLD) continue;
+
+    const engagement = story.points + story.numComments * 3;
     results.push({
       name: `[Hacker News] "${story.title}"`,
       description:
@@ -280,35 +367,16 @@ function buildCommunityResults(
       sourceUrl: story.storyUrl,
       engagement,
       source: 'hackernews',
+      relevanceScore: relevance,
     });
   }
 
-  // Polymarket → CommunityResult
-  for (const event of polymarket) {
-    // Build odds string
-    let oddsStr = '';
-    if (event.outcomes.length > 0 && event.outcomePrices.length > 0) {
-      const pairs = event.outcomes.map((o, i) => {
-        const price = parseFloat(event.outcomePrices[i] || '0');
-        return `${o}: ${Math.round(price * 100)}%`;
-      });
-      oddsStr = pairs.join(', ');
-    }
-
-    results.push({
-      name: `[Polymarket] "${event.title}"`,
-      description:
-        `Prediction market with ${formatVolume(event.volume)} volume, ${formatVolume(event.liquidity)} liquidity. ` +
-        (oddsStr ? `Current odds: ${oddsStr}. ` : '') +
-        (event.endDate ? `Resolves: ${event.endDate.split('T')[0]}` : ''),
-      sourceUrl: event.url,
-      engagement: event.volume / 100, // normalize volume to comparable range
-      source: 'polymarket',
-    });
-  }
-
-  // Sort by engagement (highest first)
-  results.sort((a, b) => b.engagement - a.engagement);
+  // Sort by relevance first, then engagement within same relevance tier
+  results.sort((a, b) => {
+    const relevanceDiff = b.relevanceScore - a.relevanceScore;
+    if (Math.abs(relevanceDiff) > 0.1) return relevanceDiff;
+    return b.engagement - a.engagement;
+  });
 
   return results;
 }
@@ -317,25 +385,16 @@ function buildCommunityResults(
 // Format for parseStructuredOutput() compatibility
 // ============================================================
 
-/**
- * Format results into the same structured text format that
- * parseStructuredOutput() in intake.ts already parses.
- *
- * Format per entry:
- *   N. **Name** — Description
- *   Deadline: None listed
- *   Program URL: https://...
- */
 function formatAsStructuredOutput(results: CommunityResult[], topic: string): string {
   if (results.length === 0) {
-    return `No community results found for "${topic}".`;
+    return `No relevant community results found for "${topic}".`;
   }
 
-  // Take top 15 results across all sources
+  // Take top 15 results
   const top = results.slice(0, 15);
   const lines: string[] = [];
 
-  lines.push(`Community Pulse: "${topic}" — ${top.length} results from Reddit, Hacker News, and Polymarket\n`);
+  lines.push(`Community Pulse: "${topic}" — ${top.length} relevant results from Reddit and Hacker News\n`);
 
   for (let i = 0; i < top.length; i++) {
     const r = top[i];
@@ -345,12 +404,10 @@ function formatAsStructuredOutput(results: CommunityResult[], topic: string): st
     lines.push('');
   }
 
-  // Append stats
   const redditCount = top.filter((r) => r.source === 'reddit').length;
   const hnCount = top.filter((r) => r.source === 'hackernews').length;
-  const pmCount = top.filter((r) => r.source === 'polymarket').length;
   lines.push(`---`);
-  lines.push(`Sources: ${redditCount} Reddit threads, ${hnCount} HN stories, ${pmCount} Polymarket events`);
+  lines.push(`Sources: ${redditCount} Reddit threads, ${hnCount} HN stories (relevance-filtered)`);
 
   return lines.join('\n');
 }
@@ -368,34 +425,34 @@ export async function executeCommunityScan(
 
   console.log(`[Community] Starting community pulse scan for wire: ${wire}`);
 
-  // Extract topic from prompt text
-  // The prompt text contains the full scan prompt — extract the core topic
-  const topic = extractTopic(promptText, wire);
-  console.log(`[Community] Topic: "${topic}"`);
+  // Build targeted search queries from the prompt
+  const queries = buildSearchQueries(promptText, wire);
+  console.log(`[Community] Queries: ${JSON.stringify(queries)}`);
 
-  // Fan out to all three sources in parallel
-  const [reddit, hn, polymarket] = await Promise.all([
-    searchReddit(topic),
-    searchHN(topic),
-    searchPolymarket(topic),
+  // Fan out to Reddit + HN in parallel (Polymarket excluded — wrong tool for grant discovery)
+  const [reddit, hn] = await Promise.all([
+    searchReddit(queries.primary, wire),
+    searchHN(queries.primary, wire),
   ]);
 
   const durationMs = Date.now() - start;
 
   console.log(
-    `[Community] Results — Reddit: ${reddit.length}, HN: ${hn.length}, Polymarket: ${polymarket.length} (${durationMs}ms)`
+    `[Community] Raw results — Reddit: ${reddit.length}, HN: ${hn.length} (${durationMs}ms)`
   );
 
-  // Build unified results
-  const results = buildCommunityResults(reddit, hn, polymarket);
+  // Build unified results with relevance filtering
+  const results = buildCommunityResults(reddit, hn, wire);
 
-  // Format as structured output for parseStructuredOutput()
-  const content = formatAsStructuredOutput(results, topic);
+  console.log(
+    `[Community] After relevance filter: ${results.length} results (threshold: ${RELEVANCE_THRESHOLD})`
+  );
 
-  // Log API usage (all free, but track for monitoring)
+  const content = formatAsStructuredOutput(results, queries.primary);
+
   logApiUsage({
     provider: 'community',
-    model: 'community-pulse/1.0',
+    model: 'community-pulse/1.1',
     purpose: 'scan',
     duration_ms: durationMs,
     success: true,
@@ -405,46 +462,46 @@ export async function executeCommunityScan(
 
   return {
     content,
-    model: 'community-pulse/1.0',
+    model: 'community-pulse/1.1',
     tokensUsed: 0,
   };
 }
 
 // ============================================================
-// Topic extraction
+// Search query building
 // ============================================================
 
 /**
- * Extract the core search topic from the scan prompt text.
- * The prompt contains instructions + topic context.
- * We extract key phrases relevant to the wire.
+ * Build focused search queries from the scan prompt text.
+ * Instead of dumping the full prompt as a search query, we extract
+ * the key funding-related terms and combine with wire context.
  */
-function extractTopic(promptText: string, wire: string): string {
-  // Strategy: use wire-specific default topics, enhanced by prompt keywords
-
-  const wireDefaults: Record<string, string> = {
-    crypto: 'cryptocurrency grants funding DeFi DAO treasury public goods',
-    ai: 'AI grants research funding machine learning fellowship',
-    oss: 'open source funding grants sustainability sponsorship',
+function buildSearchQueries(promptText: string, wire: string): { primary: string; secondary: string } {
+  // Wire-specific primary queries — these are what we actually search for
+  const wirePrimaries: Record<string, string> = {
+    crypto: 'crypto grant funding program DeFi DAO',
+    ai: 'AI research grant funding fellowship program',
+    oss: 'open source grant funding sponsorship program',
   };
 
-  // Start with the wire default
-  let topic = wireDefaults[wire] || wire;
+  const wireSecondaries: Record<string, string> = {
+    crypto: 'retroPGF public goods Gitcoin ecosystem fund',
+    ai: 'NSF DARPA AI safety compute grant',
+    oss: 'GitHub Sponsors sovereign tech fund maintainer',
+  };
 
-  // Extract any quoted phrases from the prompt for specificity
-  const quotedPhrases = promptText.match(/"([^"]+)"/g);
-  if (quotedPhrases && quotedPhrases.length > 0) {
-    topic = quotedPhrases.map((p) => p.replace(/"/g, '')).join(' ');
-  }
-
-  // Check for explicit topic markers in the prompt
-  const topicMatch = promptText.match(
-    /(?:focus on|search for|topic:|about)\s*[:\-]?\s*(.+?)(?:\.|$)/i
+  // Check if the prompt has specific entities/programs mentioned
+  const entityMatch = promptText.match(
+    /(?:focus on|specifically|including|such as)[:\s]+(.+?)(?:\.|$)/i
   );
-  if (topicMatch) {
-    // Use the first 100 chars of the matched topic as the search query
-    topic = topicMatch[1].substring(0, 100).trim();
+
+  let primary = wirePrimaries[wire] || `${wire} grant funding`;
+  let secondary = wireSecondaries[wire] || `${wire} funding program`;
+
+  if (entityMatch) {
+    // Append specific entities to narrow the search
+    primary += ' ' + entityMatch[1].substring(0, 60).trim();
   }
 
-  return topic;
+  return { primary, secondary };
 }
