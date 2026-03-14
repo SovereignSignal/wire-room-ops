@@ -61,6 +61,18 @@ function stripMarkdownArtifacts(text: string): string {
     .trim();
 }
 
+/** Strip Grok citation markers and trailing junk from URLs.
+ *  e.g. "https://example.com[[1]](https://x.com)" → "https://example.com"
+ *       "https://example.com[4]" → "https://example.com"
+ */
+function cleanUrl(raw: string): string {
+  return raw
+    .replace(/\[\[?\d+\]?\]?\(https?:\/\/[^)]*\)/g, '')  // [[N]](url) citation links
+    .replace(/\[\[?\d+\]?\]?/g, '')                       // bare [[N]] or [N] markers
+    .replace(/[)\].,;:]+$/, '')                            // trailing punctuation
+    .trim();
+}
+
 // ============================================================
 // Post-parse field sanitization
 // ============================================================
@@ -104,8 +116,10 @@ function sanitizeResult(result: RawScanResult): RawScanResult {
     }
   }
 
-  // 5. Source URL: strip markdown link artifacts like "url](url" or trailing "](" fragments
+  // 5. Source URL: strip citation markers, markdown artifacts, and trailing junk
   if (sourceUrl) {
+    // Strip Grok citation markers: [[1]](url), [4], etc.
+    sourceUrl = cleanUrl(sourceUrl);
     // Pattern: "https://x.com/foo/123](https://x.com/foo/123" — take the part before ](
     const mdArtifact = sourceUrl.indexOf('](');
     if (mdArtifact !== -1) {

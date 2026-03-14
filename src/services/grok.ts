@@ -119,7 +119,9 @@ export async function executeScanPrompt(
   const provider = getCachedProvider('grok');
   const model = options?.model || provider?.default_model || DEFAULT_SCAN_MODEL;
 
-  let fullPrompt = promptText;
+  // Inject today's date so the model has temporal context for recency filtering
+  const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+  let fullPrompt = `Today's date is ${today}.\n\n${promptText}`;
   if (options?.responseFormat) {
     fullPrompt += `\n\nRespond using this format:\n${options.responseFormat}`;
   }

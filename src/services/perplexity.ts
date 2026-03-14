@@ -40,8 +40,9 @@ export async function executePerplexityScan(
   const baseUrl = provider?.base_url || PERPLEXITY_BASE_URL;
   const start = Date.now();
 
-  // Append response format instructions if provided (same pattern as Grok)
-  let fullPrompt = promptText;
+  // Inject today's date for temporal context, append response format
+  const today = new Date().toISOString().split('T')[0];
+  let fullPrompt = `Today's date is ${today}.\n\n${promptText}`;
   if (options?.responseFormat) {
     fullPrompt += `\n\nRespond using this format:\n${options.responseFormat}`;
   }

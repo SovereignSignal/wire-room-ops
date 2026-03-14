@@ -930,7 +930,8 @@ Rules:
 - Include funding amount in description when mentioned (e.g. "$50K", "$1M")
 - Use specific dates for deadlines when available
 - Include both newly announced AND currently active/open programs
-- Prefer specific announcement posts over generic listicles`;
+- Each Source URL must be a direct link — not a listicle, aggregator, or "top N grants" blog post
+- Do NOT include citation markers like [[1]] in URLs`;
 
   const { rowCount } = await pool.query(
     `UPDATE scan_prompts SET response_format = $1 WHERE response_format IS NULL`,
@@ -940,13 +941,13 @@ Rules:
     console.log(`[DB] Set response_format on ${rowCount} prompts that had NULL`);
   }
 
-  // Migration: update ALL prompts that have overly restrictive format rules causing zero results
+  // Migration v4: update all prompts to latest format (adds anti-listicle + citation rules)
   const { rowCount: updatedCount } = await pool.query(
-    `UPDATE scan_prompts SET response_format = $1 WHERE response_format LIKE '%Only include NEW opportunities%' OR response_format LIKE '%Skip results where you cannot%' OR response_format LIKE '%Program URL%not a tweet%'`,
+    `UPDATE scan_prompts SET response_format = $1 WHERE response_format != $1`,
     [defaultResponseFormat]
   );
   if (updatedCount && updatedCount > 0) {
-    console.log(`[DB] Updated ${updatedCount} prompts with relaxed response format (was too restrictive, causing 0 results)`);
+    console.log(`[DB] Updated ${updatedCount} prompts to latest response format`);
   }
 
   // Migration: strip inline format instructions from prompt_text
