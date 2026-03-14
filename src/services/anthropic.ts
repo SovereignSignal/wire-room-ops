@@ -333,8 +333,9 @@ export async function summarizeWithOpus(entry: DatabaseEntry, model?: string): P
       .replace('{existing_summary}', entry.quick_summary);
   }
 
+  const anthropicProvider = getCachedProvider('anthropic');
   const { text } = await createMessageWithFallback(prompt, {
-    model: model || DEFAULT_ANTHROPIC_MODEL,
+    model: model || anthropicProvider?.default_model || DEFAULT_ANTHROPIC_MODEL,
     maxTokens: 500,
     purpose: 'summarize',
   });

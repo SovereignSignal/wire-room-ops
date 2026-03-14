@@ -33,10 +33,10 @@ export async function executePerplexityScan(
   const provider = getCachedProvider('perplexity');
   const apiKey = provider?.api_key || process.env.PERPLEXITY_API_KEY;
   if (!apiKey) {
-    throw new Error('PERPLEXITY_API_KEY not set in environment');
+    throw new Error('Perplexity API key not configured — add it via Settings > API Providers');
   }
 
-  const model = options?.model || DEFAULT_PERPLEXITY_MODEL;
+  const model = options?.model || provider?.default_model || DEFAULT_PERPLEXITY_MODEL;
   const baseUrl = provider?.base_url || PERPLEXITY_BASE_URL;
   const start = Date.now();
 
@@ -57,7 +57,7 @@ export async function executePerplexityScan(
       messages: [
         {
           role: 'system',
-          content: `You are a research assistant scanning the web for ${getBrand().contentType}. Return only factual, sourced results.\n\nFor each result, use this format:\n1. **Program Name** — Description including funding amount\nDeadline: [date, "Rolling", or "None listed"]\nProgram URL: [direct link to program page]\n\nBold names with **, number results, include direct URLs.`,
+          content: `You are a research assistant scanning the web for ${getBrand().contentType}. Return only factual, sourced results.\n\nFor each result, use this format:\n1. **Program Name** — Description including funding amount\nDeadline: [date, "Rolling", or "None listed"]\nSource URL: [URL where you found this]\n\nBold names with **, number results, include URLs. Include both new and currently active programs.`,
         },
         {
           role: 'user',

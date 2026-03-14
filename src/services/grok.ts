@@ -53,7 +53,7 @@ export async function summarizeWithGrok(entry: DatabaseEntry, model?: string): P
   const provider = getCachedProvider('grok');
   const apiKey = provider?.api_key || config.apis.grok.apiKey;
   const baseUrl = provider?.base_url || config.apis.grok.baseUrl;
-  const useModel = model || DEFAULT_GROK_MODEL;
+  const useModel = model || provider?.default_model || DEFAULT_GROK_MODEL;
   const start = Date.now();
 
   const response = await fetch(`${baseUrl}/chat/completions`, {
@@ -116,14 +116,14 @@ export async function executeScanPrompt(
   promptText: string,
   options?: { model?: string; responseFormat?: string | null; toolType?: ToolType }
 ): Promise<{ content: string; model: string; tokensUsed?: number }> {
-  const model = options?.model || DEFAULT_SCAN_MODEL;
+  const provider = getCachedProvider('grok');
+  const model = options?.model || provider?.default_model || DEFAULT_SCAN_MODEL;
 
   let fullPrompt = promptText;
   if (options?.responseFormat) {
     fullPrompt += `\n\nRespond using this format:\n${options.responseFormat}`;
   }
 
-  const provider = getCachedProvider('grok');
   const apiKey = provider?.api_key || config.apis.grok.apiKey;
   const baseUrl = (provider?.base_url || config.apis.grok.baseUrl).replace(/\/v1$/, '');
   const start = Date.now();

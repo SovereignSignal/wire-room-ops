@@ -93,9 +93,9 @@ export async function classifyEntry(entry: {
     console.error('[Classifier] Failed to fetch operator signals:', err);
   }
   const prompt = buildClassificationPrompt(entry, operatorGuidance);
-  const classifyModel = 'grok-4.20-beta-0309-non-reasoning';
 
   const provider = getCachedProvider('grok');
+  const classifyModel = provider?.default_model || 'grok-4.20-beta-0309-non-reasoning';
   const apiKey = provider?.api_key || config.apis.grok.apiKey;
   const baseUrl = provider?.base_url || config.apis.grok.baseUrl;
   const start = Date.now();
@@ -249,7 +249,7 @@ export async function tagBatch(
   const provider = getCachedProvider('grok');
   const apiKey = provider?.api_key || config.apis.grok.apiKey;
   const baseUrl = provider?.base_url || config.apis.grok.baseUrl;
-  const tagModel = 'grok-4.20-beta-0309-non-reasoning';
+  const tagModel = provider?.default_model || 'grok-4.20-beta-0309-non-reasoning';
 
   for (let i = 0; i < entries.length; i += batchSize) {
     const chunk = entries.slice(i, i + batchSize);
