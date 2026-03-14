@@ -74,7 +74,9 @@ export async function runDailyIntake(
   const progress = options.onProgress || (() => {});
 
   const runDate = submissions[0]?.scanDate || new Date().toISOString().split('T')[0];
-  const wire = submissions.length === 1 ? submissions[0].wire : 'all';
+  // Determine wire: if all submissions share the same wire, use it; otherwise 'all'
+  const uniqueWires = new Set(submissions.map(s => s.wire));
+  const wire = uniqueWires.size === 1 ? submissions[0].wire : 'all';
 
   // Seed seen_urls with URLs already in the wire (non-fatal)
   try {
