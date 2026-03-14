@@ -922,17 +922,15 @@ export async function ensureScanPromptsTable(): Promise<void> {
 
 1. **Program Name** — Brief description including funding amount if known
 Deadline: [specific date, "Rolling", or "None listed"]
-Source URL: [the X post or announcement URL where you found this]
+Source URL: [the URL where you found this — X post, article, or program page]
 
 Rules:
-- Only include NEW opportunities announced or posted in the last 7 days
-- Do NOT include evergreen/generic program pages — only specific recent announcements
 - Number each result sequentially
 - Bold the program name with ** markers
-- "Source URL" must be the actual X post, tweet, or article where the opportunity was announced
-- Include funding amount in description (e.g. "$50K", "$1M")
+- Include funding amount in description when mentioned (e.g. "$50K", "$1M")
 - Use specific dates for deadlines when available
-- Skip results where you cannot find a specific recent announcement URL`;
+- Include both newly announced AND currently active/open programs
+- Prefer specific announcement posts over generic listicles`;
 
   const { rowCount } = await pool.query(
     `UPDATE scan_prompts SET response_format = $1 WHERE response_format IS NULL`,
@@ -942,13 +940,37 @@ Rules:
     console.log(`[DB] Set response_format on ${rowCount} prompts that had NULL`);
   }
 
-  // Migration: update prompts using old "Program URL" format to new "Source URL" format
+  // Migration: update ALL prompts that have overly restrictive format rules causing zero results
   const { rowCount: updatedCount } = await pool.query(
-    `UPDATE scan_prompts SET response_format = $1 WHERE response_format LIKE '%Program URL%not a tweet%'`,
+    `UPDATE scan_prompts SET response_format = $1 WHERE response_format LIKE '%Only include NEW opportunities%' OR response_format LIKE '%Skip results where you cannot%' OR response_format LIKE '%Program URL%not a tweet%'`,
     [defaultResponseFormat]
   );
   if (updatedCount && updatedCount > 0) {
-    console.log(`[DB] Updated ${updatedCount} prompts from old "Program URL" format to new "Source URL" format`);
+    console.log(`[DB] Updated ${updatedCount} prompts with relaxed response format (was too restrictive, causing 0 results)`);
+  }
+
+  // Migration: strip inline format instructions from prompt_text
+  // The response_format column is the single source of truth for output formatting.
+  // Having format instructions in BOTH prompt_text AND response_format confuses the model.
+  // x_search prompts end with: "For each result:\n[Account] — ...\n[Date]"
+  // web_search prompts end with: "For each result:\n[Source/Org] — ...\nCRITICAL: ..."
+  const { rows: promptsWithInlineFormat } = await pool.query(
+    `SELECT id, prompt_text FROM scan_prompts WHERE prompt_text LIKE '%For each result:%' AND tool_type IN ('x_search', 'web_search')`
+  );
+  let strippedCount = 0;
+  for (const p of promptsWithInlineFormat) {
+    // Find the last "For each result:" and strip everything from there
+    const idx = p.prompt_text.lastIndexOf('For each result:');
+    if (idx > 0) {
+      const cleaned = p.prompt_text.substring(0, idx).trimEnd();
+      if (cleaned !== p.prompt_text) {
+        await pool.query('UPDATE scan_prompts SET prompt_text = $1 WHERE id = $2', [cleaned, p.id]);
+        strippedCount++;
+      }
+    }
+  }
+  if (strippedCount > 0) {
+    console.log(`[DB] Stripped conflicting inline format instructions from ${strippedCount} prompt texts`);
   }
 
   console.log('[DB] Scan prompts table ready (Phase 2+3 migrations applied, Gate 2 columns added)');
