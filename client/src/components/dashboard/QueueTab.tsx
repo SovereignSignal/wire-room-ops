@@ -425,20 +425,20 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
         <table className="ops-table">
           <thead>
             <tr>
-              <th className="w-8">
+              <th className="w-8 px-2">
                 <Checkbox
                   checked={selectedIds.size === filteredEntries.length && filteredEntries.length > 0}
                   onCheckedChange={toggleSelectAll}
                   className="border-primary/50 data-[state=checked]:bg-primary data-[state=checked]:border-primary"
                 />
               </th>
-              <th className="w-auto">Name</th>
-              <th className="w-20">Wire</th>
-              <th className="w-16">Class</th>
-              <th className="w-14">Score</th>
-              <th className="w-16">Date</th>
-              <th className="w-16">Src</th>
-              <th className="w-36">Actions</th>
+              <th>Name</th>
+              <th className="w-[100px] px-2">Wire</th>
+              <th className="w-[72px] px-2">Class</th>
+              <th className="w-[56px] px-2">Score</th>
+              <th className="w-[76px] px-2">Date</th>
+              <th className="w-[68px] px-2">Src</th>
+              <th className="w-[110px] px-2">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -448,8 +448,8 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                 className={`cursor-pointer ${selectedIds.has(entry.id) ? 'bg-primary/5' : ''}`}
                 onClick={() => onViewDetails(entry)}
               >
-                <td onClick={(e) => e.stopPropagation()}>
-                  <Checkbox 
+                <td className="px-2" onClick={(e) => e.stopPropagation()}>
+                  <Checkbox
                     checked={selectedIds.has(entry.id)}
                     onCheckedChange={() => toggleSelect(entry.id)}
                     className="border-primary/50 data-[state=checked]:bg-primary data-[state=checked]:border-primary"
@@ -473,25 +473,29 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                     </span>
                   )}
                 </td>
-                <td onClick={(e) => e.stopPropagation()}>
+                <td className="px-2" onClick={(e) => e.stopPropagation()}>
                   <WireSelector wire={entry.wire} wires={entry.wires} entryId={entry.id} onWiresChange={handleWiresChange} availableWires={availableWires} />
                 </td>
-                <td>
+                <td className="px-2">
                   <ClassificationBadge classification={entry.classification} />
                 </td>
-                <td>
+                <td className="px-2">
                   <ScoreBadge score={entry.quality_score} />
                 </td>
-                <td>
-                  {entry.source_published_at ? (
-                    <span className="text-xs font-mono text-muted-foreground whitespace-nowrap" title={`Source: ${new Date(entry.source_published_at).toLocaleDateString()}`}>
-                      {new Date(entry.source_published_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                    </span>
-                  ) : (
-                    <span className="text-muted-foreground/50 text-xs">—</span>
-                  )}
+                <td className="px-2">
+                  {(() => {
+                    const dateStr = entry.source_published_at || entry.created_at;
+                    if (!dateStr) return <span className="text-muted-foreground/50 text-xs">—</span>;
+                    const isSource = !!entry.source_published_at;
+                    return (
+                      <span className={`text-[10px] font-mono whitespace-nowrap ${isSource ? 'text-muted-foreground' : 'text-muted-foreground/60'}`}
+                        title={isSource ? `Source: ${new Date(dateStr).toLocaleDateString()}` : `Added: ${new Date(dateStr).toLocaleDateString()}`}>
+                        {new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                      </span>
+                    );
+                  })()}
                 </td>
-                <td onClick={(e) => e.stopPropagation()}>
+                <td className="px-2" onClick={(e) => e.stopPropagation()}>
                   {(() => {
                     const href = resolveSourceUrl(entry);
                     if (!href) return <span className="text-muted-foreground text-xs">—</span>;
@@ -511,7 +515,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                     );
                   })()}
                 </td>
-                <td onClick={(e) => e.stopPropagation()}>
+                <td className="px-2" onClick={(e) => e.stopPropagation()}>
                   <div className="flex items-center gap-1">
                     <Button
                       size="sm"
