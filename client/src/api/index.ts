@@ -13,7 +13,7 @@ async function authFetch(url: string, init?: RequestInit): Promise<Response> {
 }
 
 export async function fetchPromptResults(promptId: string, limit = 20): Promise<{ entries: ScanEntry[]; total: number }> {
-  const q = new URLSearchParams({ promptId, limit: String(limit) }).toString();
+  const q = new URLSearchParams({ promptId, limit: String(limit), status: 'raw,queued,approved,archived,duplicate,declined' }).toString();
   const res = await authFetch(`${BASE}/scan/entries?${q}`);
   if (!res.ok) throw new Error(`Failed to fetch prompt results: ${res.status}`);
   const data = await res.json();
