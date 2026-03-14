@@ -991,6 +991,22 @@ Rules:
       find: 'anything older than 7 days',
       replace: 'programs that have already closed or expired',
     },
+    {
+      find: 'announced or updated in the last 7 days',
+      replace: 'announced or updated recently, or with currently open applications',
+    },
+    {
+      find: 'from the last 7 days',
+      replace: 'from recent activity or currently open programs',
+    },
+    {
+      find: 'in the last 7 days',
+      replace: 'recently or with currently open applications',
+    },
+    {
+      find: 'within the last 7 days',
+      replace: 'recently or with currently open applications',
+    },
   ];
   let recencyFixCount = 0;
   for (const fix of recencyFixes) {
