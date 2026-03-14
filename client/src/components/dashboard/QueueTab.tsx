@@ -372,12 +372,9 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
               </div>
               <ClassificationBadge classification={entry.classification} />
               <ScoreBadge score={entry.quality_score} />
-              {entry.amount && (
-                <span className="text-[10px] font-mono text-muted-foreground">{entry.amount}</span>
-              )}
-              {entry.deadline && (
-                <span className="text-[10px] font-mono text-muted-foreground">⏰ {entry.deadline}</span>
-              )}
+              <span className="text-[10px] font-mono text-muted-foreground">
+                {new Date(entry.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+              </span>
               {entry.tags && entry.tags.length > 0 && entry.tags.map((tag, i) => (
                 <span key={i} className="text-[10px] px-1.5 py-0.5 rounded-full border border-purple-500/30 text-purple-400 bg-purple-500/10">{tag}</span>
               ))}
@@ -437,10 +434,9 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
               <th className="w-24">Wire</th>
               <th className="w-32">Classification</th>
               <th className="w-20">Score</th>
-              <th className="w-24">Amount</th>
-              <th className="w-28">Deadline</th>
+              <th className="w-24">Date</th>
               <th className="w-24">Source</th>
-              <th className="w-40">Actions</th>
+              <th className="w-32">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -484,11 +480,10 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                 <td>
                   <ScoreBadge score={entry.quality_score} />
                 </td>
-                <td className="overflow-hidden"><div className="font-mono text-sm truncate">{entry.amount}</div></td>
-                <td className="overflow-hidden">
-                  <div className="text-sm font-mono truncate">
-                    {entry.deadline || <span className="text-muted-foreground">—</span>}
-                  </div>
+                <td>
+                  <span className="text-xs font-mono text-muted-foreground whitespace-nowrap">
+                    {new Date(entry.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                  </span>
                 </td>
                 <td onClick={(e) => e.stopPropagation()}>
                   {(() => {
@@ -544,7 +539,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
             ))}
             {filteredEntries.length === 0 && (
               <tr>
-                <td colSpan={9} className="text-center py-12 text-muted-foreground font-display text-sm tracking-wider">
+                <td colSpan={8} className="text-center py-12 text-muted-foreground font-display text-sm tracking-wider">
                   NO ITEMS MATCH FILTERS
                 </td>
               </tr>
