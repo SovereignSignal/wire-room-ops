@@ -407,6 +407,32 @@ export async function updateModelPricing(provider: string, model: string, data: 
   return res.json();
 }
 
+// --- Prompt Effectiveness Stats ---
+
+export interface PromptStatsData {
+  promptId: string | null;
+  wire: string;
+  label: string;
+  variant: string;
+  scanSource: string;
+  totalResults: number;
+  uniqueResults: number;
+  duplicateRate: number;
+  avgQualityScore: number;
+  highQualityCount: number;
+  approvedCount: number;
+  declinedCount: number;
+  approvalRate: number;
+  classificationMix: Record<string, number>;
+  publishedAtCoverage: number;
+}
+
+export async function fetchPromptStats(days = 21): Promise<{ prompts: PromptStatsData[]; overlapStats: { totalUniqueEntries: number; entriesFoundByMultiple: number; overlapRate: number } }> {
+  const res = await authFetch(`${BASE}/scan/prompt-stats?days=${days}`);
+  if (!res.ok) throw new Error(`Failed to fetch prompt stats: ${res.status}`);
+  return res.json();
+}
+
 // --- Scan Prompts API ---
 
 export async function fetchScanPrompts(wire?: string): Promise<ScanPrompt[]> {

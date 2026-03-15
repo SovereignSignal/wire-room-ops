@@ -184,7 +184,7 @@ export async function ensureScheduleTable(): Promise<void> {
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       name TEXT NOT NULL DEFAULT 'Untitled Schedule',
       enabled BOOLEAN NOT NULL DEFAULT false,
-      day_of_week INTEGER NOT NULL DEFAULT 3,
+      day_of_week INTEGER NOT NULL DEFAULT 7,
       hour INTEGER NOT NULL DEFAULT 9,
       minute INTEGER NOT NULL DEFAULT 0,
       lookback_days INTEGER NOT NULL DEFAULT 7,

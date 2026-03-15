@@ -10,7 +10,9 @@ import {
   fetchSchedules,
   updateSchedule,
   fetchPromptResults,
+  fetchPromptStats,
   ScheduleResponse,
+  PromptStatsData,
 } from '@/api';
 import {
   Sheet,
@@ -100,14 +102,22 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
   const [promptResultsTotal, setPromptResultsTotal] = useState(0);
   const [resultsLoading, setResultsLoading] = useState(false);
 
+  // Prompt scorecard state
+  const [promptStatsData, setPromptStatsData] = useState<PromptStatsData[]>([]);
+  const [scorecardOpen, setScorecardOpen] = useState(false);
+  const [overlapStats, setOverlapStats] = useState<{ totalUniqueEntries: number; entriesFoundByMultiple: number; overlapRate: number } | null>(null);
+
   const loadData = useCallback(async () => {
     try {
-      const [promptsData, schedulesData] = await Promise.all([
+      const [promptsData, schedulesData, statsData] = await Promise.all([
         fetchScanPrompts(),
         fetchSchedules().catch(() => [] as ScheduleResponse[]),
+        fetchPromptStats(21).catch(() => ({ prompts: [], overlapStats: { totalUniqueEntries: 0, entriesFoundByMultiple: 0, overlapRate: 0 } })),
       ]);
       setPrompts(promptsData);
       setSchedules(schedulesData);
+      setPromptStatsData(statsData.prompts);
+      setOverlapStats(statsData.overlapStats);
     } catch {
       toast({ title: 'Error', description: 'Failed to load scan prompts' });
     } finally {
@@ -325,6 +335,88 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
           + ADD PROMPT
         </button>
       </div>
+
+      {/* Prompt Scorecard */}
+      {promptStatsData.length > 0 && (
+        <div className="border border-border rounded-lg overflow-hidden">
+          <button
+            onClick={() => setScorecardOpen(!scorecardOpen)}
+            className="w-full flex items-center justify-between px-4 py-3 bg-card/60 hover:bg-card/80 transition-colors"
+          >
+            <div className="flex items-center gap-3">
+              <h3 className="text-[10px] font-display tracking-widest text-muted-foreground">PROMPT SCORECARD</h3>
+              <span className="text-[10px] font-mono text-muted-foreground/60">21-day window</span>
+              {overlapStats && (
+                <span className="text-[10px] font-mono text-muted-foreground/60">
+                  {Math.round(overlapStats.overlapRate * 100)}% overlap
+                </span>
+              )}
+            </div>
+            <span className="text-xs text-muted-foreground">{scorecardOpen ? '\u25B2' : '\u25BC'}</span>
+          </button>
+          {scorecardOpen && (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[900px]">
+                <thead>
+                  <tr className="bg-card/40 border-t border-border">
+                    <th className="text-left text-[9px] font-display tracking-widest text-muted-foreground px-3 py-2">PROMPT</th>
+                    <th className="text-left text-[9px] font-display tracking-widest text-muted-foreground px-2 py-2">SRC</th>
+                    <th className="text-right text-[9px] font-display tracking-widest text-muted-foreground px-2 py-2">TOTAL</th>
+                    <th className="text-right text-[9px] font-display tracking-widest text-muted-foreground px-2 py-2">UNIQUE</th>
+                    <th className="text-right text-[9px] font-display tracking-widest text-muted-foreground px-2 py-2">DUP%</th>
+                    <th className="text-right text-[9px] font-display tracking-widest text-muted-foreground px-2 py-2">AVG Q</th>
+                    <th className="text-right text-[9px] font-display tracking-widest text-muted-foreground px-2 py-2">APPR</th>
+                    <th className="text-right text-[9px] font-display tracking-widest text-muted-foreground px-2 py-2">APPR%</th>
+                    <th className="text-center text-[9px] font-display tracking-widest text-muted-foreground px-2 py-2">CLASS MIX</th>
+                    <th className="text-right text-[9px] font-display tracking-widest text-muted-foreground px-2 py-2">PUB%</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {promptStatsData.map((s, i) => {
+                    const approvalPct = Math.round(s.approvalRate * 100);
+                    const dupPct = Math.round(s.duplicateRate * 100);
+                    const pubPct = Math.round(s.publishedAtCoverage * 100);
+                    const approvalColor = approvalPct >= 50 ? 'text-green-400' : approvalPct >= 25 ? 'text-yellow-400' : 'text-red-400';
+                    const dupColor = dupPct <= 30 ? 'text-green-400' : dupPct <= 60 ? 'text-yellow-400' : 'text-red-400';
+                    const scoreColor = s.avgQualityScore >= 60 ? 'text-green-400' : s.avgQualityScore >= 40 ? 'text-yellow-400' : 'text-red-400';
+                    const srcLabel = s.scanSource === 'x-scan' ? 'X' : s.scanSource === 'web-search' ? 'WEB' : s.scanSource === 'perplexity' ? 'PPLX' : s.scanSource?.toUpperCase()?.slice(0, 4) || '?';
+                    return (
+                      <tr key={s.promptId || i} className="border-t border-border/30 hover:bg-card/30">
+                        <td className="px-3 py-2 text-xs">
+                          <span className="font-medium">{s.label}</span>
+                          <span className="text-muted-foreground/60 ml-1 text-[10px]">{s.wire}</span>
+                        </td>
+                        <td className="px-2 py-2 text-[10px] font-mono text-muted-foreground">{srcLabel}</td>
+                        <td className="px-2 py-2 text-xs font-mono text-right">{s.totalResults}</td>
+                        <td className="px-2 py-2 text-xs font-mono text-right">{s.uniqueResults}</td>
+                        <td className={`px-2 py-2 text-xs font-mono text-right ${dupColor}`}>{dupPct}%</td>
+                        <td className={`px-2 py-2 text-xs font-mono text-right ${scoreColor}`}>{s.avgQualityScore}</td>
+                        <td className="px-2 py-2 text-xs font-mono text-right">
+                          <span className="text-green-400">{s.approvedCount}</span>
+                          {s.declinedCount > 0 && <span className="text-red-400 ml-1">/{s.declinedCount}</span>}
+                        </td>
+                        <td className={`px-2 py-2 text-xs font-mono text-right ${approvalColor}`}>
+                          {s.approvedCount + s.declinedCount > 0 ? `${approvalPct}%` : '\u2014'}
+                        </td>
+                        <td className="px-2 py-2">
+                          <div className="flex items-center gap-0.5 justify-center">
+                            {s.classificationMix.GRANT > 0 && <span className="px-1 py-0 rounded text-[8px] font-mono bg-green-500/10 text-green-400 border border-green-500/20">{s.classificationMix.GRANT}G</span>}
+                            {s.classificationMix.NEWS > 0 && <span className="px-1 py-0 rounded text-[8px] font-mono bg-blue-500/10 text-blue-400 border border-blue-500/20">{s.classificationMix.NEWS}N</span>}
+                            {s.classificationMix.EXPIRED > 0 && <span className="px-1 py-0 rounded text-[8px] font-mono bg-orange-500/10 text-orange-400 border border-orange-500/20">{s.classificationMix.EXPIRED}E</span>}
+                            {s.classificationMix.NOISE > 0 && <span className="px-1 py-0 rounded text-[8px] font-mono bg-red-500/10 text-red-400 border border-red-500/20">{s.classificationMix.NOISE}X</span>}
+                            {s.classificationMix.UNCHECKED > 0 && <span className="px-1 py-0 rounded text-[8px] font-mono bg-muted/20 text-muted-foreground border border-border">{s.classificationMix.UNCHECKED}?</span>}
+                          </div>
+                        </td>
+                        <td className={`px-2 py-2 text-xs font-mono text-right ${pubPct > 0 ? 'text-cyan-400' : 'text-muted-foreground/40'}`}>{pubPct}%</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Prompt table */}
       {prompts.length === 0 ? (

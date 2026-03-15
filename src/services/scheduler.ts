@@ -28,7 +28,7 @@ export interface ScheduleConfig {
 const DEFAULT_SCHEDULE_TEMPLATE: Omit<ScheduleConfig, 'id'> = {
   name: 'New Schedule',
   enabled: false,
-  dayOfWeek: 3, // Wednesday
+  dayOfWeek: 7, // Every day (0-6 = specific day, 7 = daily)
   hour: 9,
   minute: 0,
   lookbackDays: 7,
@@ -231,41 +231,41 @@ export async function removeSchedule(id: string): Promise<boolean> {
   return deleted;
 }
 
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
 export function formatScheduleDescription(schedule: ScheduleConfig): string {
   if (!schedule.enabled) {
     return 'Disabled';
   }
 
-  const hour = schedule.hour.toString().padStart(2, '0');
   const minute = schedule.minute.toString().padStart(2, '0');
   const ampm = schedule.hour >= 12 ? 'PM' : 'AM';
   const hour12 = schedule.hour % 12 || 12;
+  const isWeekly = schedule.dayOfWeek >= 0 && schedule.dayOfWeek <= 6;
+  const cadence = isWeekly ? `${DAY_NAMES[schedule.dayOfWeek]}s` : 'Daily';
 
-  if (schedule.scheduleType === 'scan-execution' || !schedule.scheduleType) {
-    if (schedule.frequencyHours && schedule.frequencyHours < 24) {
-      return `Every ${schedule.frequencyHours}h at :${minute} (${schedule.timezone}) \u2014 Scan Execution`;
-    }
-    return `Daily at ${hour12}:${minute} ${ampm} (${schedule.timezone}) \u2014 Scan Execution`;
+  const typeLabel =
+    schedule.scheduleType === 'forum-scan' ? 'Forum Scan' :
+    schedule.scheduleType === 'daily-digest' ? 'Daily Digest' :
+    'Scan Execution';
+
+  if (schedule.frequencyHours && schedule.frequencyHours < 24) {
+    return `Every ${schedule.frequencyHours}h at :${minute} (${schedule.timezone}) \u2014 ${typeLabel}`;
   }
-
-  if (schedule.scheduleType === 'forum-scan') {
-    if (schedule.frequencyHours && schedule.frequencyHours < 24) {
-      return `Every ${schedule.frequencyHours}h at :${minute} (${schedule.timezone}) \u2014 Forum Scan`;
-    }
-    return `Daily at ${hour12}:${minute} ${ampm} (${schedule.timezone}) \u2014 Forum Scan`;
-  }
-
-  return `Daily at ${hour12}:${minute} ${ampm} (${schedule.timezone}) \u2014 Scan Execution`;
+  return `${cadence} at ${hour12}:${minute} ${ampm} (${schedule.timezone}) \u2014 ${typeLabel}`;
 }
 
 function buildCronExpression(schedule: ScheduleConfig): string {
   // Cron format: minute hour dayOfMonth month dayOfWeek
+  // dayOfWeek: 0-6 for specific day, 7 means "every day" (wildcard)
+  const dow = schedule.dayOfWeek >= 0 && schedule.dayOfWeek <= 6 ? schedule.dayOfWeek : '*';
+
   if (schedule.frequencyHours && schedule.frequencyHours < 24) {
     // Sub-daily: run every N hours at the configured minute
-    return `${schedule.minute} */${schedule.frequencyHours} * * *`;
+    return `${schedule.minute} */${schedule.frequencyHours} * * ${dow}`;
   }
-  // Daily schedule
-  return `${schedule.minute} ${schedule.hour} * * *`;
+  // Daily or weekly schedule
+  return `${schedule.minute} ${schedule.hour} * * ${dow}`;
 }
 
 function createJobExecutor(schedule: ScheduleConfig) {
@@ -299,6 +299,9 @@ function createJobExecutor(schedule: ScheduleConfig) {
 
         const scanResult = await runScanExecution(pool, {
           wire: currentScheduleData.wire || undefined,
+          config: {
+            dedupeWindow: currentScheduleData.lookbackDays || 14,
+          },
         });
 
         status.status = 'success';
