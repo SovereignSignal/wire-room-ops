@@ -749,7 +749,7 @@ export async function ensureScanTables(): Promise<void> {
   `);
   await client.query(`
     ALTER TABLE scan_entries ADD CONSTRAINT scan_entries_scan_source_check
-      CHECK (scan_source IN ('x-scan', 'web-search', 'community', 'telegram', 'telegram-intake', 'manual-intake', 'email', 'forum'))
+      CHECK (scan_source IN ('x-scan', 'web-search', 'perplexity', 'community', 'telegram', 'telegram-intake', 'manual-intake', 'email', 'forum'))
   `);
   await client.query(`
     ALTER TABLE scan_entries DROP CONSTRAINT IF EXISTS scan_entries_prompt_variant_check
@@ -922,6 +922,7 @@ export async function ensureScanPromptsTable(): Promise<void> {
 
 1. **Program Name** — Brief description including funding amount if known
 Deadline: [specific date, "Rolling", or "None listed"]
+Published: [date this was announced or last updated, or "Unknown"]
 Source URL: [the URL where you found this — X post, article, or program page]
 
 Rules:
@@ -929,6 +930,7 @@ Rules:
 - Bold the program name with ** markers
 - Include funding amount in description when mentioned (e.g. "$50K", "$1M")
 - Use specific dates for deadlines when available
+- Published date should reflect when the opportunity was announced or last updated, not the deadline
 - Include both newly announced AND currently active/open programs
 - Each Source URL must be a direct link — not a listicle, aggregator, or "top N grants" blog post
 - Do NOT include citation markers like [[1]] in URLs`;

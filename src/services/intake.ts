@@ -203,6 +203,15 @@ function parseStructuredText(text: string): RawScanResult[] {
         currentEntry.deadline = normalizeDeadline(stripMarkdownArtifacts(earlyDeadline[1].trim()));
         continue;
       }
+      // Published date (when the opportunity was announced/updated)
+      const earlyPublished = line.match(/^\*{0,2}(?:Published|Announced|Updated|Date Published|Last Updated)\*{0,2}:?\*{0,2}\s+(.+)/i);
+      if (earlyPublished) {
+        const pubRaw = stripMarkdownArtifacts(earlyPublished[1].trim());
+        if (pubRaw && !/unknown/i.test(pubRaw) && !/none/i.test(pubRaw)) {
+          currentEntry.sourcePublishedAt = parsePublishedDate(pubRaw);
+        }
+        continue;
+      }
       // URL (handles **bold** markers in any position)
       const earlyUrl = line.match(/^\*{0,2}(?:Link|URL|Source|Source URL|Website|Direct URL|Program URL)\*{0,2}:?\*{0,2}\s+(https?:\/\/\S+)/i);
       if (earlyUrl) {
@@ -446,6 +455,16 @@ function parseLenientNumberedList(text: string): RawScanResult[] {
         continue;
       }
 
+      // Published date (when announced/updated)
+      const publishedMatch = line.match(/\*{0,2}(?:Published|Announced|Updated|Date Published|Last Updated)\*{0,2}:?\*{0,2}\s+(.+)/i);
+      if (publishedMatch) {
+        const pubRaw = stripMarkdownArtifacts(publishedMatch[1].trim());
+        if (pubRaw && !/unknown/i.test(pubRaw) && !/none/i.test(pubRaw)) {
+          currentEntry.sourcePublishedAt = parsePublishedDate(pubRaw);
+        }
+        continue;
+      }
+
       // Amount on its own line (handles optional ** bold markers)
       const amountMatch = line.match(/\*{0,2}(?:Amount|Funding|Grant|Prize|Award|Value)\*{0,2}:?\*{0,2}\s+(.+)/i);
       if (amountMatch && !currentEntry.amount) {
@@ -557,6 +576,7 @@ function parseXPostFormat(text: string): RawScanResult[] {
 
     // Collect description from body lines (skip header, URL, and date lines)
     let sourceUrl = '';
+    let postDate: string | null = null;
     const bodyLines: string[] = [];
 
     for (let i = 1; i < lines.length; i++) {
@@ -581,8 +601,9 @@ function parseXPostFormat(text: string): RawScanResult[] {
         continue;
       }
 
-      // Date line (YYYY-MM-DD or "Day, DD Mon YYYY..." format)
+      // Date line (YYYY-MM-DD or "Day, DD Mon YYYY..." format) — capture as published date
       if (/^\d{4}-\d{2}-\d{2}$/.test(line) || /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+\d{1,2}\s+\w+\s+\d{4}/i.test(line)) {
+        postDate = parsePublishedDate(line);
         continue;
       }
 
@@ -625,6 +646,7 @@ function parseXPostFormat(text: string): RawScanResult[] {
       amount,
       deadline,
       sourceUrl,
+      sourcePublishedAt: postDate,
     });
   }
 
@@ -767,6 +789,44 @@ function normalizeDeadline(raw: string): string | null {
 
   // Return the raw string for date parsing downstream
   return raw.trim();
+}
+
+/**
+ * Try to parse a published/announced date string into an ISO date string.
+ * Returns null if the string can't be parsed into a valid date.
+ */
+function parsePublishedDate(raw: string): string | null {
+  // Strip markdown artifacts
+  const cleaned = raw.replace(/\*\*/g, '').replace(/\[.*?\]/g, '').trim();
+  if (!cleaned) return null;
+
+  // Try direct parse
+  const d = new Date(cleaned);
+  if (!isNaN(d.getTime()) && d.getFullYear() >= 2020 && d.getFullYear() <= 2030) {
+    return d.toISOString();
+  }
+
+  // "March 8, 2026" or "Mar 8 2026"
+  const monthFirst = cleaned.match(/(\w+)\s+(\d{1,2}),?\s*(\d{4})/);
+  if (monthFirst) {
+    const attempt = new Date(`${monthFirst[1]} ${monthFirst[2]}, ${monthFirst[3]}`);
+    if (!isNaN(attempt.getTime())) return attempt.toISOString();
+  }
+
+  // "8 March 2026"
+  const dayFirst = cleaned.match(/(\d{1,2})\s+(\w+),?\s*(\d{4})/);
+  if (dayFirst) {
+    const attempt = new Date(`${dayFirst[2]} ${dayFirst[1]}, ${dayFirst[3]}`);
+    if (!isNaN(attempt.getTime())) return attempt.toISOString();
+  }
+
+  // "2026-03-08" ISO format
+  if (/^\d{4}-\d{2}-\d{2}$/.test(cleaned)) {
+    const attempt = new Date(cleaned + 'T00:00:00Z');
+    if (!isNaN(attempt.getTime())) return attempt.toISOString();
+  }
+
+  return null;
 }
 
 /**

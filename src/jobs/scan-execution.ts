@@ -156,8 +156,8 @@ export async function runScanExecution(
       // Build submission
       const source: ScanSource =
         prompt.toolType === 'community' ? 'community' :
-        prompt.toolType === 'perplexity' || prompt.toolType === 'web_search'
-          ? 'web-search'
+        prompt.toolType === 'perplexity' ? 'perplexity' :
+        prompt.toolType === 'web_search' ? 'web-search'
           : 'x-scan';
       submissions.push({
         wire: prompt.wire,
