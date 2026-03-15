@@ -1226,7 +1226,7 @@ export async function getStatusCounts(wire?: string, date?: string, promptId?: s
 
 export async function getEntriesByStatus(
   statuses: string[],
-  opts?: { wire?: string; date?: string; promptId?: string; limit?: number; offset?: number }
+  opts?: { wire?: string; date?: string; promptId?: string; limit?: number; offset?: number; minScore?: number; excludeSources?: string[] }
 ): Promise<{ entries: any[]; total: number }> {
   const pool = getPool();
   const conditions: string[] = [`status = ANY($1)`];
@@ -1244,6 +1244,14 @@ export async function getEntriesByStatus(
   if (opts?.promptId) {
     conditions.push(`prompt_id = $${paramIndex++}`);
     values.push(opts.promptId);
+  }
+  if (opts?.minScore != null) {
+    conditions.push(`COALESCE(quality_score, 0) >= $${paramIndex++}`);
+    values.push(opts.minScore);
+  }
+  if (opts?.excludeSources && opts.excludeSources.length > 0) {
+    conditions.push(`COALESCE(scan_source, '') != ALL($${paramIndex++})`);
+    values.push(opts.excludeSources);
   }
 
   const whereClause = `WHERE ${conditions.join(' AND ')}`;

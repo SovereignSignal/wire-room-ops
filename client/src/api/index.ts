@@ -28,7 +28,7 @@ export async function fetchPromptResults(promptId: string, limit = 20): Promise<
   };
 }
 
-export async function fetchEntries(params: { status?: string; wire?: string; limit?: number } = {}): Promise<ScanEntry[]> {
+export async function fetchEntries(params: { status?: string; wire?: string; limit?: number; minScore?: number; excludeSources?: string } = {}): Promise<ScanEntry[]> {
   const effectiveParams = { limit: 500, ...params };
   const q = new URLSearchParams(
     Object.fromEntries(Object.entries(effectiveParams).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)]))

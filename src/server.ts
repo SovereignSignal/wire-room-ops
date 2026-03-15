@@ -2368,8 +2368,11 @@ app.get('/api/scan/entries', requireAuth, async (req: Request, res: Response) =>
     }
     const limit = Math.min(Math.max(parseInt(req.query.limit as string, 10) || 100, 1), 500);
     const offset = Math.max(parseInt(req.query.offset as string, 10) || 0, 0);
+    const rawMinScore = parseInt(req.query.minScore as string, 10);
+    const minScore = isNaN(rawMinScore) ? undefined : Math.max(0, Math.min(100, rawMinScore));
+    const excludeSources = req.query.excludeSources ? (req.query.excludeSources as string).split(',').map(s => s.trim()).filter(Boolean) : undefined;
 
-    let { entries, total } = await getEntriesByStatus(statuses, { wire, date, promptId, limit, offset });
+    let { entries, total } = await getEntriesByStatus(statuses, { wire, date, promptId, limit, offset, minScore, excludeSources });
 
     if (includeDistributionStatus && entries.length > 0) {
       const distributionStatus = await getDistributionStatusForEntries(entries.map(entry => entry.id));

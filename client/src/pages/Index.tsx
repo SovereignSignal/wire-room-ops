@@ -29,7 +29,7 @@ const Index = () => {
   const loadData = useCallback(async () => {
     try {
       const results = await Promise.allSettled([
-        fetchEntries({ status: 'queued' }),
+        fetchEntries({ status: 'queued', excludeSources: 'community' }),
         fetchEntries({ status: 'approved' }),
         fetchStats(),
         fetchFeeds(),
@@ -108,7 +108,7 @@ const Index = () => {
   // Auto-refresh queue count every 60 seconds
   useEffect(() => {
     const interval = setInterval(() => {
-      fetchEntries({ status: 'queued' })
+      fetchEntries({ status: 'queued', excludeSources: 'community' })
         .then(entries => {
           setQueueEntries(entries);
           setLastUpdated(new Date());
