@@ -36,10 +36,19 @@ The Wire Room queries with `WHERE status = 'approved'` (optionally `AND wire = $
 - All AI prompts (Grok, Claude, Perplexity), quality scorer keywords, and email templates use `getBrand()` instead of hardcoded values
 - Override per deployment via `BRAND_AUDIENCE`, `BRAND_CONTENT_TYPE`, `BRAND_CONTENT_VERB`, etc.
 
-### Dual AI Processing
-- **Grok API** handles X.com/Twitter URLs because it has native access to tweet content
-- **Claude API** handles all other URLs, using Firecrawl for web scraping
-- This routing happens in `src/services/processor.ts` which imports `isXcomUrl()` from `src/services/grok.ts`
+### Multi-Provider AI Processing
+- **Grok API** handles X.com/Twitter URLs (native access to tweet content) and all scan execution (x_search, web_search tools)
+- **Claude API** handles all other URL summarization, using Firecrawl for web scraping. Also powers prompt review and distribution post generation
+- **Perplexity API** handles deep web research scans (sonar-pro model, natively searches web with citations)
+- **Community scan** searches Reddit and Hacker News using free public APIs (no auth needed)
+- URL routing for summarization happens in `src/services/processor.ts` which imports `isXcomUrl()` from `src/services/grok.ts`
+
+### API Provider System
+- All API keys can be stored in the `api_providers` DB table with env var fallback (`src/services/api-provider.ts`)
+- Resolution order: explicit param > DB provider default_model > hardcoded default
+- Providers are cached in-memory and refreshed on upsert
+- Dashboard Settings > API Providers tab manages keys, base URLs, default models, and connection testing
+- Known providers: grok, anthropic, firecrawl, perplexity, resend, telegram, telegram-intake
 
 ### Storage Strategy
 - **Generated files** and **schedule configs** are persisted to Postgres (survive restarts)
@@ -64,17 +73,27 @@ src/
 │   └── brand.ts          # Deployment-agnostic brand config (audience, contentType, contentVerb)
 ├── db/index.ts           # Postgres queries, schedules, feeds, scan tables, scan prompts, distribution tables
 ├── jobs/
+│   ├── daily-digest.ts     # Daily digest email aggregation (all scan activity across wires)
 │   ├── daily-intake.ts     # Scan intake pipeline orchestrator (parse -> dedup -> classify -> queue)
-│   ├── scan-execution.ts   # Automated scan execution (prompt fetch -> Grok -> intake)
+│   ├── enrichment.ts       # Enriches thin entries by scraping source URLs and regenerating summaries
 │   ├── forum-scan.ts       # Forum scan orchestrator (discuss.watch -> intake, DB-driven wire list)
+│   ├── process-raw.ts      # Background job to process raw entries through Gate 1 -> dedup -> classify
+│   ├── scan-execution.ts   # Automated scan execution (prompt fetch -> Grok/Perplexity/Community -> intake)
 │   └── summary-sync.ts     # Sync tele-sum summaries into scan_entries as approved (7-day lookback)
 ├── migrations/
-│   └── cleanup-approved-data.ts  # One-time data cleanup for existing bad entries
+│   ├── cleanup-approved-data.ts  # One-time data cleanup for existing bad entries
+│   ├── cleanup-org-profiles.ts   # Org profile data cleanup
+│   └── dedup-org-profiles.ts     # Org profile deduplication
 ├── services/
 │   ├── anthropic.ts      # Claude API calls with scraping integration (uses getBrand())
+│   ├── api-provider.ts     # DB-backed API key management with env var fallback (api_providers table)
+│   ├── api-usage.ts        # Fire-and-forget API usage logging + cost estimation (api_usage_log table)
 │   ├── approval-guard.ts   # Pre-approval validation (blocks bad data from reaching website)
 │   ├── auth.ts           # Session tokens, download tokens, cleanup timers
+│   ├── classifier.ts       # Gate 2 LLM classifier (GRANT/NEWS/EXPIRED/NOISE + quality score + tags)
+│   ├── community.ts        # Community scan: Reddit + Hacker News search (no auth needed)
 │   ├── dedup.ts            # URL exact-match and fuzzy name deduplication
+│   ├── discord-channel.ts  # Discord channel posting via REST API (distribution)
 │   ├── distribution.ts     # Distribution orchestrator: send entries to channels, retry, newsletter
 │   ├── email.ts            # Resend email templates (5 types)
 │   ├── forum.ts            # discuss.watch API client (search terms overrideable via FORUM_SEARCH_TERMS)
@@ -82,10 +101,16 @@ src/
 │   ├── intake.ts           # Scan result parser, URL/name normalization
 │   ├── intake-core.ts      # Channel-agnostic intake logic (URL extraction, wire detection, DB insert)
 │   ├── job-queue.ts        # SSE-based job progress tracking
-│   ├── models.ts           # Dynamic model fetching from both APIs
-│   ├── post-generator.ts   # Claude Sonnet AI generates tweet + Telegram HTML per entry
+│   ├── models.ts           # Dynamic model fetching from Grok, Anthropic, Perplexity APIs
+│   ├── notion-sync.ts      # Notion CRM sync (org_profiles -> Notion database, DB-backed config)
+│   ├── operator-signals.ts # Feedback loop: mines approve/decline decisions to calibrate classifier
+│   ├── org-enricher.ts     # LLM-based org profile enrichment (type, source_type, website, tier)
+│   ├── org-extractor.ts    # Extract canonical org names from entries (pattern matching + LLM)
+│   ├── org-merge.ts        # Org profile dedup: merge source into target, relink entries
+│   ├── perplexity.ts       # Perplexity API for deep web research scans (sonar-pro model)
+│   ├── post-generator.ts   # Claude Sonnet 4.6 generates tweet + Telegram HTML per entry
 │   ├── processor.ts        # Entry processing with retry logic
-│   ├── quality-scorer.ts   # 0-100 quality scoring (FUNDING_TYPES/ACTIONABLE_TYPES overrideable via env)
+│   ├── quality-scorer.ts   # Legacy rule-based scorer (replaced by LLM classifier in pipeline)
 │   ├── scan-stats.ts       # Prompt effectiveness and overlap metrics
 │   ├── scheduler.ts        # node-cron scheduling with health tracking (DB-driven wire list)
 │   ├── scraper.ts          # Firecrawl integration, URL resolution
@@ -125,8 +150,9 @@ Server-rendered views (login/error only):
 - All server-rendered views use `renderPageShell()` from `shared.ts` for consistent layout
 
 ### Changing AI Prompts
-- Grok newsletter prompt: `src/services/grok.ts` - `GROK_PROMPT`
-- Claude prompts: `src/services/anthropic.ts` - `SCRAPED_CONTENT_PROMPT` and `FALLBACK_PROMPT`
+- Grok newsletter prompt: `src/services/grok.ts` - `buildGrokPrompt()` function
+- Claude prompts: `src/services/anthropic.ts` - `buildScrapedContentPrompt()` and `buildFallbackPrompt()` functions
+- Classifier prompt: `src/services/classifier.ts` - `buildClassificationPrompt()` function
 - Scan prompts: Stored in `scan_prompts` table, managed via `/api/scan/prompts` CRUD API. Each prompt has `prompt_text` and optional `response_format`.
 
 ### Adding Environment Variables
@@ -149,6 +175,7 @@ All services (`wire-room-ops`, `the-wire-room`, `tele-sum`) share one PostgreSQL
 | **tele-sum legacy** | `messages`, `summaries`, `categories`, `users`, `telegram_bots`, `channel_configs` | Telegram ingestion (bridged via `summary-sync.ts`) |
 | **Distribution** | `distribution_channels`, `distribution_logs`, `distribution_config` (legacy) | Channel output tracking |
 | **Config** | `feeds`, `schedules`, `schedule_config`, `integration_config` | Wire/schedule/integration config |
+| **API management** | `api_providers`, `api_usage_log`, `model_pricing` | DB-backed API keys, usage tracking, cost estimation |
 | **Identity** | `org_profiles`, `sessions` | Organization tracking + auth sessions |
 | **Legacy** | `grant_entries`, `grok_usage`, `review_queue`, `alembic_version`, `sync_status` | Historical/dormant tables |
 
@@ -213,12 +240,18 @@ Pre-approval validation (`src/services/approval-guard.ts`) prevents bad data fro
 | Method | Path | Purpose | Rate Limit |
 |--------|------|---------|------------|
 | POST | `/api/admin/run-migration` | One-time data cleanup (fix junk fields, expired approvals) | 1 / 30 min |
-| POST | `/api/admin/classify-backfill` | Batch-classify UNCHECKED queued/approved entries | 1 / 10 min |
+| POST | `/api/admin/classify-backfill` | Batch-classify UNCHECKED queued/approved entries | 3 / 5 min |
+| POST | `/api/admin/tag-backfill` | Batch-extract entity tags for entries missing tags | 3 / 5 min |
 | POST | `/api/admin/summary-sync-backfill` | Historical Telegram summary import | 1 / 30 min |
+| POST | `/api/admin/recover-self-dupes` | Recover entries self-marked as duplicate | 1 / 10 min |
+| POST | `/api/admin/clean-stale-seen` | Clean stale entries from seen_urls/seen_names | 1 / 10 min |
+| POST | `/api/admin/clean-orgs` | Clean org profiles (remove empty/junk) | 1 / 30 min |
+| POST | `/api/admin/dedup-orgs` | Merge duplicate org profiles | 1 / 30 min |
+| POST | `/api/admin/enrich-orgs` | LLM-based org profile enrichment | 1 / 10 min |
 
 ### Other Tables
 
-Schedule configuration uses a `schedules` table with UUID primary keys, supporting multiple named schedules with a `schedule_type` field (`scan-execution` or `forum-scan`). Cron expressions are computed dynamically from `hour`/`minute`/`frequencyHours` columns via `buildCronExpression()`.
+Schedule configuration uses a `schedules` table with UUID primary keys, supporting multiple named schedules with a `schedule_type` field (`scan-execution`, `forum-scan`, or `daily-digest`). Cron expressions are computed dynamically from `hour`/`minute`/`frequencyHours` columns via `buildCronExpression()`.
 
 The `feeds` table manages dynamic wire/feed types, seeded from `SEED_FEEDS` and auto-discovered from `channel_configs`. Scan prompts are stored in `scan_prompts` with CRUD support.
 
@@ -226,15 +259,30 @@ Distribution uses `distribution_channels` (managed channels with UUID PK, per-ch
 
 ## API Integration Details
 
+All providers support DB-backed credentials (`api_providers` table) with env var fallback. Model resolution: explicit param > provider.default_model > hardcoded default.
+
 ### Grok API (X.ai)
-- **Chat Completions** (`/v1/chat/completions`): Used for newsletter summaries. Default model: `grok-4-1-fast-reasoning`
-- **Responses API** (`/v1/responses`): Used for scan execution with `x_search` or `web_search` tools. Default model: `grok-4-1-fast`
-- Each scan prompt has a `tool_type` column (`x_search` or `web_search`) controlling which tool is used
+- **Chat Completions** (`/v1/chat/completions`): Used for newsletter summaries and LLM classification. Default model: `grok-4.20-beta-0309-non-reasoning`
+- **Responses API** (`/v1/responses`): Used for scan execution with `x_search` or `web_search` tools. Default model: `grok-4.20-beta-0309-non-reasoning`
+- Each scan prompt has a `tool_type` column (`x_search`, `web_search`, `perplexity`, or `community`) controlling routing
 - Has native X.com/Twitter access via `x_search`; open web results via `web_search`
 
 ### Claude API (Anthropic)
 - Uses official SDK `@anthropic-ai/sdk`
-- Default model: `claude-opus-4-1-20250805`
+- Default model for summarization: `claude-opus-4-1-20250805` (with model fallback chain for prompt review)
+- Post generation uses `claude-sonnet-4-6-20250627` for cost efficiency
+
+### Perplexity API
+- Chat completions endpoint at `https://api.perplexity.ai/chat/completions`
+- Default model: `sonar-pro`
+- Natively searches the web and returns cited results (no tool configuration needed)
+- Used for deep web research scans (prompts with `tool_type: 'perplexity'`)
+
+### Community Scan (Reddit + HN)
+- Reddit: public JSON search API (`reddit.com/search.json`) -- no auth needed
+- Hacker News: Algolia search API (`hn.algolia.com`) -- no auth needed
+- Search queries are extracted from prompt text (quoted phrases, "Focus on:" sections, or first sentence)
+- Results formatted as structured output for parser compatibility
 
 ### Firecrawl API
 - Endpoint: `https://api.firecrawl.dev/v1/scrape`
@@ -292,7 +340,7 @@ Scheduled jobs that fail send email via `sendScheduledJobFailureEmail()` with er
 ## Common Issues
 
 ### "Missing required environment variables"
-Check that all 8 required env vars are set: DATABASE_URL, ANTHROPIC_API_KEY, GROK_API_KEY, FIRECRAWL_API_KEY, RESEND_API_KEY, NOTIFICATION_EMAIL, PRIVY_APP_ID, PRIVY_APP_SECRET.
+Check that all 4 required env vars are set: DATABASE_URL, NOTIFICATION_EMAIL, PRIVY_APP_ID, PRIVY_APP_SECRET. API keys (ANTHROPIC_API_KEY, GROK_API_KEY, FIRECRAWL_API_KEY, RESEND_API_KEY) are optional at startup and produce warnings -- they can also be configured via Settings > API Providers in the dashboard.
 
 ### "No entries found for this date range"
 The database query found no `summaries` with `processing_status = 'SUCCESS'` in the date range.
@@ -305,15 +353,17 @@ Generated files are persisted to Postgres, but sessions and job queues are in-me
 
 ## Environment Variables
 
-### Required
+### Required (server will not start without these)
 - `DATABASE_URL` - PostgreSQL connection string
+- `NOTIFICATION_EMAIL` - Primary operator email (always allowed dashboard access)
+- `PRIVY_APP_ID` - Privy authentication app ID
+- `PRIVY_APP_SECRET` - Privy authentication app secret
+
+### Optional API Keys (warn on startup if missing; can also be set via Settings > API Providers in dashboard)
 - `ANTHROPIC_API_KEY` - Claude API key
 - `GROK_API_KEY` - X.ai Grok API key
 - `FIRECRAWL_API_KEY` - Firecrawl scraping API key
 - `RESEND_API_KEY` - Resend email API key
-- `NOTIFICATION_EMAIL` - Primary operator email (always allowed dashboard access)
-- `PRIVY_APP_ID` - Privy authentication app ID
-- `PRIVY_APP_SECRET` - Privy authentication app secret
 
 ### Optional
 - `PORT` - Server port (default: 3000)
@@ -361,12 +411,14 @@ Automated discovery of grant opportunities via X.com scanning, web search, and f
 ### Ingestion Channels
 - **X.com scan** (`x-scan`): Grok Responses API with `x_search` tool, runs on schedule
 - **Web search** (`web-search`): Grok Responses API with `web_search` tool, same prompt system as X scan
+- **Perplexity scan** (`web-search`): Perplexity sonar-pro with native web search and citations (prompts with `tool_type: 'perplexity'`)
+- **Community scan** (`community`): Reddit + Hacker News public APIs, no auth needed (prompts with `tool_type: 'community'`)
 - **Forum scan** (`forum`): discuss.watch API searches across 150+ Discourse forums (search terms overrideable via `FORUM_SEARCH_TERMS`)
 - **Telegram intake** (`telegram-intake`): Bot-based URL/article submission via webhook. Uses adapter pattern (`telegram-adapter.ts` -> `intake-core.ts`)
 - **Manual paste** (`x-scan`/`web-search`): Dashboard paste-in flow
 
 ### Data Flow
-1. **Execute**: `scan-execution.ts` fetches active prompts from `scan_prompts`, calls Grok Responses API with `x_search` or `web_search` tool (per prompt's `tool_type`)
+1. **Execute**: `scan-execution.ts` fetches active prompts from `scan_prompts`, routes to the correct provider per `tool_type`: Grok Responses API (`x_search`/`web_search`), Perplexity (`perplexity`), or Reddit+HN APIs (`community`)
 2. **Parse**: `intake.ts` extracts structured results via 4 parser strategies (structured text, JSON, X-post format, lenient numbered list)
 3. **Sanitize**: Post-parse `sanitizeResult()` cleans all parsed output — truncates names >120 chars, rejects junk deadlines (>50 chars, contains URLs/semicolons), discards suspicious small amounts (<$100 bare), moves excess name text into description
 4. **Insert**: Raw results written to `scan_entries` with `status: raw`
@@ -394,11 +446,17 @@ Automated discovery of grant opportunities via X.com scanning, web search, and f
 ### Schedule Types
 - **`scan-execution`**: Daily cron, runs `runScanExecution()` which executes all active prompts for a wire
 - **`forum-scan`**: Daily cron, runs `runForumScan()` which searches discuss.watch forums
+- **`daily-digest`**: Daily cron, runs `runDailyDigest()` which aggregates 24h scan activity and sends summary email. Auto-derives scan schedules to run before it
 
 ### Prompt Management
 - Prompts stored in `scan_prompts` table with `wire`, `label`, `prompt_text`, `response_format`, `variant`, `tool_type`
+- `tool_type` values: `x_search` (Grok X.com), `web_search` (Grok web), `perplexity` (Perplexity sonar-pro), `community` (Reddit+HN)
+- `response_format` is the single source of truth for output format instructions -- inline format instructions were removed from prompt texts
 - CRUD API: `/api/scan/prompts` (GET/POST), `/api/scan/prompts/:id` (PUT/DELETE)
 - Test endpoint: `/api/scan/prompts/:id/test` -- executes a prompt and returns parsed results without intake processing
+- Run endpoint: `/api/scan/prompts/:id/run` -- executes a prompt and runs results through the full intake pipeline
+- Draft test: `/api/scan/prompts/test` -- tests unsaved prompt text without DB lookup
+- Prompt review: `/api/scan/prompts/review` -- Claude-based prompt review with suggestions and revised text
 - Effectiveness stats: `/api/scan/prompt-stats` -- per-prompt metrics and cross-prompt overlap rate
 
 ### Gate 2: LLM Classification + Scoring
@@ -424,18 +482,20 @@ The legacy rule-based scorer (`src/services/quality-scorer.ts`) is still in the 
 ## Distribution System
 
 ### Overview
-Per-feed multi-channel distribution of approved scan entries. Distribution is a **manual action** triggered from the feed dashboard -- it is NOT auto-triggered on approval. Three channels are supported: Telegram, X/Twitter, and newsletter (copyable markdown).
+Per-feed multi-channel distribution of approved scan entries. Distribution is a **manual action** triggered from the feed dashboard -- it is NOT auto-triggered on approval. Five channel types are supported: Telegram, Discord, Slack, X/Twitter, and newsletter (copyable markdown).
 
 ### Architecture
 - **Orchestrator**: `src/services/distribution.ts` -- coordinates sending approved-but-undistributed entries to all enabled channels for a wire, with retry support and newsletter markdown generation
-- **Post generator**: `src/services/post-generator.ts` -- uses Claude Sonnet to generate a tweet (280 chars) and Telegram HTML post per entry. Falls back to a template if AI generation fails
-- **Telegram client**: `src/services/telegram-channel.ts` -- sends HTML-formatted posts to Telegram channels via Bot API. Bot token from `TELEGRAM_BOT_TOKEN` env var; channel ID from `distribution_config` per wire
-- **X/Twitter client**: `src/services/x-client.ts` -- posts tweets via `twitter-api-v2`. All 4 OAuth credentials (API key, API secret, access token, access secret) stored in `distribution_config` JSONB per wire
-- **Types**: `src/types/intake.ts` -- `DistributionChannel`, `DistributionStatus`, `DistributionConfig`, `DistributionLog`, `GeneratedPosts`
+- **Post generator**: `src/services/post-generator.ts` -- uses Claude Sonnet 4.6 (`claude-sonnet-4-6-20250627`) to generate a tweet (280 chars) and Telegram HTML post per entry. Falls back to a template if AI generation fails
+- **Telegram client**: `src/services/telegram-channel.ts` -- sends HTML-formatted posts to Telegram channels via Bot API. Bot token from `TELEGRAM_BOT_TOKEN` env var or `api_providers` DB table
+- **Discord client**: `src/services/discord-channel.ts` -- sends messages to Discord channels via REST API (webhook URL or bot token in `distribution_channels` credentials)
+- **X/Twitter client**: `src/services/x-client.ts` -- posts tweets via `twitter-api-v2`. OAuth credentials stored in `distribution_channels` JSONB per wire
+- **Slack**: Supported as a channel type in the distribution orchestrator (credentials in `distribution_channels`)
+- **Types**: `src/types/intake.ts` -- `DistributionChannel` (telegram/discord/slack/x/newsletter), `DistributionStatus`, `DistributionConfig`, `DistributionLog`, `GeneratedPosts`
 
 ### Database Tables
-- **`distribution_channels`**: Managed channels with UUID PK. Columns: `id`, `wire`, `channel` (telegram/x), `name`, `enabled`, `target_id`, `credentials` JSONB (bot tokens, OAuth creds), `created_at`, `updated_at`. CRUD via Settings > Distribution tab.
-- **`distribution_logs`**: Tracks each send attempt. Columns: `id` (UUID), `entry_id` FK to `scan_entries`, `channel`, `wire`, `status` (pending/success/failed), `post_text`, `external_id` (platform post ID), `error_message`, `created_at`. Has unique partial index on `(entry_id, channel) WHERE status IN ('pending','success')` to prevent double-posts.
+- **`distribution_channels`**: Managed channels with UUID PK. Columns: `id`, `wire`, `channel` (telegram/discord/slack/x), `name`, `enabled`, `target_id`, `credentials` JSONB (bot tokens, OAuth creds, webhook URLs), `created_at`, `updated_at`. CRUD via Settings > Distribution tab.
+- **`distribution_logs`**: Tracks each send attempt. Columns: `id` (UUID), `entry_id` FK to `scan_entries`, `channel`, `channel_id` (FK to distribution_channels), `wire`, `status` (pending/success/failed), `post_text`, `external_id` (platform post ID), `error_message`, `created_at`. Has unique partial index on `(entry_id, channel) WHERE status IN ('pending','success')` to prevent double-posts.
 - **`distribution_config`**: Legacy table (unused). Replaced by `distribution_channels`.
 
 ### API Routes
@@ -468,16 +528,46 @@ Per-feed multi-channel distribution of approved scan entries. Distribution is a 
 - **Retry sends only to failed channels**: Redistribution skips channels that already have a `success` or `pending` log entry
 
 ### Dashboard UI
-- **Dashboard** (`client/`): React SPA with Settings > Distribution tab showing managed channel cards (TEST/EDIT/DEL actions), Queue tab with approve/decline actions and distribution status, Published tab with distribution pills
+- **Dashboard** (`client/`): React SPA with Settings > Distribution tab showing managed channel cards (TEST/EDIT/DEL actions), Queue tab with approve/decline actions and distribution status pills per entry
 
 ### Common Tasks for Distribution
-- **Configuring Telegram for a wire**: PUT `/api/distribution/config/:wire/telegram` with `{ "enabled": true, "config": { "channelId": "@yourchannel" } }`. Requires `TELEGRAM_BOT_TOKEN` env var.
-- **Configuring X/Twitter for a wire**: PUT `/api/distribution/config/:wire/x` with `{ "enabled": true, "config": { "apiKey": "...", "apiSecret": "...", "accessToken": "...", "accessSecret": "..." } }`
+- **Adding a channel**: Create via Settings > Distribution tab in dashboard, or POST to distribution channels API. Credentials stored in JSONB per channel.
+- **Configuring Telegram**: Set bot token via `TELEGRAM_BOT_TOKEN` env var or `api_providers` DB table. Channel ID (e.g. `@yourchannel`) set in channel config.
+- **Configuring Discord**: Set webhook URL or bot token + channel ID in channel credentials JSONB.
+- **Configuring X/Twitter**: Set all 4 OAuth credentials (apiKey, apiSecret, accessToken, accessSecret) in channel credentials JSONB.
 - **Triggering distribution**: POST `/api/distribution/run/:wire` -- sends to all enabled channels
 - **Generating newsletter**: GET `/api/distribution/newsletter/:wire` -- returns markdown of undistributed approved entries
 - **Retrying a failed send**: POST `/api/scan/entries/:id/redistribute` -- retries only failed channels
 - **Checking distribution status**: GET `/api/distribution/status/:wire` -- bulk status for all approved entries in a wire
 - **Viewing logs for an entry**: GET `/api/scan/entries/:id/distribution` -- full log history
+- **Testing a channel**: POST to distribution channel test endpoint -- sends a test message to verify connectivity
+
+## Operator Signals (Feedback Loop)
+
+The classifier is calibrated by operator approve/decline decisions (`src/services/operator-signals.ts`):
+- Queries 30-day history of approve/decline actions per wire
+- Computes per-entity approval rates, score thresholds for approved vs declined entries, and common decline reasons
+- Formats guidance as a prompt addendum injected into the classifier prompt
+- Results cached for 6 hours to avoid repeated DB queries
+- The classifier (`src/services/classifier.ts`) calls `computeOperatorSignals()` and `formatSignalsForPrompt()` before each classification
+
+## API Usage Tracking
+
+All LLM API calls are logged for cost monitoring (`src/services/api-usage.ts`):
+- **`api_usage_log`** table: provider, model, purpose, wire, duration_ms, tokens_in/out, success, error_message
+- **`model_pricing`** table: per-model cost rates (input/output per million tokens)
+- `logApiUsage()` is fire-and-forget (never blocks the caller)
+- Dashboard API exposes usage aggregation and pricing CRUD
+- Cost estimation computed from usage logs joined with model pricing
+
+## Organization Management
+
+Org profiles track organizations mentioned in entries (`org_profiles` table):
+- **Extractor** (`src/services/org-extractor.ts`): Pattern matching + LLM-based extraction of canonical org names from entry text. Auto-links entries to `org_profiles` on approve.
+- **Enricher** (`src/services/org-enricher.ts`): LLM-based enrichment of org profiles (type, source_type, website, tier). Admin endpoint for batch enrichment.
+- **Merge** (`src/services/org-merge.ts`): Merge duplicate org profiles (source -> target), relink all entries. Admin endpoint for manual dedup.
+- **Notion sync** (`src/services/notion-sync.ts`): Sync org profiles to a Notion database. Config stored in `integration_config` table (DB-backed, not env vars).
+- Admin endpoints: `/api/admin/clean-orgs`, `/api/admin/dedup-orgs`, `/api/admin/enrich-orgs`
 
 ## Rate Limiting
 
@@ -486,15 +576,28 @@ In-memory rate limiter in `src/server.ts`:
 |----------|-------|--------|
 | `/resend-link` | 2 per IP | 30 min |
 | `/api/scan/prompts/:id/test` | 5 global | 5 min |
+| `/api/scan/prompts/test` (draft) | 5 global | 5 min |
+| `/api/scan/prompts/review` | 3 global | 5 min |
+| `/api/scan/prompts/:id/run` | 2 per prompt | 5 min |
 | `/api/scan/run` | 1 global | 15 min |
 | `/api/forum/run` | 1 global | 15 min |
 | `/api/summary-sync` | 3 global | 5 min |
+| `/api/admin/summary-sync-backfill` | 1 global | 30 min |
+| `/api/process-raw` | 3 global | 5 min |
+| `/api/enrich` | 3 global | 5 min |
+| `/api/classify-queue` | 3 global | 5 min |
 | `/api/distribution/run/:wire` | 3 per wire | 5 min |
 | `/api/distribution/newsletter/:wire` | 5 global | 5 min |
 | `/api/scan/entries/:id/redistribute` | 5 global | 5 min |
+| Distribution channel test | 5 global | 5 min |
 | `/api/admin/run-migration` | 1 global | 30 min |
+| `/api/admin/recover-self-dupes` | 1 global | 10 min |
+| `/api/admin/clean-stale-seen` | 1 global | 10 min |
 | `/api/admin/classify-backfill` | 3 global | 5 min |
-| `/api/admin/summary-sync-backfill` | 1 global | 30 min |
+| `/api/admin/tag-backfill` | 3 global | 5 min |
+| `/api/admin/clean-orgs` | 1 global | 30 min |
+| `/api/admin/dedup-orgs` | 1 global | 30 min |
+| `/api/admin/enrich-orgs` | 1 global | 10 min |
 
 ## Code Style Notes
 
@@ -510,14 +613,14 @@ In-memory rate limiter in `src/server.ts`:
 ## Planned / Not Yet Implemented
 
 The following features are planned but not yet built:
-- **CRM sync** (Notion organization tracking)
-- **Slack/Discord intake adapters** (same `intake-core.ts` interface, new channel adapters)
+- **Slack/Discord intake adapters** (same `intake-core.ts` interface, new inbound channel adapters -- distribution to these channels already works)
 - **Email inbound ingestion** (URL extraction from forwarded emails)
 - **Automated scheduled distribution** (currently manual trigger only)
 
 Previously planned and now implemented:
-- ~~Multi-channel distribution~~ -- Implemented: Telegram, X/Twitter, and newsletter channels (see Distribution System section)
+- ~~Multi-channel distribution~~ -- Implemented: Telegram, Discord, Slack, X/Twitter, and newsletter channels (see Distribution System section)
 - ~~Weekly newsletter generation~~ -- Implemented: on-demand newsletter markdown generation via `/api/distribution/newsletter/:wire`
 - ~~Telegram bot ingestion~~ -- Implemented: `telegram-adapter.ts` + `intake-core.ts` with webhook at `/api/telegram/intake-webhook`
 - ~~Deployment-agnostic config~~ -- Implemented: `brand.ts` + env-var driven wire lists, scoring keywords, and AI prompts
 - ~~Data quality gates~~ -- Implemented: parser sanitization, approval guard, classification retry, admin backfill endpoints
+- ~~CRM sync~~ -- Partially implemented: `notion-sync.ts` with DB-backed config via `integration_config` table, org profiles in `org_profiles` table

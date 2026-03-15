@@ -6,26 +6,28 @@ Deployed as The Wire Room (grants wire) but designed to be deployment-agnostic �
 
 ## Current Scope (March 2026)
 
-- Scan execution (X search, web search, forum scanning)
+- Scan execution (X search, web search, Perplexity deep web, Reddit+HN community, forum scanning)
 - Multi-channel ingestion (Telegram bot, manual paste, API)
-- Intake pipeline (parse -> dedup -> quality score -> queue)
-- Queue review + approval workflow
-- Multi-channel distribution (Telegram, X/Twitter, newsletter)
+- Intake pipeline (parse -> dedup -> LLM classify + score -> queue)
+- Queue review + approval workflow with pre-approval validation
+- Multi-channel distribution (Telegram, Discord, Slack, X/Twitter, newsletter)
 - React dashboard (Lovable design) + server-rendered login
+- DB-backed API key management with env var fallback
+- Org profile management (extraction, enrichment, merge, Notion sync)
 - Schedule management, summary sync bridge, model listing, email alerts
 - Deployment-agnostic brand/audience configuration
 
 ## Core Workflow
 
-1. Prompts are stored in `scan_prompts`.
-2. `scan-execution` (or manual trigger) calls Grok Responses API (`x_search` / `web_search`).
-3. Results are parsed into structured entries.
-4. Intake pipeline inserts raw rows, deduplicates against `seen_urls` + `seen_names`, scores quality, and moves entries to `queued` or `archived`.
+1. Prompts are stored in `scan_prompts` with a `tool_type` (x_search, web_search, perplexity, community).
+2. `scan-execution` (or manual trigger) routes to the correct provider per tool_type.
+3. Results are parsed into structured entries via 4 parser strategies.
+4. Intake pipeline inserts raw rows, deduplicates against `seen_urls` + `seen_names`, classifies + scores via LLM (Grok), and moves entries to `queued` or `archived`.
 5. Operator reviews queue in dashboard and sets action:
    - `approve` -> `status = 'approved'`
    - `decline` -> `status = 'declined'`
    - `reviewlater` -> `status = 'skipped'`
-6. Operator triggers distribution from the feed page -- approved entries are sent to configured channels (Telegram, X/Twitter, newsletter).
+6. Operator triggers distribution from the feed page -- approved entries are sent to configured channels (Telegram, Discord, Slack, X/Twitter, newsletter).
 7. The Wire Room frontend reads approved rows directly from `scan_entries`.
 
 ## Features
@@ -36,16 +38,18 @@ Deployed as The Wire Room (grants wire) but designed to be deployment-agnostic �
 - Deployment-agnostic brand config (audience, content type, scoring keywords — all env-var driven)
 - Dynamic feeds (DB-driven wire list, not hardcoded)
 - Telegram intake bot for URL/article submissions via webhook
-- Channel-agnostic intake core with adapter pattern (Telegram today, Slack/Discord future)
-- Prompt CRUD + test execution + prompt lab
+- Channel-agnostic intake core with adapter pattern
+- Prompt CRUD + test execution + run + review + prompt lab
 - Automated scan runs with SSE progress updates
 - Forum scanning via discuss.watch (search terms overrideable via env var)
 - Intake scoring + dedup stats + prompt effectiveness stats
-- Quality scorer with overrideable funding/actionable type keywords
+- LLM classifier (Grok) with quality scoring, entity tags, and operator signal feedback loop
+- DB-backed API key management with env var fallback (api_providers table)
+- Org profile management (auto-extraction, LLM enrichment, merge, Notion CRM sync)
 - Scheduler with per-schedule health and retry-on-failure behavior
 - Summary sync bridge (`summaries` -> approved `scan_entries`, DB-driven wire list)
-- Multi-channel distribution (Telegram, X/Twitter, newsletter markdown)
-- AI-generated posts via Claude Sonnet with template fallback
+- Multi-channel distribution (Telegram, Discord, Slack, X/Twitter, newsletter markdown)
+- AI-generated posts via Claude Sonnet 4.6 with template fallback
 - Postgres-backed generated file storage and email notifications
 
 ## Quick Start
@@ -62,16 +66,19 @@ npm install
 cp .env.example .env
 ```
 
-Required env vars:
+Required env vars (server will not start without these):
 
 - `DATABASE_URL`
+- `NOTIFICATION_EMAIL`
+- `PRIVY_APP_ID`
+- `PRIVY_APP_SECRET`
+
+Optional API keys (warn on startup if missing; can also be set via Settings > API Providers):
+
 - `ANTHROPIC_API_KEY`
 - `GROK_API_KEY`
 - `FIRECRAWL_API_KEY`
 - `RESEND_API_KEY`
-- `NOTIFICATION_EMAIL`
-- `PRIVY_APP_ID`
-- `PRIVY_APP_SECRET`
 
 ### 3. Run
 
@@ -119,31 +126,46 @@ src/
 │   └── brand.ts            # Deployment-agnostic brand config (env-var driven)
 ├── db/index.ts
 ├── jobs/
-│   ├── daily-intake.ts
-│   ├── forum-scan.ts
-│   ├── scan-execution.ts
-│   └── summary-sync.ts
+│   ├── daily-digest.ts     # Daily digest email aggregation
+│   ├── daily-intake.ts     # Intake pipeline orchestrator (dedup -> classify -> queue)
+│   ├── enrichment.ts       # Enriches thin entries by scraping + regenerating summaries
+│   ├── forum-scan.ts       # Forum scan orchestrator (discuss.watch -> intake)
+│   ├── process-raw.ts      # Background job to process raw entries through pipeline
+│   ├── scan-execution.ts   # Scan execution (prompt -> Grok/Perplexity/Community -> intake)
+│   └── summary-sync.ts     # Sync tele-sum summaries into scan_entries
 ├── services/
-│   ├── anthropic.ts
+│   ├── anthropic.ts        # Claude API (summarization, prompt review)
+│   ├── api-provider.ts     # DB-backed API key management with env var fallback
+│   ├── api-usage.ts        # Fire-and-forget API usage logging + cost estimation
+│   ├── approval-guard.ts   # Pre-approval validation
 │   ├── auth.ts
+│   ├── classifier.ts       # LLM classifier (GRANT/NEWS/EXPIRED/NOISE + quality score)
+│   ├── community.ts        # Reddit + Hacker News search (no auth needed)
 │   ├── dedup.ts
-│   ├── distribution.ts
+│   ├── discord-channel.ts  # Discord channel posting (distribution)
+│   ├── distribution.ts     # Distribution orchestrator (5 channel types)
 │   ├── email.ts
 │   ├── forum.ts
-│   ├── grok.ts
-│   ├── intake.ts
-│   ├── intake-core.ts      # Channel-agnostic intake logic (URL extraction, wire detection, DB insert)
+│   ├── grok.ts             # Grok Chat + Responses API
+│   ├── intake.ts           # 4-strategy parser + sanitizeResult()
+│   ├── intake-core.ts      # Channel-agnostic intake logic
 │   ├── job-queue.ts
-│   ├── models.ts
-│   ├── post-generator.ts
+│   ├── models.ts           # Dynamic model fetching (Grok, Anthropic, Perplexity)
+│   ├── notion-sync.ts      # Notion CRM sync (DB-backed config)
+│   ├── operator-signals.ts # Feedback loop from approve/decline decisions
+│   ├── org-enricher.ts     # LLM-based org profile enrichment
+│   ├── org-extractor.ts    # Extract org names from entries
+│   ├── org-merge.ts        # Merge duplicate org profiles
+│   ├── perplexity.ts       # Perplexity API (deep web research scans)
+│   ├── post-generator.ts   # Claude Sonnet post generation (tweet + Telegram)
 │   ├── processor.ts
-│   ├── quality-scorer.ts
+│   ├── quality-scorer.ts   # Legacy rule-based scorer (replaced by LLM classifier)
 │   ├── scan-stats.ts
 │   ├── scheduler.ts
 │   ├── scraper.ts
 │   ├── storage.ts
-│   ├── telegram-adapter.ts  # Telegram intake bot adapter (webhook handler, inline keyboard)
-│   ├── telegram-channel.ts
+│   ├── telegram-adapter.ts # Telegram intake bot adapter
+│   ├── telegram-channel.ts # Telegram channel posting (distribution)
 │   └── x-client.ts
 ├── types/
 │   ├── index.ts
@@ -154,10 +176,7 @@ src/
 │   └── url.ts
 └── views/
     ├── error.ts
-    ├── feed.ts
     ├── login.ts            # Server-rendered (Privy + starfield animation)
-    ├── queue.ts
-    ├── settings.ts
     └── shared.ts           # Page shell (deep space palette, Orbitron headings)
 ```
 
@@ -182,46 +201,35 @@ Authenticated UI:
 - `GET /schedules`
 - `GET /settings`
 
-Authenticated API:
+Authenticated API (partial list -- see CLAUDE.md for complete reference):
 
-- `GET /api/models`
-- `GET /api/wires`
-- `GET /api/feeds`
-- `POST /api/feeds`
-- `PUT /api/feeds/:key`
-- `DELETE /api/feeds/:key`
-- `GET /api/files`
-- `GET /api/schedules`
-- `POST /api/schedules`
-- `PUT /api/schedules/:id`
-- `DELETE /api/schedules/:id`
-- `GET /api/scheduler-status`
-- `POST /api/test-alert`
-- `GET /api/scan/prompts`
-- `POST /api/scan/prompts`
-- `PUT /api/scan/prompts/:id`
-- `DELETE /api/scan/prompts/:id`
-- `POST /api/scan/prompts/:id/test`
-- `POST /api/scan/run`
-- `POST /api/forum/run`
-- `POST /api/scan/submit`
-- `POST /api/scan/submit-batch`
-- `GET /api/scan/queue`
-- `GET /api/scan/entries`
-- `POST /api/scan/entries/:id/action`
-- `GET /api/scan/stats`
-- `GET /api/scan/status-counts`
-- `GET /api/scan/seen-urls`
-- `GET /api/scan/prompt-stats`
+- `GET /api/models` -- list available AI models
+- `GET /api/wires` -- active wire list
+- `GET/POST /api/feeds`, `PUT/DELETE /api/feeds/:key`
+- `GET/POST/PUT/DELETE /api/schedules(/:id)`, `GET /api/scheduler-status`
+- `GET/POST /api/scan/prompts`, `PUT/DELETE /api/scan/prompts/:id`
+- `POST /api/scan/prompts/:id/test` -- test a prompt
+- `POST /api/scan/prompts/:id/run` -- run a prompt through full intake
+- `POST /api/scan/prompts/test` -- test draft prompt text
+- `POST /api/scan/prompts/review` -- Claude-based prompt review
+- `POST /api/scan/run` -- trigger scan execution
+- `POST /api/forum/run` -- trigger forum scan
+- `POST /api/scan/submit`, `POST /api/scan/submit-batch`
+- `GET /api/scan/queue`, `GET /api/scan/entries`
+- `POST /api/scan/entries/:id/action` -- approve/decline/archive
+- `POST /api/scan/entries/bulk-action` -- bulk approve/decline
+- `GET /api/scan/stats`, `GET /api/scan/status-counts`, `GET /api/scan/prompt-stats`
 - `POST /api/summary-sync`
-- `GET /api/distribution/config`
-- `PUT /api/distribution/config/:wire/:channel`
-- `POST /api/distribution/run/:wire`
-- `GET /api/distribution/newsletter/:wire`
+- `POST /api/process-raw`, `POST /api/enrich`, `POST /api/classify-queue`
+- `GET /api/distribution/config`, `PUT /api/distribution/config/:wire/:channel`
+- `POST /api/distribution/run/:wire`, `GET /api/distribution/newsletter/:wire`
 - `GET /api/distribution/status/:wire`
-- `GET /api/scan/entries/:id/distribution`
-- `POST /api/scan/entries/:id/redistribute`
-- `GET /api/job/:jobId/progress`
+- `GET /api/scan/entries/:id/distribution`, `POST /api/scan/entries/:id/redistribute`
+- `GET/PUT /api/api-providers(/:provider)` -- API key management
+- `GET /api/api-usage` -- usage logs
+- `GET /api/orgs`, `PUT /api/orgs/:id`, `POST /api/orgs/merge`
+- `POST /api/admin/run-migration`, `POST /api/admin/classify-backfill`, etc.
+- `GET /api/job/:jobId/progress` -- SSE job progress
 
 ## Scheduler Types
 
@@ -229,6 +237,7 @@ Supported schedule types:
 
 - `scan-execution`
 - `forum-scan`
+- `daily-digest`
 
 Notes:
 
@@ -236,28 +245,19 @@ Notes:
 - Failed jobs send notification email and retry once after 5 minutes.
 - Schedules persist in Postgres and are reloaded on startup.
 
-## Scan Quality Scoring
+## Quality Scoring
 
-`src/services/quality-scorer.ts` scores entries 0-100 using signals like:
+Quality scoring is done by the Grok LLM classifier (`src/services/classifier.ts`) in a single API call that classifies entries (GRANT/NEWS/EXPIRED/NOISE) and assigns a 0-100 quality score. NOISE entries are archived; entries scoring >= 40 are queued for review.
 
-- amount presence/size
-- deadline quality (rolling/upcoming/expired)
-- funding/actionability keywords
-- governance-noise and stale-award penalties
-
-Default intake threshold is `40` (`queued` if >= 40, else `archived`).
+The legacy rule-based scorer (`src/services/quality-scorer.ts`) is still in the codebase but is no longer used in the main pipeline.
 
 ## Distribution
 
 Per-feed multi-channel distribution of approved entries. Triggered manually from the feed dashboard (not auto-on-approve).
 
-Channels:
+Five channel types: **Telegram**, **Discord**, **Slack**, **X/Twitter**, **Newsletter** (copyable markdown).
 
-- **Telegram** -- Posts HTML to a channel via Bot API. Requires `TELEGRAM_BOT_TOKEN` env var; channel ID configured per wire.
-- **X/Twitter** -- Tweets via `twitter-api-v2`. OAuth credentials stored per wire in `distribution_config`.
-- **Newsletter** -- Generates copyable markdown digest of undistributed approved entries.
-
-Post content is AI-generated by Claude Sonnet (tweet + Telegram HTML), with template fallback on failure. Distribution logs track per-entry send status, and a unique partial index prevents double-posts. Failed sends can be retried individually from the queue page.
+Channel credentials are managed via the `distribution_channels` table (Settings > Distribution tab in dashboard). Post content is AI-generated by Claude Sonnet 4.6 (tweet + Telegram HTML), with template fallback on failure. Distribution logs track per-entry send status, and a unique partial index prevents double-posts. Failed sends can be retried individually from the queue page.
 
 ## Database Tables (Owned Here)
 
@@ -269,8 +269,14 @@ Post content is AI-generated by Claude Sonnet (tweet + Telegram HTML), with temp
 - `intake_runs`
 - `scan_prompts`
 - `generated_files`
-- `distribution_config`
+- `distribution_channels`
 - `distribution_logs`
+- `distribution_config` (legacy, unused)
+- `api_providers`
+- `api_usage_log`
+- `model_pricing`
+- `org_profiles`
+- `integration_config`
 
 Also read by summary sync bridge:
 
@@ -279,16 +285,19 @@ Also read by summary sync bridge:
 
 ## Environment Variables
 
-Required:
+Required (server will not start without these):
 
 - `DATABASE_URL`
+- `NOTIFICATION_EMAIL`
+- `PRIVY_APP_ID`
+- `PRIVY_APP_SECRET`
+
+Optional API keys (warn on startup; can be set via Settings > API Providers):
+
 - `ANTHROPIC_API_KEY`
 - `GROK_API_KEY`
 - `FIRECRAWL_API_KEY`
 - `RESEND_API_KEY`
-- `NOTIFICATION_EMAIL`
-- `PRIVY_APP_ID`
-- `PRIVY_APP_SECRET`
 
 Optional:
 
@@ -336,7 +345,7 @@ Entries can be submitted through multiple channels using the adapter pattern:
 
 - **Telegram bot** (`@GrantWireSummarizer_bot`): Send a URL or text to the bot. Wire is auto-detected from keywords; if ambiguous, the bot presents an inline keyboard for wire selection. Requires `TELEGRAM_INTAKE_BOT_TOKEN`. Only the allowed user ID can submit.
 - **Manual paste**: Submit via the dashboard (existing `/api/scan/submit` and `/api/scan/submit-batch` endpoints).
-- **Future adapters**: Slack, Discord, email — same `intake-core.ts` interface.
+- **Future adapters**: Slack, Discord, email inbound -- same `intake-core.ts` interface for ingestion (distribution to Slack/Discord channels already works).
 
 The intake core (`src/services/intake-core.ts`) is channel-agnostic: it accepts an `IntakeMessage`, extracts URLs, detects the target wire via per-wire keyword scoring, and inserts a raw `scan_entry`. Channel adapters (like `telegram-adapter.ts`) handle protocol-specific concerns (webhook validation, inline keyboards, etc.) and delegate to the core.
 

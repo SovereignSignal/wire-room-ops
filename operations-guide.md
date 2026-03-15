@@ -14,9 +14,9 @@ The system is deployment-agnostic: swap brand config and prompts to run any vert
 
 ## What It Is Not (in this repo)
 
-- No CRM sync or Notion integration (planned).
+- Notion CRM sync is partially built (`notion-sync.ts`, `org_profiles` table) but not fully production-hardened.
 - No automated scheduled distribution (manual trigger only).
-- Historical docs may reference CRM modules that are not in the current codebase.
+- No inbound email ingestion (planned).
 
 ## Production Checklist
 
@@ -32,14 +32,19 @@ The system is deployment-agnostic: swap brand config and prompts to run any vert
 
 Set these in Railway (or your host):
 
+Required (server will not start without these):
+
 - `DATABASE_URL`
+- `NOTIFICATION_EMAIL`
+- `PRIVY_APP_ID`
+- `PRIVY_APP_SECRET`
+
+Optional API keys (warn on startup; can also be set via Settings > API Providers in dashboard):
+
 - `ANTHROPIC_API_KEY`
 - `GROK_API_KEY`
 - `FIRECRAWL_API_KEY`
 - `RESEND_API_KEY`
-- `NOTIFICATION_EMAIL`
-- `PRIVY_APP_ID`
-- `PRIVY_APP_SECRET`
 
 Common optional settings:
 
@@ -86,8 +91,10 @@ Create prompts with `wire`, `label`, `promptText`, `toolType`, `isActive`, `sort
 
 Tool types:
 
-- `x_search` for X-native discovery
-- `web_search` for broader web discovery
+- `x_search` for X-native discovery (Grok Responses API)
+- `web_search` for broader web discovery (Grok Responses API)
+- `perplexity` for deep web research (Perplexity sonar-pro, requires PERPLEXITY_API_KEY)
+- `community` for Reddit + Hacker News search (free public APIs, no auth needed)
 
 Start with 2-3 prompts per wire and test each prompt:
 
@@ -126,6 +133,7 @@ Supported schedule types:
 
 - `scan-execution`
 - `forum-scan`
+- `daily-digest`
 
 Example schedule:
 
@@ -235,4 +243,4 @@ To deploy Wire Room Ops for a different vertical (e.g. consulting leads, researc
 
 ## Session Persistence
 
-Sessions are stored in the PostgreSQL `sessions` table (DB-backed). They survive Railway deploys — no more forced re-login after every deployment. Session expiry is 7 days. Cookie `maxAge` matches.
+Sessions are stored in-memory and reset on every restart/deploy. Session expiry is 24 hours via HttpOnly cookies. Re-login is required after each deployment.
