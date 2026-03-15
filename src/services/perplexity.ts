@@ -28,7 +28,7 @@ const DEFAULT_PERPLEXITY_MODEL = 'sonar-pro';
 
 export async function executePerplexityScan(
   promptText: string,
-  options?: { model?: string; responseFormat?: string | null }
+  options?: { model?: string; responseFormat?: string | null; outputFormat?: 'text' | 'json' }
 ): Promise<{ content: string; model: string; tokensUsed?: number }> {
   const provider = getCachedProvider('perplexity');
   const apiKey = provider?.api_key || process.env.PERPLEXITY_API_KEY;
@@ -39,13 +39,32 @@ export async function executePerplexityScan(
   const model = options?.model || provider?.default_model || DEFAULT_PERPLEXITY_MODEL;
   const baseUrl = provider?.base_url || PERPLEXITY_BASE_URL;
   const start = Date.now();
+  const useJson = options?.outputFormat === 'json';
 
   // Inject today's date for temporal context, append response format
   const today = new Date().toISOString().split('T')[0];
   let fullPrompt = `Today's date is ${today}.\n\n${promptText}`;
-  if (options?.responseFormat) {
+  if (!useJson && options?.responseFormat) {
     fullPrompt += `\n\nRespond using this format:\n${options.responseFormat}`;
   }
+  if (useJson) {
+    fullPrompt += `\n\nReturn results as a JSON object with a "results" array. Each item must have: name (string), description (string), source_url (string), and optionally: deadline (string), published (string), amount (string).`;
+  }
+
+  const systemPrompt = useJson
+    ? `You are a research assistant scanning the web for ${getBrand().contentType}. Return only factual, sourced results as structured JSON.`
+    : `You are a research assistant scanning the web for ${getBrand().contentType}. Return only factual, sourced results.\n\nFor each result, use this format:\n1. **Program Name** — Description including funding amount\nDeadline: [date, "Rolling", or "None listed"]\nSource URL: [URL where you found this]\n\nBold names with **, number results, include URLs. Include both new and currently active programs.`;
+
+  const requestBody: Record<string, unknown> = {
+    model,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: fullPrompt },
+    ],
+    max_tokens: 2000,
+    temperature: 0.1,
+    return_citations: true,
+  };
 
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
@@ -53,22 +72,7 @@ export async function executePerplexityScan(
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`,
     },
-    body: JSON.stringify({
-      model,
-      messages: [
-        {
-          role: 'system',
-          content: `You are a research assistant scanning the web for ${getBrand().contentType}. Return only factual, sourced results.\n\nFor each result, use this format:\n1. **Program Name** — Description including funding amount\nDeadline: [date, "Rolling", or "None listed"]\nSource URL: [URL where you found this]\n\nBold names with **, number results, include URLs. Include both new and currently active programs.`,
-        },
-        {
-          role: 'user',
-          content: fullPrompt,
-        },
-      ],
-      max_tokens: 2000,
-      temperature: 0.1,
-      return_citations: true,
-    }),
+    body: JSON.stringify(requestBody),
   });
 
   if (!response.ok) {

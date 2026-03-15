@@ -35,12 +35,21 @@ function buildClassificationPrompt(entry: {
   description: string;
   source_url: string;
   wire: string;
+  intent?: string;
 }, operatorGuidance?: string): string {
+  const intentGuidance = entry.intent === 'signal'
+    ? '\n## Prompt Intent: Signal\nThis entry came from a signal-detection prompt. Classify as NEWS unless it is clearly a direct grant application opportunity.'
+    : entry.intent === 'canonical'
+    ? '\n## Prompt Intent: Canonical\nThis entry came from a canonical-program prompt. Penalize if the program is closed/expired. Reward complete information (amount, deadline, eligibility).'
+    : entry.intent === 'discovery'
+    ? '\n## Prompt Intent: Discovery\nThis entry came from a discovery prompt. Penalize if there is no evidence of recent activity (announcement, post, update within last 30 days).'
+    : '';
+
   return `You are an intelligence analyst for a grants and funding intelligence feed. Classify AND score this entry. The entry is currently tagged for the "${entry.wire}" wire but you should verify this is correct — if the content is clearly about a different domain (e.g., an AI grant tagged as crypto), note it in your reason.
 
 Name: ${entry.name}
 Description: ${entry.description}
-URL: ${entry.source_url}
+URL: ${entry.source_url}${intentGuidance}
 
 ## Classification
 Classify as exactly one of:
@@ -83,6 +92,7 @@ export async function classifyEntry(entry: {
   description: string;
   source_url: string;
   wire: string;
+  intent?: string;
 }): Promise<ClassificationResult> {
   // Fetch operator signals (cached, non-blocking on failure)
   let operatorGuidance = '';

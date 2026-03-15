@@ -1117,7 +1117,7 @@ app.get('/api/scan/prompts', requireAuth, async (req: Request, res: Response) =>
 
 // API: Create scan prompt
 app.post('/api/scan/prompts', requireAuth, async (req: Request, res: Response) => {
-  const { wire, label, promptText, responseFormat, isActive, sortOrder, toolType, variant } = req.body;
+  const { wire, label, promptText, responseFormat, isActive, sortOrder, toolType, variant, model, outputFormat, intent } = req.body;
 
   if (!wire || typeof wire !== 'string') {
     res.status(400).json({ error: 'wire is required' });
@@ -1131,8 +1131,16 @@ app.post('/api/scan/prompts', requireAuth, async (req: Request, res: Response) =
     res.status(400).json({ error: 'promptText is required and must be non-empty' });
     return;
   }
-  if (toolType && !['x_search', 'web_search'].includes(toolType)) {
-    res.status(400).json({ error: 'toolType must be "x_search" or "web_search"' });
+  if (toolType && !['x_search', 'web_search', 'perplexity', 'community'].includes(toolType)) {
+    res.status(400).json({ error: 'toolType must be "x_search", "web_search", "perplexity", or "community"' });
+    return;
+  }
+  if (outputFormat && !['text', 'json'].includes(outputFormat)) {
+    res.status(400).json({ error: 'outputFormat must be "text" or "json"' });
+    return;
+  }
+  if (intent && !['discovery', 'canonical', 'signal'].includes(intent)) {
+    res.status(400).json({ error: 'intent must be "discovery", "canonical", or "signal"' });
     return;
   }
 
@@ -1154,6 +1162,9 @@ app.post('/api/scan/prompts', requireAuth, async (req: Request, res: Response) =
       sortOrder: typeof sortOrder === 'number' ? sortOrder : undefined,
       toolType: toolType || 'x_search',
       variant: variant || undefined,
+      model: model || undefined,
+      outputFormat: outputFormat || undefined,
+      intent: intent || undefined,
     });
 
     res.json(prompt);
@@ -1171,7 +1182,7 @@ app.put('/api/scan/prompts/:id', requireAuth, async (req: Request, res: Response
     return;
   }
 
-  const { wire, label, promptText, responseFormat, isActive, sortOrder, toolType, variant } = req.body;
+  const { wire, label, promptText, responseFormat, isActive, sortOrder, toolType, variant, model, outputFormat, intent } = req.body;
   const updates: Record<string, any> = {};
 
   if (wire !== undefined) {
@@ -1191,11 +1202,26 @@ app.put('/api/scan/prompts/:id', requireAuth, async (req: Request, res: Response
   if (sortOrder !== undefined) updates.sortOrder = sortOrder;
   if (variant !== undefined) updates.variant = variant;
   if (toolType !== undefined) {
-    if (!['x_search', 'web_search'].includes(toolType)) {
-      res.status(400).json({ error: 'toolType must be "x_search" or "web_search"' });
+    if (!['x_search', 'web_search', 'perplexity', 'community'].includes(toolType)) {
+      res.status(400).json({ error: 'toolType must be "x_search", "web_search", "perplexity", or "community"' });
       return;
     }
     updates.toolType = toolType;
+  }
+  if (model !== undefined) updates.model = model || null;
+  if (outputFormat !== undefined) {
+    if (!['text', 'json'].includes(outputFormat)) {
+      res.status(400).json({ error: 'outputFormat must be "text" or "json"' });
+      return;
+    }
+    updates.outputFormat = outputFormat;
+  }
+  if (intent !== undefined) {
+    if (!['discovery', 'canonical', 'signal'].includes(intent)) {
+      res.status(400).json({ error: 'intent must be "discovery", "canonical", or "signal"' });
+      return;
+    }
+    updates.intent = intent;
   }
 
   try {
@@ -1238,6 +1264,8 @@ function normalizePromptLabPayload(body: Record<string, unknown>): {
   promptText: string;
   responseFormat?: string | null;
   toolType: ToolType;
+  model?: string;
+  outputFormat?: 'text' | 'json';
   parsedResults?: RawScanResult[];
   testOutput?: string | null;
 } {
@@ -1246,7 +1274,9 @@ function normalizePromptLabPayload(body: Record<string, unknown>): {
     label: typeof body.label === 'string' ? body.label : undefined,
     promptText: typeof body.promptText === 'string' ? body.promptText.trim() : '',
     responseFormat: typeof body.responseFormat === 'string' ? body.responseFormat : undefined,
-    toolType: body.toolType === 'web_search' ? 'web_search' : body.toolType === 'perplexity' ? 'perplexity' : 'x_search',
+    toolType: body.toolType === 'web_search' ? 'web_search' : body.toolType === 'perplexity' ? 'perplexity' : body.toolType === 'community' ? 'community' : 'x_search',
+    model: typeof body.model === 'string' && body.model ? body.model : undefined,
+    outputFormat: body.outputFormat === 'json' ? 'json' : 'text',
     parsedResults: Array.isArray(body.parsedResults) ? body.parsedResults as RawScanResult[] : undefined,
     testOutput: typeof body.testOutput === 'string' ? body.testOutput : undefined,
   };
@@ -1256,24 +1286,31 @@ async function executePromptLabTest(input: {
   promptText: string;
   responseFormat?: string | null;
   toolType: ToolType;
+  model?: string;
+  outputFormat?: 'text' | 'json';
 }) {
   const result = await withRetry(() => {
     if (input.toolType === 'perplexity') {
       return executePerplexityScan(input.promptText, {
+        model: input.model,
         responseFormat: input.responseFormat,
+        outputFormat: input.outputFormat,
       });
     }
     return executeScanPrompt(input.promptText, {
+      model: input.model,
       responseFormat: input.responseFormat,
       toolType: input.toolType,
     });
   });
-  const parsedResults = parseStructuredOutput(result.content);
+  const parseHint = input.outputFormat === 'json' ? 'json' as const : undefined;
+  const { results: parsedResults, strategy } = parseStructuredOutput(result.content, parseHint);
   return {
     success: true,
     content: result.content,
     parsedResults,
     parsedCount: parsedResults.length,
+    parseStrategy: strategy,
     model: result.model,
     tokensUsed: result.tokensUsed,
   };
@@ -1346,6 +1383,8 @@ app.post('/api/scan/prompts/:id/test', requireAuth, async (req: Request, res: Re
       promptText: prompt.promptText,
       responseFormat: prompt.responseFormat,
       toolType: prompt.toolType,
+      model: prompt.model || undefined,
+      outputFormat: prompt.outputFormat,
     }));
   } catch (error) {
     console.error('Scan prompt test failed:', error);
@@ -1378,10 +1417,13 @@ app.post('/api/scan/prompts/:id/run', requireAuth, async (req: Request, res: Res
       () => {
         if (prompt.toolType === 'perplexity') {
           return executePerplexityScan(prompt.promptText, {
+            model: prompt.model || undefined,
             responseFormat: prompt.responseFormat,
+            outputFormat: prompt.outputFormat,
           });
         }
         return executeScanPrompt(prompt.promptText, {
+          model: prompt.model || undefined,
           responseFormat: prompt.responseFormat,
           toolType: prompt.toolType,
         });
@@ -1389,7 +1431,8 @@ app.post('/api/scan/prompts/:id/run', requireAuth, async (req: Request, res: Res
       2
     );
 
-    const parsed = parseStructuredOutput(scanResult.content);
+    const parseHint = prompt.outputFormat === 'json' ? 'json' as const : undefined;
+    const { results: parsed, strategy: parseStrategy } = parseStructuredOutput(scanResult.content, parseHint);
     const today = new Date().toISOString().split('T')[0];
 
     // Determine variant
@@ -1397,9 +1440,11 @@ app.post('/api/scan/prompts/:id/run', requireAuth, async (req: Request, res: Res
     const variant = (prompt.variant && VALID_VARIANTS.includes(prompt.variant)) ? prompt.variant : 'A';
 
     // Determine source
-    const source = prompt.toolType === 'perplexity' || prompt.toolType === 'web_search'
-      ? 'web-search' as const
-      : 'x-scan' as const;
+    const source =
+      prompt.toolType === 'community' ? 'community' as const :
+      prompt.toolType === 'perplexity' ? 'perplexity' as const :
+      prompt.toolType === 'web_search' ? 'web-search' as const
+        : 'x-scan' as const;
 
     // Run through intake pipeline
     const pool = getPool();
@@ -1410,15 +1455,18 @@ app.post('/api/scan/prompts/:id/run', requireAuth, async (req: Request, res: Res
       source,
       results: parsed,
       promptId: prompt.id,
+      rawOutput: scanResult.content,
+      parseStrategy,
     };
 
     const intakeSummary = await runDailyIntake(pool, [submission]);
 
-    console.log(`[PromptRun] "${prompt.label}" → ${parsed.length} parsed, ${intakeSummary.newUnique} new, ${intakeSummary.highQualityCount} high quality`);
+    console.log(`[PromptRun] "${prompt.label}" → ${parsed.length} parsed (${parseStrategy}), ${intakeSummary.newUnique} new, ${intakeSummary.highQualityCount} high quality`);
 
     res.json({
       success: true,
       parsedCount: parsed.length,
+      parseStrategy,
       newUnique: intakeSummary.newUnique,
       duplicatesFound: intakeSummary.duplicatesFound,
       highQualityCount: intakeSummary.highQualityCount,

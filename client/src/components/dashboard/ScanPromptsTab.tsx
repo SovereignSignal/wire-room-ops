@@ -29,9 +29,16 @@ const TOOL_TYPES = [
   { value: 'x_search', label: 'X Search', icon: '🔎' },
   { value: 'web_search', label: 'Web Search', icon: '🌐' },
   { value: 'perplexity', label: 'Perplexity', icon: '🔮' },
+  { value: 'community', label: 'Community', icon: '🗣' },
 ];
 
 const VARIANTS = ['A', 'B', 'C', 'W', 'P'];
+
+const INTENTS = [
+  { value: 'discovery', label: 'Discovery', desc: 'Find newly announced opportunities' },
+  { value: 'canonical', label: 'Canonical', desc: 'Find currently-open known programs' },
+  { value: 'signal', label: 'Signal', desc: 'Catch news, funding rounds, signals' },
+];
 
 function timeAgo(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -85,6 +92,9 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
   const [formLabel, setFormLabel] = useState('');
   const [formToolType, setFormToolType] = useState('x_search');
   const [formVariant, setFormVariant] = useState('');
+  const [formModel, setFormModel] = useState('');
+  const [formOutputFormat, setFormOutputFormat] = useState<'text' | 'json'>('text');
+  const [formIntent, setFormIntent] = useState<'discovery' | 'canonical' | 'signal'>('discovery');
   const [formPromptText, setFormPromptText] = useState('');
   const [formResponseFormat, setFormResponseFormat] = useState('');
   const [formActive, setFormActive] = useState(true);
@@ -152,6 +162,9 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
     setFormLabel('');
     setFormToolType('x_search');
     setFormVariant('');
+    setFormModel('');
+    setFormOutputFormat('text');
+    setFormIntent('discovery');
     setFormPromptText('');
     setFormResponseFormat('');
     setFormActive(true);
@@ -171,6 +184,9 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
     setFormLabel(p.label);
     setFormToolType(p.toolType);
     setFormVariant(p.variant || '');
+    setFormModel(p.model || '');
+    setFormOutputFormat(p.outputFormat || 'text');
+    setFormIntent(p.intent || 'discovery');
     setFormPromptText(p.promptText);
     setFormResponseFormat(p.responseFormat || '');
     setFormActive(p.isActive);
@@ -211,6 +227,9 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
       promptText: formPromptText,
       toolType: formToolType,
       variant: formVariant || undefined,
+      model: formModel || undefined,
+      outputFormat: formOutputFormat,
+      intent: formIntent,
       responseFormat: formResponseFormat || undefined,
       isActive: formActive,
     };
@@ -722,6 +741,47 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
                   ))}
                 </select>
               </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[10px] font-display tracking-widest text-muted-foreground mb-1.5">INTENT</label>
+                  <select
+                    value={formIntent}
+                    onChange={e => setFormIntent(e.target.value as 'discovery' | 'canonical' | 'signal')}
+                    className="w-full px-3 py-2 text-sm bg-background border border-border rounded focus:border-primary/50 focus:outline-none"
+                  >
+                    {INTENTS.map(i => (
+                      <option key={i.value} value={i.value}>{i.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-display tracking-widest text-muted-foreground mb-1.5">OUTPUT</label>
+                  <select
+                    value={formOutputFormat}
+                    onChange={e => setFormOutputFormat(e.target.value as 'text' | 'json')}
+                    className="w-full px-3 py-2 text-sm bg-background border border-border rounded focus:border-primary/50 focus:outline-none"
+                  >
+                    <option value="text">Text (parsed)</option>
+                    <option value="json">JSON (structured)</option>
+                  </select>
+                </div>
+              </div>
+
+              {(formToolType === 'x_search' || formToolType === 'web_search') && (
+                <div>
+                  <label className="block text-[10px] font-display tracking-widest text-muted-foreground mb-1.5">
+                    MODEL OVERRIDE <span className="text-muted-foreground/60">(optional)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={formModel}
+                    onChange={e => setFormModel(e.target.value)}
+                    placeholder="Default (provider setting)"
+                    className="w-full px-3 py-2 text-sm bg-background border border-border rounded focus:border-primary/50 focus:outline-none font-mono"
+                  />
+                </div>
+              )}
 
               <div>
                 <label className="block text-[10px] font-display tracking-widest text-muted-foreground mb-1.5">PROMPT TEXT</label>

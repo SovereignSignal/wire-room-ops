@@ -449,6 +449,9 @@ export async function createScanPrompt(data: {
   responseFormat?: string;
   toolType?: string;
   variant?: string;
+  model?: string;
+  outputFormat?: string;
+  intent?: string;
   isActive?: boolean;
 }): Promise<ScanPrompt> {
   const res = await authFetch(`${BASE}/scan/prompts`, {
@@ -470,6 +473,9 @@ export async function updateScanPrompt(id: string, data: Partial<{
   responseFormat: string | null;
   toolType: string;
   variant: string | null;
+  model: string | null;
+  outputFormat: string;
+  intent: string;
   isActive: boolean;
 }>): Promise<ScanPrompt> {
   const res = await authFetch(`${BASE}/scan/prompts/${id}`, {

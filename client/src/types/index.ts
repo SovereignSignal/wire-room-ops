@@ -132,7 +132,10 @@ export interface ScanPrompt {
   promptText: string;
   responseFormat: string | null;
   variant: string | null;
-  toolType: 'x_search' | 'web_search' | 'perplexity';
+  toolType: 'x_search' | 'web_search' | 'perplexity' | 'community';
+  model: string | null;
+  outputFormat: 'text' | 'json';
+  intent: 'discovery' | 'canonical' | 'signal';
   isActive: boolean;
   sortOrder: number;
   createdAt: string;

@@ -99,9 +99,13 @@ export async function runDailyIntake(
     scanDate: string;
     promptId?: string;
     submittedBy?: string;
+    rawOutput?: string;
+    parseStrategy?: string;
   }> = [];
 
   for (const sub of submissions) {
+    // Only store raw output on the first entry per submission to save space
+    let isFirstEntry = true;
     for (const r of sub.results) {
       allResults.push({
         result: r,
@@ -111,7 +115,10 @@ export async function runDailyIntake(
         scanDate: sub.scanDate,
         promptId: sub.promptId,
         submittedBy: sub.submittedBy,
+        rawOutput: isFirstEntry ? sub.rawOutput : undefined,
+        parseStrategy: sub.parseStrategy,
       });
+      isFirstEntry = false;
     }
   }
 
@@ -123,7 +130,7 @@ export async function runDailyIntake(
 
   // Build batched multi-row INSERT (chunks of 50 to stay within param limits)
   const BATCH_SIZE = 50;
-  const COLS_PER_ROW = 15;
+  const COLS_PER_ROW = 17;
 
   for (let batchStart = 0; batchStart < allResults.length; batchStart += BATCH_SIZE) {
     const batch = allResults.slice(batchStart, batchStart + BATCH_SIZE);
@@ -137,7 +144,7 @@ export async function runDailyIntake(
       const offset = i * COLS_PER_ROW;
 
       valueClauses.push(
-        `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8}, $${offset + 9}, $${offset + 10}, $${offset + 11}, $${offset + 12}, 'raw', $${offset + 13}, $${offset + 14}, $${offset + 15})`
+        `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8}, $${offset + 9}, $${offset + 10}, $${offset + 11}, $${offset + 12}, 'raw', $${offset + 13}, $${offset + 14}, $${offset + 15}, $${offset + 16}, $${offset + 17})`
       );
       values.push(
         item.result.name,
@@ -155,13 +162,15 @@ export async function runDailyIntake(
         item.promptId || null,
         item.submittedBy || null,
         item.result.sourcePublishedAt || null,
+        item.rawOutput || null,
+        item.parseStrategy || null,
       );
     }
 
     const res = await pool.query(
       `INSERT INTO scan_entries
        (name, description, source_url, amount, amount_numeric, amount_currency,
-        deadline, deadline_parsed, wire, prompt_variant, scan_source, scan_date, status, prompt_id, submitted_by, source_published_at)
+        deadline, deadline_parsed, wire, prompt_variant, scan_source, scan_date, status, prompt_id, submitted_by, source_published_at, raw_output, parse_strategy)
        VALUES ${valueClauses.join(', ')}
        RETURNING id`,
       values

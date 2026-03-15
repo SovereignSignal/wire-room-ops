@@ -472,6 +472,9 @@ export interface ScanPromptRecord {
   responseFormat: string | null;
   variant: string | null;
   toolType: ToolType;
+  model: string | null;
+  outputFormat: 'text' | 'json';
+  intent: 'discovery' | 'canonical' | 'signal';
   isActive: boolean;
   sortOrder: number;
   createdAt: Date;
@@ -487,6 +490,9 @@ function parseScanPromptRow(row: any): ScanPromptRecord {
     responseFormat: row.response_format || null,
     variant: row.variant || null,
     toolType: row.tool_type || 'x_search',
+    model: row.model || null,
+    outputFormat: row.output_format || 'text',
+    intent: row.intent || 'discovery',
     isActive: row.is_active ?? true,
     sortOrder: row.sort_order ?? 0,
     createdAt: row.created_at,
@@ -926,14 +932,16 @@ Published: [date this was announced or last updated, or "Unknown"]
 Source URL: [the URL where you found this — X post, article, or program page]
 
 Rules:
-- Number each result sequentially
+- Number each result sequentially (1, 2, 3...)
 - Bold the program name with ** markers
 - Include funding amount in description when mentioned (e.g. "$50K", "$1M")
 - Use specific dates for deadlines when available
 - Published date should reflect when the opportunity was announced or last updated, not the deadline
-- Include both newly announced AND currently active/open programs
-- Each Source URL must be a direct link — not a listicle, aggregator, or "top N grants" blog post
-- Do NOT include citation markers like [[1]] in URLs`;
+- Each Source URL must be a direct, canonical link — not a listicle, aggregator, or "top N" blog post
+- Do NOT include citation markers like [[1]] in URLs
+- Start immediately with result 1 — no preamble, introduction, or summary text
+- Do NOT include a conclusion, summary, or sign-off after the last result
+- Every result must have evidence of recent activity (announcement, post, update) — do not include evergreen programs without a fresh signal`;
 
   const { rowCount } = await pool.query(
     `UPDATE scan_prompts SET response_format = $1 WHERE response_format IS NULL`,
@@ -943,13 +951,13 @@ Rules:
     console.log(`[DB] Set response_format on ${rowCount} prompts that had NULL`);
   }
 
-  // Migration v4: update all prompts to latest format (adds anti-listicle + citation rules)
+  // Migration v6: update prompts that still have the old format (without anti-preamble rules)
   const { rowCount: updatedCount } = await pool.query(
-    `UPDATE scan_prompts SET response_format = $1 WHERE response_format != $1`,
+    `UPDATE scan_prompts SET response_format = $1 WHERE response_format != $1 AND response_format NOT LIKE '%no preamble%'`,
     [defaultResponseFormat]
   );
   if (updatedCount && updatedCount > 0) {
-    console.log(`[DB] Updated ${updatedCount} prompts to latest response format`);
+    console.log(`[DB] Updated ${updatedCount} prompts to latest response format (v6)`);
   }
 
   // Migration: strip inline format instructions from prompt_text
@@ -1022,7 +1030,33 @@ Rules:
     console.log(`[DB] Relaxed recency constraints in ${recencyFixCount} prompt texts`);
   }
 
-  console.log('[DB] Scan prompts table ready (Phase 2+3 migrations applied, Gate 2 columns added)');
+  // Migration v6: model column for per-prompt model override
+  await pool.query(`ALTER TABLE scan_prompts ADD COLUMN IF NOT EXISTS model TEXT`);
+
+  // Migration v6: output_format column (text or json)
+  await pool.query(`ALTER TABLE scan_prompts ADD COLUMN IF NOT EXISTS output_format TEXT DEFAULT 'text'`);
+
+  // Migration v6: intent column for prompt purpose tagging
+  await pool.query(`ALTER TABLE scan_prompts ADD COLUMN IF NOT EXISTS intent TEXT DEFAULT 'discovery'`);
+
+  // Set default intents based on tool_type for existing prompts
+  await pool.query(`UPDATE scan_prompts SET intent = 'discovery' WHERE tool_type = 'x_search' AND intent IS NULL`);
+  await pool.query(`UPDATE scan_prompts SET intent = 'canonical' WHERE tool_type IN ('web_search', 'perplexity') AND intent IS NULL`);
+  await pool.query(`UPDATE scan_prompts SET intent = 'signal' WHERE tool_type = 'community' AND intent IS NULL`);
+
+  // Set reasoning model on existing x_search prompts that don't have a model set
+  const { rowCount: modelSetCount } = await pool.query(
+    `UPDATE scan_prompts SET model = 'grok-4.20-beta-0309-reasoning' WHERE tool_type = 'x_search' AND model IS NULL`
+  );
+  if (modelSetCount && modelSetCount > 0) {
+    console.log(`[DB] Set reasoning model on ${modelSetCount} x_search prompts`);
+  }
+
+  // Migration v6: raw_output and parse_strategy columns on scan_entries
+  await pool.query(`ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS raw_output TEXT`);
+  await pool.query(`ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS parse_strategy TEXT`);
+
+  console.log('[DB] Scan prompts table ready (Phase 2+3+6 migrations applied)');
 }
 
 /**
@@ -1136,11 +1170,14 @@ export async function createScanPrompt(params: {
   sortOrder?: number;
   toolType?: ToolType;
   variant?: string;
+  model?: string;
+  outputFormat?: 'text' | 'json';
+  intent?: 'discovery' | 'canonical' | 'signal';
 }): Promise<ScanPromptRecord> {
   const pool = getPool();
   const result = await pool.query(`
-    INSERT INTO scan_prompts (wire, label, prompt_text, response_format, is_active, sort_order, tool_type, variant)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    INSERT INTO scan_prompts (wire, label, prompt_text, response_format, is_active, sort_order, tool_type, variant, model, output_format, intent)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
     RETURNING *
   `, [
     params.wire,
@@ -1151,6 +1188,9 @@ export async function createScanPrompt(params: {
     params.sortOrder ?? 0,
     params.toolType || 'x_search',
     params.variant || null,
+    params.model || null,
+    params.outputFormat || 'text',
+    params.intent || 'discovery',
   ]);
 
   return parseScanPromptRow(result.rows[0]);
@@ -1158,7 +1198,7 @@ export async function createScanPrompt(params: {
 
 export async function updateScanPrompt(
   id: string,
-  updates: Partial<{ wire: string; label: string; promptText: string; responseFormat: string | null; isActive: boolean; sortOrder: number; variant: string | null; toolType: ToolType }>
+  updates: Partial<{ wire: string; label: string; promptText: string; responseFormat: string | null; isActive: boolean; sortOrder: number; variant: string | null; toolType: ToolType; model: string | null; outputFormat: 'text' | 'json'; intent: 'discovery' | 'canonical' | 'signal' }>
 ): Promise<ScanPromptRecord | null> {
   const pool = getPool();
   const setClauses: string[] = [];
@@ -1173,6 +1213,9 @@ export async function updateScanPrompt(
   if (updates.sortOrder !== undefined) { setClauses.push(`sort_order = $${paramIndex++}`); values.push(updates.sortOrder); }
   if (updates.variant !== undefined) { setClauses.push(`variant = $${paramIndex++}`); values.push(updates.variant); }
   if (updates.toolType !== undefined) { setClauses.push(`tool_type = $${paramIndex++}`); values.push(updates.toolType); }
+  if (updates.model !== undefined) { setClauses.push(`model = $${paramIndex++}`); values.push(updates.model); }
+  if (updates.outputFormat !== undefined) { setClauses.push(`output_format = $${paramIndex++}`); values.push(updates.outputFormat); }
+  if (updates.intent !== undefined) { setClauses.push(`intent = $${paramIndex++}`); values.push(updates.intent); }
 
   if (setClauses.length === 0) return getScanPromptById(id);
 

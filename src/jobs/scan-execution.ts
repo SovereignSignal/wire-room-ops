@@ -127,7 +127,9 @@ export async function runScanExecution(
         () => {
           if (prompt.toolType === 'perplexity') {
             return executePerplexityScan(prompt.promptText, {
+              model: prompt.model || undefined,
               responseFormat: prompt.responseFormat,
+              outputFormat: prompt.outputFormat,
             });
           }
           if (prompt.toolType === 'community') {
@@ -136,6 +138,7 @@ export async function runScanExecution(
             });
           }
           return executeScanPrompt(prompt.promptText, {
+            model: prompt.model || undefined,
             responseFormat: prompt.responseFormat,
             toolType: prompt.toolType,
           });
@@ -143,14 +146,15 @@ export async function runScanExecution(
         2 // 2 total attempts (1 retry) — these are expensive calls
       );
 
-      const parsed = parseStructuredOutput(scanResult.content);
+      const parseHint = prompt.outputFormat === 'json' ? 'json' as const : undefined;
+      const { results: parsed, strategy: parseStrategy } = parseStructuredOutput(scanResult.content, parseHint);
       const durationMs = Date.now() - promptStart;
 
       if (parsed.length === 0) {
-        console.warn(`[ScanExecution] Prompt "${prompt.label}" returned 0 parseable results`);
+        console.warn(`[ScanExecution] Prompt "${prompt.label}" returned 0 parseable results (strategy: ${parseStrategy})`);
         console.warn(`[ScanExecution] Raw output (first 500 chars): ${scanResult.content.substring(0, 500)}`);
       } else {
-        console.log(`[ScanExecution] Prompt "${prompt.label}" parsed ${parsed.length} results`);
+        console.log(`[ScanExecution] Prompt "${prompt.label}" parsed ${parsed.length} results (strategy: ${parseStrategy})`);
       }
 
       // Build submission
@@ -166,6 +170,8 @@ export async function runScanExecution(
         source,
         results: parsed,
         promptId: prompt.id,
+        rawOutput: scanResult.content,
+        parseStrategy,
       });
 
       totalResults += parsed.length;

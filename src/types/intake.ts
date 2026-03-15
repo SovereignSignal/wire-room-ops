@@ -30,6 +30,12 @@ export type ScanStatus =
   | 'approved'      // Approved for publication + distribution
   | 'declined';     // Rejected by reviewer
 
+// Output format for scan prompts
+export type OutputFormat = 'text' | 'json';
+
+// Prompt intent classification
+export type PromptIntent = 'discovery' | 'canonical' | 'signal';
+
 /**
  * A single result as parsed from a structured scan output.
  * This is the raw intake format before any processing.
@@ -54,6 +60,8 @@ export interface ScanSubmission {
   results: RawScanResult[];
   promptId?: string;          // UUID of the scan_prompt that produced these results
   submittedBy?: string;       // Who submitted (e.g. 'telegram:12345', 'email:user@example.com')
+  rawOutput?: string;         // Full raw API response text (before parsing)
+  parseStrategy?: string;     // Which parser matched ('structured_text', 'json', 'x_post', 'lenient_list', 'none')
 }
 
 /**

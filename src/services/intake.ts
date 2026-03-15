@@ -157,24 +157,37 @@ function sanitizeResult(result: RawScanResult): RawScanResult {
  * Deadline: [date or "Rolling" or "None listed"]
  * Link: [URL]
  */
-export function parseStructuredOutput(text: string): RawScanResult[] {
+export type ParseStrategy = 'structured_text' | 'json' | 'x_post' | 'lenient_list' | 'none';
+
+export interface ParseResult {
+  results: RawScanResult[];
+  strategy: ParseStrategy;
+}
+
+export function parseStructuredOutput(text: string, hint?: 'json'): ParseResult {
+  // If JSON output format is explicitly requested, try JSON first
+  if (hint === 'json') {
+    const jsonResults = parseJsonOutput(text);
+    if (jsonResults.length > 0) return { results: jsonResults.map(sanitizeResult), strategy: 'json' };
+  }
+
   // Strategy 1: Try structured text format (numbered list with bold names)
   const structured = parseStructuredText(text);
-  if (structured.length > 0) return structured.map(sanitizeResult);
+  if (structured.length > 0) return { results: structured.map(sanitizeResult), strategy: 'structured_text' };
 
   // Strategy 2: Try JSON parsing (array of objects or wrapped array)
   const jsonResults = parseJsonOutput(text);
-  if (jsonResults.length > 0) return jsonResults.map(sanitizeResult);
+  if (jsonResults.length > 0) return { results: jsonResults.map(sanitizeResult), strategy: 'json' };
 
   // Strategy 4: Try X-post format (@Handle  Description / URL / date blocks)
   const xPosts = parseXPostFormat(text);
-  if (xPosts.length > 0) return xPosts.map(sanitizeResult);
+  if (xPosts.length > 0) return { results: xPosts.map(sanitizeResult), strategy: 'x_post' };
 
   // Strategy 3: Try lenient numbered list (no bold required, flexible URL detection)
   const lenient = parseLenientNumberedList(text);
-  if (lenient.length > 0) return lenient.map(sanitizeResult);
+  if (lenient.length > 0) return { results: lenient.map(sanitizeResult), strategy: 'lenient_list' };
 
-  return [];
+  return { results: [], strategy: 'none' };
 }
 
 /**
@@ -885,7 +898,7 @@ export function buildSubmission(
   scanDate: string,
   source: ScanSource = 'x-scan'
 ): ScanSubmission {
-  const results = parseStructuredOutput(rawText);
+  const { results } = parseStructuredOutput(rawText);
 
   return {
     wire,
@@ -940,7 +953,7 @@ export function buildBatchSubmission(
   }
 
   for (const section of sections) {
-    const results = parseStructuredOutput(section.text);
+    const { results } = parseStructuredOutput(section.text);
     if (results.length > 0) {
       submissions.push({
         wire,
