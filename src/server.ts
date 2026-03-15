@@ -16,6 +16,7 @@ import { buildSubmission, buildBatchSubmission } from './services/intake';
 import { runDailyIntake, getDailyQueue, getIntakeStats } from './jobs/daily-intake';
 import { getPool, getDistributionConfigs, upsertDistributionConfig, getDistributionLogs, getDistributionStatusBulk, getDistributionStatusForEntries, getDistributionChannels, getDistributionChannelById, createDistributionChannel, updateDistributionChannel, deleteDistributionChannel, insertApprovedSummary } from './db';
 import { executeScanPrompt } from './services/grok';
+import { executeCommunityScan } from './services/community';
 import { executePerplexityScan } from './services/perplexity';
 import { runOrgExtraction, getOrgProfiles, getOrgById, getEntriesByOrg, ensureOrgProfilesTable, extractOrgFromName, upsertOrgProfile, linkEntryToOrg, findSimilarOrg } from './services/org-extractor';
 import { mergeOrgs, archiveOrg } from './services/org-merge';
@@ -1288,6 +1289,7 @@ async function executePromptLabTest(input: {
   toolType: ToolType;
   model?: string;
   outputFormat?: 'text' | 'json';
+  wire?: string;
 }) {
   const result = await withRetry(() => {
     if (input.toolType === 'perplexity') {
@@ -1295,6 +1297,11 @@ async function executePromptLabTest(input: {
         model: input.model,
         responseFormat: input.responseFormat,
         outputFormat: input.outputFormat,
+      });
+    }
+    if (input.toolType === 'community') {
+      return executeCommunityScan(input.promptText, {
+        wire: input.wire || 'crypto',
       });
     }
     return executeScanPrompt(input.promptText, {
@@ -1385,6 +1392,7 @@ app.post('/api/scan/prompts/:id/test', requireAuth, async (req: Request, res: Re
       toolType: prompt.toolType,
       model: prompt.model || undefined,
       outputFormat: prompt.outputFormat,
+      wire: prompt.wire,
     }));
   } catch (error) {
     console.error('Scan prompt test failed:', error);
@@ -1420,6 +1428,11 @@ app.post('/api/scan/prompts/:id/run', requireAuth, async (req: Request, res: Res
             model: prompt.model || undefined,
             responseFormat: prompt.responseFormat,
             outputFormat: prompt.outputFormat,
+          });
+        }
+        if (prompt.toolType === 'community') {
+          return executeCommunityScan(prompt.promptText, {
+            wire: prompt.wire,
           });
         }
         return executeScanPrompt(prompt.promptText, {
