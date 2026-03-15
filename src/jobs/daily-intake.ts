@@ -282,9 +282,13 @@ export async function runDailyIntake(
   const classificationFailures: number[] = [];
 
   for (const entryId of uniqueEntryIds) {
-    // Fetch the entry for classification + scoring
+    // Fetch the entry for classification + scoring (join prompt intent)
     const entryRes = await pool.query(
-      `SELECT name, description, amount, deadline, scan_date, source_url, wire FROM scan_entries WHERE id = $1`,
+      `SELECT se.name, se.description, se.amount, se.deadline, se.scan_date, se.source_url, se.wire,
+              sp.intent AS prompt_intent
+       FROM scan_entries se
+       LEFT JOIN scan_prompts sp ON se.prompt_id = sp.id
+       WHERE se.id = $1`,
       [entryId]
     );
     const entry = entryRes.rows[0];
@@ -297,6 +301,7 @@ export async function runDailyIntake(
         description: entry.description || '',
         source_url: entry.source_url || '',
         wire: entry.wire,
+        intent: entry.prompt_intent || undefined,
       });
       qualityScore = classResult.qualityScore;
 
@@ -341,7 +346,10 @@ export async function runDailyIntake(
         await new Promise(resolve => setTimeout(resolve, 2000));
 
         const entryRes = await pool.query(
-          `SELECT name, description, source_url, wire FROM scan_entries WHERE id = $1`,
+          `SELECT se.name, se.description, se.source_url, se.wire, sp.intent AS prompt_intent
+           FROM scan_entries se
+           LEFT JOIN scan_prompts sp ON se.prompt_id = sp.id
+           WHERE se.id = $1`,
           [entryId]
         );
         const entry = entryRes.rows[0];
@@ -352,6 +360,7 @@ export async function runDailyIntake(
           description: entry.description || '',
           source_url: entry.source_url || '',
           wire: entry.wire,
+          intent: entry.prompt_intent || undefined,
         });
 
         await pool.query(

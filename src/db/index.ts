@@ -1039,10 +1039,9 @@ Rules:
   // Migration v6: intent column for prompt purpose tagging
   await pool.query(`ALTER TABLE scan_prompts ADD COLUMN IF NOT EXISTS intent TEXT DEFAULT 'discovery'`);
 
-  // Set default intents based on tool_type for existing prompts
-  await pool.query(`UPDATE scan_prompts SET intent = 'discovery' WHERE tool_type = 'x_search' AND intent IS NULL`);
-  await pool.query(`UPDATE scan_prompts SET intent = 'canonical' WHERE tool_type IN ('web_search', 'perplexity') AND intent IS NULL`);
-  await pool.query(`UPDATE scan_prompts SET intent = 'signal' WHERE tool_type = 'community' AND intent IS NULL`);
+  // Set default intents based on tool_type for prompts still at the generic default
+  await pool.query(`UPDATE scan_prompts SET intent = 'canonical' WHERE tool_type IN ('web_search', 'perplexity') AND intent = 'discovery'`);
+  await pool.query(`UPDATE scan_prompts SET intent = 'signal' WHERE tool_type = 'community' AND intent = 'discovery'`);
 
   // Set reasoning model on existing x_search prompts that don't have a model set
   const { rowCount: modelSetCount } = await pool.query(

@@ -412,12 +412,14 @@ function parseJsonOutput(text: string): RawScanResult[] {
 
     if (!name && !description) continue;
 
+    const published = obj.published || obj.source_published_at || obj.sourcePublishedAt || obj.announced || obj.date_published || obj.last_updated || '';
     results.push({
       name: stripMarkdownArtifacts(String(name).trim()) || 'Unknown',
       description: stripMarkdownArtifacts(String(description).trim()) || 'Found via X scan',
       amount: obj.amount ? String(obj.amount) : extractAmount(String(description)),
       deadline: obj.deadline ? normalizeDeadline(String(obj.deadline)) : null,
       sourceUrl: (() => { const u = String(sourceUrl).trim(); return isUsefulUrl(u) ? u : ''; })(),
+      sourcePublishedAt: published ? parsePublishedDate(String(published)) : null,
     });
   }
 

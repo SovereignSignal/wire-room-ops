@@ -51,10 +51,11 @@ test('parseStructuredOutput parses canonical numbered format', () => {
   ].join('\n');
 
   const parsed = parseStructuredOutput(content);
-  assert.equal(parsed.length, 1);
-  assert.equal(parsed[0].name, 'Alpha Grants');
-  assert.equal(parsed[0].sourceUrl, 'https://example.org/grants/alpha');
-  assert.equal(parsed[0].deadline, 'March 8, 2026');
+  assert.equal(parsed.results.length, 1);
+  assert.equal(parsed.results[0].name, 'Alpha Grants');
+  assert.equal(parsed.results[0].sourceUrl, 'https://example.org/grants/alpha');
+  assert.equal(parsed.results[0].deadline, 'March 8, 2026');
+  assert.equal(parsed.strategy, 'structured_text');
 });
 
 test('parseStructuredOutput parses x_search block format', () => {
@@ -66,10 +67,11 @@ test('parseStructuredOutput parses x_search block format', () => {
   ].join('\n');
 
   const parsed = parseStructuredOutput(content);
-  assert.equal(parsed.length, 1);
-  assert.match(parsed[0].name, /^GrantDAO:/);
-  assert.equal(parsed[0].sourceUrl, 'https://x.com/grantdao/status/12345');
-  assert.equal(parsed[0].amount, '$100K');
+  assert.equal(parsed.results.length, 1);
+  assert.match(parsed.results[0].name, /^GrantDAO:/);
+  assert.equal(parsed.results[0].sourceUrl, 'https://x.com/grantdao/status/12345');
+  assert.equal(parsed.results[0].amount, '$100K');
+  assert.equal(parsed.strategy, 'x_post');
 });
 
 test('parseStructuredOutput parses JSON payloads', () => {
@@ -80,12 +82,15 @@ test('parseStructuredOutput parses JSON payloads', () => {
       amount: '$50,000',
       deadline: '2026-05-01',
       source_url: 'https://example.com/beta',
+      published: '2026-03-01',
     },
   ]);
 
   const parsed = parseStructuredOutput(content);
-  assert.equal(parsed.length, 1);
-  assert.equal(parsed[0].name, 'Beta Fellowship');
-  assert.equal(parsed[0].sourceUrl, 'https://example.com/beta');
-  assert.equal(parsed[0].amount, '$50,000');
+  assert.equal(parsed.results.length, 1);
+  assert.equal(parsed.results[0].name, 'Beta Fellowship');
+  assert.equal(parsed.results[0].sourceUrl, 'https://example.com/beta');
+  assert.equal(parsed.results[0].amount, '$50,000');
+  assert.equal(parsed.results[0].sourcePublishedAt, '2026-03-01T00:00:00.000Z');
+  assert.equal(parsed.strategy, 'json');
 });

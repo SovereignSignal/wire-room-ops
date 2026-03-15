@@ -32,7 +32,7 @@ const TOOL_TYPES = [
   { value: 'community', label: 'Community', icon: '🗣' },
 ];
 
-const VARIANTS = ['A', 'B', 'C', 'W', 'P'];
+const VARIANTS = ['A', 'B', 'C', 'W', 'P', 'N', 'S'];
 
 const INTENTS = [
   { value: 'discovery', label: 'Discovery', desc: 'Find newly announced opportunities' },

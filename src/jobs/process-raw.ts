@@ -93,7 +93,7 @@ export async function processRawEntries(pool?: Pool): Promise<{
     // Process in batches until no more raw entries
     while (true) {
       const batch = await db.query(
-        `SELECT id, name, description, source_url, amount, deadline, wire, scan_date
+        `SELECT id, name, description, source_url, amount, deadline, wire, scan_date, prompt_id
          FROM scan_entries
          WHERE status = 'raw'
            AND created_at < NOW() - INTERVAL '2 minutes'
@@ -182,11 +182,19 @@ export async function processRawEntries(pool?: Pool): Promise<{
             // Gate 2: LLM classification + quality scoring (single Grok call)
             // Non-blocking — failure leaves entry as UNCHECKED with score 0
             try {
+              // Look up prompt intent for this entry
+              const promptRes = await db.query(
+                `SELECT sp.intent FROM scan_prompts sp WHERE sp.id = $1`,
+                [row.prompt_id]
+              );
+              const promptIntent = promptRes.rows[0]?.intent;
+
               const classResult = await classifyEntry({
                 name: row.name,
                 description: row.description || '',
                 source_url: row.source_url,
                 wire: row.wire,
+                intent: promptIntent || undefined,
               });
               await db.query(
                 `UPDATE scan_entries

@@ -22,7 +22,7 @@ export type ScanStatus =
   | 'raw'           // Just ingested, no processing yet
   | 'deduped'       // Passed dedup check (unique)
   | 'duplicate'     // Flagged as duplicate
-  | 'queued'        // Ready for review (passed quality threshold)
+  | 'queued'        // Ready for operator review
   | 'enriched'      // AI summary generated
   | 'published'     // Included in a newsletter output
   | 'archived'      // Below quality threshold, kept for reference
