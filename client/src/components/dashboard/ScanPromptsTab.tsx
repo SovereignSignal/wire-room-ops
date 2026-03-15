@@ -459,10 +459,25 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
               </tr>
             </thead>
             <tbody>
-              {prompts.map(p => {
+              {[...prompts].sort((a, b) => {
+                // Active first, then inactive
+                if (a.isActive !== b.isActive) return a.isActive ? -1 : 1;
+                // Within same status: sort by wire, then sortOrder
+                if (a.wire !== b.wire) return a.wire.localeCompare(b.wire);
+                return a.sortOrder - b.sortOrder;
+              }).map((p, idx, sorted) => {
                 const schedule = getWireSchedule(p.wire);
+                const prevActive = idx > 0 ? sorted[idx - 1].isActive : true;
+                const showDivider = prevActive && !p.isActive;
                 return (
-                  <tr key={p.id} className="border-b border-border/50 hover:bg-card/40 transition-colors">
+                  <>{showDivider && (
+                    <tr key="inactive-divider" className="border-t-2 border-t-border/60">
+                      <td colSpan={7} className="px-4 py-2 text-[10px] font-display tracking-widest text-muted-foreground/60 uppercase bg-muted/5">
+                        Inactive Prompts
+                      </td>
+                    </tr>
+                  )}
+                  <tr key={p.id} className={`border-b border-border/50 hover:bg-card/40 transition-colors ${!p.isActive ? 'opacity-40' : ''}`}>
                     <td className="px-4 py-3 text-sm font-medium">{p.label}</td>
                     <td className="px-3 py-3 text-sm">
                       <span className="inline-flex items-center px-2 py-0.5 rounded bg-card border border-border text-xs font-mono">
@@ -521,6 +536,7 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
                       </div>
                     </td>
                   </tr>
+                  </>
                 );
               })}
             </tbody>
