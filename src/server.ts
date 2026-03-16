@@ -3030,44 +3030,51 @@ app.post('/api/admin/purge-source', requireAuth, async (req: Request, res: Respo
     return;
   }
 
+  const client = await getPool().connect();
   try {
-    const db = getPool();
+    await client.query('BEGIN');
+
     // Find all entry IDs for this source
-    const { rows } = await db.query(
+    const { rows } = await client.query(
       `SELECT id FROM scan_entries WHERE scan_source = $1`,
       [source]
     );
     const ids = rows.map((r: any) => r.id);
 
     if (ids.length === 0) {
+      await client.query('ROLLBACK');
       res.json({ deleted: 0, message: `No entries found with scan_source = '${source}'` });
       return;
     }
 
     // Clear all FK references before deleting entries
-    const { rowCount: seenNames } = await db.query(
+    const { rowCount: seenNames } = await client.query(
       `DELETE FROM seen_names WHERE entry_id = ANY($1)`, [ids]
     );
-    const { rowCount: seenUrls } = await db.query(
+    const { rowCount: seenUrls } = await client.query(
       `DELETE FROM seen_urls WHERE first_seen_entry_id = ANY($1)`, [ids]
     );
-    await db.query(
+    await client.query(
       `DELETE FROM distribution_logs WHERE entry_id = ANY($1)`, [ids]
     );
     // Clear self-referencing duplicate_of_id pointers
-    await db.query(
+    await client.query(
       `UPDATE scan_entries SET duplicate_of_id = NULL WHERE duplicate_of_id = ANY($1)`, [ids]
     );
     // Delete the entries themselves
-    const { rowCount: deleted } = await db.query(
+    const { rowCount: deleted } = await client.query(
       `DELETE FROM scan_entries WHERE scan_source = $1`, [source]
     );
 
+    await client.query('COMMIT');
     console.log(`[Admin] Purged ${deleted} entries with scan_source='${source}' (${seenNames} seen_names, ${seenUrls} seen_urls)`);
     res.json({ deleted, seenNamesRemoved: seenNames, seenUrlsRemoved: seenUrls });
   } catch (error) {
+    await client.query('ROLLBACK');
     console.error('[Admin] purge-source error:', error);
     res.status(500).json({ error: 'Purge failed' });
+  } finally {
+    client.release();
   }
 });
 
