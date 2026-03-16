@@ -478,24 +478,41 @@ export interface BatchIntakeResult {
 }
 
 /**
- * Detect whether a message is a numbered batch list.
- * Matches messages starting with "1. **" or "1. " with multiple entries.
+ * Detect whether a message is a batch list (numbered or bold-name format).
+ * Matches:
+ *   - Numbered: "1. **Name**" or "1. Text" with "2. " later
+ *   - Bold: "**Name** — Description" appearing 2+ times with Link: lines
  */
 export function isBatchMessage(text: string): boolean {
-  return /^\s*1\.\s+\*\*/.test(text) || /^\s*1\.\s+\S/.test(text) && /\n\s*2\.\s+/.test(text);
+  // Numbered list format
+  if (/^\s*1\.\s+\*\*/.test(text)) return true;
+  if (/^\s*1\.\s+\S/.test(text) && /\n\s*2\.\s+/.test(text)) return true;
+
+  // Bold-name format: **Name** — Description with multiple entries
+  const boldEntries = text.match(/^\*\*[^*]+\*\*\s*[—–\-]/gm);
+  if (boldEntries && boldEntries.length >= 2) return true;
+
+  return false;
 }
 
 /**
- * Parse a numbered batch list into individual entries.
- * Handles the Grok output format:
- *   N. **Name** — Description
- *   Deadline: X
- *   Link: <url>
+ * Parse a batch list into individual entries.
+ * Handles two formats:
+ *   Numbered: N. **Name** — Description / Deadline: X / Link: <url>
+ *   Bold:     **Name** — Description / Deadline: X / Link: <url>
  */
 function parseBatchEntries(text: string): Array<{ name: string; description: string; sourceUrl: string; deadline?: string }> {
-  // Split on numbered item boundaries: \n1. or \n2. etc (allows leading whitespace)
-  // Also handle the first entry which may not have a preceding newline
-  const chunks = text.split(/\n(?=\s*\d+\.\s+)/).filter(c => c.trim() && /^\s*\d+\./.test(c));
+  // Detect format: numbered vs bold-name
+  const isNumbered = /^\s*\d+\.\s+/.test(text.trim());
+
+  let chunks: string[];
+  if (isNumbered) {
+    // Split on numbered item boundaries: \n1. or \n2. etc
+    chunks = text.split(/\n(?=\s*\d+\.\s+)/).filter(c => c.trim() && /^\s*\d+\./.test(c));
+  } else {
+    // Split on bold-name boundaries: \n**Name**
+    chunks = text.split(/\n(?=\*\*[^*]+\*\*\s*[—–\-])/).filter(c => c.trim() && /^\*\*[^*]+\*\*/.test(c));
+  }
 
   return chunks.map(chunk => {
     // Strip the numbered prefix first (e.g. "14. " or " 3.  ")
@@ -604,6 +621,8 @@ export async function processBatchMessage(
         scanSource,
       });
       // Don't registerSeen here — processRawEntries handles it (see self-match bug fix)
+      // Fire-and-forget classification so entries get scored and queued promptly
+      setImmediate(() => classifyAndQueue(id, entry.name, entry.description, entry.sourceUrl, resolvedWire));
       result.inserted++;
       result.entries.push({ name: entry.name, wire: resolvedWire, id });
     } catch (err) {
