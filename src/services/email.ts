@@ -436,3 +436,41 @@ ${brand.name}`.trim();
 
   console.log(`[Email] Daily digest sent to: ${Array.isArray(to) ? to.join(', ') : to}`);
 }
+
+export async function sendCsvExportEmail(
+  result: import('../jobs/csv-export').CsvExportResult,
+  downloadUrl: string | null,
+  recipients?: string[]
+): Promise<void> {
+  const brand = getBrand();
+  const wireList = result.wires.map(w => w.toUpperCase()).join(', ');
+
+  const body = `
+    <p style="margin:0 0 16px;font-size:14px;color:#222;"><strong>${result.entryCount}</strong> approved entries across ${result.wires.length} wire${result.wires.length !== 1 ? 's' : ''} (${escapeHtml(wireList)})</p>
+    ${sectionLabel('Entries')}
+    ${result.htmlTable}
+    ${downloadUrl ? emailBtn(downloadUrl, 'Download CSV') : ''}
+    <p style="margin:0;color:#999;font-size:11px;">Use this data as input for newsletter composition.</p>`;
+
+  const htmlContent = emailShell(`Approved Export \u2014 ${result.date}`, body);
+
+  const textContent = `WIREOPS - Approved Entries Export ${result.date}
+
+${result.entryCount} approved entries across ${result.wires.length} wire(s): ${wireList}
+${downloadUrl ? `\nDownload CSV: ${downloadUrl}` : ''}
+
+---
+${brand.name}`.trim();
+
+  const to = recipients && recipients.length > 0 ? recipients : config.email.notificationEmail;
+
+  await sendWithTracking({
+    from: `${brand.fromName} <${config.email.fromEmail}>`,
+    to,
+    subject: `WireOps Export \u2014 ${result.date} | ${result.entryCount} approved entries`,
+    html: htmlContent,
+    text: textContent,
+  });
+
+  console.log(`[Email] CSV export email sent to: ${Array.isArray(to) ? to.join(', ') : to}`);
+}

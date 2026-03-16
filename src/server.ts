@@ -7,7 +7,7 @@ import jwt from 'jsonwebtoken';
 import jwksClient from 'jwks-rsa';
 import { getFile, listFiles } from './services/storage';
 import { getAvailableWires, closePool, getAllFeeds, ensureFeedsTable, ensureClassificationColumns, getFeedByKey, createFeed, updateFeed, archiveFeed, getEntryCountsByWire, getAllScanPrompts, getScanPromptById, createScanPrompt, updateScanPrompt, deleteScanPrompt, getStatusCounts, getEntriesByStatus, getSeenUrlStats, getSeenUrlsList } from './db';
-import { sendScanDigestEmail, sendResendLinkEmail } from './services/email';
+import { sendScanDigestEmail, sendResendLinkEmail, sendCsvExportEmail } from './services/email';
 import { StoredFile } from './types';
 import { jobQueue } from './services/job-queue';
 import { getAllModels } from './services/models';
@@ -34,6 +34,7 @@ import { renderLoginPage } from './views/login';
 import { renderErrorPage, renderLegacyDownloadPage, renderExpiredLinkPage, renderResendSuccessPage } from './views/error';
 import { handleTelegramUpdate, registerIntakeWebhook, cleanupPendingEntries } from './services/telegram-adapter';
 import { processRawEntries } from './jobs/process-raw';
+import { runCsvExport } from './jobs/csv-export';
 import { databaseRouter } from './routes/database';
 import { runEnrichment } from './jobs/enrichment';
 import { validateForApproval } from './services/approval-guard';
@@ -3203,6 +3204,76 @@ app.post('/api/admin/enrich-orgs', requireAuth, async (req: Request, res: Respon
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';
     console.error('[Admin] Org enrichment failed:', error);
+    res.status(500).json({ error: errorMsg });
+  }
+});
+
+// --- CSV Export ---
+
+// GET /api/export/csv — direct CSV file download
+app.get('/api/export/csv', requireAuth, async (req: Request, res: Response) => {
+  const hoursBack = Math.min(168, Math.max(1, parseInt(req.query.hoursBack as string, 10) || 24));
+
+  if (!rateLimit('export-csv-download', 5, 5 * 60 * 1000)) {
+    res.status(429).json({ error: 'Export recently generated. Please wait a few minutes.' });
+    return;
+  }
+
+  try {
+    const pool = getPool();
+    const result = await runCsvExport(pool, hoursBack);
+    if (result.entryCount === 0) {
+      res.status(200).json({ success: true, message: 'No approved entries in the specified timeframe', entryCount: 0 });
+      return;
+    }
+    const dateStr = new Date().toISOString().slice(0, 10);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="wireops-export-${dateStr}.csv"`);
+    res.send(result.csvContent);
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[Export] CSV download failed:', error);
+    res.status(500).json({ error: errorMsg });
+  }
+});
+
+// POST /api/export/csv — generate + email CSV export on demand
+app.post('/api/export/csv', requireAuth, async (req: Request, res: Response) => {
+  const hoursBack = Math.min(168, Math.max(1, parseInt(req.body?.hoursBack, 10) || 24));
+
+  if (!rateLimit('export-csv-email', 3, 5 * 60 * 1000)) {
+    res.status(429).json({ error: 'Export email recently sent. Please wait a few minutes.' });
+    return;
+  }
+
+  try {
+    const pool = getPool();
+    const result = await runCsvExport(pool, hoursBack);
+    if (result.entryCount === 0) {
+      res.json({ success: true, message: 'No approved entries in the specified timeframe', entryCount: 0 });
+      return;
+    }
+
+    // Build download link
+    const downloadUrl = result.fileId
+      ? createMagicLink(config.email.notificationEmail, result.fileId)
+      : null;
+
+    // Resolve recipients from any daily-digest schedule's notifyEmails
+    let recipients: string[] | undefined;
+    try {
+      const schedules = await getSchedules();
+      const digestSchedule = schedules.find(s => s.scheduleType === 'daily-digest');
+      if (digestSchedule?.notifyEmails) {
+        recipients = digestSchedule.notifyEmails.split(',').map(e => e.trim()).filter(Boolean);
+      }
+    } catch { /* fall back to default notification email */ }
+
+    await sendCsvExportEmail(result, downloadUrl, recipients);
+    res.json({ success: true, entryCount: result.entryCount, wires: result.wires });
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[Export] CSV email failed:', error);
     res.status(500).json({ error: errorMsg });
   }
 });

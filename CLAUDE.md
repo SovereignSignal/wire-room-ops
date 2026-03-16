@@ -73,6 +73,7 @@ src/
 ├── db/index.ts           # Postgres queries, schedules, feeds, scan tables, scan prompts, distribution tables
 ├── jobs/
 │   ├── daily-digest.ts     # Daily digest email aggregation (all scan activity across wires)
+│   ├── csv-export.ts       # Approved entries CSV export (cross-wire, for newsletter composition)
 │   ├── daily-intake.ts     # Scan intake pipeline orchestrator (parse -> dedup -> classify -> queue)
 │   ├── enrichment.ts       # Enriches thin entries by scraping source URLs and regenerating summaries
 │   ├── forum-scan.ts       # Forum scan orchestrator (discuss.watch -> intake, DB-driven wire list)
@@ -563,6 +564,26 @@ Org profiles track organizations mentioned in entries (`org_profiles` table):
 - **Notion sync** (`src/services/notion-sync.ts`): Sync org profiles to a Notion database. Config stored in `integration_config` table (DB-backed, not env vars).
 - Admin endpoints: `/api/admin/clean-orgs`, `/api/admin/dedup-orgs`, `/api/admin/enrich-orgs`
 
+## Approved Entries Export
+
+Cross-wire CSV export of recently approved entries for newsletter composition.
+
+### Key Files
+- `src/db/index.ts` — `getApprovedEntriesForExport(hoursBack)` query (uses `updated_at` since approval sets that timestamp)
+- `src/jobs/csv-export.ts` — `runCsvExport()`: query, build CSV + HTML table, store file via `storeFile()`
+- `src/services/email.ts` — `sendCsvExportEmail()` with inline HTML table + CSV download button
+
+### API Endpoints
+| Method | Path | Purpose | Rate Limit |
+|--------|------|---------|------------|
+| GET | `/api/export/csv?hoursBack=24` | Direct CSV file download (attachment) | 5 global / 5 min |
+| POST | `/api/export/csv` | Generate + email CSV export on demand | 3 global / 5 min |
+
+POST body: `{ "hoursBack": 24 }` (default 24, clamped 1-168). Recipients resolved from daily-digest schedule's `notifyEmails`.
+
+### Scheduler Integration
+Runs automatically after the daily-digest email (non-fatal). Skipped if 0 approved entries in the past 24h.
+
 ## Rate Limiting
 
 In-memory rate limiter in `src/server.ts`:
@@ -593,6 +614,8 @@ In-memory rate limiter in `src/server.ts`:
 | `/api/admin/dedup-orgs` | 1 global | 30 min |
 | `/api/admin/enrich-orgs` | 1 global | 10 min |
 | `/api/admin/purge-source` | 1 global | 30 min |
+| `GET /api/export/csv` | 5 global | 5 min |
+| `POST /api/export/csv` | 3 global | 5 min |
 
 ## Code Style Notes
 

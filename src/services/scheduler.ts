@@ -2,7 +2,9 @@ import cron, { ScheduledTask } from 'node-cron';
 import { runScanExecution } from '../jobs/scan-execution';
 import { runForumScan } from '../jobs/forum-scan';
 import { config } from '../config';
-import { sendTestAlertEmail, sendScheduledJobFailureEmail, sendDailyDigestEmail } from './email';
+import { sendTestAlertEmail, sendScheduledJobFailureEmail, sendDailyDigestEmail, sendCsvExportEmail } from './email';
+import { runCsvExport } from '../jobs/csv-export';
+import { createMagicLink } from './auth';
 import { runDailyDigest, getTopPendingFinds } from '../jobs/daily-digest';
 import { ensureScheduleTable, getAllSchedules, getScheduleById, createSchedule, updateSchedule, deleteSchedule as dbDeleteSchedule, StoredScheduleConfig, ensureFeedsTable, ensureScanTables, ensureScanPromptsTable, ensureDistributionTables, getPool } from '../db';
 import { getActiveWires } from './intake-core';
@@ -351,6 +353,25 @@ function createJobExecutor(schedule: ScheduleConfig) {
             console.log(`[Scheduler] Daily digest email sent (${digest.totalNewUnique} new, ${digest.totalPendingReview} pending)`);
           } catch (emailErr) {
             console.error(`[Scheduler] Failed to send daily digest email:`, emailErr);
+          }
+
+          // CSV export of approved entries (non-fatal)
+          try {
+            const csvResult = await runCsvExport(pool, 24);
+            if (csvResult.entryCount > 0) {
+              const downloadUrl = csvResult.fileId
+                ? createMagicLink(config.email.notificationEmail, csvResult.fileId)
+                : null;
+              const recipients = currentScheduleData.notifyEmails
+                ? currentScheduleData.notifyEmails.split(',').map(e => e.trim()).filter(Boolean)
+                : undefined;
+              await sendCsvExportEmail(csvResult, downloadUrl, recipients);
+              console.log(`[Scheduler] CSV export email sent (${csvResult.entryCount} entries)`);
+            } else {
+              console.log(`[Scheduler] CSV export: no approved entries in last 24h, skipping`);
+            }
+          } catch (csvErr) {
+            console.error(`[Scheduler] Failed to send CSV export email:`, csvErr);
           }
         } else {
           console.log(`[Scheduler] Daily digest: no activity today, skipping email`);

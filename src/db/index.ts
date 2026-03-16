@@ -1855,3 +1855,35 @@ export async function insertApprovedSummary(entry: SummaryInsert): Promise<numbe
     return null;
   }
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Approved entries export (cross-wire)
+// ────────────────────────────────────────────────────────────────────────────
+
+export interface ExportEntry {
+  id: number;
+  name: string;
+  description: string | null;
+  source_url: string;
+  wire: string;
+  amount: string | null;
+  deadline: string | null;
+  quality_score: number | null;
+  classification: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export async function getApprovedEntriesForExport(hoursBack = 24): Promise<ExportEntry[]> {
+  const pool = getPool();
+  const result = await pool.query<ExportEntry>(
+    `SELECT id, name, description, source_url, wire, amount, deadline,
+            quality_score, classification, created_at, updated_at
+     FROM scan_entries
+     WHERE status = 'approved'
+       AND updated_at >= NOW() - make_interval(hours => $1)
+     ORDER BY wire, quality_score DESC NULLS LAST`,
+    [hoursBack]
+  );
+  return result.rows;
+}
