@@ -359,13 +359,15 @@ function createJobExecutor(schedule: ScheduleConfig) {
           try {
             const csvResult = await runCsvExport(pool, 24);
             if (csvResult.entryCount > 0) {
-              const downloadUrl = csvResult.fileId
-                ? createMagicLink(config.email.notificationEmail, csvResult.fileId)
-                : null;
+              const email = config.email.notificationEmail;
+              const downloadUrls = {
+                csv: csvResult.csvFileId ? createMagicLink(email, csvResult.csvFileId) : null,
+                md: csvResult.mdFileId ? createMagicLink(email, csvResult.mdFileId) : null,
+              };
               const recipients = currentScheduleData.notifyEmails
                 ? currentScheduleData.notifyEmails.split(',').map(e => e.trim()).filter(Boolean)
                 : undefined;
-              await sendCsvExportEmail(csvResult, downloadUrl, recipients);
+              await sendCsvExportEmail(csvResult, downloadUrls, recipients);
               console.log(`[Scheduler] CSV export email sent (${csvResult.entryCount} entries)`);
             } else {
               console.log(`[Scheduler] CSV export: no approved entries in last 24h, skipping`);

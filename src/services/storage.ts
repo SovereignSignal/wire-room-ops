@@ -55,14 +55,17 @@ async function loadFilesFromDb(): Promise<void> {
 
 export async function storeFile(
   content: string,
-  dateRange: { start: Date; end: Date }
+  dateRange: { start: Date; end: Date },
+  filename?: string
 ): Promise<StoredFile> {
   await ensureFilesTable();
-  
+
   const id = uuidv4();
   const now = new Date();
-  
-  const filename = `grant-wire-${formatDateForFilename(dateRange.start)}-to-${formatDateForFilename(dateRange.end)}.md`;
+
+  if (!filename) {
+    filename = `grant-wire-${formatDateForFilename(dateRange.start)}-to-${formatDateForFilename(dateRange.end)}.md`;
+  }
   
   const file: StoredFile = {
     id,

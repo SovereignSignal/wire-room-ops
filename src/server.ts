@@ -547,13 +547,15 @@ app.get('/file/:fileId', async (req: Request, res: Response) => {
   }
   
   const file = await getFile(fileId);
-  
+
   if (!file) {
     res.status(404).send(renderErrorPage('File not found'));
     return;
   }
-  
-  res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+
+  const ext = file.filename.split('.').pop()?.toLowerCase();
+  const contentType = ext === 'csv' ? 'text/csv; charset=utf-8' : 'text/markdown; charset=utf-8';
+  res.setHeader('Content-Type', contentType);
   res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.filename)}"`);
   res.send(file.content);
 });
@@ -632,13 +634,15 @@ app.get('/download/:token', async (req: Request, res: Response) => {
   }
   
   const file = await getFile(validation.fileId);
-  
+
   if (!file) {
     res.status(404).send(renderErrorPage('File not found'));
     return;
   }
-  
-  res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+
+  const ext = file.filename.split('.').pop()?.toLowerCase();
+  const contentType = ext === 'csv' ? 'text/csv; charset=utf-8' : 'text/markdown; charset=utf-8';
+  res.setHeader('Content-Type', contentType);
   res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.filename)}"`);
   res.send(file.content);
 });
@@ -3219,6 +3223,8 @@ app.get('/api/export/csv', requireAuth, async (req: Request, res: Response) => {
     return;
   }
 
+  const format = (req.query.format as string)?.toLowerCase() === 'md' ? 'md' : 'csv';
+
   try {
     const pool = getPool();
     const result = await runCsvExport(pool, hoursBack);
@@ -3227,12 +3233,18 @@ app.get('/api/export/csv', requireAuth, async (req: Request, res: Response) => {
       return;
     }
     const dateStr = new Date().toISOString().slice(0, 10);
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="wireops-export-${dateStr}.csv"`);
-    res.send(result.csvContent);
+    if (format === 'md') {
+      res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="wireops-export-${dateStr}.md"`);
+      res.send(result.markdownContent);
+    } else {
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="wireops-export-${dateStr}.csv"`);
+      res.send(result.csvContent);
+    }
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-    console.error('[Export] CSV download failed:', error);
+    console.error('[Export] Download failed:', error);
     res.status(500).json({ error: errorMsg });
   }
 });
@@ -3254,10 +3266,12 @@ app.post('/api/export/csv', requireAuth, async (req: Request, res: Response) => 
       return;
     }
 
-    // Build download link
-    const downloadUrl = result.fileId
-      ? createMagicLink(config.email.notificationEmail, result.fileId)
-      : null;
+    // Build download links
+    const email = config.email.notificationEmail;
+    const downloadUrls = {
+      csv: result.csvFileId ? createMagicLink(email, result.csvFileId) : null,
+      md: result.mdFileId ? createMagicLink(email, result.mdFileId) : null,
+    };
 
     // Resolve recipients from any daily-digest schedule's notifyEmails
     let recipients: string[] | undefined;
@@ -3269,7 +3283,7 @@ app.post('/api/export/csv', requireAuth, async (req: Request, res: Response) => 
       }
     } catch { /* fall back to default notification email */ }
 
-    await sendCsvExportEmail(result, downloadUrl, recipients);
+    await sendCsvExportEmail(result, downloadUrls, recipients);
     res.json({ success: true, entryCount: result.entryCount, wires: result.wires });
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';

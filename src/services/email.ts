@@ -439,17 +439,22 @@ ${brand.name}`.trim();
 
 export async function sendCsvExportEmail(
   result: import('../jobs/csv-export').CsvExportResult,
-  downloadUrl: string | null,
+  downloadUrls: { csv: string | null; md: string | null },
   recipients?: string[]
 ): Promise<void> {
   const brand = getBrand();
   const wireList = result.wires.map(w => w.toUpperCase()).join(', ');
 
+  const buttons = [
+    downloadUrls.csv ? emailBtn(downloadUrls.csv, 'Download CSV') : '',
+    downloadUrls.md ? emailBtn(downloadUrls.md, 'Download Markdown') : '',
+  ].filter(Boolean).join('');
+
   const body = `
     <p style="margin:0 0 16px;font-size:14px;color:#222;"><strong>${result.entryCount}</strong> approved entries across ${result.wires.length} wire${result.wires.length !== 1 ? 's' : ''} (${escapeHtml(wireList)})</p>
     ${sectionLabel('Entries')}
     ${result.htmlTable}
-    ${downloadUrl ? emailBtn(downloadUrl, 'Download CSV') : ''}
+    ${buttons}
     <p style="margin:0;color:#999;font-size:11px;">Use this data as input for newsletter composition.</p>`;
 
   const htmlContent = emailShell(`Approved Export \u2014 ${result.date}`, body);
@@ -457,7 +462,8 @@ export async function sendCsvExportEmail(
   const textContent = `WIREOPS - Approved Entries Export ${result.date}
 
 ${result.entryCount} approved entries across ${result.wires.length} wire(s): ${wireList}
-${downloadUrl ? `\nDownload CSV: ${downloadUrl}` : ''}
+${downloadUrls.csv ? `\nDownload CSV: ${downloadUrls.csv}` : ''}
+${downloadUrls.md ? `\nDownload Markdown: ${downloadUrls.md}` : ''}
 
 ---
 ${brand.name}`.trim();

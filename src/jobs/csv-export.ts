@@ -16,7 +16,11 @@ export interface CsvExportResult {
   entryCount: number;
   wires: string[];
   csvContent: string;
+  markdownContent: string;
   htmlTable: string;
+  csvFileId: string | null;
+  mdFileId: string | null;
+  /** @deprecated Use csvFileId */
   fileId: string | null;
 }
 
@@ -87,6 +91,38 @@ function buildHtmlTable(entries: ExportEntry[]): string {
   </table>`;
 }
 
+function buildMarkdown(entries: ExportEntry[]): string {
+  const byWire = new Map<string, ExportEntry[]>();
+  for (const e of entries) {
+    const list = byWire.get(e.wire) || [];
+    list.push(e);
+    byWire.set(e.wire, list);
+  }
+
+  const dateStr = new Date().toISOString().slice(0, 10);
+  const sections: string[] = [`# Approved Entries Export \u2014 ${dateStr}\n`];
+
+  for (const wire of [...byWire.keys()].sort()) {
+    const wireEntries = byWire.get(wire)!;
+    sections.push(`## ${wire.toUpperCase()} (${wireEntries.length})\n`);
+    for (const e of wireEntries) {
+      const meta: string[] = [];
+      if (e.amount) meta.push(e.amount);
+      if (e.deadline) meta.push(`Deadline: ${e.deadline}`);
+      if (e.quality_score != null) meta.push(`Score: ${e.quality_score}`);
+      const metaLine = meta.length > 0 ? ` \u2014 ${meta.join(' | ')}` : '';
+      sections.push(`- **${e.name}**${metaLine}`);
+      sections.push(`  ${e.source_url}`);
+      if (e.description) {
+        sections.push(`  ${truncate(e.description, DESC_TRUNCATE)}`);
+      }
+      sections.push('');
+    }
+  }
+
+  return sections.join('\n');
+}
+
 export async function runCsvExport(_pool: Pool, hoursBack = 24): Promise<CsvExportResult> {
   const dateStr = new Date().toISOString().slice(0, 10);
   const entries = await getApprovedEntriesForExport(hoursBack);
@@ -97,30 +133,37 @@ export async function runCsvExport(_pool: Pool, hoursBack = 24): Promise<CsvExpo
       entryCount: 0,
       wires: [],
       csvContent: '',
+      markdownContent: '',
       htmlTable: '',
+      csvFileId: null,
+      mdFileId: null,
       fileId: null,
     };
   }
 
   const wires = [...new Set(entries.map(e => e.wire))].sort();
   const csvContent = buildCsv(entries);
+  const markdownContent = buildMarkdown(entries);
   const htmlTable = buildHtmlTable(entries);
 
-  // Store CSV for download
   const now = new Date();
-  const stored = await storeFile(csvContent, {
-    start: new Date(now.getTime() - hoursBack * 3600_000),
-    end: now,
-  });
+  const range = { start: new Date(now.getTime() - hoursBack * 3600_000), end: now };
 
-  console.log(`[CsvExport] ${entries.length} entries across ${wires.length} wires, fileId=${stored.id}`);
+  // Store both formats
+  const csvFile = await storeFile(csvContent, range, `wireops-export-${dateStr}.csv`);
+  const mdFile = await storeFile(markdownContent, range, `wireops-export-${dateStr}.md`);
+
+  console.log(`[CsvExport] ${entries.length} entries across ${wires.length} wires, csv=${csvFile.id} md=${mdFile.id}`);
 
   return {
     date: dateStr,
     entryCount: entries.length,
     wires,
     csvContent,
+    markdownContent,
     htmlTable,
-    fileId: stored.id,
+    csvFileId: csvFile.id,
+    mdFileId: mdFile.id,
+    fileId: csvFile.id,
   };
 }
