@@ -191,6 +191,7 @@ export async function processRawEntries(pool?: Pool): Promise<{
                 wire: row.wire,
                 intent: row.prompt_intent || undefined,
               });
+              const classStatus = classResult.classification === 'NOISE' ? 'archived' : 'queued';
               await db.query(
                 `UPDATE scan_entries
                  SET classification = $1,
@@ -198,7 +199,8 @@ export async function processRawEntries(pool?: Pool): Promise<{
                      quality_score = $3,
                      quality_breakdown = $4,
                      metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
-                     tags = $6
+                     tags = $6,
+                     status = $8
                  WHERE id = $7`,
                 [
                   classResult.classification,
@@ -208,6 +210,7 @@ export async function processRawEntries(pool?: Pool): Promise<{
                   JSON.stringify(classResult.extracted),
                   classResult.tags,
                   row.id,
+                  classStatus,
                 ]
               );
             } catch (classError) {

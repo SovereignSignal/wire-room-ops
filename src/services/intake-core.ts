@@ -283,10 +283,11 @@ async function insertEntry(entry: {
 async function classifyAndQueue(entryId: number, name: string, description: string, sourceUrl: string, wire: string): Promise<void> {
   try {
     const result = await classifyEntry({ name, description, source_url: sourceUrl, wire });
+    const newStatus = result.classification === 'NOISE' ? 'archived' : 'queued';
     const pool = getPool();
     await pool.query(
       `UPDATE scan_entries
-       SET quality_score = $1, quality_breakdown = $2, status = 'queued',
+       SET quality_score = $1, quality_breakdown = $2, status = $8,
            classification = $3, classification_reason = $4,
            metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
            tags = $6
@@ -299,9 +300,10 @@ async function classifyAndQueue(entryId: number, name: string, description: stri
         JSON.stringify(result.extracted),
         result.tags,
         entryId,
+        newStatus,
       ]
     );
-    console.log(`[IntakeCore] Classified entry #${entryId}: ${result.classification} (score: ${result.qualityScore})`);
+    console.log(`[IntakeCore] Classified entry #${entryId}: ${result.classification} → ${newStatus} (score: ${result.qualityScore})`);
   } catch (err) {
     // Fallback: promote to queued with score 0 so it's still visible
     console.error(`[IntakeCore] Classification failed for entry #${entryId}, queuing with score 0:`, err);

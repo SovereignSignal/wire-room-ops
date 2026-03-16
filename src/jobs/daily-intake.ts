@@ -304,10 +304,11 @@ export async function runDailyIntake(
         intent: entry.prompt_intent || undefined,
       });
       qualityScore = classResult.qualityScore;
+      const classStatus = classResult.classification === 'NOISE' ? 'archived' : 'queued';
 
       await pool.query(
         `UPDATE scan_entries
-         SET quality_score = $1, quality_breakdown = $2, status = 'queued',
+         SET quality_score = $1, quality_breakdown = $2, status = $8,
              classification = $3, classification_reason = $4,
              metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
              tags = $6
@@ -320,6 +321,7 @@ export async function runDailyIntake(
           JSON.stringify(classResult.extracted),
           classResult.tags,
           entryId,
+          classStatus,
         ]
       );
     } catch (classError) {
@@ -362,10 +364,11 @@ export async function runDailyIntake(
           wire: entry.wire,
           intent: entry.prompt_intent || undefined,
         });
+        const retryStatus = classResult.classification === 'NOISE' ? 'archived' : 'queued';
 
         await pool.query(
           `UPDATE scan_entries
-           SET quality_score = $1, quality_breakdown = $2,
+           SET quality_score = $1, quality_breakdown = $2, status = $8,
                classification = $3, classification_reason = $4,
                metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
                tags = $6
@@ -378,6 +381,7 @@ export async function runDailyIntake(
             JSON.stringify(classResult.extracted),
             classResult.tags,
             entryId,
+            retryStatus,
           ]
         );
 
@@ -385,7 +389,7 @@ export async function runDailyIntake(
         totalScore += classResult.qualityScore;
         if (classResult.qualityScore >= 60) highQualityCount++;
 
-        console.log(`[DailyIntake] Retry succeeded for entry ${entryId}: ${classResult.classification} (${classResult.qualityScore})`);
+        console.log(`[DailyIntake] Retry succeeded for entry ${entryId}: ${classResult.classification} → ${retryStatus} (${classResult.qualityScore})`);
       } catch (retryError) {
         console.error(`[DailyIntake] Retry also failed for entry ${entryId}:`, retryError);
       }
