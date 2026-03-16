@@ -84,6 +84,9 @@ function cleanUrl(raw: string): string {
 function sanitizeResult(result: RawScanResult): RawScanResult {
   let { name, description, amount, deadline, sourceUrl } = result;
 
+  // 0. Name: strip leading/trailing brackets (Telegram bold rendering artifacts)
+  name = name.replace(/^\[+|\]+$/g, '').trim();
+
   // 1. Name: truncate at 120 chars at word boundary
   if (name.length > 120) {
     // If name is a full sentence, move the excess text into description if empty

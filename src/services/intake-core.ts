@@ -536,6 +536,25 @@ function parseBatchEntries(text: string): Array<{ name: string; description: str
       // Must contain a Link: line to be a valid entry
       return trimmed.length > 0 && /Link:\s*https?:\/\//i.test(trimmed);
     });
+
+    // Fallback: if blank-line split produced fewer chunks than Link: lines,
+    // entries are run together without blank lines. Re-split by accumulating
+    // lines into blocks that end when a new "Link:" line starts a new entry.
+    const linkLineCount = (cleaned.match(/^Link:\s*https?:\/\//gim) || []).length;
+    if (chunks.length < linkLineCount && linkLineCount >= 2) {
+      chunks = [];
+      let block = '';
+      for (const line of cleaned.split('\n')) {
+        // A "Link:" line closes the current entry after it's appended
+        block += line + '\n';
+        if (/^Link:\s*https?:\/\//i.test(line.trim())) {
+          chunks.push(block.trim());
+          block = '';
+        }
+      }
+      // Remaining lines without a Link: are discarded (incomplete entry)
+      chunks = chunks.filter(c => c.length > 0 && /Link:\s*https?:\/\//i.test(c));
+    }
   }
 
   return chunks.map(rawChunk => {
