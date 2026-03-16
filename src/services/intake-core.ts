@@ -478,23 +478,28 @@ export interface BatchIntakeResult {
 }
 
 /**
- * Detect whether a message is a batch list (numbered or bold-name format).
+ * Detect whether a message is a batch list.
  * Matches:
  *   - Numbered: "1. **Name**" or "1. Text" with "2. " later
- *   - Bold: "**Name** — Description" appearing 2+ times
+ *   - Bold markdown: "**Name** — Description" appearing 2+ times
+ *   - Structured: Multiple "Link: https://..." lines (Telegram strips ** to bold rendering)
  */
 export function isBatchMessage(text: string): boolean {
   // Numbered list format
   if (/^\s*1\.\s+\*\*/.test(text)) return true;
   if (/^\s*1\.\s+\S/.test(text) && /\n\s*2\.\s+/.test(text)) return true;
 
-  // Bold-name format: **Name** — Description with multiple entries
-  // Use multiline flag so ^ matches start of any line (handles blank lines between entries)
+  // Bold-name format with literal ** markers
   const boldEntries = text.match(/^\s*\*\*[^*]+\*\*\s*[—–\-]/gm);
   if (boldEntries && boldEntries.length >= 2) return true;
-
-  // Single bold entry with structured fields (Link:/Deadline:) — likely a Telegram split
   if (boldEntries && boldEntries.length === 1 && /\nLink:\s*https?:\/\//i.test(text)) return true;
+
+  // Structured format without ** (Telegram renders bold and strips markers):
+  // Multiple "Link: <url>" lines = structured batch
+  const linkLines = text.match(/^Link:\s*https?:\/\//gim);
+  if (linkLines && linkLines.length >= 2) return true;
+  // Single entry with Link: (Telegram split of larger batch)
+  if (linkLines && linkLines.length === 1 && /\n(?:Deadline|Link):/i.test(text)) return true;
 
   return false;
 }
@@ -516,11 +521,20 @@ function parseBatchEntries(text: string): Array<{ name: string; description: str
   if (isNumbered) {
     // Split on numbered item boundaries: \n1. or \n2. etc
     chunks = cleaned.split(/\n(?=\s*\d+\.\s+)/).filter(c => c.trim() && /^\s*\d+\./.test(c.trim()));
-  } else {
-    // Split on bold-name boundaries: blank lines or newlines before **Name**
+  } else if (/\*\*[^*]+\*\*/.test(cleaned)) {
+    // Bold-name format with literal ** markers
     chunks = cleaned.split(/\n(?=\s*\*\*[^*]+\*\*\s*[—–\-])/).filter(c => {
       const trimmed = c.trim();
       return trimmed.length > 0 && /^\*\*[^*]+\*\*/.test(trimmed);
+    });
+  } else {
+    // Plain-text structured format (Telegram stripped ** markers):
+    // Split on blank lines or before lines that look like entry starts (Name — Description)
+    // Each entry block has: Name — Description, Deadline: ..., Link: ...
+    chunks = cleaned.split(/\n\s*\n/).filter(c => {
+      const trimmed = c.trim();
+      // Must contain a Link: line to be a valid entry
+      return trimmed.length > 0 && /Link:\s*https?:\/\//i.test(trimmed);
     });
   }
 
