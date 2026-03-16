@@ -3056,16 +3056,19 @@ app.post('/api/admin/purge-source', requireAuth, async (req: Request, res: Respo
       return;
     }
 
-    // Delete related seen records first (FK-safe)
+    // Clear all FK references before deleting entries
     const { rowCount: seenNames } = await db.query(
       `DELETE FROM seen_names WHERE entry_id = ANY($1)`, [ids]
     );
     const { rowCount: seenUrls } = await db.query(
-      `DELETE FROM seen_urls WHERE entry_id = ANY($1)`, [ids]
+      `DELETE FROM seen_urls WHERE first_seen_entry_id = ANY($1)`, [ids]
     );
-    // Clear distribution logs if any
     await db.query(
       `DELETE FROM distribution_logs WHERE entry_id = ANY($1)`, [ids]
+    );
+    // Clear self-referencing duplicate_of_id pointers
+    await db.query(
+      `UPDATE scan_entries SET duplicate_of_id = NULL WHERE duplicate_of_id = ANY($1)`, [ids]
     );
     // Delete the entries themselves
     const { rowCount: deleted } = await db.query(
