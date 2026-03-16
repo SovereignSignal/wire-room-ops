@@ -25,7 +25,7 @@ Both share the same PostgreSQL database. This repo writes; the website reads `sc
 | `src/config/index.ts` | Env vars; only 4 truly required (DATABASE_URL, NOTIFICATION_EMAIL, PRIVY_APP_ID, PRIVY_APP_SECRET) |
 | `src/config/brand.ts` | Deployment-agnostic brand config |
 | `src/db/index.ts` | All Postgres queries |
-| `src/jobs/scan-execution.ts` | Scan orchestrator (routes to Grok/Perplexity/Community per tool_type) |
+| `src/jobs/scan-execution.ts` | Scan orchestrator (routes to Grok/Perplexity per tool_type) |
 | `src/jobs/daily-intake.ts` | Intake pipeline (dedup -> classify -> queue) |
 | `src/services/classifier.ts` | LLM classifier (GRANT/NEWS/EXPIRED/NOISE + quality score) via Grok |
 | `src/services/intake.ts` | 4-strategy parser + sanitizeResult() |
@@ -33,7 +33,6 @@ Both share the same PostgreSQL database. This repo writes; the website reads `sc
 | `src/services/anthropic.ts` | Claude API (summarization, prompt review) |
 | `src/services/grok.ts` | Grok API (summaries + scan execution) |
 | `src/services/perplexity.ts` | Perplexity API (deep web research scans) |
-| `src/services/community.ts` | Reddit + HN public API search (no auth) |
 | `src/services/api-provider.ts` | DB-backed API key management with env var fallback |
 | `src/services/operator-signals.ts` | Feedback loop from approve/decline decisions |
 
@@ -51,7 +50,7 @@ All API keys can be managed via the `api_providers` DB table (Settings > API Pro
 ## Pipeline Flow
 
 ```
-Sources (X scan, web search, Perplexity, Community, forums, Telegram, manual)
+Sources (X scan, web search, Perplexity, forums, Telegram, manual)
   -> Parse (4 strategies) -> Sanitize -> Insert (status: raw)
   -> Gate 1: Completeness -> Dedup (URL + fuzzy name)
   -> Gate 2: LLM Classify + Score (Grok) -> Queue (score >= 40) or Archive

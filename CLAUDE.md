@@ -40,7 +40,6 @@ The Wire Room queries with `WHERE status = 'approved'` (optionally `AND wire = $
 - **Grok API** handles X.com/Twitter URLs (native access to tweet content) and all scan execution (x_search, web_search tools)
 - **Claude API** handles all other URL summarization, using Firecrawl for web scraping. Also powers prompt review and distribution post generation
 - **Perplexity API** handles deep web research scans (sonar-pro model, natively searches web with citations)
-- **Community scan** searches Reddit and Hacker News using free public APIs (no auth needed)
 - URL routing for summarization happens in `src/services/processor.ts` which imports `isXcomUrl()` from `src/services/grok.ts`
 
 ### API Provider System
@@ -78,7 +77,7 @@ src/
 │   ├── enrichment.ts       # Enriches thin entries by scraping source URLs and regenerating summaries
 │   ├── forum-scan.ts       # Forum scan orchestrator (discuss.watch -> intake, DB-driven wire list)
 │   ├── process-raw.ts      # Background job to process raw entries through Gate 1 -> dedup -> classify
-│   ├── scan-execution.ts   # Automated scan execution (prompt fetch -> Grok/Perplexity/Community -> intake)
+│   ├── scan-execution.ts   # Automated scan execution (prompt fetch -> Grok/Perplexity -> intake)
 │   └── summary-sync.ts     # Sync tele-sum summaries into scan_entries as approved (7-day lookback)
 ├── migrations/
 │   ├── cleanup-approved-data.ts  # One-time data cleanup for existing bad entries
@@ -91,7 +90,6 @@ src/
 │   ├── approval-guard.ts   # Pre-approval validation (blocks bad data from reaching website)
 │   ├── auth.ts           # Session tokens, download tokens, cleanup timers
 │   ├── classifier.ts       # Gate 2 LLM classifier (GRANT/NEWS/EXPIRED/NOISE + quality score + tags)
-│   ├── community.ts        # Community scan: Reddit + Hacker News search (no auth needed)
 │   ├── dedup.ts            # URL exact-match and fuzzy name deduplication
 │   ├── discord-channel.ts  # Discord channel posting via REST API (distribution)
 │   ├── distribution.ts     # Distribution orchestrator: send entries to channels, retry, newsletter
@@ -248,6 +246,7 @@ Pre-approval validation (`src/services/approval-guard.ts`) prevents bad data fro
 | POST | `/api/admin/clean-orgs` | Clean org profiles (remove empty/junk) | 1 / 30 min |
 | POST | `/api/admin/dedup-orgs` | Merge duplicate org profiles | 1 / 30 min |
 | POST | `/api/admin/enrich-orgs` | LLM-based org profile enrichment | 1 / 10 min |
+| POST | `/api/admin/purge-source` | Delete all entries from a scan_source (cascading cleanup) | 1 / 30 min |
 
 ### Other Tables
 
@@ -264,7 +263,7 @@ All providers support DB-backed credentials (`api_providers` table) with env var
 ### Grok API (X.ai)
 - **Chat Completions** (`/v1/chat/completions`): Used for newsletter summaries and LLM classification. Default model: `grok-4.20-beta-0309-non-reasoning`
 - **Responses API** (`/v1/responses`): Used for scan execution with `x_search` or `web_search` tools. Default model: `grok-4.20-beta-0309-non-reasoning`
-- Each scan prompt has a `tool_type` column (`x_search`, `web_search`, `perplexity`, or `community`) controlling routing
+- Each scan prompt has a `tool_type` column (`x_search`, `web_search`, or `perplexity`) controlling routing
 - Has native X.com/Twitter access via `x_search`; open web results via `web_search`
 
 ### Claude API (Anthropic)
@@ -277,12 +276,6 @@ All providers support DB-backed credentials (`api_providers` table) with env var
 - Default model: `sonar-pro`
 - Natively searches the web and returns cited results (no tool configuration needed)
 - Used for deep web research scans (prompts with `tool_type: 'perplexity'`)
-
-### Community Scan (Reddit + HN)
-- Reddit: public JSON search API (`reddit.com/search.json`) -- no auth needed
-- Hacker News: Algolia search API (`hn.algolia.com`) -- no auth needed
-- Search queries are extracted from prompt text (quoted phrases, "Focus on:" sections, or first sentence)
-- Results formatted as structured output for parser compatibility
 
 ### Firecrawl API
 - Endpoint: `https://api.firecrawl.dev/v1/scrape`
@@ -412,15 +405,14 @@ Automated discovery of grant opportunities via X.com scanning, web search, and f
 - **X.com scan** (`x-scan`): Grok Responses API with `x_search` tool, runs on schedule
 - **Web search** (`web-search`): Grok Responses API with `web_search` tool, same prompt system as X scan
 - **Perplexity scan** (`web-search`): Perplexity sonar-pro with native web search and citations (prompts with `tool_type: 'perplexity'`)
-- **Community scan** (`community`): Reddit + Hacker News public APIs, no auth needed (prompts with `tool_type: 'community'`)
 - **Forum scan** (`forum`): discuss.watch API searches across 150+ Discourse forums (search terms overrideable via `FORUM_SEARCH_TERMS`)
-- **Telegram intake** (`telegram-intake`): Bot-based URL/article submission via webhook. Uses adapter pattern (`telegram-adapter.ts` -> `intake-core.ts`)
+- **Telegram intake** (`telegram-intake`): Bot-based URL/article submission via webhook. Supports single URLs and batch messages (numbered lists, bold-name format, or structured `Link:` format). Uses adapter pattern (`telegram-adapter.ts` -> `intake-core.ts`)
 - **Manual paste** (`x-scan`/`web-search`): Dashboard paste-in flow
 
 ### Data Flow
-1. **Execute**: `scan-execution.ts` fetches active prompts from `scan_prompts`, routes to the correct provider per `tool_type`: Grok Responses API (`x_search`/`web_search`), Perplexity (`perplexity`), or Reddit+HN APIs (`community`)
-2. **Parse**: `intake.ts` extracts structured results via 4 parser strategies (structured text, JSON, X-post format, lenient numbered list)
-3. **Sanitize**: Post-parse `sanitizeResult()` cleans all parsed output — truncates names >120 chars, rejects junk deadlines (>50 chars, contains URLs/semicolons), discards suspicious small amounts (<$100 bare), moves excess name text into description
+1. **Execute**: `scan-execution.ts` fetches active prompts from `scan_prompts`, routes to the correct provider per `tool_type`: Grok Responses API (`x_search`/`web_search`) or Perplexity (`perplexity`)
+2. **Parse**: `intake.ts` extracts structured results via 4 parser strategies (structured text, JSON, X-post format, lenient numbered list). All strategies extract `sourcePublishedAt` when available (Published/Announced/Updated dates)
+3. **Sanitize**: Post-parse `sanitizeResult()` cleans all parsed output — strips leading/trailing brackets from names, truncates names >120 chars, rejects junk deadlines (>50 chars, contains URLs/semicolons), discards suspicious small amounts (<$100 bare), moves excess name text into description
 4. **Insert**: Raw results written to `scan_entries` with `status: raw`
 5. **Gate 1 — Completeness**: Entries with empty `source_url` or missing critical fields are flagged/archived before dedup
 6. **Dedup**: `dedup.ts` checks against `seen_urls` (exact URL match) and `seen_names` (fuzzy token overlap)
@@ -449,8 +441,10 @@ Automated discovery of grant opportunities via X.com scanning, web search, and f
 - **`daily-digest`**: Daily cron, runs `runDailyDigest()` which aggregates 24h scan activity and sends summary email. Auto-derives scan schedules to run before it
 
 ### Prompt Management
-- Prompts stored in `scan_prompts` table with `wire`, `label`, `prompt_text`, `response_format`, `variant`, `tool_type`
-- `tool_type` values: `x_search` (Grok X.com), `web_search` (Grok web), `perplexity` (Perplexity sonar-pro), `community` (Reddit+HN)
+- Prompts stored in `scan_prompts` table with `wire`, `label`, `prompt_text`, `response_format`, `variant`, `tool_type`, `intent`
+- `tool_type` values: `x_search` (Grok X.com), `web_search` (Grok web), `perplexity` (Perplexity sonar-pro)
+- `intent` values: `discovery` (find newly announced opportunities), `canonical` (find currently-open known programs), `signal` (catch news, funding rounds, signals) — influences classifier behavior via prompt guidance
+- `variant` values: `A`/`B`/`C` (legacy X-scan), `W` (web search), `P` (Perplexity), `N` (neutral/Telegram sync), `S` (signal)
 - `response_format` is the single source of truth for output format instructions -- inline format instructions were removed from prompt texts
 - CRUD API: `/api/scan/prompts` (GET/POST), `/api/scan/prompts/:id` (PUT/DELETE)
 - Test endpoint: `/api/scan/prompts/:id/test` -- executes a prompt and returns parsed results without intake processing
@@ -598,6 +592,7 @@ In-memory rate limiter in `src/server.ts`:
 | `/api/admin/clean-orgs` | 1 global | 30 min |
 | `/api/admin/dedup-orgs` | 1 global | 30 min |
 | `/api/admin/enrich-orgs` | 1 global | 10 min |
+| `/api/admin/purge-source` | 1 global | 30 min |
 
 ## Code Style Notes
 

@@ -895,14 +895,14 @@ export async function ensureScanPromptsTable(): Promise<void> {
       CHECK (tool_type IN ('x_search', 'web_search', 'perplexity', 'community'))
   `);
 
-  // Phase 4 migration: expand variant constraint to include 'S' (community), 'W', 'P', 'N'
+  // Phase 4 migration: expand variant constraint to include 'S' (signal), 'W' (web), 'P' (perplexity), 'N' (neutral)
   await pool.query(`ALTER TABLE scan_prompts DROP CONSTRAINT IF EXISTS scan_prompts_variant_check`);
   await pool.query(`
     ALTER TABLE scan_prompts ADD CONSTRAINT scan_prompts_variant_check
       CHECK (variant IN ('A', 'B', 'C', 'W', 'P', 'N', 'S'))
   `);
 
-  // Phase 4 migration: add community_signals JSONB column for community pulse metadata
+  // Phase 4 migration: add community_signals JSONB column for external signal metadata
   await pool.query(`ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS community_signals JSONB`);
 
   // Gate 2 migration: classification columns on scan_entries
@@ -1038,7 +1038,7 @@ Rules:
 
   // Migration v6: intent column for prompt purpose tagging
   // Default is 'discovery'; prompts created via UI/API set intent explicitly.
-  // No startup backfill — avoids clobbering intentional 'discovery' on web_search/perplexity/community prompts.
+  // No startup backfill — avoids clobbering intentional 'discovery' on web_search/perplexity prompts.
   await pool.query(`ALTER TABLE scan_prompts ADD COLUMN IF NOT EXISTS intent TEXT DEFAULT 'discovery'`);
 
   // Set reasoning model on existing x_search prompts that don't have a model set

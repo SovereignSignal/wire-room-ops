@@ -3026,7 +3026,7 @@ app.post('/api/admin/purge-source', requireAuth, async (req: Request, res: Respo
 
   const { source } = req.body;
   if (!source || typeof source !== 'string') {
-    res.status(400).json({ error: 'source is required (e.g. "community")' });
+    res.status(400).json({ error: 'source is required (e.g. "forum", "telegram")' });
     return;
   }
 

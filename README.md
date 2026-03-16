@@ -6,7 +6,7 @@ Deployed as The Wire Room (grants wire) but designed to be deployment-agnostic �
 
 ## Current Scope (March 2026)
 
-- Scan execution (X search, web search, Perplexity deep web, Reddit+HN community, forum scanning)
+- Scan execution (X search, web search, Perplexity deep web, forum scanning)
 - Multi-channel ingestion (Telegram bot, manual paste, API)
 - Intake pipeline (parse -> dedup -> LLM classify + score -> queue)
 - Queue review + approval workflow with pre-approval validation
@@ -19,7 +19,7 @@ Deployed as The Wire Room (grants wire) but designed to be deployment-agnostic �
 
 ## Core Workflow
 
-1. Prompts are stored in `scan_prompts` with a `tool_type` (x_search, web_search, perplexity, community).
+1. Prompts are stored in `scan_prompts` with a `tool_type` (x_search, web_search, perplexity) and `intent` (discovery, canonical, signal).
 2. `scan-execution` (or manual trigger) routes to the correct provider per tool_type.
 3. Results are parsed into structured entries via 4 parser strategies.
 4. Intake pipeline inserts raw rows, deduplicates against `seen_urls` + `seen_names`, classifies + scores via LLM (Grok), and moves entries to `queued` or `archived`.
@@ -131,7 +131,7 @@ src/
 │   ├── enrichment.ts       # Enriches thin entries by scraping + regenerating summaries
 │   ├── forum-scan.ts       # Forum scan orchestrator (discuss.watch -> intake)
 │   ├── process-raw.ts      # Background job to process raw entries through pipeline
-│   ├── scan-execution.ts   # Scan execution (prompt -> Grok/Perplexity/Community -> intake)
+│   ├── scan-execution.ts   # Scan execution (prompt -> Grok/Perplexity -> intake)
 │   └── summary-sync.ts     # Sync tele-sum summaries into scan_entries
 ├── services/
 │   ├── anthropic.ts        # Claude API (summarization, prompt review)
@@ -140,7 +140,6 @@ src/
 │   ├── approval-guard.ts   # Pre-approval validation
 │   ├── auth.ts
 │   ├── classifier.ts       # LLM classifier (GRANT/NEWS/EXPIRED/NOISE + quality score)
-│   ├── community.ts        # Reddit + Hacker News search (no auth needed)
 │   ├── dedup.ts
 │   ├── discord-channel.ts  # Discord channel posting (distribution)
 │   ├── distribution.ts     # Distribution orchestrator (5 channel types)
