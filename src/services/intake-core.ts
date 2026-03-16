@@ -10,7 +10,7 @@
  */
 
 import { getPool, getAllFeeds } from '../db';
-import { checkDuplicate } from '../services/dedup';
+import { checkDuplicate, registerSeen } from '../services/dedup';
 import { classifyEntry } from '../services/classifier';
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -215,7 +215,7 @@ function buildName(text: string, url: string | null): string {
 
   if (firstLine && firstLine !== url) {
     // Strip numbered list prefix (e.g. "14. " or "3. ")
-    const cleaned = firstLine.replace(/^\d+\.\s+/, '').trim();
+    const cleaned = firstLine.replace(/^\d+\.\s+/, '').replace(/^\[+|\]+$/g, '').trim();
     return cleaned.slice(0, 120);
   }
   if (url) {
@@ -370,9 +370,11 @@ export async function processIntakeMessage(
         submittedBy: msg.senderId,
         scanSource,
       });
-      // Don't registerSeen here — processRawEntries handles registration after dedup passes.
-      // Registering at intake caused a self-match bug where processRawEntries' second dedup
-      // pass would find the entry's own URL in seen_urls and mark it as duplicate of itself.
+      // Register in dedup tables immediately so future scans won't re-discover this entry.
+      // classifyAndQueue (below) promotes status from raw→queued before processRawEntries
+      // runs, so processRawEntries never sees these entries. ON CONFLICT DO NOTHING makes
+      // double-registration harmless.
+      await registerSeen(getPool(), { id, sourceUrl: primaryUrl, name, wire, scanDate });
       // Fire-and-forget classification so entry gets scored before next intake run
       setImmediate(() => classifyAndQueue(id, name, text, primaryUrl, wire));
       return {
@@ -410,7 +412,7 @@ export async function processIntakeMessage(
       submittedBy: msg.senderId,
       scanSource,
     });
-    // Don't registerSeen here — processRawEntries handles it (see comment above)
+    await registerSeen(getPool(), { id, sourceUrl: primaryUrl, name, wire: fallbackWire, scanDate });
     // Fire-and-forget classification so entry gets scored before next intake run
     setImmediate(() => classifyAndQueue(id, name, text, primaryUrl, fallbackWire));
     return {
@@ -451,7 +453,7 @@ export async function completeWireSelection(
 
   try {
     const id = await insertEntry({ ...entry, wire });
-    // Don't registerSeen here — processRawEntries handles it (see self-match bug comment above)
+    await registerSeen(getPool(), { id, sourceUrl: entry.sourceUrl, name: entry.name, wire, scanDate: entry.scanDate });
     // Fire-and-forget classification
     setImmediate(() => classifyAndQueue(id, entry.name, entry.description, entry.sourceUrl, wire));
     return {
@@ -667,7 +669,7 @@ export async function processBatchMessage(
         submittedBy: msg.senderId,
         scanSource,
       });
-      // Don't registerSeen here — processRawEntries handles it (see self-match bug fix)
+      await registerSeen(getPool(), { id, sourceUrl: entry.sourceUrl, name: entry.name, wire: resolvedWire, scanDate });
       toClassify.push({ id, name: entry.name, description: entry.description, sourceUrl: entry.sourceUrl, wire: resolvedWire });
       result.inserted++;
       result.entries.push({ name: entry.name, wire: resolvedWire, id });

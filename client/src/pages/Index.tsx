@@ -67,7 +67,7 @@ const Index = () => {
 
       if (statsR.status === 'fulfilled') {
         const statsData = statsR.value;
-        const verticalStats: VerticalStats[] = (statsData.intake || []).map((r: any) => ({
+        const verticalStats: VerticalStats[] = (statsData.intake || []).filter((r: any) => r.wire).map((r: any) => ({
           wire: r.wire,
           last_scan: r.last_scan || new Date().toISOString(),
           items_this_week: Number(r.items_this_week) || 0,

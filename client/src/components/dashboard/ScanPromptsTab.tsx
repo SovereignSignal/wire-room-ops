@@ -55,9 +55,13 @@ function formatNextRun(dateStr: string): string {
   const mins = Math.floor(diff / 60000);
   if (mins < 60) return `in ${mins}m`;
   const hours = Math.floor(mins / 60);
-  if (hours < 24) return `in ${hours}h`;
+  const remainingMins = mins % 60;
+  if (hours < 24) {
+    return remainingMins > 0 ? `in ${hours}h ${remainingMins}m` : `in ${hours}h`;
+  }
   const days = Math.floor(hours / 24);
-  return `in ${days}d`;
+  const remainingHours = hours % 24;
+  return remainingHours > 0 ? `in ${days}d ${remainingHours}h` : `in ${days}d`;
 }
 
 const STATUS_COLORS: Record<string, string> = {

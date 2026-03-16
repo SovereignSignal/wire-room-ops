@@ -1074,7 +1074,7 @@ app.get('/api/dashboard/stats', requireAuth, async (req: Request, res: Response)
         COALESCE(SUM(high_quality_count),0) as high_quality_count,
         MAX(created_at) as last_scan
       FROM intake_runs
-      WHERE created_at >= NOW() - INTERVAL '7 days'
+      WHERE created_at >= NOW() - INTERVAL '7 days' AND wire IS NOT NULL
       GROUP BY wire
     `);
     const pending = await pool.query(
