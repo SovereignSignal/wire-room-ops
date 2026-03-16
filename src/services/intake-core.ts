@@ -619,6 +619,7 @@ export async function processBatchMessage(
   const entries = parseBatchEntries(text);
 
   const result: BatchIntakeResult = { inserted: 0, duplicates: 0, errors: 0, failed: 0, entries: [] };
+  const toClassify: Array<{ id: number; name: string; description: string; sourceUrl: string; wire: string }> = [];
 
   for (const entry of entries) {
     // Detect wire from combined name + description
@@ -667,8 +668,7 @@ export async function processBatchMessage(
         scanSource,
       });
       // Don't registerSeen here — processRawEntries handles it (see self-match bug fix)
-      // Fire-and-forget classification so entries get scored and queued promptly
-      setImmediate(() => classifyAndQueue(id, entry.name, entry.description, entry.sourceUrl, resolvedWire));
+      toClassify.push({ id, name: entry.name, description: entry.description, sourceUrl: entry.sourceUrl, wire: resolvedWire });
       result.inserted++;
       result.entries.push({ name: entry.name, wire: resolvedWire, id });
     } catch (err) {
@@ -676,6 +676,16 @@ export async function processBatchMessage(
       result.failed++;
       result.entries.push({ name: entry.name, wire: resolvedWire, error: err instanceof Error ? err.message : 'Insert failed' });
     }
+  }
+
+  // Classify all inserted entries sequentially in a single setImmediate
+  // to avoid N concurrent LLM calls that can hit API rate limits.
+  if (toClassify.length > 0) {
+    setImmediate(async () => {
+      for (const e of toClassify) {
+        await classifyAndQueue(e.id, e.name, e.description, e.sourceUrl, e.wire);
+      }
+    });
   }
 
   return result;
