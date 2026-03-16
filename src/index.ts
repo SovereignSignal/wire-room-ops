@@ -2,7 +2,7 @@ import { validateConfig, config } from './config';
 import { startServer } from './server';
 
 async function main() {
-  console.log('[Startup] Starting Wire Room Ops (build: 2026-03-16T08)...');
+  console.log('[Startup] Starting Wire Room Ops...');
 
   try {
     validateConfig();
