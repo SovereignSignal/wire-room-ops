@@ -481,7 +481,7 @@ export interface BatchIntakeResult {
  * Detect whether a message is a batch list (numbered or bold-name format).
  * Matches:
  *   - Numbered: "1. **Name**" or "1. Text" with "2. " later
- *   - Bold: "**Name** — Description" appearing 2+ times with Link: lines
+ *   - Bold: "**Name** — Description" appearing 2+ times
  */
 export function isBatchMessage(text: string): boolean {
   // Numbered list format
@@ -489,8 +489,12 @@ export function isBatchMessage(text: string): boolean {
   if (/^\s*1\.\s+\S/.test(text) && /\n\s*2\.\s+/.test(text)) return true;
 
   // Bold-name format: **Name** — Description with multiple entries
-  const boldEntries = text.match(/^\*\*[^*]+\*\*\s*[—–\-]/gm);
+  // Use multiline flag so ^ matches start of any line (handles blank lines between entries)
+  const boldEntries = text.match(/^\s*\*\*[^*]+\*\*\s*[—–\-]/gm);
   if (boldEntries && boldEntries.length >= 2) return true;
+
+  // Single bold entry with structured fields (Link:/Deadline:) — likely a Telegram split
+  if (boldEntries && boldEntries.length === 1 && /\nLink:\s*https?:\/\//i.test(text)) return true;
 
   return false;
 }
@@ -502,20 +506,27 @@ export function isBatchMessage(text: string): boolean {
  *   Bold:     **Name** — Description / Deadline: X / Link: <url>
  */
 function parseBatchEntries(text: string): Array<{ name: string; description: string; sourceUrl: string; deadline?: string }> {
+  // Strip trailing "Total: N results..." line
+  const cleaned = text.replace(/\n*Total:\s*\d+\s+results?[^\n]*$/i, '').trim();
+
   // Detect format: numbered vs bold-name
-  const isNumbered = /^\s*\d+\.\s+/.test(text.trim());
+  const isNumbered = /^\s*\d+\.\s+/.test(cleaned);
 
   let chunks: string[];
   if (isNumbered) {
     // Split on numbered item boundaries: \n1. or \n2. etc
-    chunks = text.split(/\n(?=\s*\d+\.\s+)/).filter(c => c.trim() && /^\s*\d+\./.test(c));
+    chunks = cleaned.split(/\n(?=\s*\d+\.\s+)/).filter(c => c.trim() && /^\s*\d+\./.test(c.trim()));
   } else {
-    // Split on bold-name boundaries: \n**Name**
-    chunks = text.split(/\n(?=\*\*[^*]+\*\*\s*[—–\-])/).filter(c => c.trim() && /^\*\*[^*]+\*\*/.test(c));
+    // Split on bold-name boundaries: blank lines or newlines before **Name**
+    chunks = cleaned.split(/\n(?=\s*\*\*[^*]+\*\*\s*[—–\-])/).filter(c => {
+      const trimmed = c.trim();
+      return trimmed.length > 0 && /^\*\*[^*]+\*\*/.test(trimmed);
+    });
   }
 
-  return chunks.map(chunk => {
-    // Strip the numbered prefix first (e.g. "14. " or " 3.  ")
+  return chunks.map(rawChunk => {
+    // Trim leading blank lines and strip numbered prefix (e.g. "14. " or " 3.  ")
+    const chunk = rawChunk.trim();
     const withoutPrefix = chunk.replace(/^\s*\d+\.\s+/, '');
 
     // Extract name from **bold** or leading text (now without numbered prefix)
