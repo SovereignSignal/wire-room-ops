@@ -3029,6 +3029,57 @@ app.post('/api/admin/clean-stale-seen', requireAuth, async (req: Request, res: R
   }
 });
 
+// API: Purge all entries from a given scan_source (deletes entries + seen records)
+app.post('/api/admin/purge-source', requireAuth, async (req: Request, res: Response) => {
+  if (!rateLimit('purge-source', 1, 30 * 60 * 1000)) {
+    res.status(429).json({ error: 'Recently run. Please wait 30 minutes.' });
+    return;
+  }
+
+  const { source } = req.body;
+  if (!source || typeof source !== 'string') {
+    res.status(400).json({ error: 'source is required (e.g. "community")' });
+    return;
+  }
+
+  try {
+    const db = getPool();
+    // Find all entry IDs for this source
+    const { rows } = await db.query(
+      `SELECT id FROM scan_entries WHERE scan_source = $1`,
+      [source]
+    );
+    const ids = rows.map((r: any) => r.id);
+
+    if (ids.length === 0) {
+      res.json({ deleted: 0, message: `No entries found with scan_source = '${source}'` });
+      return;
+    }
+
+    // Delete related seen records first (FK-safe)
+    const { rowCount: seenNames } = await db.query(
+      `DELETE FROM seen_names WHERE entry_id = ANY($1)`, [ids]
+    );
+    const { rowCount: seenUrls } = await db.query(
+      `DELETE FROM seen_urls WHERE entry_id = ANY($1)`, [ids]
+    );
+    // Clear distribution logs if any
+    await db.query(
+      `DELETE FROM distribution_logs WHERE entry_id = ANY($1)`, [ids]
+    );
+    // Delete the entries themselves
+    const { rowCount: deleted } = await db.query(
+      `DELETE FROM scan_entries WHERE scan_source = $1`, [source]
+    );
+
+    console.log(`[Admin] Purged ${deleted} entries with scan_source='${source}' (${seenNames} seen_names, ${seenUrls} seen_urls)`);
+    res.json({ deleted, seenNamesRemoved: seenNames, seenUrlsRemoved: seenUrls });
+  } catch (error) {
+    console.error('[Admin] purge-source error:', error);
+    res.status(500).json({ error: 'Purge failed' });
+  }
+});
+
 // API: Backfill classification for UNCHECKED entries
 app.post('/api/admin/classify-backfill', requireAuth, async (req: Request, res: Response) => {
   if (!rateLimit('classify-backfill', 3, 5 * 60 * 1000)) {
