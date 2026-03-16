@@ -130,14 +130,35 @@ async function checkUrlMatch(
     // If we have both names, check if they're similar enough to be the same entry.
     // Dissimilar names with the same URL = aggregate post (don't flag as duplicate).
     if (entryName && matchedName && !areNamesSimilar(entryName, matchedName)) {
-      // Names are significantly different — fall through to name-based dedup
+      // Cap aggregate URLs: if 3+ entries already share this URL, treat as duplicate.
+      // This prevents listicle pages ("Top 50 Grants") from flooding the queue
+      // while still allowing tweets/posts that list 2-3 distinct grants.
+      const countResult = await pool.query(
+        `SELECT COUNT(*)::int AS cnt FROM scan_entries
+         WHERE source_url = $1 AND wire = $2
+           AND status NOT IN ('duplicate', 'archived')`,
+        [sourceUrl, wire]
+      );
+      const existingCount = countResult.rows[0]?.cnt || 0;
+      if (existingCount >= 3) {
+        return {
+          isDuplicate: true,
+          matchType: 'url_exact',
+          matchedEntryId: entryId,
+          matchedEntryName: displayName,
+          confidence: 0.8,
+          reason: `Aggregate URL cap: ${existingCount} entries already exist from this URL`,
+        };
+      }
+
+      // Under the cap — allow as distinct entry from aggregate URL
       return {
         isDuplicate: false,
         matchType: null,
         matchedEntryId: null,
         matchedEntryName: null,
         confidence: 0,
-        reason: `URL matches entry #${entryId} ("${matchedName}") but names differ — treating as distinct entry from aggregate URL`,
+        reason: `URL matches entry #${entryId} ("${matchedName}") but names differ — treating as distinct entry from aggregate URL (${existingCount + 1} of 3 max)`,
       };
     }
 

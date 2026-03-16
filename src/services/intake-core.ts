@@ -498,8 +498,8 @@ export function isBatchMessage(text: string): boolean {
   // Multiple "Link: <url>" lines = structured batch
   const linkLines = text.match(/^Link:\s*https?:\/\//gim);
   if (linkLines && linkLines.length >= 2) return true;
-  // Single entry with Link: (Telegram split of larger batch)
-  if (linkLines && linkLines.length === 1 && /\n(?:Deadline|Link):/i.test(text)) return true;
+  // Single entry with both Deadline: and Link: (Telegram split of larger batch)
+  if (linkLines && linkLines.length === 1 && /\nDeadline:/i.test(text)) return true;
 
   return false;
 }

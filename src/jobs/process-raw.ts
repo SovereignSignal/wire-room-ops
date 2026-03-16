@@ -93,11 +93,13 @@ export async function processRawEntries(pool?: Pool): Promise<{
     // Process in batches until no more raw entries
     while (true) {
       const batch = await db.query(
-        `SELECT id, name, description, source_url, amount, deadline, wire, scan_date, prompt_id
-         FROM scan_entries
-         WHERE status = 'raw'
-           AND created_at < NOW() - INTERVAL '2 minutes'
-         ORDER BY created_at ASC
+        `SELECT se.id, se.name, se.description, se.source_url, se.amount, se.deadline,
+                se.wire, se.scan_date, se.prompt_id, sp.intent AS prompt_intent
+         FROM scan_entries se
+         LEFT JOIN scan_prompts sp ON se.prompt_id = sp.id
+         WHERE se.status = 'raw'
+           AND se.created_at < NOW() - INTERVAL '2 minutes'
+         ORDER BY se.created_at ASC
          LIMIT $1`,
         [BATCH_SIZE]
       );
@@ -182,19 +184,12 @@ export async function processRawEntries(pool?: Pool): Promise<{
             // Gate 2: LLM classification + quality scoring (single Grok call)
             // Non-blocking — failure leaves entry as UNCHECKED with score 0
             try {
-              // Look up prompt intent for this entry
-              const promptRes = await db.query(
-                `SELECT sp.intent FROM scan_prompts sp WHERE sp.id = $1`,
-                [row.prompt_id]
-              );
-              const promptIntent = promptRes.rows[0]?.intent;
-
               const classResult = await classifyEntry({
                 name: row.name,
                 description: row.description || '',
                 source_url: row.source_url,
                 wire: row.wire,
-                intent: promptIntent || undefined,
+                intent: row.prompt_intent || undefined,
               });
               await db.query(
                 `UPDATE scan_entries
@@ -202,14 +197,16 @@ export async function processRawEntries(pool?: Pool): Promise<{
                      classification_reason = $2,
                      quality_score = $3,
                      quality_breakdown = $4,
-                     metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb
-                 WHERE id = $6`,
+                     metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
+                     tags = $6
+                 WHERE id = $7`,
                 [
                   classResult.classification,
                   classResult.reason,
                   classResult.qualityScore,
                   JSON.stringify({ scoreReason: classResult.scoreReason }),
                   JSON.stringify(classResult.extracted),
+                  classResult.tags,
                   row.id,
                 ]
               );
