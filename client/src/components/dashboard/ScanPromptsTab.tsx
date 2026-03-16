@@ -29,7 +29,6 @@ const TOOL_TYPES = [
   { value: 'x_search', label: 'X Search', icon: '🔎' },
   { value: 'web_search', label: 'Web Search', icon: '🌐' },
   { value: 'perplexity', label: 'Perplexity', icon: '🔮' },
-  { value: 'community', label: 'Community', icon: '🗣' },
 ];
 
 const VARIANTS = ['A', 'B', 'C', 'W', 'P', 'N', 'S'];

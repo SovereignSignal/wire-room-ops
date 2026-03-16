@@ -16,7 +16,6 @@ import { buildSubmission, buildBatchSubmission } from './services/intake';
 import { runDailyIntake, getDailyQueue, getIntakeStats } from './jobs/daily-intake';
 import { getPool, getDistributionConfigs, upsertDistributionConfig, getDistributionLogs, getDistributionStatusBulk, getDistributionStatusForEntries, getDistributionChannels, getDistributionChannelById, createDistributionChannel, updateDistributionChannel, deleteDistributionChannel, insertApprovedSummary } from './db';
 import { executeScanPrompt } from './services/grok';
-import { executeCommunityScan } from './services/community';
 import { executePerplexityScan } from './services/perplexity';
 import { runOrgExtraction, getOrgProfiles, getOrgById, getEntriesByOrg, ensureOrgProfilesTable, extractOrgFromName, upsertOrgProfile, linkEntryToOrg, findSimilarOrg } from './services/org-extractor';
 import { mergeOrgs, archiveOrg } from './services/org-merge';
@@ -1132,8 +1131,8 @@ app.post('/api/scan/prompts', requireAuth, async (req: Request, res: Response) =
     res.status(400).json({ error: 'promptText is required and must be non-empty' });
     return;
   }
-  if (toolType && !['x_search', 'web_search', 'perplexity', 'community'].includes(toolType)) {
-    res.status(400).json({ error: 'toolType must be "x_search", "web_search", "perplexity", or "community"' });
+  if (toolType && !['x_search', 'web_search', 'perplexity'].includes(toolType)) {
+    res.status(400).json({ error: 'toolType must be "x_search", "web_search", or "perplexity"' });
     return;
   }
   if (outputFormat && !['text', 'json'].includes(outputFormat)) {
@@ -1203,8 +1202,8 @@ app.put('/api/scan/prompts/:id', requireAuth, async (req: Request, res: Response
   if (sortOrder !== undefined) updates.sortOrder = sortOrder;
   if (variant !== undefined) updates.variant = variant;
   if (toolType !== undefined) {
-    if (!['x_search', 'web_search', 'perplexity', 'community'].includes(toolType)) {
-      res.status(400).json({ error: 'toolType must be "x_search", "web_search", "perplexity", or "community"' });
+    if (!['x_search', 'web_search', 'perplexity'].includes(toolType)) {
+      res.status(400).json({ error: 'toolType must be "x_search", "web_search", or "perplexity"' });
       return;
     }
     updates.toolType = toolType;
@@ -1275,7 +1274,7 @@ function normalizePromptLabPayload(body: Record<string, unknown>): {
     label: typeof body.label === 'string' ? body.label : undefined,
     promptText: typeof body.promptText === 'string' ? body.promptText.trim() : '',
     responseFormat: typeof body.responseFormat === 'string' ? body.responseFormat : undefined,
-    toolType: body.toolType === 'web_search' ? 'web_search' : body.toolType === 'perplexity' ? 'perplexity' : body.toolType === 'community' ? 'community' : 'x_search',
+    toolType: body.toolType === 'web_search' ? 'web_search' : body.toolType === 'perplexity' ? 'perplexity' : 'x_search',
     model: typeof body.model === 'string' && body.model ? body.model : undefined,
     outputFormat: body.outputFormat === 'json' ? 'json' : 'text',
     parsedResults: Array.isArray(body.parsedResults) ? body.parsedResults as RawScanResult[] : undefined,
@@ -1297,11 +1296,6 @@ async function executePromptLabTest(input: {
         model: input.model,
         responseFormat: input.responseFormat,
         outputFormat: input.outputFormat,
-      });
-    }
-    if (input.toolType === 'community') {
-      return executeCommunityScan(input.promptText, {
-        wire: input.wire || 'crypto',
       });
     }
     return executeScanPrompt(input.promptText, {
@@ -1430,11 +1424,6 @@ app.post('/api/scan/prompts/:id/run', requireAuth, async (req: Request, res: Res
             outputFormat: prompt.outputFormat,
           });
         }
-        if (prompt.toolType === 'community') {
-          return executeCommunityScan(prompt.promptText, {
-            wire: prompt.wire,
-          });
-        }
         return executeScanPrompt(prompt.promptText, {
           model: prompt.model || undefined,
           responseFormat: prompt.responseFormat,
@@ -1454,7 +1443,6 @@ app.post('/api/scan/prompts/:id/run', requireAuth, async (req: Request, res: Res
 
     // Determine source
     const source =
-      prompt.toolType === 'community' ? 'community' as const :
       prompt.toolType === 'perplexity' ? 'perplexity' as const :
       prompt.toolType === 'web_search' ? 'web-search' as const
         : 'x-scan' as const;

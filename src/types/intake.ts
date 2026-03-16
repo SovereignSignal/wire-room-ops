@@ -9,13 +9,13 @@
 export type PromptVariant = 'A' | 'B' | 'C' | 'W' | 'P' | 'N' | 'S';
 
 // Prompt strategy labels (for human readability)
-export type PromptStrategy = 'Action' | 'Landscape' | 'Open Sweep' | 'Community';
+export type PromptStrategy = 'Action' | 'Landscape' | 'Open Sweep';
 
 // Which Grok tool to use for scan execution
-export type ToolType = 'x_search' | 'web_search' | 'perplexity' | 'community';
+export type ToolType = 'x_search' | 'web_search' | 'perplexity';
 
 // Where the result came from
-export type ScanSource = 'x-scan' | 'web-search' | 'perplexity' | 'community' | 'telegram' | 'telegram-intake' | 'manual-intake' | 'email' | 'forum';
+export type ScanSource = 'x-scan' | 'web-search' | 'perplexity' | 'telegram' | 'telegram-intake' | 'manual-intake' | 'email' | 'forum';
 
 // Processing state for scan results as they move through the pipeline
 export type ScanStatus =

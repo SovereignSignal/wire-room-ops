@@ -21,7 +21,6 @@ import type {
 import { getAllScanPrompts, ScanPromptRecord } from '../db';
 import { executeScanPrompt } from '../services/grok';
 import { executePerplexityScan } from '../services/perplexity';
-import { executeCommunityScan } from '../services/community';
 import { parseStructuredOutput } from '../services/intake';
 import { withRetry } from '../services/processor';
 import { runDailyIntake } from './daily-intake';
@@ -132,11 +131,6 @@ export async function runScanExecution(
               outputFormat: prompt.outputFormat,
             });
           }
-          if (prompt.toolType === 'community') {
-            return executeCommunityScan(prompt.promptText, {
-              wire: prompt.wire,
-            });
-          }
           return executeScanPrompt(prompt.promptText, {
             model: prompt.model || undefined,
             responseFormat: prompt.responseFormat,
@@ -159,7 +153,6 @@ export async function runScanExecution(
 
       // Build submission
       const source: ScanSource =
-        prompt.toolType === 'community' ? 'community' :
         prompt.toolType === 'perplexity' ? 'perplexity' :
         prompt.toolType === 'web_search' ? 'web-search'
           : 'x-scan';
