@@ -171,7 +171,9 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     forwardedFrom,
   };
 
-  // Batch mode: numbered list (Grok scan output)
+  // Batch mode: numbered list, bold-name, or structured (Link:) format
+  const linkCount = (text.match(/^Link:\s*https?:\/\//gim) || []).length;
+  console.log(`[TelegramAdapter] Message from ${userId}: ${text.length} chars, ${linkCount} Link: lines, isBatch=${isBatchMessage(text)}, first100=${JSON.stringify(text.slice(0, 100))}`);
   if (isBatchMessage(text)) {
     console.log(`[TelegramAdapter] Batch message detected from user ${userId}`);
     await sendMessage(message.chat.id, '⏳ Processing batch… hold tight.');
