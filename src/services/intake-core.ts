@@ -215,7 +215,7 @@ function buildName(text: string, url: string | null): string {
 
   if (firstLine && firstLine !== url) {
     // Strip numbered list prefix (e.g. "14. " or "3. ")
-    const cleaned = firstLine.replace(/^\d+\.\s+/, '').replace(/^\[+|\]+$/g, '').trim();
+    const cleaned = firstLine.replace(/^\d+\.\s+/, '').replace(/^#+\s+/, '').replace(/^\[+|\]+$/g, '').trim();
     return cleaned.slice(0, 120);
   }
   if (url) {
@@ -486,6 +486,7 @@ export interface BatchIntakeResult {
  * Matches:
  *   - Numbered: "1. **Name**" or "1. Text" with "2. " later
  *   - Bold markdown: "**Name** — Description" appearing 2+ times
+ *   - Markdown links: "[Name](url)" appearing 2+ times (newsletters/briefings)
  *   - Structured: Multiple "Link: https://..." lines (Telegram strips ** to bold rendering)
  */
 export function isBatchMessage(text: string): boolean {
@@ -497,6 +498,10 @@ export function isBatchMessage(text: string): boolean {
   const boldEntries = text.match(/^\s*\*\*[^*]+\*\*\s*[—–\-]/gm);
   if (boldEntries && boldEntries.length >= 2) return true;
   if (boldEntries && boldEntries.length === 1 && /\nLink:\s*https?:\/\//i.test(text)) return true;
+
+  // Markdown link format: [Name](url) — common in newsletters/briefings
+  const mdLinks = text.match(/\[([^\]]{3,})\]\(https?:\/\/[^)]+\)/g);
+  if (mdLinks && mdLinks.length >= 2) return true;
 
   // Structured format without ** (Telegram renders bold and strips markers):
   // Multiple "Link: <url>" lines = structured batch
@@ -510,21 +515,37 @@ export function isBatchMessage(text: string): boolean {
 
 /**
  * Parse a batch list into individual entries.
- * Handles two formats:
- *   Numbered: N. **Name** — Description / Deadline: X / Link: <url>
- *   Bold:     **Name** — Description / Deadline: X / Link: <url>
+ * Handles three formats:
+ *   Numbered:  N. **Name** — Description / Deadline: X / Link: <url>
+ *   Bold:      **Name** — Description / Deadline: X / Link: <url>
+ *   Markdown:  [Name](url) — Description (newsletters/briefings)
  */
 function parseBatchEntries(text: string): Array<{ name: string; description: string; sourceUrl: string; deadline?: string }> {
   // Strip trailing "Total: N results..." line
   const cleaned = text.replace(/\n*Total:\s*\d+\s+results?[^\n]*$/i, '').trim();
 
-  // Detect format: numbered vs bold-name
+  // Detect format: numbered vs bold-name vs markdown-link
   const isNumbered = /^\s*\d+\.\s+/.test(cleaned);
+  const mdLinkMatches = [...cleaned.matchAll(/\[([^\]]{3,})\]\((https?:\/\/[^)]+)\)/g)];
+  const isMarkdownLinks = !isNumbered && !/\*\*[^*]+\*\*/.test(cleaned) && mdLinkMatches.length >= 2;
 
   let chunks: string[];
   if (isNumbered) {
     // Split on numbered item boundaries: \n1. or \n2. etc
     chunks = cleaned.split(/\n(?=\s*\d+\.\s+)/).filter(c => c.trim() && /^\s*\d+\./.test(c.trim()));
+  } else if (isMarkdownLinks) {
+    // Markdown link format: [Name](url) — common in newsletters/briefings
+    // Each [Name](url) is one entry; extract name, URL, and surrounding description
+    return mdLinkMatches.map(m => {
+      const name = m[1].trim().slice(0, 120);
+      const sourceUrl = m[2].trim();
+      // Get text after the closing ) on the same line for description
+      const afterIdx = m.index! + m[0].length;
+      const afterText = cleaned.substring(afterIdx).split('\n')[0];
+      const descMatch = afterText.match(/^\s*[—–\-]\s*(.+)/);
+      const description = descMatch ? descMatch[1].trim() : name;
+      return { name, description, sourceUrl };
+    }).filter(e => e.name.length > 2);
   } else if (/\*\*[^*]+\*\*/.test(cleaned)) {
     // Bold-name format with literal ** markers
     chunks = cleaned.split(/\n(?=\s*\*\*[^*]+\*\*\s*[—–\-])/).filter(c => {
