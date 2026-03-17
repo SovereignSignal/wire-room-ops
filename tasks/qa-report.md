@@ -1,182 +1,279 @@
 # Wire Ops Dashboard QA Report
 
-**Date**: 2026-02-23
+**Date**: 2026-03-16
 **URL Tested**: https://wire-room-ops-production.up.railway.app/
-**Server Health**: OK (timestamp: 2026-02-24T02:55:11.795Z)
+**Browser**: Chrome (via Claude-in-Chrome MCP)
+**System Status**: ARRAY ONLINE, all API providers active
 
 ---
 
 ## 1. Testing Summary
 
-Conducted systematic testing of the Wire Ops dashboard covering: login flow, dashboard rendering, schedule management, queue page, scan prompts, distribution setup, API health, and logout flow.
+Conducted systematic testing of the Wire Ops React SPA dashboard covering: Overview tab, Scans tab (prompts, edit dialog, tool type dropdown), Queue tab (filters, entries, duplicates), Database tab, Settings tab (Sources, Distribution, API Providers), and general UI/console/network health.
 
-**Overall Health**: The backend APIs are healthy and the dashboard main page functions well. One **critical bug** was found and fixed: the `/queue` page is completely broken due to a JavaScript syntax error that prevents all client-side code from executing.
+**Overall Health**: The dashboard is in good shape. The React SPA loads cleanly, navigation between all 5 main tabs works correctly, and all API requests return 200 OK. No JavaScript errors from the application code. The primary issues found are data quality problems (duplicates in queue, "UNKNOWN" wire) and minor UI/accessibility polish items.
 
 ---
 
 ## 2. Working Features (Confirmed Functional)
 
-### Login Flow
-- Privy login page renders correctly at `/` with branding and "Sign In" button
-- Clicking "Sign In" triggers Privy authentication modal
-- Cached Privy sessions auto-authenticate and redirect to `/dashboard`
-- Session cookie is set correctly (HttpOnly, secure, sameSite lax)
+### Overview Tab
+- All 4 stat cards load with reasonable numbers: Ingested This Week (468), In Queue (48 at start, declining due to live processing), Raw/Incoming (0), Published (326)
+- System Status section shows Avg Quality (35) and Active Sources (4 Wires)
+- Recent Activity section shows latest entries with wire badges and timestamps
+- ARRAY ONLINE indicator with auto-refresh timer working
 
-### Dashboard Main Page
-- All sections render and load data correctly:
-  - **Generate Weekly Summary**: Date pickers, feed selector, model selectors (Grok 4.1 Fast, Claude Sonnet 4.6), "Run Job Now" button all present
-  - **Generated Files**: 2 files listed with download links
-  - **Feed Management**: 3 feeds shown (crypto: 3163, ai: 13, oss: 3) with Edit/Archive actions
-  - **Scheduled Runs**: All 6 schedules display correctly after async load:
-    - 3 Weekly Summary schedules (crypto/ai/oss, Wed mornings, enabled)
-    - 3 Scan Execution schedules (crypto/ai/oss, every 12h, enabled)
-  - **Scheduler Health**: Shows "Active (6 schedules)", server started 3 hours ago
-  - **CRM Org Sync**: Staging DB configured, 0 pending orgs
-  - **Run Scan**: Wire filter dropdown + "Run Scan Now" button functional
-  - **Forum Scan**: Wire filter + "Run Forum Scan" button present
-  - **Scan Intake**: Feed/Mode/Variant/Date selectors + textarea + "Process Scan" button
-  - **Daily Queue (inline)**: Stats grid, feed/score/date filters, "Load Queue" button -- returns "No entries found" for today's date correctly
-  - **Prompt Management**: All 9 prompts displayed (3 per wire: A/B/C variants, all x_search, all Active) with Disable/Test/Edit/Delete actions
-  - **Prompt Effectiveness**: Stats loaded with data from last 7 days; cross-prompt overlap 1%
+### Scans Tab
+- 31 prompts configured (12 active, 19 inactive)
+- Active prompts correctly show 4 per wire (ai, crypto, oss) with X Search, Perplexity, Web Search, and Perplexity tool types
+- Each prompt row displays: Label, Wire, Tool (with icon), Status (ACTIVE badge), Last Run, Next Run, and Actions (RUN/EDIT/DEL)
+- "INACTIVE PROMPTS" divider correctly separates active from inactive prompts
+- Inactive prompts show OFF status badge and dimmed styling
+- PROMPT SCORECARD shows "21-day window 3% overlap"
+- Edit Prompt dialog opens correctly with all fields:
+  - Schedule section (linked schedule info)
+  - Wire and Variant dropdowns
+  - Label text field
+  - Tool Type dropdown (confirmed: only X Search, Web Search, Perplexity -- NO "Community" option)
+  - Intent dropdown (Discovery, Canonical, Signal)
+  - Output dropdown (Text (parsed), JSON (structured))
+  - Model Override field
+  - Prompt Text textarea
+  - Response Format textarea
+- "+ ADD PROMPT" button visible in top right
 
-### Logout Flow
-- `/logout` clears session cookie and redirects to login page
-- Subsequent access to `/dashboard` or `/queue` redirects to login
+### Queue Tab
+- Loads entries with correct data (names, descriptions, tags, wire badges, classifications, quality scores)
+- Wire filter buttons (ALL, CRYPTO, AI, OSS) work correctly -- selecting CRYPTO shows only CRYPTO entries, etc.
+- Type filters present: All, GRANT, EXPIRED, NEWS, NOISE, UNCLASSIFIED
+- Advanced filters present: VERTICAL, SIGNAL, TIMELINE dropdowns
+- Entry rows show: checkbox, name, description excerpt, entity tags, wire badge, classification badge, quality score, date, source link, action buttons (approve, archive, decline, delete)
+- "more" expand links visible on entries with long descriptions
+- Quality scores correctly color-coded (green for high, red/orange for low)
+- Entries sorted by quality score (descending)
+- No community-sourced entries visible (confirmed via text search -- "community" only appears in entry descriptions, not as scan sources)
 
-### API Health
-- `/health` returns `{"status":"ok"}` with timestamp
-- All tested API endpoints respond correctly:
-  - `/api/feeds` (3 feeds)
-  - `/api/schedules` (6 schedules)
-  - `/api/scheduler-status` (active, 6 schedules)
-  - `/api/scan/status-counts` (31 queued, 3 approved, 2 skipped, 30 duplicates, 96 archived)
-  - `/api/scan/entries?status=queued,scored` (31 entries)
-  - `/api/scan/entries?status=approved` (3 entries)
-  - `/api/models` (returns Grok and Claude model lists)
+### Database Tab
+- 4 stat cards: Scan Entries (2,318), Published (3,392), Queue Depth (36), Raw/Unprocessed (0)
+- Sub-tabs: SCAN ENTRIES, INTAKE RUNS, DISTRIBUTION LOG, PUBLISHED
+- Filters: WIRE dropdown, STATUS dropdown, SEARCH text input, FROM/TO date pickers, APPLY button
+- CSV export button
+- Entries display with: Name, Wire, Status, Quality, Source, Date columns
+- Source column correctly shows "telegram" for Telegram-ingested entries
 
-### Schedule Configuration
-- Scan execution schedules exist and are active
-- Next scan run: Feb 24, 12:00 AM Pacific (08:00 UTC) -- approximately 5 hours from test time
-- Scans run every 12 hours for each wire (crypto/ai/oss)
-- 9 active prompts will execute during scheduled scans
+### Settings Tab - Sources
+- Wire health cards for UNKNOWN, CRYPTO, AI, OSS showing: ingested count, duplicate %, avg quality, high quality count/%, last scan time
+- Quality ratings correctly color-coded (red for Poor, yellow for Marginal)
+
+### Settings Tab - Distribution
+- 3 Telegram channels configured (ai, crypto, oss), all ACTIVE
+- Each channel shows: Name, Type, Wire, Target ID, Status, Actions (TEST/EDIT/DEL)
+- "+ ADD CHANNEL" button present
+
+### Settings Tab - API Providers
+- 7 providers configured, all ACTIVE:
+  1. Grok (xAI) - DB, model: grok-4.20-beta-0309-non-reasoning
+  2. Claude (Anthropic) - DB, model: claude-opus-4-1-20250805
+  3. Firecrawl - DB
+  4. Perplexity - DB, model: sonar-pro
+  5. Resend - DB
+  6. Telegram (Distribution) - ENV
+  7. Telegram (Intake) - ENV
+- API keys properly masked in display
+- TEST CONNECTION and EDIT buttons present on each
+
+### Navigation & System Health
+- All 5 main tabs (Overview, Scans, Queue, Database, Settings) navigate correctly
+- Settings has 7 sub-tabs, all accessible: Sources, Scan Prompts, Distribution, API Providers, Usage, Integrations, Email
+- Header shows ARRAY ONLINE with auto-refresh timestamp and LOGOUT button
+- No application JavaScript errors in console
+- All API network requests return 200 OK
 
 ---
 
 ## 3. Issues Found
 
-### CRITICAL: Queue Page (/queue) JavaScript Completely Broken
-
-**Severity**: Critical
-**Steps to Reproduce**:
-1. Navigate to https://wire-room-ops-production.up.railway.app/queue
-2. Page renders HTML structure but shows "Loading..." indefinitely
-3. Tabs, filters, and Refresh button are non-functional
-
-**Expected Behavior**: Page should load 31 pending entries with Approve/Review Later/Decline buttons, show tab counts, and allow entry management.
-
-**Actual Behavior**: Page shows "Loading..." forever. All JavaScript functions are undefined (`loadFeeds`, `loadStatusCounts`, `loadEntries`, `escapeHtml` -- all `undefined`). The entire `<script>` block fails to parse.
-
-**Root Cause**: JavaScript syntax error: `Unexpected identifier 'tnum'`
-
-In `renderQueuePage()`, lines 4660-4662 of `src/server.ts`, inline JavaScript builds HTML strings containing `font-feature-settings: 'tnum'` with escaped single quotes `\'tnum\'`. Since this JavaScript code is embedded inside a TypeScript template literal (backtick string), the `\'` escape sequences are consumed by the template literal engine. The rendered HTML output contains unescaped `'tnum'` which breaks the JavaScript string parsing:
-
-```javascript
-// TypeScript source (inside template literal):
-tilesHtml += '...font-feature-settings: \'tnum\';">' + queued + '...';
-
-// Rendered JavaScript in browser:
-tilesHtml += '...font-feature-settings: 'tnum';">' + queued + '...';
-//                                       ^ This terminates the JS string prematurely
-```
-
-**Fix Applied**: Removed redundant inline `font-family` and `font-feature-settings` styles from the three affected lines. The `.status-item .value` CSS class already defines these properties, making the inline styles unnecessary.
-
-**Impact**: This bug makes the queue page -- the primary interface for approving entries -- completely unusable. Users cannot approve, decline, or review entries via the queue page. The dashboard's inline "Daily Queue" section partially works but lacks the tab navigation and distribution status features.
-
-### HIGH: Distribution Not Firing on Approved Entries
+### HIGH: Duplicate Entries in Queue (Dedup Failure)
 
 **Severity**: High
 **Steps to Reproduce**:
-1. Check approved entries via API: `GET /api/scan/entries?status=approved`
-2. All 3 approved entries have empty `distribution_logs` arrays
+1. Navigate to Queue tab
+2. Set filter to ALL
+3. Scroll through entries
 
-**Expected Behavior**: Approved entries should have distribution logs showing Telegram and X posting status.
+**Expected Behavior**: Each unique grant/opportunity should appear only once in the queue.
 
-**Actual Behavior**: `distribution_logs: []` for all approved entries.
+**Actual Behavior**: Multiple duplicates found:
+- "Avalanche Retro9000" appears **3 times** (all CRYPTO, GRANT, score 48, identical descriptions and tags)
+- "Maori AI Scholarship" appears **2 times** (one short name, one with description appended to name)
+- "RAISE Hackathon" appears **2 times** (one as "RAISE Hackathon", one as "[RAISE Hackathon]" in brackets)
+- "Aleph Hackathon" appears **2 times** (both CRYPTO, NEWS, score 28)
+- "World Foundation Grants (Worldcoin)" appears **2 times** (both CRYPTO, NEWS, score 28)
+- "Core Foundation Grant" appears **2 times** (both CRYPTO, NEWS, score 28)
 
-**Potential Root Cause**: Either `DISTRIBUTION_ENABLED` is not set to `true` in the Railway environment variables, or the Telegram channel IDs and X API credentials are not configured for the relevant wires. The distribution system is opt-in and requires explicit environment variable configuration.
+**Potential Root Cause**: The fuzzy name dedup (`seen_names` table) may not be catching entries with:
+1. Nearly identical names from different scan runs (same URL, different name formatting)
+2. Bracket-wrapped names from Telegram intake (e.g., "[RAISE Hackathon]" vs "RAISE Hackathon")
+3. Names with descriptions appended (e.g., "Maori AI Scholarship -- new scholarship program...")
 
-**Impact**: Entries approved today or tomorrow will not be posted to Telegram or X channels. This directly blocks the user's success criteria of having approved entries post to Telegram and X.
+The dedup system uses token overlap, but bracket punctuation and name-description concatenation may bypass the anchor token matching.
 
-### MEDIUM: Scheduler "Last Job Run" Shows "Never"
+**Impact**: Operator wastes time reviewing the same entry multiple times. Affects editorial efficiency directly.
+
+### MEDIUM: Queue Draining Rapidly During Session (48 to 0)
 
 **Severity**: Medium
 **Steps to Reproduce**:
-1. View Scheduler Health section on dashboard
-2. "Last Job Run" shows "Never", "Last Job Result" shows "No runs yet"
+1. Open Queue tab (shows 48 entries)
+2. Navigate between tabs for ~15 minutes
+3. Return to Queue tab
 
-**Expected Behavior**: If scans have been producing entries (visible in prompt effectiveness stats), the scheduler should show when the last job ran.
+**Expected Behavior**: Queue count should remain stable unless an operator takes action.
 
-**Actual Behavior**: Shows "Never" even though prompt effectiveness data shows scan results from the last 7 days.
+**Actual Behavior**: Queue count decreased from 48 -> 45 -> 43 -> 42 -> 37 -> 33 -> 10 -> 0 over ~15 minutes with no operator action taken. Entries appear to be auto-archived during the session.
 
-**Potential Root Cause**: The server was restarted ~3 hours ago. Scheduler job history is stored in-memory and resets on restart. The existing entries were produced by a prior server instance. This is expected behavior but confusing to operators.
+**Potential Root Cause**: The `process-raw` background job or classify-backfill process may be running and archiving entries that fail quality thresholds. Alternatively, the Telegram intake bridge may be re-processing entries and changing their status. This needs investigation to determine if the auto-archival is intentional or a bug.
 
-**Impact**: Low operational impact -- the scheduler is active and schedules are configured. The display is misleading but not blocking.
+**Impact**: If intentional (quality threshold enforcement), this is working as designed but the operator has no visibility into why entries disappear. If unintentional, entries are being lost.
 
-### LOW: Dashboard Loads Async Data Slowly (Race Condition with Scroll)
+### MEDIUM: "UNKNOWN" Wire in Settings > Sources
+
+**Severity**: Medium
+**Steps to Reproduce**:
+1. Navigate to Settings > Sources tab
+2. Observe the wire health cards
+
+**Expected Behavior**: Only known wires (crypto, ai, oss) should appear as source cards.
+
+**Actual Behavior**: An "UNKNOWN" wire card appears with significant volume: 192 ingested entries, 27 scans this week, 44% duplicate rate, Avg Quality 44.
+
+**Potential Root Cause**: Entries ingested via Telegram intake or summary-sync bridge without a wire assignment default to some "unknown" value. The `summary-sync.ts` bridge infers wire from content keywords but may fall back to an empty/unknown value when no keywords match.
+
+**Impact**: 192 entries are not properly categorized and won't appear under any wire filter in the Queue tab. These entries are invisible to the operator's normal review workflow.
+
+### LOW: Bracket-Wrapped Entry Names from Telegram Intake
 
 **Severity**: Low
 **Steps to Reproduce**:
-1. Load dashboard page
-2. Immediately scroll down to Scheduled Runs section
-3. Only 3 of 6 schedules may be visible initially
+1. Navigate to Queue tab, scroll to low-score entries
+2. Look for entries with names like "[AI Skills Scholarship Program]" and "[RAISE Hackathon]"
 
-**Expected Behavior**: All 6 schedules should render promptly.
+**Expected Behavior**: Entry names should be clean text without surrounding brackets.
 
-**Actual Behavior**: The schedule table renders incrementally. The 3 weekly summary schedules appear first, and the 3 scan execution schedules appear after the async API calls complete. If the user scrolls past before data loads, they may think scan schedules are missing.
+**Actual Behavior**: Some entries have names wrapped in square brackets, e.g., "[RAISE Hackathon]" and "[AI Skills Scholarship Program]".
 
-**Potential Root Cause**: The `loadSchedules()` function makes 3 parallel API calls (`/api/feeds`, `/api/models`, `/api/schedules`) and renders after all resolve. Network latency on Railway causes a noticeable delay.
+**Potential Root Cause**: The Telegram intake parser or the LLM classifier may be wrapping names in brackets when extracting from Telegram message format.
 
-**Impact**: Minor UX concern. Adding loading skeletons or a "loading schedules..." indicator would prevent confusion.
+**Impact**: Minor display issue. Also contributes to dedup failures since "[RAISE Hackathon]" and "RAISE Hackathon" are not recognized as duplicates.
+
+### LOW: NOISE-Classified Entry Still in Queue
+
+**Severity**: Low
+**Steps to Reproduce**:
+1. Navigate to Queue tab
+2. Scroll to bottom of entries
+3. Find "JSAI Buildathon Hack" (CRYPTO, NOISE, score 18)
+
+**Expected Behavior**: Entries classified as NOISE should be auto-archived and not appear in the queue.
+
+**Actual Behavior**: JSAI Buildathon Hack has NOISE classification but remains in the queued status with score 18.
+
+**Potential Root Cause**: The entry may have been classified after being queued, and the status wasn't updated to "archived" as expected. Or NOISE entries from Telegram intake may bypass the auto-archive logic.
+
+**Impact**: Minor -- operators can manually archive it. But NOISE entries polluting the queue reduce review efficiency.
+
+### LOW: React Accessibility Warning in Edit Dialog
+
+**Severity**: Low
+**Steps to Reproduce**:
+1. Open any prompt's Edit dialog
+2. Check browser console
+
+**Expected Behavior**: No console warnings.
+
+**Actual Behavior**: Two React warnings: "Missing `Description` or `aria-describedby={undefined}` for {DialogContent}."
+
+**Potential Root Cause**: The Dialog component (likely from Radix UI) expects a `DialogDescription` child or an `aria-describedby` prop to be accessible. The Edit Prompt dialog doesn't provide either.
+
+**Impact**: Accessibility concern for screen reader users. No visual or functional impact.
+
+### LOW: Edit Prompt Dialog "Next Run" Format Ambiguous
+
+**Severity**: Low
+**Steps to Reproduce**:
+1. Click EDIT on any active prompt
+2. Look at the SCHEDULE section
+
+**Expected Behavior**: Next run time should be clearly formatted.
+
+**Actual Behavior**: Shows "Next run: 3/16/2026, 11:00:00 AM (1h 2h)" -- the "(1h 2h)" suffix is ambiguous. It's unclear if this means "in 1 hour 2 hours" or some other duration format.
+
+**Impact**: Minor confusion for operators trying to understand when the next scan will run.
 
 ---
 
-## 4. Overnight Scan Readiness Assessment
+## 4. Proposed Improvement Tasks
 
-### Will scans run overnight?
-**YES** -- Scan execution schedules are active:
-- Crypto, AI, OSS scans scheduled every 12h
-- Next run: Feb 24, 12:00 AM Pacific (08:00 UTC)
-- 9 active prompts (3 per wire, all x_search tool)
-- Grok API key appears configured (prompts have been producing results)
+### Task 1: Fix Queue Dedup for Telegram Intake Entries
+**Priority**: High
+**Type**: Bug fix
+**Description**: Improve the dedup system to handle:
+1. Bracket-stripped name matching (normalize "[Name]" to "Name" before dedup)
+2. Name-with-description matching (detect when a description is appended to a name and split before dedup)
+3. Cross-run same-name detection (entries with identical or near-identical names from different scan runs/sources)
+**Files**: `src/services/dedup.ts`, `src/services/intake.ts`, `src/services/intake-core.ts`
 
-### Will the email be delivered?
-**LIKELY** -- Weekly summary schedules run on Wednesdays. Scan execution schedules run daily. The scan completion will populate the queue with new entries. Whether a digest email is sent depends on the schedule's `notifyEmails` configuration (not visible in current schedules).
+### Task 2: Investigate and Fix Queue Auto-Drain Behavior
+**Priority**: Medium
+**Type**: Investigation / Bug fix
+**Description**: The queue dropped from 48 to 0 entries in ~15 minutes with no operator action. Investigate:
+1. Is a background job (process-raw, classify-backfill) running and archiving entries?
+2. Check `scan_entries` status change logs for entries that were queued then archived during the test window
+3. If auto-archival is intentional, add visibility (e.g., toast notification "X entries auto-archived due to quality threshold")
+**Files**: `src/jobs/process-raw.ts`, `src/jobs/daily-intake.ts`, `src/services/classifier.ts`
 
-### Can the user approve entries tomorrow?
-**NOT VIA /queue PAGE** -- The queue page is broken (critical bug above). However:
-- The fix has been applied locally and needs to be deployed
-- Alternatively, the dashboard's inline "Daily Queue" section works for basic approval
-- API-level approval works (`POST /api/scan/entries/:id/action`)
+### Task 3: Resolve "UNKNOWN" Wire Entries
+**Priority**: Medium
+**Type**: Data quality fix
+**Description**: 192 entries are assigned to an "UNKNOWN" wire and are invisible in the normal queue review flow.
+1. Identify the source of entries without wire assignment (likely Telegram intake or summary-sync)
+2. Add a default wire fallback (or use "crypto" as default per CLAUDE.md)
+3. Backfill existing UNKNOWN entries with appropriate wire assignments
+4. Consider hiding "UNKNOWN" from the Sources card if it's not a real wire
+**Files**: `src/services/intake-core.ts`, `src/jobs/summary-sync.ts`
 
-### Will approved entries post to Telegram and X?
-**UNCERTAIN** -- Distribution logs are empty for existing approved entries. This suggests distribution may not be enabled. Need to verify:
-1. `DISTRIBUTION_ENABLED=true` is set in Railway env vars
-2. `TELEGRAM_CHANNEL_CRYPTO`, `TELEGRAM_CHANNEL_AI`, `TELEGRAM_CHANNEL_OSS` are set
-3. `X_CRYPTO_API_KEY` (and 3 companion vars) are set for each wire
+### Task 4: Auto-Archive NOISE Entries from Queue
+**Priority**: Low
+**Type**: Bug fix
+**Description**: Entries classified as NOISE (like "JSAI Buildathon Hack" with score 18) should be auto-archived rather than remaining in the queue. Verify that the NOISE -> archived status transition is happening consistently, especially for entries classified after initial queuing.
+**Files**: `src/services/classifier.ts`, `src/jobs/daily-intake.ts`
+
+### Task 5: Add DialogDescription to Edit Prompt Modal
+**Priority**: Low
+**Type**: Accessibility fix
+**Description**: Add a `DialogDescription` component (or visually hidden description via `aria-describedby`) to the Edit Prompt dialog to resolve the React console warnings and improve screen reader accessibility.
+**Files**: `client/src/components/` (wherever the prompt edit dialog is defined)
+
+### Task 6: Clean Up Next Run Time Format
+**Priority**: Low
+**Type**: UI polish
+**Description**: The "(1h 2h)" suffix on the next run time in the Edit Prompt dialog's Schedule section is ambiguous. Change to a clearer format like "in 1h 2m" or "1 hour, 2 minutes from now".
+**Files**: `client/src/components/` (prompt edit dialog / schedule display component)
 
 ---
 
-## 5. Recommended Immediate Actions
+## 5. Recommendations
 
-### P0 - Deploy Queue Page Fix (blocks approval workflow)
-The `src/server.ts` fix for the queue page JavaScript syntax error needs to be committed and deployed. This is the single most impactful action.
+### Priority Order
+1. **Task 1 (Dedup)** -- Directly impacts operator efficiency. Duplicate entries are the highest-friction issue in the current workflow.
+2. **Task 2 (Queue Drain)** -- Needs investigation first to determine if it's a bug or feature. If entries are being lost, this is critical.
+3. **Task 3 (UNKNOWN Wire)** -- 192 entries are effectively invisible. Quick win if the fix is just adding a default wire fallback.
+4. **Tasks 4-6** -- Low priority polish items that can be addressed in a future cleanup pass.
 
-### P0 - Verify Distribution Environment Variables
-Check Railway dashboard for:
-- `DISTRIBUTION_ENABLED=true`
-- Telegram channel IDs for each wire
-- X API credentials for each wire
-
-### P1 - Verify Scan Execution Will Produce Results
-Run a manual scan via the dashboard "Run Scan Now" button to confirm the Grok API key is working and prompts produce parseable output.
+### Positive Observations
+- The React SPA dashboard is a massive improvement over the old server-rendered pages (from the Feb 2026 QA report)
+- The Scans tab organization (active prompts first, inactive divider, tool type icons) is clean and intuitive
+- The Queue filtering system (wire buttons + type filters + advanced filters) is well-designed
+- All API calls are returning 200 OK with no network failures
+- The Settings tab is comprehensive with good sub-tab organization
+- No JavaScript application errors in the console -- only browser extension noise and minor React warnings
