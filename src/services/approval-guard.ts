@@ -31,11 +31,11 @@ export function validateForApproval(entry: {
     errors.push('Missing source URL');
   }
 
-  if (entry.classification === 'EXPIRED') {
-    errors.push('Entry classified as EXPIRED');
-  }
-
   // --- Non-blocking warnings ---
+
+  if (entry.classification === 'EXPIRED') {
+    warnings.push('Entry classified as EXPIRED — verify before publishing');
+  }
 
   if (entry.name && entry.name.length > 120) {
     warnings.push('Name exceeds 120 characters (possible parser leakage)');
