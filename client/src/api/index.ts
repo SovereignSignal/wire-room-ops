@@ -61,7 +61,11 @@ export async function updateEntryStatus(id: number | string, status: string) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action }),
   });
-  if (!res.ok) throw new Error(`Failed to update entry: ${res.status}`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const detail = body.issues?.join('; ') || body.error || res.status;
+    throw new Error(String(detail));
+  }
   return res.json();
 }
 
@@ -72,7 +76,11 @@ export async function bulkUpdateEntryStatus(ids: (number | string)[], status: st
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ids, action }),
   });
-  if (!res.ok) throw new Error(`Failed to bulk update entries: ${res.status}`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const detail = body.issues?.join('; ') || body.error || res.status;
+    throw new Error(String(detail));
+  }
   return res.json();
 }
 
@@ -82,7 +90,11 @@ export async function quietApproveEntry(id: number | string) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action: 'approve', quiet: true }),
   });
-  if (!res.ok) throw new Error(`Failed to quiet approve entry: ${res.status}`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const detail = body.issues?.join('; ') || body.error || res.status;
+    throw new Error(String(detail));
+  }
   return res.json();
 }
 
@@ -92,7 +104,11 @@ export async function bulkQuietApprove(ids: (number | string)[]) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ids, action: 'approve', quiet: true }),
   });
-  if (!res.ok) throw new Error(`Failed to bulk quiet approve: ${res.status}`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const detail = body.issues?.join('; ') || body.error || res.status;
+    throw new Error(String(detail));
+  }
   return res.json();
 }
 

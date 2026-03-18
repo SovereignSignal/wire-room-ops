@@ -132,7 +132,8 @@ const Index = () => {
       await loadData();
     } catch (err) {
       console.error('Failed to update status:', err);
-      toast({ title: 'Error', description: 'Failed to update entry status' });
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      toast({ title: 'Action blocked', description: msg });
     }
   };
 
@@ -150,7 +151,8 @@ const Index = () => {
       await loadData();
     } catch (err) {
       console.error('Failed to quiet approve:', err);
-      toast({ title: 'Error', description: 'Failed to quiet approve entries' });
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      toast({ title: 'Approval blocked', description: msg });
     }
   };
 
