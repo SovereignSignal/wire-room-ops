@@ -84,8 +84,8 @@ function cleanUrl(raw: string): string {
 function sanitizeResult(result: RawScanResult): RawScanResult {
   let { name, description, amount, deadline, sourceUrl } = result;
 
-  // 0. Name: strip leading/trailing brackets (Telegram bold rendering artifacts)
-  name = name.replace(/^\[+|\]+$/g, '').trim();
+  // 0. Name: strip leading/trailing brackets and "Source:" prefix (citation artifacts)
+  name = name.replace(/^\[+|\]+$/g, '').replace(/^Source:\s*/i, '').trim();
 
   // 1. Name: truncate at 120 chars at word boundary
   if (name.length > 120) {
@@ -171,26 +171,50 @@ export function parseStructuredOutput(text: string, hint?: 'json'): ParseResult 
   // If JSON output format is explicitly requested, try JSON first
   if (hint === 'json') {
     const jsonResults = parseJsonOutput(text);
-    if (jsonResults.length > 0) return { results: jsonResults.map(sanitizeResult), strategy: 'json' };
+    if (jsonResults.length > 0) return { results: filterCitations(jsonResults.map(sanitizeResult)), strategy: 'json' };
   }
 
   // Strategy 1: Try structured text format (numbered list with bold names)
   const structured = parseStructuredText(text);
-  if (structured.length > 0) return { results: structured.map(sanitizeResult), strategy: 'structured_text' };
+  if (structured.length > 0) return { results: filterCitations(structured.map(sanitizeResult)), strategy: 'structured_text' };
 
   // Strategy 2: Try JSON parsing (array of objects or wrapped array)
   const jsonResults = parseJsonOutput(text);
-  if (jsonResults.length > 0) return { results: jsonResults.map(sanitizeResult), strategy: 'json' };
+  if (jsonResults.length > 0) return { results: filterCitations(jsonResults.map(sanitizeResult)), strategy: 'json' };
 
   // Strategy 4: Try X-post format (@Handle  Description / URL / date blocks)
   const xPosts = parseXPostFormat(text);
-  if (xPosts.length > 0) return { results: xPosts.map(sanitizeResult), strategy: 'x_post' };
+  if (xPosts.length > 0) return { results: filterCitations(xPosts.map(sanitizeResult)), strategy: 'x_post' };
 
   // Strategy 3: Try lenient numbered list (no bold required, flexible URL detection)
   const lenient = parseLenientNumberedList(text);
-  if (lenient.length > 0) return { results: lenient.map(sanitizeResult), strategy: 'lenient_list' };
+  if (lenient.length > 0) return { results: filterCitations(lenient.map(sanitizeResult)), strategy: 'lenient_list' };
 
   return { results: [], strategy: 'none' };
+}
+
+/**
+ * Filter out entries that are source citations rather than actual opportunities.
+ * Grok web_search responses include source/publication names (e.g. "DailyCoin",
+ * "AMBCrypto") that the parser can mistake for entries.
+ */
+function filterCitations(results: RawScanResult[]): RawScanResult[] {
+  return results.filter(r => {
+    const name = r.name.trim();
+    const desc = r.description.trim();
+
+    // Name and description are identical — pure citation artifact
+    if (name && desc && name === desc) return false;
+
+    // Description is empty or just the name repeated with minor differences
+    if (!desc || desc.length < 10) {
+      // Short name with no description — likely a publication/source name
+      // (real entries always have at least a brief description)
+      if (name.split(/\s+/).length <= 4) return false;
+    }
+
+    return true;
+  });
 }
 
 /**
