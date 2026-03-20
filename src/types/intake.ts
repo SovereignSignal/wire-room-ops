@@ -185,6 +185,106 @@ export interface SeenName {
   firstSeen: Date;
 }
 
+// --- Scoring experiment types ---
+
+/**
+ * Tunable parameters for the quality scorer.
+ * All values are integers. Weights are points added/subtracted; thresholds are numeric limits.
+ */
+export interface ScoringParams {
+  // Base weights
+  w_has_amount: number;
+  w_amount_threshold: number;
+  w_has_deadline: number;
+  w_deadline_upcoming: number;
+  w_funding_opportunity: number;
+  w_actionable: number;
+
+  // Penalties (negative values)
+  p_governance_noise: number;
+  p_already_awarded: number;
+  p_vague_description: number;
+  p_small_amount: number;
+
+  // Thresholds
+  t_amount_min: number;
+  t_amount_tiny: number;
+  t_deadline_window_days: number;
+  t_rolling_bonus: number;
+
+  // Queue threshold
+  t_queue_min_score: number;
+}
+
+export interface ParamRange {
+  min: number;
+  max: number;
+}
+
+export const PARAM_RANGES: Record<keyof ScoringParams, ParamRange> = {
+  w_has_amount:          { min: 10, max: 40 },
+  w_amount_threshold:    { min: 5,  max: 30 },
+  w_has_deadline:        { min: 5,  max: 25 },
+  w_deadline_upcoming:   { min: 0,  max: 20 },
+  w_funding_opportunity: { min: 10, max: 35 },
+  w_actionable:          { min: 5,  max: 25 },
+
+  p_governance_noise:    { min: -30, max: 0 },
+  p_already_awarded:     { min: -25, max: 0 },
+  p_vague_description:   { min: -15, max: 0 },
+  p_small_amount:        { min: -15, max: 0 },
+
+  t_amount_min:          { min: 1000,  max: 25000 },
+  t_amount_tiny:         { min: 100,   max: 5000 },
+  t_deadline_window_days:{ min: 14,    max: 120 },
+  t_rolling_bonus:       { min: 0,     max: 15 },
+
+  t_queue_min_score:     { min: 20, max: 70 },
+};
+
+/**
+ * Hard constraints that no mutation may violate.
+ */
+export const PARAM_CONSTRAINTS = {
+  /** Sum of positive weights must be >= 60 */
+  MIN_POSITIVE_WEIGHT_SUM: 60,
+  /** Sum of positive weights must be <= 130 */
+  MAX_POSITIVE_WEIGHT_SUM: 130,
+  /** Maximum mutations per experiment */
+  MAX_MUTATIONS_PER_EXPERIMENT: 3,
+  /** Minimum experiment duration in hours */
+  MIN_EXPERIMENT_HOURS: 48,
+  /** Maximum experiment duration in hours */
+  MAX_EXPERIMENT_HOURS: 168,
+  /** Auto-rollback if approval rate drops below this */
+  MIN_APPROVAL_RATE: 0.15,
+} as const;
+
+export interface ExperimentResults {
+  approval_rate: number;
+  engagement_rate: number;
+  editorial_efficiency: number;
+  composite_score: number;
+}
+
+export interface ScoringExperiment {
+  id: string;
+  name: string;
+  status: 'pending' | 'active' | 'completed' | 'rolled_back' | 'aborted';
+  params: ScoringParams;
+  parent_experiment_id: string | null;
+  mutation_description: string | null;
+  started_at: Date | null;
+  ended_at: Date | null;
+  min_duration_hours: number;
+  results: ExperimentResults | null;
+  entry_count: number;
+  approved_count: number;
+  declined_count: number;
+  created_at: Date;
+  created_by: string;
+}
+
 // --- Distribution types ---
 
 export type DistributionChannel = 'telegram' | 'discord' | 'slack' | 'x' | 'newsletter';
