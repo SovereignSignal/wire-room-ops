@@ -36,6 +36,7 @@ import { handleTelegramUpdate, registerIntakeWebhook, cleanupPendingEntries } fr
 import { processRawEntries } from './jobs/process-raw';
 import { runCsvExport } from './jobs/csv-export';
 import { databaseRouter } from './routes/database';
+import { experimentsRouter } from './routes/experiments';
 import { runEnrichment } from './jobs/enrichment';
 import { validateForApproval } from './services/approval-guard';
 import { ensureApiProviderTables, refreshProviderCache, getAllProviders, upsertProvider, testProviderConnection, getCachedProvider } from './services/api-provider';
@@ -3438,6 +3439,9 @@ app.put('/api/pricing/:provider/:model', requireAuth, async (req: Request, res: 
 
 // Database introspection API
 app.use('/api/database', requireAuth, databaseRouter);
+
+// Scoring experiments API
+app.use('/api/experiments', requireAuth, experimentsRouter);
 
 // Serve React dashboard (built client)
 const clientDist = path.join(__dirname, '../dist/client');
