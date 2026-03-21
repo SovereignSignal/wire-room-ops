@@ -130,6 +130,13 @@ export function DashboardLayout({
                 )}
               </TabsTrigger>
               <TabsTrigger
+                value="autoresearch"
+                className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-1.5 px-2.5 sm:px-4 font-display text-[10px] sm:text-xs tracking-wider whitespace-nowrap"
+              >
+                <span className="text-sm">🔬</span>
+                AUTORESEARCH
+              </TabsTrigger>
+              <TabsTrigger
                 value="database"
                 className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-1.5 px-2.5 sm:px-4 font-display text-[10px] sm:text-xs tracking-wider whitespace-nowrap"
               >

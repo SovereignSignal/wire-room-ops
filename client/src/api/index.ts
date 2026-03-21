@@ -1,4 +1,4 @@
-import { ScanEntry, WireCounts, DbStats, DbTableResponse, ScanPrompt } from '@/types';
+import { ScanEntry, WireCounts, DbStats, DbTableResponse, ScanPrompt, ScoringExperiment, ScoringParams } from '@/types';
 
 const BASE = "/api";
 
@@ -281,6 +281,46 @@ export async function createSchedule(schedule: Partial<Omit<ScheduleResponse, 'i
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     throw new Error(data.error || `Failed to create schedule: ${res.status}`);
+  }
+  return res.json();
+}
+
+// --- Experiment API ---
+
+export async function getExperiments(status?: string, limit = 50): Promise<ScoringExperiment[]> {
+  const params = new URLSearchParams();
+  if (status) params.set('status', status);
+  params.set('limit', String(limit));
+  const q = params.toString();
+  const res = await authFetch(`${BASE}/experiments${q ? '?' + q : ''}`);
+  if (!res.ok) throw new Error(`Failed to fetch experiments: ${res.status}`);
+  const data = await res.json();
+  return data.experiments || data;
+}
+
+export async function getActiveExperiment(): Promise<ScoringExperiment | null> {
+  const res = await authFetch(`${BASE}/experiments/active`);
+  if (!res.ok) {
+    if (res.status === 404) return null;
+    throw new Error(`Failed to fetch active experiment: ${res.status}`);
+  }
+  const data = await res.json();
+  return data.experiment || data || null;
+}
+
+export async function createExperiment(
+  name: string,
+  params?: Partial<ScoringParams>,
+  parentId?: string
+): Promise<ScoringExperiment> {
+  const res = await authFetch(`${BASE}/experiments/create`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, params, parentId }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `Failed to create experiment: ${res.status}`);
   }
   return res.json();
 }
@@ -599,4 +639,16 @@ export async function testUnsavedPrompt(data: {
     throw new Error(err.error || `Test failed: ${res.status}`);
   }
   return res.json();
+}
+
+export async function rollbackExperiment(id: string, reason?: string): Promise<void> {
+  const res = await authFetch(`${BASE}/experiments/${id}/rollback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `Failed to rollback experiment: ${res.status}`);
+  }
 }

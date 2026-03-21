@@ -6,6 +6,7 @@ import { QueueTab } from '@/components/dashboard/QueueTab';
 import { DatabaseTab } from '@/components/dashboard/DatabaseTab';
 import { ScanPromptsTab } from '@/components/dashboard/ScanPromptsTab';
 import { SettingsTab } from '@/components/dashboard/SettingsTab';
+import { AutoResearchTab } from '@/components/dashboard/AutoResearchTab';
 // ReviewTab removed — approve/decline now inline in QueueTab
 import { Starfield } from '@/components/dashboard/Starfield';
 import { EntryDetailsSheet } from '@/components/dashboard/EntryDetailsSheet';
@@ -220,6 +221,9 @@ const Index = () => {
               setActiveTab('queue');
             }}
           />
+        )}
+        {activeTab === 'autoresearch' && (
+          <AutoResearchTab />
         )}
       </DashboardLayout>
 

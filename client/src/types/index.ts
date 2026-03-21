@@ -142,3 +142,61 @@ export interface ScanPrompt {
   updatedAt: string;
   lastRunAt: string | null;
 }
+
+// --- AutoResearch / Experiment types ---
+
+export interface ScoringParams {
+  w_amount: number;
+  w_deadline: number;
+  w_funding_type: number;
+  w_actionability: number;
+  w_vagueness: number;
+  w_governance: number;
+  w_awarded: number;
+  w_small_amount: number;
+  w_expired: number;
+  [key: string]: number;
+}
+
+export interface ParamMutation {
+  param: string;
+  from: number;
+  to: number;
+}
+
+export type ExperimentDecision = 'keep' | 'rollback' | 'extend' | 'active' | 'pending';
+
+export interface ExperimentResults {
+  approval_rate: number;
+  engagement_rate: number;
+  editorial_efficiency: number;
+  composite_score: number;
+  entry_count: number;
+}
+
+export interface ScoringExperiment {
+  id: string;
+  name: string;
+  status: 'active' | 'completed' | 'rolled_back';
+  decision?: ExperimentDecision;
+  params: ScoringParams;
+  defaultParams: ScoringParams;
+  mutations: ParamMutation[];
+  parentId: string | null;
+  currentResults?: ExperimentResults;
+  created_at: string;
+  completed_at?: string;
+  rollback_reason?: string;
+}
+
+export const PARAM_RANGES: Record<string, { min: number; max: number; step: number; label: string }> = {
+  w_amount: { min: 0, max: 50, step: 1, label: 'Amount Weight' },
+  w_deadline: { min: 0, max: 50, step: 1, label: 'Deadline Weight' },
+  w_funding_type: { min: 0, max: 50, step: 1, label: 'Funding Type Weight' },
+  w_actionability: { min: 0, max: 50, step: 1, label: 'Actionability Weight' },
+  w_vagueness: { min: -30, max: 0, step: 1, label: 'Vagueness Penalty' },
+  w_governance: { min: -30, max: 0, step: 1, label: 'Governance Penalty' },
+  w_awarded: { min: -30, max: 0, step: 1, label: 'Already Awarded Penalty' },
+  w_small_amount: { min: -20, max: 0, step: 1, label: 'Small Amount Penalty' },
+  w_expired: { min: -30, max: 0, step: 1, label: 'Expired Penalty' },
+};
