@@ -1,13 +1,9 @@
 /**
  * Quality Scoring Service
  *
- * Assigns a 0-100 quality score to each scan entry based on:
- * - Whether it has a dollar amount (+25)
- * - Whether the amount is above a meaningful threshold (+15)
- * - Whether it has a deadline (+15)
- * - Whether the deadline is upcoming/actionable (+10)
- * - Whether it's a real funding opportunity vs governance/news (+20)
- * - Whether someone can actually apply to it (+15)
+ * Assigns a 0-100 quality score to each scan entry based on parameterized weights.
+ * Parameters are loaded from the active scoring experiment (DB), falling back to
+ * DEFAULT_PARAMS which match the original hardcoded values exactly.
  *
  * Scores are used to:
  * - Filter the daily briefing (only high quality items)
@@ -15,8 +11,68 @@
  * - Determine what goes in the weekly newsletter
  */
 
-import type { QualityBreakdown, ScanEntry } from '../types/intake';
+import type { QualityBreakdown, ScoringParams } from '../types/intake';
 import { parseAmount, parseDeadline } from './intake';
+import { getPool } from '../db';
+
+// ============================================================
+// Default Parameters (match original hardcoded values exactly)
+// ============================================================
+
+export const DEFAULT_PARAMS: ScoringParams = {
+  // Base weights
+  w_has_amount: 25,
+  w_amount_threshold: 15,
+  w_has_deadline: 15,
+  w_deadline_upcoming: 10,
+  w_funding_opportunity: 20,
+  w_actionable: 15,
+
+  // Penalties
+  p_governance_noise: -15,
+  p_already_awarded: -10,
+  p_vague_description: -5,
+  p_small_amount: -5,
+
+  // Thresholds
+  t_amount_min: 5000,
+  t_amount_tiny: 1000,
+  t_deadline_window_days: 60,
+  t_rolling_bonus: 5,
+
+  // Queue threshold
+  t_queue_min_score: 40,
+};
+
+// ============================================================
+// Active Params Loader
+// ============================================================
+
+/**
+ * Load the active experiment's params from DB, or fall back to DEFAULT_PARAMS.
+ * Returns the params and optionally the experiment ID.
+ */
+export async function getActiveParams(): Promise<{ params: ScoringParams; experimentId: string | null }> {
+  try {
+    const pool = getPool();
+    const result = await pool.query(
+      `SELECT id, params FROM scoring_experiments
+       WHERE status = 'active'
+       ORDER BY started_at DESC LIMIT 1`
+    );
+
+    if (result.rows.length > 0) {
+      return {
+        params: result.rows[0].params as ScoringParams,
+        experimentId: result.rows[0].id as string,
+      };
+    }
+  } catch {
+    // DB not available or table doesn't exist yet — use defaults
+  }
+
+  return { params: DEFAULT_PARAMS, experimentId: null };
+}
 
 // ============================================================
 // Entry Type Classification
@@ -170,49 +226,53 @@ const OPPORTUNITY_KEYWORDS = [
 /**
  * Score a scan entry on quality from 0-100.
  * Returns both the total score and a breakdown of how it was calculated.
+ *
+ * When called without params, uses DEFAULT_PARAMS (backward compatible).
  */
-export function scoreEntry(entry: {
-  name: string;
-  description: string | null;
-  amount: string | null;
-  deadline: string | null;
-  scanDate?: string;
-}): QualityBreakdown {
+export function scoreEntry(
+  entry: {
+    name: string;
+    description: string | null;
+    amount: string | null;
+    deadline: string | null;
+    scanDate?: string;
+  },
+  params: ScoringParams = DEFAULT_PARAMS
+): QualityBreakdown {
   let totalScore = 0;
   const penalties: string[] = [];
   const desc = (entry.description || '').toLowerCase();
   const name = entry.name.toLowerCase();
 
-  // ---- Has Amount: +25 ----
+  // ---- Has Amount ----
   const hasAmount = !!entry.amount && entry.amount.trim() !== '';
-  if (hasAmount) totalScore += 25;
+  if (hasAmount) totalScore += params.w_has_amount;
 
-  // ---- Amount Above Threshold: +15 ----
+  // ---- Amount Above Threshold ----
   let amountAboveThreshold = false;
   if (hasAmount) {
     const parsed = parseAmount(entry.amount);
-    if (parsed && parsed.numeric >= 5000) {
+    if (parsed && parsed.numeric >= params.t_amount_min) {
       amountAboveThreshold = true;
-      totalScore += 15;
-    } else if (parsed && parsed.numeric < 1000) {
-      // Tiny amounts get a small penalty
+      totalScore += params.w_amount_threshold;
+    } else if (parsed && parsed.numeric < params.t_amount_tiny) {
       penalties.push(`Small amount: ${entry.amount}`);
-      totalScore -= 5;
+      totalScore += params.p_small_amount;
     }
   }
 
-  // ---- Has Deadline: +15 ----
+  // ---- Has Deadline ----
   const hasDeadline =
     !!entry.deadline &&
     entry.deadline !== 'Rolling' &&
     entry.deadline !== 'None listed' &&
     entry.deadline.trim() !== '';
-  if (hasDeadline) totalScore += 15;
+  if (hasDeadline) totalScore += params.w_has_deadline;
 
   // Rolling deadlines get a partial bonus
-  if (entry.deadline === 'Rolling') totalScore += 5;
+  if (entry.deadline === 'Rolling') totalScore += params.t_rolling_bonus;
 
-  // ---- Deadline Upcoming: +10 ----
+  // ---- Deadline Upcoming ----
   let deadlineUpcoming = false;
   if (hasDeadline) {
     const parsed = parseDeadline(entry.deadline);
@@ -221,48 +281,48 @@ export function scoreEntry(entry: {
       const daysUntil =
         (parsed.getTime() - now.getTime()) / (1000 * 60 * 60 * 24);
 
-      if (daysUntil >= 0 && daysUntil <= 60) {
+      if (daysUntil >= 0 && daysUntil <= params.t_deadline_window_days) {
         deadlineUpcoming = true;
-        totalScore += 10;
+        totalScore += params.w_deadline_upcoming;
       } else if (daysUntil < 0) {
-        // Expired deadline is a penalty
+        // Expired deadline — use the same magnitude as the deadline_upcoming weight as penalty
         penalties.push('Deadline has passed');
-        totalScore -= 10;
+        totalScore -= params.w_deadline_upcoming;
       }
     }
   }
 
-  // ---- Is Funding Opportunity: +20 ----
+  // ---- Is Funding Opportunity ----
   const isFundingOpportunity = classifyAsFunding(name, desc);
   if (isFundingOpportunity) {
-    totalScore += 20;
+    totalScore += params.w_funding_opportunity;
   }
 
-  // ---- Is Actionable: +15 ----
+  // ---- Is Actionable ----
   const isActionable = classifyAsActionable(name, desc);
   if (isActionable) {
-    totalScore += 15;
+    totalScore += params.w_actionable;
   }
 
   // ---- Penalties ----
 
   // Governance/DAO proposals that aren't actually grants
   if (isGovernanceNoise(name, desc)) {
-    totalScore -= 15;
+    totalScore += params.p_governance_noise;
     penalties.push('Governance/DAO noise');
   }
 
   // "Awarded" entries (already happened, not actionable)
   if (desc.includes('awarded to') || desc.includes('received') || desc.includes('was granted')) {
     if (!isActionable && !isFundingOpportunity) {
-      totalScore -= 10;
+      totalScore += params.p_already_awarded;
       penalties.push('Already awarded (not open)');
     }
   }
 
   // Very short/vague descriptions
   if (!entry.description || entry.description.length < 30) {
-    totalScore -= 5;
+    totalScore += params.p_vague_description;
     penalties.push('Vague description');
   }
 
