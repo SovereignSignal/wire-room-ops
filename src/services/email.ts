@@ -338,7 +338,10 @@ export async function sendDailyDigestEmail(
   digest: import('../jobs/daily-digest').DailyDigestResult,
   dashboardUrl: string,
   recipients?: string[],
-  topFinds?: TopFindEntry[]
+  topFinds?: TopFindEntry[],
+  csvExport?: import('../jobs/csv-export').CsvExportResult,
+  downloadUrls?: { csv: string | null; md: string | null },
+  experimentStatus?: { name: string; entriesScored: number; approvalRate: number; status: string } | null
 ): Promise<void> {
   const brand = getBrand();
   const reviewUrl = `${dashboardUrl.replace(/\/$/, '')}/queue`;
@@ -357,6 +360,25 @@ export async function sendDailyDigestEmail(
   const wireText = digest.wires.map(w =>
     `  ${w.wire.padEnd(10)} scans:${w.scansRun}  new:${w.newUnique}  approved:${w.recentlyApproved}  pending:${w.pendingReview}`
   ).join('\n');
+
+  // Autoresearch experiment status section
+  let experimentHtml = '';
+  let experimentText = '';
+  if (experimentStatus !== undefined) {
+    if (experimentStatus === null) {
+      experimentHtml = `
+      ${sectionLabel('Autoresearch')}
+      <p style="margin:0 0 16px;font-size:12px;color:#999;">No active experiment</p>`;
+      experimentText = '\nAUTORESEARCH\nNo active experiment\n';
+    } else {
+      const approvalPct = Math.round(experimentStatus.approvalRate);
+      const expLine = `\u{1F9EA} ${escapeHtml(experimentStatus.name)} | ${experimentStatus.entriesScored} entries scored | ${approvalPct}% approval | ${escapeHtml(experimentStatus.status)}`;
+      experimentHtml = `
+      ${sectionLabel('Autoresearch')}
+      <p style="margin:0 0 16px;font-size:12px;color:#555;${MONO}">${expLine}</p>`;
+      experimentText = `\nAUTORESEARCH\n\u{1F9EA} ${experimentStatus.name} | ${experimentStatus.entriesScored} entries scored | ${approvalPct}% approval | ${experimentStatus.status}\n`;
+    }
+  }
 
   // Top pending
   let topFindsHtml = '';
@@ -389,10 +411,29 @@ export async function sendDailyDigestEmail(
     ).join('\n');
   }
 
+  // Approved entries section (from CSV export)
+  let approvedEntriesHtml = '';
+  let approvedEntriesText = '';
+  if (csvExport && csvExport.entryCount > 0) {
+    const buttons = [
+      downloadUrls?.csv ? emailBtn(downloadUrls.csv, 'Download CSV') : '',
+      downloadUrls?.md ? emailBtn(downloadUrls.md, 'Download Markdown') : '',
+    ].filter(Boolean).join('');
+    approvedEntriesHtml = `
+      ${sectionLabel('Approved Entries')}
+      ${csvExport.htmlTable}
+      ${buttons}
+      <p style="margin:0 0 16px;color:#999;font-size:11px;">Use this data as input for newsletter composition.</p>`;
+    approvedEntriesText = `\nAPPROVED ENTRIES (${csvExport.entryCount})\n` +
+      (downloadUrls?.csv ? `Download CSV: ${downloadUrls.csv}\n` : '') +
+      (downloadUrls?.md ? `Download Markdown: ${downloadUrls.md}\n` : '');
+  }
+
   const summaryLine = `<strong>${digest.totalNewUnique}</strong> new finds today. ${digest.totalPendingReview > 0 ? `<strong style="color:#0088cc;">${digest.totalPendingReview} pending review.</strong>` : 'Queue is clear.'}`;
 
   const body = `
     <p style="margin:0 0 20px;font-size:14px;color:#222;">${summaryLine}</p>
+    ${experimentHtml}
     ${sectionLabel('By Wire')}
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-bottom:20px;">
       <tr>
@@ -405,31 +446,34 @@ export async function sendDailyDigestEmail(
       ${wireRows}
     </table>
     ${topFindsHtml}
+    ${approvedEntriesHtml}
     ${digest.totalPendingReview > 0
       ? emailBtn(reviewUrl, `Review Queue (${digest.totalPendingReview})`)
       : emailBtn(dashboardUrl, 'Open Dashboard')}`;
 
-  const htmlContent = emailShell(`Daily Digest \u2014 ${digest.date}`, body);
+  const htmlContent = emailShell(`WireOps \u2014 ${digest.date}`, body);
 
-  const textContent = `WIREOPS - Daily Digest ${digest.date}
+  const textContent = `WIREOPS - ${digest.date}
 
 ${digest.totalNewUnique} new finds. ${digest.totalPendingReview > 0 ? `${digest.totalPendingReview} pending review.` : 'Queue is clear.'}
-
+${experimentText}
 BY WIRE
 ${wireText}
 ${topFindsText}
+${approvedEntriesText}
 ${digest.totalPendingReview > 0 ? `\nReview: ${reviewUrl}` : `\nDashboard: ${dashboardUrl}`}
 
 ---
 ${brand.name}`.trim();
 
-  const pendingLabel = digest.totalPendingReview > 0 ? ` | ${digest.totalPendingReview} pending` : '';
+  const approvedCount = csvExport?.entryCount ?? 0;
+  const approvedLabel = approvedCount > 0 ? ` | ${approvedCount} approved` : '';
   const to = recipients && recipients.length > 0 ? recipients : config.email.notificationEmail;
 
   await sendWithTracking({
     from: `${brand.fromName} <${config.email.fromEmail}>`,
     to,
-    subject: `${brand.name} Digest \u2014 ${digest.date} | ${digest.totalNewUnique} new${pendingLabel}`,
+    subject: `WireOps \u2014 ${digest.date} | ${digest.totalNewUnique} new${approvedLabel}`,
     html: htmlContent,
     text: textContent,
   });
