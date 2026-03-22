@@ -2,7 +2,8 @@ import cron, { ScheduledTask } from 'node-cron';
 import { runScanExecution } from '../jobs/scan-execution';
 import { runForumScan } from '../jobs/forum-scan';
 import { config } from '../config';
-import { sendTestAlertEmail, sendScheduledJobFailureEmail, sendDailyDigestEmail, sendCsvExportEmail } from './email';
+import { sendTestAlertEmail, sendScheduledJobFailureEmail, sendDailyDigestEmail } from './email';
+import { ExperimentEngine } from './experiment-engine';
 import { runCsvExport } from '../jobs/csv-export';
 import { createMagicLink } from './auth';
 import { runDailyDigest, getTopPendingFinds } from '../jobs/daily-digest';
@@ -344,36 +345,55 @@ function createJobExecutor(schedule: ScheduleConfig) {
         console.log(`[Scheduler] Daily digest: hasActivity=${digest.hasActivity}, newUnique=${digest.totalNewUnique}, pending=${digest.totalPendingReview}`);
 
         if (digest.hasActivity) {
-          try {
-            const dashboardUrl = config.app.url;
-            const recipients = currentScheduleData.notifyEmails
-              ? currentScheduleData.notifyEmails.split(',').map(e => e.trim()).filter(Boolean)
-              : undefined;
-            await sendDailyDigestEmail(digest, dashboardUrl, recipients, topFinds);
-            console.log(`[Scheduler] Daily digest email sent (${digest.totalNewUnique} new, ${digest.totalPendingReview} pending)`);
-          } catch (emailErr) {
-            console.error(`[Scheduler] Failed to send daily digest email:`, emailErr);
-          }
+          const dashboardUrl = config.app.url;
+          const recipients = currentScheduleData.notifyEmails
+            ? currentScheduleData.notifyEmails.split(',').map(e => e.trim()).filter(Boolean)
+            : undefined;
 
-          // CSV export of approved entries (non-fatal)
+          // Run CSV export first
+          let csvResult: import('../jobs/csv-export').CsvExportResult | undefined;
+          let downloadUrls: { csv: string | null; md: string | null } | undefined;
           try {
-            const csvResult = await runCsvExport(pool, 24);
+            csvResult = await runCsvExport(pool, 24);
             if (csvResult.entryCount > 0) {
               const email = config.email.notificationEmail;
-              const downloadUrls = {
+              downloadUrls = {
                 csv: csvResult.csvFileId ? createMagicLink(email, csvResult.csvFileId) : null,
                 md: csvResult.mdFileId ? createMagicLink(email, csvResult.mdFileId) : null,
               };
-              const recipients = currentScheduleData.notifyEmails
-                ? currentScheduleData.notifyEmails.split(',').map(e => e.trim()).filter(Boolean)
-                : undefined;
-              await sendCsvExportEmail(csvResult, downloadUrls, recipients);
-              console.log(`[Scheduler] CSV export email sent (${csvResult.entryCount} entries)`);
+              console.log(`[Scheduler] CSV export ready (${csvResult.entryCount} entries)`);
             } else {
-              console.log(`[Scheduler] CSV export: no approved entries in last 24h, skipping`);
+              console.log(`[Scheduler] CSV export: no approved entries in last 24h`);
             }
           } catch (csvErr) {
-            console.error(`[Scheduler] Failed to send CSV export email:`, csvErr);
+            console.error(`[Scheduler] Failed to run CSV export:`, csvErr);
+          }
+
+          // Pull active experiment status
+          let experimentStatus: { name: string; entriesScored: number; approvalRate: number; status: string } | null = null;
+          try {
+            const engine = new ExperimentEngine(pool);
+            const activeExp = await engine.getActiveExperiment();
+            if (activeExp) {
+              const total = activeExp.approved_count + activeExp.declined_count;
+              const approvalRate = total > 0 ? (activeExp.approved_count / total) * 100 : 0;
+              experimentStatus = {
+                name: activeExp.name,
+                entriesScored: total,
+                approvalRate,
+                status: activeExp.status,
+              };
+            }
+          } catch (expErr) {
+            console.error(`[Scheduler] Failed to fetch experiment status:`, expErr);
+          }
+
+          // Send single consolidated email
+          try {
+            await sendDailyDigestEmail(digest, dashboardUrl, recipients, topFinds, csvResult, downloadUrls, experimentStatus);
+            console.log(`[Scheduler] Daily digest email sent (${digest.totalNewUnique} new, ${csvResult?.entryCount ?? 0} approved)`);
+          } catch (emailErr) {
+            console.error(`[Scheduler] Failed to send daily digest email:`, emailErr);
           }
         } else {
           console.log(`[Scheduler] Daily digest: no activity today, skipping email`);
