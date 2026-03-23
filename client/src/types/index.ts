@@ -146,17 +146,52 @@ export interface ScanPrompt {
 // --- AutoResearch / Experiment types ---
 
 export interface ScoringParams {
-  w_amount: number;
-  w_deadline: number;
-  w_funding_type: number;
-  w_actionability: number;
-  w_vagueness: number;
-  w_governance: number;
-  w_awarded: number;
-  w_small_amount: number;
-  w_expired: number;
+  // Base weights
+  w_has_amount: number;
+  w_amount_threshold: number;
+  w_has_deadline: number;
+  w_deadline_upcoming: number;
+  w_funding_opportunity: number;
+  w_actionable: number;
+
+  // Penalties (negative values)
+  p_governance_noise: number;
+  p_already_awarded: number;
+  p_vague_description: number;
+  p_small_amount: number;
+
+  // Thresholds
+  t_amount_min: number;
+  t_amount_tiny: number;
+  t_deadline_window_days: number;
+  t_rolling_bonus: number;
+
+  // Queue threshold
+  t_queue_min_score: number;
+
   [key: string]: number;
 }
+
+export const DEFAULT_PARAMS: ScoringParams = {
+  w_has_amount: 25,
+  w_amount_threshold: 15,
+  w_has_deadline: 15,
+  w_deadline_upcoming: 10,
+  w_funding_opportunity: 20,
+  w_actionable: 15,
+
+  p_governance_noise: -15,
+  p_already_awarded: -10,
+  p_vague_description: -5,
+  p_small_amount: -5,
+
+  t_amount_min: 5000,
+  t_amount_tiny: 1000,
+  t_deadline_window_days: 60,
+  t_rolling_bonus: 5,
+
+  t_queue_min_score: 40,
+};
 
 export interface ParamMutation {
   param: string;
@@ -177,26 +212,43 @@ export interface ExperimentResults {
 export interface ScoringExperiment {
   id: string;
   name: string;
-  status: 'active' | 'completed' | 'rolled_back';
+  status: 'active' | 'completed' | 'rolled_back' | 'pending' | 'aborted';
   decision?: ExperimentDecision;
   params: ScoringParams;
-  defaultParams: ScoringParams;
-  mutations: ParamMutation[];
-  parentId: string | null;
-  currentResults?: ExperimentResults;
+  parent_experiment_id: string | null;
+  mutation_description: string | null;
   created_at: string;
-  completed_at?: string;
+  started_at?: string | null;
+  ended_at?: string | null;
+  min_duration_hours?: number;
+  entry_count?: number;
+  approved_count?: number;
+  declined_count?: number;
+  created_by?: string;
+  // Enriched fields (attached by frontend from API response)
+  defaultParams?: ScoringParams;
+  mutations?: ParamMutation[];
+  currentResults?: ExperimentResults;
   rollback_reason?: string;
 }
 
 export const PARAM_RANGES: Record<string, { min: number; max: number; step: number; label: string }> = {
-  w_amount: { min: 0, max: 50, step: 1, label: 'Amount Weight' },
-  w_deadline: { min: 0, max: 50, step: 1, label: 'Deadline Weight' },
-  w_funding_type: { min: 0, max: 50, step: 1, label: 'Funding Type Weight' },
-  w_actionability: { min: 0, max: 50, step: 1, label: 'Actionability Weight' },
-  w_vagueness: { min: -30, max: 0, step: 1, label: 'Vagueness Penalty' },
-  w_governance: { min: -30, max: 0, step: 1, label: 'Governance Penalty' },
-  w_awarded: { min: -30, max: 0, step: 1, label: 'Already Awarded Penalty' },
-  w_small_amount: { min: -20, max: 0, step: 1, label: 'Small Amount Penalty' },
-  w_expired: { min: -30, max: 0, step: 1, label: 'Expired Penalty' },
+  w_has_amount:          { min: 10, max: 40, step: 1, label: 'Has Amount Weight' },
+  w_amount_threshold:    { min: 5,  max: 30, step: 1, label: 'Amount Threshold Weight' },
+  w_has_deadline:        { min: 5,  max: 25, step: 1, label: 'Has Deadline Weight' },
+  w_deadline_upcoming:   { min: 0,  max: 20, step: 1, label: 'Deadline Upcoming Weight' },
+  w_funding_opportunity: { min: 10, max: 35, step: 1, label: 'Funding Opportunity Weight' },
+  w_actionable:          { min: 5,  max: 25, step: 1, label: 'Actionable Weight' },
+
+  p_governance_noise:    { min: -30, max: 0, step: 1, label: 'Governance Noise Penalty' },
+  p_already_awarded:     { min: -25, max: 0, step: 1, label: 'Already Awarded Penalty' },
+  p_vague_description:   { min: -15, max: 0, step: 1, label: 'Vague Description Penalty' },
+  p_small_amount:        { min: -15, max: 0, step: 1, label: 'Small Amount Penalty' },
+
+  t_amount_min:          { min: 1000,  max: 25000, step: 100, label: 'Min Amount Threshold ($)' },
+  t_amount_tiny:         { min: 100,   max: 5000,  step: 100, label: 'Tiny Amount Threshold ($)' },
+  t_deadline_window_days:{ min: 14,    max: 120,   step: 1,   label: 'Deadline Window (days)' },
+  t_rolling_bonus:       { min: 0,     max: 15,    step: 1,   label: 'Rolling Bonus' },
+
+  t_queue_min_score:     { min: 20, max: 70, step: 1, label: 'Queue Min Score' },
 };

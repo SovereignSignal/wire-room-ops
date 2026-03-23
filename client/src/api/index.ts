@@ -1,4 +1,4 @@
-import { ScanEntry, WireCounts, DbStats, DbTableResponse, ScanPrompt, ScoringExperiment, ScoringParams } from '@/types';
+import { ScanEntry, WireCounts, DbStats, DbTableResponse, ScanPrompt, ScoringExperiment, ScoringParams, ParamMutation, DEFAULT_PARAMS } from '@/types';
 
 const BASE = "/api";
 
@@ -287,6 +287,19 @@ export async function createSchedule(schedule: Partial<Omit<ScheduleResponse, 'i
 
 // --- Experiment API ---
 
+/**
+ * Compute param mutations by diffing experiment params against a baseline.
+ */
+function computeMutations(params: ScoringParams, baseline: ScoringParams): ParamMutation[] {
+  const mutations: ParamMutation[] = [];
+  for (const key of Object.keys(baseline)) {
+    if (params[key] !== undefined && params[key] !== baseline[key]) {
+      mutations.push({ param: key, from: baseline[key], to: params[key] });
+    }
+  }
+  return mutations;
+}
+
 export async function getExperiments(status?: string, limit = 50): Promise<ScoringExperiment[]> {
   const params = new URLSearchParams();
   if (status) params.set('status', status);
@@ -295,7 +308,13 @@ export async function getExperiments(status?: string, limit = 50): Promise<Scori
   const res = await authFetch(`${BASE}/experiments${q ? '?' + q : ''}`);
   if (!res.ok) throw new Error(`Failed to fetch experiments: ${res.status}`);
   const data = await res.json();
-  return data.experiments || data;
+  const experiments: ScoringExperiment[] = data.experiments || data;
+  // Enrich each experiment with computed mutations
+  return experiments.map((exp) => ({
+    ...exp,
+    defaultParams: exp.defaultParams || DEFAULT_PARAMS,
+    mutations: exp.mutations || computeMutations(exp.params, DEFAULT_PARAMS),
+  }));
 }
 
 export async function getActiveExperiment(): Promise<ScoringExperiment | null> {
@@ -305,7 +324,14 @@ export async function getActiveExperiment(): Promise<ScoringExperiment | null> {
     throw new Error(`Failed to fetch active experiment: ${res.status}`);
   }
   const data = await res.json();
-  return data.experiment || data || null;
+  const experiment = data.active;
+  if (!experiment) return null;
+  const defaultParams = data.defaultParams || DEFAULT_PARAMS;
+  return {
+    ...experiment,
+    defaultParams,
+    mutations: computeMutations(experiment.params, defaultParams),
+  };
 }
 
 export async function createExperiment(

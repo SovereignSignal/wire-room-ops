@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -164,10 +164,10 @@ function ActiveExperimentCard({
           <span>{r?.entry_count ?? 0} entries scored</span>
           <span className="text-muted-foreground/40">|</span>
           <span>Started {timeAgo(experiment.created_at)}</span>
-          {experiment.parentId && (
+          {experiment.parent_experiment_id && (
             <>
               <span className="text-muted-foreground/40">|</span>
-              <span>Parent: {experiment.parentId.slice(0, 8)}</span>
+              <span>Parent: {experiment.parent_experiment_id.slice(0, 8)}</span>
             </>
           )}
         </div>
@@ -331,9 +331,8 @@ function ExperimentHistory({
               </TableHeader>
               <TableBody>
                 {experiments.map((exp) => (
-                  <>
+                  <React.Fragment key={exp.id}>
                     <TableRow
-                      key={exp.id}
                       className="cursor-pointer hover:bg-primary/5"
                       onClick={() => setExpandedId(expandedId === exp.id ? null : exp.id)}
                     >
@@ -353,20 +352,20 @@ function ExperimentHistory({
                         </span>
                       </TableCell>
                       <TableCell className="font-mono text-[10px] text-muted-foreground hidden sm:table-cell">
-                        {exp.parentId ? exp.parentId.slice(0, 8) : '--'}
+                        {exp.parent_experiment_id ? exp.parent_experiment_id.slice(0, 8) : '--'}
                       </TableCell>
                       <TableCell className="font-mono text-xs text-right text-muted-foreground">
                         {timeAgo(exp.created_at)}
                       </TableCell>
                     </TableRow>
                     {expandedId === exp.id && (
-                      <TableRow key={`${exp.id}-detail`}>
+                      <TableRow>
                         <TableCell colSpan={6} className="bg-background/30 p-4">
                           <ExpandedExperimentDetail experiment={exp} />
                         </TableCell>
                       </TableRow>
                     )}
-                  </>
+                  </React.Fragment>
                 ))}
               </TableBody>
             </Table>
