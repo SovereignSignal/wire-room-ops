@@ -12,6 +12,7 @@
 import { getPool, getAllFeeds } from '../db';
 import { checkDuplicate, registerSeen } from '../services/dedup';
 import { classifyEntry } from '../services/classifier';
+import { getActiveParams } from './quality-scorer';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Public types
@@ -258,15 +259,16 @@ async function insertEntry(entry: {
   submittedBy: string;
   scanSource: string;
   status?: string;
+  experimentId?: string | null;
 }): Promise<number> {
   const pool = getPool();
   const status = entry.status ?? 'raw'; // Raw entries flow through the classification pipeline
   const res = await pool.query(
     `INSERT INTO scan_entries
-     (name, description, source_url, wire, prompt_variant, scan_source, scan_date, status, submitted_by)
-     VALUES ($1, $2, $3, $4, 'N', $5, $6, $7, $8)
+     (name, description, source_url, wire, prompt_variant, scan_source, scan_date, status, submitted_by, experiment_id)
+     VALUES ($1, $2, $3, $4, 'N', $5, $6, $7, $8, $9)
      RETURNING id`,
-    [entry.name, entry.description, entry.sourceUrl, entry.wire, entry.scanSource, entry.scanDate, status, entry.submittedBy]
+    [entry.name, entry.description, entry.sourceUrl, entry.wire, entry.scanSource, entry.scanDate, status, entry.submittedBy, entry.experimentId ?? null]
   );
   return res.rows[0].id;
 }
@@ -336,6 +338,8 @@ export async function processIntakeMessage(
     return { status: 'error', errorMessage: 'No active wires configured' };
   }
 
+  const { experimentId } = await getActiveParams();
+
   // Extract URLs
   const textUrls = extractUrls(text);
   const passedUrls = msg.urls || [];
@@ -368,6 +372,7 @@ export async function processIntakeMessage(
         scanDate,
         submittedBy: msg.senderId,
         scanSource,
+        experimentId,
       });
       // Register in dedup tables immediately so future scans won't re-discover this entry.
       // classifyAndQueue (below) promotes status from raw→queued before processRawEntries
@@ -410,6 +415,7 @@ export async function processIntakeMessage(
       scanDate,
       submittedBy: msg.senderId,
       scanSource,
+      experimentId,
     });
     await registerSeen(getPool(), { id, sourceUrl: primaryUrl, name, wire: fallbackWire, scanDate });
     // Fire-and-forget classification so entry gets scored before next intake run
@@ -433,6 +439,8 @@ export async function completeWireSelection(
   pendingKey: string,
   wire: string,
 ): Promise<IntakeResult> {
+  const { experimentId } = await getActiveParams();
+
   const entry = pendingEntries.get(pendingKey);
   if (!entry) {
     return { status: 'error', errorMessage: 'Pending entry expired or not found' };
@@ -451,7 +459,7 @@ export async function completeWireSelection(
   }
 
   try {
-    const id = await insertEntry({ ...entry, wire });
+    const id = await insertEntry({ ...entry, wire, experimentId });
     await registerSeen(getPool(), { id, sourceUrl: entry.sourceUrl, name: entry.name, wire, scanDate: entry.scanDate });
     // Fire-and-forget classification
     setImmediate(() => classifyAndQueue(id, entry.name, entry.description, entry.sourceUrl, wire));
@@ -639,6 +647,7 @@ export async function processBatchMessage(
   const wires = await getActiveWires();
   const scanDate = new Date().toISOString().slice(0, 10);
   const entries = parseBatchEntries(text);
+  const { experimentId } = await getActiveParams();
 
   const result: BatchIntakeResult = { inserted: 0, duplicates: 0, errors: 0, failed: 0, entries: [] };
   const toClassify: Array<{ id: number; name: string; description: string; sourceUrl: string; wire: string }> = [];
@@ -688,6 +697,7 @@ export async function processBatchMessage(
         scanDate,
         submittedBy: msg.senderId,
         scanSource,
+        experimentId,
       });
       await registerSeen(getPool(), { id, sourceUrl: entry.sourceUrl, name: entry.name, wire: resolvedWire, scanDate });
       toClassify.push({ id, name: entry.name, description: entry.description, sourceUrl: entry.sourceUrl, wire: resolvedWire });
@@ -708,6 +718,17 @@ export async function processBatchMessage(
         await classifyAndQueue(e.id, e.name, e.description, e.sourceUrl, e.wire);
       }
     });
+  }
+
+  // Refresh experiment counts after batch insert
+  if (experimentId && result.inserted > 0) {
+    try {
+      const { ExperimentEngine } = await import('./experiment-engine');
+      const engine = new ExperimentEngine();
+      await engine.refreshCounts(experimentId);
+    } catch (err) {
+      console.error('[IntakeCore] Failed to refresh experiment counts:', err);
+    }
   }
 
   return result;
