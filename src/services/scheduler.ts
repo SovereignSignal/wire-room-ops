@@ -329,11 +329,12 @@ function createJobExecutor(schedule: ScheduleConfig) {
 
         const forumResult = await runForumScan(pool, {
           wire: currentScheduleData.wire || undefined,
+          lookbackDays: currentScheduleData.lookbackDays || 2,
         });
 
         status.status = 'success';
         status.error = null;
-        console.log(`[Scheduler] Forum scan "${currentScheduleData.name}" completed: ${forumResult.totalResults} results, ${forumResult.intakeSummary.newUnique} unique`);
+        console.log(`[Scheduler] Forum scan "${currentScheduleData.name}" completed: ${forumResult.totalResults} results (${forumResult.discussionsResults} discussions + ${forumResult.searchResults} search), ${forumResult.intakeSummary.newUnique} unique`);
 
       } else if (currentScheduleData.scheduleType === 'daily-digest') {
         // ---- Daily Digest Job ----

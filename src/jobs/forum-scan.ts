@@ -1,10 +1,10 @@
 /**
  * Forum Scan Job
  *
- * Orchestrates forum scanning via discuss.watch:
- * 1. Search for grant-related discussions across 150+ Discourse forums
- * 2. Map results to ScanSubmission format
- * 3. Feed into the daily intake pipeline (dedup -> score -> queue)
+ * Orchestrates dual-strategy forum scanning via discuss.watch:
+ * 1. Fetch recent discussions (date-filtered, category-aware, high volume)
+ * 2. Keyword search for precision matches
+ * 3. Cross-deduplicate and feed into intake pipeline (dedup -> classify -> queue)
  *
  * Same pattern as scan-execution.ts but for forum data.
  */
@@ -15,18 +15,22 @@ import type {
   IntakeRunSummary,
   IntakeJobConfig,
 } from '../types/intake';
-import { searchForumDiscussions } from '../services/forum';
+import { config } from '../config';
+import { runDualForumScan } from '../services/forum';
 import { runDailyIntake } from './daily-intake';
 import { getActiveWires } from '../services/intake-core';
 
 export interface ForumScanOptions {
   wire?: string;
+  lookbackDays?: number;
   onProgress?: (message: string, pct: number) => void;
   config?: Partial<IntakeJobConfig>;
 }
 
 export interface ForumScanResult {
   totalResults: number;
+  discussionsResults: number;
+  searchResults: number;
   intakeSummary: IntakeRunSummary;
   durationMs: number;
 }
@@ -39,22 +43,31 @@ export async function runForumScan(
   const startTime = Date.now();
   const today = new Date().toISOString().split('T')[0];
 
-  progress('Starting forum scan via discuss.watch...', 0);
+  progress('Starting dual-strategy forum scan via discuss.watch...', 0);
 
-  // 1. Search discuss.watch for grant discussions
-  const results = await searchForumDiscussions({
+  // Compute since date from lookbackDays
+  const lookbackDays = options.lookbackDays || config.forum.defaultLookbackDays;
+  const since = new Date(Date.now() - lookbackDays * 86400000).toISOString().split('T')[0];
+
+  // 1. Run dual-strategy scan (discussions + search)
+  const scanResult = await runDualForumScan({
     wire: options.wire,
+    since,
     onProgress: (msg, pct) => {
-      // Map search progress (0-85) to our range (0-60)
-      progress(msg, Math.round(pct * 0.7));
+      // Map scan progress (0-100) to our range (0-60)
+      progress(msg, Math.round(pct * 0.6));
     },
   });
 
-  if (results.length === 0) {
+  const totalResults = scanResult.discussionsCount + scanResult.searchCount;
+
+  if (totalResults === 0) {
     const durationMs = Date.now() - startTime;
     progress('No forum results found', 100);
     return {
       totalResults: 0,
+      discussionsResults: 0,
+      searchResults: 0,
       intakeSummary: {
         runDate: today,
         wire: options.wire || 'all',
@@ -70,21 +83,21 @@ export async function runForumScan(
     };
   }
 
-  progress(`Found ${results.length} forum discussions, running intake...`, 65);
+  progress(`Found ${totalResults} forum discussions (${scanResult.discussionsCount} recent + ${scanResult.searchCount} search), running intake...`, 62);
 
-  // 2. Build submission for intake pipeline
+  // 2. Build one submission per wire
   const defaultWire = (await getActiveWires())[0] || 'crypto';
-  const submission: ScanSubmission = {
-    wire: options.wire || defaultWire,
-    promptVariant: 'N',
+  const submissions: ScanSubmission[] = scanResult.byWire.map(wr => ({
+    wire: wr.wire || options.wire || defaultWire,
+    promptVariant: 'N' as const,
     scanDate: today,
-    source: 'forum',
-    results,
+    source: 'forum' as const,
+    results: wr.results,
     submittedBy: 'forum:discuss.watch',
-  };
+  }));
 
   // 3. Feed into daily intake pipeline
-  const intakeSummary = await runDailyIntake(pool, [submission], {
+  const intakeSummary = await runDailyIntake(pool, submissions, {
     config: options.config,
     onProgress: (msg, pct) => {
       // Map intake progress (0-100) to our range (65-100)
@@ -95,12 +108,14 @@ export async function runForumScan(
   const durationMs = Date.now() - startTime;
 
   progress(
-    `Forum scan complete: ${results.length} results, ${intakeSummary.newUnique} unique, ${intakeSummary.highQualityCount} high quality`,
+    `Forum scan complete: ${totalResults} results, ${intakeSummary.newUnique} unique, ${intakeSummary.highQualityCount} high quality`,
     100
   );
 
   return {
-    totalResults: results.length,
+    totalResults,
+    discussionsResults: scanResult.discussionsCount,
+    searchResults: scanResult.searchCount,
     intakeSummary,
     durationMs,
   };

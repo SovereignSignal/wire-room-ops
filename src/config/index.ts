@@ -62,6 +62,7 @@ export const config = {
   forum: {
     discussWatchBaseUrl: process.env.DISCUSS_WATCH_API_URL || 'https://discuss-dot-watch-production.up.railway.app/api/v1',
     enabled: process.env.FORUM_SCAN_ENABLED === 'true',
+    defaultLookbackDays: parseInt(process.env.FORUM_LOOKBACK_DAYS || '2', 10) || 2,
   },
 
   telegram: {
