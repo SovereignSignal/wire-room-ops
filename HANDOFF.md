@@ -1,5 +1,7 @@
 # Wire Room Ops: Session Handoff
 
+> **Historical document**: This handoff was written during an earlier session. Some env vars and architectural references (thewireroom.xyz, DISTRIBUTION_ENABLED, TELEGRAM_CHANNEL_* vars) no longer exist. See CLAUDE.md and STRINGER.md for current state.
+
 ## March 9, 2026 — Theme, Intake Bot, Deployment-Agnostic Refactor
 
 ### What Was Shipped

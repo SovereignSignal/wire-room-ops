@@ -1,5 +1,7 @@
 # Wire Architecture
 
+> **Note**: Parts of this document are outdated. The Wire Room frontend (thewireroom.xyz) is deprecated. The system now distributes to Telegram channels, X, newsletter, and email under the Sovereign Signal brand. The 5-layer architecture described in STRINGER.md is the current reference.
+
 > The intelligence-to-distribution pipeline. Config-driven, operator-agnostic, deployable for any domain.
 
 ## Design Principles

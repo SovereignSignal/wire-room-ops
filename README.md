@@ -28,7 +28,7 @@ Deployed as The Wire Room (grants wire) but designed to be deployment-agnostic â
    - `decline` -> `status = 'declined'`
    - `reviewlater` -> `status = 'skipped'`
 6. Operator triggers distribution from the feed page -- approved entries are sent to configured channels (Telegram, Discord, Slack, X/Twitter, newsletter).
-7. The Wire Room frontend reads approved rows directly from `scan_entries`.
+7. Approved entries are distributed to configured channels (Telegram, X, newsletter, email). Note: the-wire-room frontend (thewireroom.xyz) is deprecated; distribution now goes directly to Telegram channels, X, newsletter, and daily digest email under the Sovereign Signal brand.
 
 ## Features
 
@@ -358,4 +358,4 @@ The `client/` directory contains a React/Vite/Tailwind frontend (Lovable wireops
 - In-memory stores are used for sessions/tokens/job-progress and are reset on restart.
 - Wire list is DB-driven (from `feeds` table), not hardcoded. Fallback via `INTAKE_WIRES` env var.
 - Brand/audience config is env-var driven via `src/config/brand.ts` â€” AI prompts, emails, and scoring use `getBrand()` instead of hardcoded values.
-- The queue/status model is the publication contract with the frontend site.
+- The queue/status model is the publication contract with distribution channels (Telegram, X, newsletter, email).

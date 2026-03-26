@@ -1,5 +1,7 @@
 # Activate Automated Scan Pipeline
 
+> **Obsolete**: This task tracker references the original A/B/C prompt architecture which has been superseded. See STRINGER.md for the current 9-prompt architecture (3 per wire: X-scan, Web Search, Perplexity).
+
 ## Goal
 Replace manual daily Grok scans with the automated pipeline: prompts execute on schedule, results get deduped/scored/queued, Sov reviews and approves from the dashboard.
 

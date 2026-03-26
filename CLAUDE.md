@@ -17,17 +17,17 @@ This backend is one half of a two-repo system:
 | Repo | Role | Location |
 |------|------|----------|
 | `wire-room-ops` (this repo) | Backend pipeline + admin dashboard | `~/GitHub/wire-room-ops` |
-| `the-wire-room` | Public-facing Next.js website | `~/GitHub/the-wire-room` |
+| `the-wire-room` | Next.js website (DEPRECATED) | `~/GitHub/the-wire-room` |
 
-Both repos share the **same PostgreSQL database**. This repo writes to it; the Wire Room reads from it.
+> **Note:** The `the-wire-room` frontend (thewireroom.xyz) is deprecated. The system now operates under the **Sovereign Signal** brand and distributes approved entries to Telegram channels, X/Twitter, newsletter, and email. The Wire Room website is no longer the primary output.
+
+Both repos share the **same PostgreSQL database**. This repo is the primary writer.
 
 ### Approve = Publish Flow
 
-When an operator clicks "Approve" on a queued scan entry (via the dashboard), the entry's status changes to `approved`. The Wire Room frontend queries `scan_entries WHERE status = 'approved'` to display entries on thewireroom.xyz. There is no separate publish step.
+When an operator clicks "Approve" on a queued scan entry (via the dashboard), the entry's status changes to `approved`. There is no separate publish step -- approved entries are distributed to configured channels (Telegram, X, newsletter, email) via the Distribution System.
 
-The Wire Room reads these columns from `scan_entries`: `id`, `name`, `description`, `source_url`, `amount`, `deadline`, `wire`, `quality_score`, `scan_source`, `created_at`.
-
-The Wire Room queries with `WHERE status = 'approved'` (optionally `AND wire = $1` for beat filtering), ordered by `created_at DESC` with `LIMIT/OFFSET` pagination. A partial index `idx_scan_entries_approved` on `(wire, created_at DESC) WHERE status = 'approved'` optimizes both filtered and unfiltered query paths.
+A partial index `idx_scan_entries_approved` on `(wire, created_at DESC) WHERE status = 'approved'` optimizes queries against approved entries.
 
 ## Key Architecture Decisions
 
@@ -164,7 +164,7 @@ Server-rendered views (login/error only):
 
 ### Shared PostgreSQL Database
 
-All services (`wire-room-ops`, `the-wire-room`, `tele-sum`) share one PostgreSQL database hosted on Railway (`wire-room-db`). This repo is the primary writer; `the-wire-room` reads approved entries for the public website.
+All services (`wire-room-ops`, `the-wire-room`, `tele-sum`) share one PostgreSQL database hosted on Railway (`wire-room-db`). This repo is the primary writer; `the-wire-room` is deprecated (see Multi-Repo Architecture).
 
 ### Table Groups
 
@@ -173,7 +173,7 @@ All services (`wire-room-ops`, `the-wire-room`, `tele-sum`) share one PostgreSQL
 | **Scan pipeline** | `scan_entries`, `seen_urls`, `seen_names`, `intake_runs`, `scan_prompts` | Core intake/dedup/queue pipeline |
 | **tele-sum legacy** | `messages`, `summaries`, `categories`, `users`, `telegram_bots`, `channel_configs` | Telegram ingestion (bridged via `summary-sync.ts`) |
 | **Distribution** | `distribution_channels`, `distribution_logs`, `distribution_config` (legacy) | Channel output tracking |
-| **Config** | `feeds`, `schedules`, `schedule_config`, `integration_config` | Wire/schedule/integration config |
+| **Config** | `feeds`, `schedules`, `integration_config` | Wire/schedule/integration config |
 | **API management** | `api_providers`, `api_usage_log`, `model_pricing` | DB-backed API keys, usage tracking, cost estimation |
 | **Identity** | `org_profiles`, `sessions` | Organization tracking + auth sessions |
 | **Legacy** | `grant_entries`, `grok_usage`, `review_queue`, `alembic_version`, `sync_status` | Historical/dormant tables |
@@ -184,7 +184,7 @@ All pipeline data flows through `scan_entries`. Key columns:
 
 | Column | Type | Purpose |
 |--------|------|---------|
-| `status` | text | Pipeline stage: `raw` → `deduped` → `queued` → `approved`/`declined`/`archived`/`duplicate` |
+| `status` | text | Pipeline stage: `raw` → `deduped` → `queued` → `approved`/`declined`/`archived`/`duplicate`/`skipped` |
 | `classification` | varchar | Gate 2 label: `GRANT`, `NEWS`, `EXPIRED`, `NOISE`, `UNCHECKED` |
 | `quality_score` | integer | 0-100 score from LLM classifier |
 | `wire` | text | Feed vertical (crypto/ai/oss) |
@@ -210,8 +210,7 @@ INGESTION (raw data)                    THE REFINERY (processing)               
                                          queued (editorial queue)
                                                 │ operator review
                                                 ▼
-                                         approved ──→ thewireroom.xyz
-                                                  ──→ distribution channels (TG, X, newsletter)
+                                         approved ──→ distribution channels (TG, X, newsletter, email)
 ```
 
 ### Dedup Tables
@@ -222,8 +221,8 @@ INGESTION (raw data)                    THE REFINERY (processing)               
 ### Approval Validation Guard
 
 Pre-approval validation (`src/services/approval-guard.ts`) prevents bad data from reaching the public website:
-- **Blocks**: empty description, empty source_url, EXPIRED classification
-- **Warns**: oversized names (>120 chars), junk deadline data, UNCHECKED classification, missing quality score
+- **Blocks**: empty description, empty source_url
+- **Warns**: EXPIRED classification, oversized names (>120 chars), junk deadline data, UNCHECKED classification, missing quality score
 - Applied to both single and bulk approve endpoints. Operator can override with `?force=true`.
 
 ### The Telegram Bridge
@@ -385,6 +384,9 @@ Generated files are persisted to Postgres, but sessions and job queues are in-me
 - `FORUM_SEARCH_TERMS` - Comma-separated search terms override for forum scanning
 - `QUALITY_FUNDING_TYPES` - JSON array override for funding type keywords
 - `QUALITY_ACTIONABLE_TYPES` - JSON array override for actionable type keywords
+- `FORUM_LOOKBACK_DAYS` - Number of days to look back for forum discussions (default: 2)
+- `START_DATE` - Override start date for date-range queries
+- `END_DATE` - Override end date for date-range queries
 
 ## Feeds System
 
@@ -405,9 +407,9 @@ Automated discovery of grant opportunities via X.com scanning, web search, and f
 ### Ingestion Channels
 - **X.com scan** (`x-scan`): Grok Responses API with `x_search` tool, runs on schedule
 - **Web search** (`web-search`): Grok Responses API with `web_search` tool, same prompt system as X scan
-- **Perplexity scan** (`web-search`): Perplexity sonar-pro with native web search and citations (prompts with `tool_type: 'perplexity'`)
-- **Forum scan** (`forum`): discuss.watch API searches across 150+ Discourse forums (search terms overrideable via `FORUM_SEARCH_TERMS`)
-- **Telegram intake** (`telegram-intake`): Bot-based URL/article submission via webhook. Supports single URLs and batch messages (numbered lists, bold-name format, or structured `Link:` format). Uses adapter pattern (`telegram-adapter.ts` -> `intake-core.ts`)
+- **Perplexity scan** (`web-search` or `perplexity`): Perplexity sonar-pro with native web search and citations (prompts with `tool_type: 'perplexity'`)
+- **Forum scan** (`forum`): discuss.watch API searches across 160+ Discourse forums (search terms overrideable via `FORUM_SEARCH_TERMS`). Pre-filters results with keyword relevance matching on discussion titles and a 30-day createdAt age filter (rejects old posts that were merely bumped)
+- **Telegram intake** (`telegram`): Bot-based URL/article submission via webhook. Supports single URLs and batch messages (numbered lists, bold-name format, or structured `Link:` format). Uses adapter pattern (`telegram-adapter.ts` -> `intake-core.ts`)
 - **Manual paste** (`x-scan`/`web-search`): Dashboard paste-in flow
 
 ### Data Flow
@@ -419,14 +421,14 @@ Automated discovery of grant opportunities via X.com scanning, web search, and f
 6. **Dedup**: `dedup.ts` checks against `seen_urls` (exact URL match) and `seen_names` (fuzzy token overlap)
 7. **Gate 2 — LLM Classify + Score**: `classifier.ts` calls Grok to classify (GRANT/NEWS/EXPIRED/NOISE) and score (0-100) in one call. Failed classifications retry once with 2-second delay.
 8. **Queue**: Classified entries get `status: queued`; NOISE -> `status: archived`
-9. **Approve Guard**: Pre-approval validation blocks entries with empty descriptions, empty URLs, or EXPIRED classification from being published
+9. **Approve Guard**: Pre-approval validation blocks entries with empty descriptions or empty URLs from being published; warns on EXPIRED classification
 
 ### Key Files
 - `src/jobs/scan-execution.ts` - Orchestrates prompt execution and feeds results to intake
 - `src/jobs/daily-intake.ts` - Main intake pipeline (dedup -> classify -> queue, with classification retry)
 - `src/services/intake.ts` - Parser with 4 strategies + `sanitizeResult()` post-parse cleanup
 - `src/services/intake-core.ts` - Channel-agnostic intake logic (URL extraction, wire detection, DB insert)
-- `src/services/approval-guard.ts` - Pre-approval validation (blocks empty desc/URL, EXPIRED entries)
+- `src/services/approval-guard.ts` - Pre-approval validation (blocks empty desc/URL; warns on EXPIRED)
 - `src/services/classifier.ts` - Gate 2 LLM classifier (GRANT/NEWS/EXPIRED/NOISE + quality score)
 - `src/services/telegram-adapter.ts` - Telegram intake bot adapter (webhook, inline keyboard, setWebhook)
 - `src/services/dedup.ts` - Two-layer dedup (URL exact + name fuzzy)

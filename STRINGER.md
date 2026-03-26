@@ -19,7 +19,7 @@ WireOps is layer 1 of a 5-layer system:
 
 ```
 1. WIREOPS — Ingestion layer (raw data)
-   X/Grok scans, Web Search, RSS, Telegram Intake Bot
+   X/Grok scans, Web Search, Telegram Intake Bot
    → scan_entries table
 
 2. THE REFINERY — Processing engine
