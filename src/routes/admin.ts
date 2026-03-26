@@ -1,0 +1,316 @@
+/**
+ * Admin Routes
+ *
+ * POST /run-migration       — one-time data cleanup
+ * POST /recover-self-dupes  — recover self-duplicated entries
+ * POST /clean-stale-seen    — remove stale dedup records for archived entries
+ * POST /purge-source        — delete all entries from a scan_source
+ * POST /classify-backfill   — batch-classify UNCHECKED entries
+ * POST /tag-backfill        — batch-extract entity tags for entries missing them
+ * POST /summary-sync-backfill — historical Telegram summary import
+ * POST /clean-orgs          — cleanup org profiles (remove junk)
+ * POST /dedup-orgs          — merge duplicate org profiles
+ * POST /enrich-orgs         — LLM-based org profile enrichment
+ */
+
+import { Router, Request, Response } from 'express';
+import { rateLimit } from '../middleware/rate-limit';
+import { getPool } from '../db';
+import { syncSummariesToScanEntries } from '../jobs/summary-sync';
+import { enrichBatch, computeDerivedFields } from '../services/org-enricher';
+
+const router = Router();
+
+// POST /run-migration — one-time data cleanup for existing bad entries
+router.post('/run-migration', async (_req: Request, res: Response) => {
+  if (!rateLimit('admin-migration', 1, 30 * 60 * 1000)) {
+    res.status(429).json({ error: 'Migration recently run. Please wait 30 minutes.' });
+    return;
+  }
+
+  try {
+    const { runDataCleanup } = await import('../migrations/cleanup-approved-data');
+    const pool = getPool();
+    const result = await runDataCleanup(pool);
+    res.json(result);
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[Migration] Data cleanup failed:', error);
+    res.status(500).json({ error: errorMsg });
+  }
+});
+
+// POST /recover-self-dupes — recover entries where duplicate_of_id = own id
+router.post('/recover-self-dupes', async (req: Request, res: Response) => {
+  if (!rateLimit('recover-self-dupes', 1, 10 * 60 * 1000)) {
+    res.status(429).json({ error: 'Recently run. Please wait 10 minutes.' });
+    return;
+  }
+  try {
+    const pool = getPool();
+    // Find entries that were marked as duplicates of themselves
+    const selfDupes = await pool.query(
+      `SELECT id FROM scan_entries WHERE status = 'duplicate' AND duplicate_of_id = id`
+    );
+    if (selfDupes.rows.length === 0) {
+      res.json({ recovered: 0, message: 'No self-duplicated entries found' });
+      return;
+    }
+    const ids = selfDupes.rows.map((r: { id: number }) => r.id);
+    // Clean up seen_urls and seen_names so reprocessing doesn't re-duplicate
+    await pool.query(`DELETE FROM seen_urls WHERE first_seen_entry_id = ANY($1)`, [ids]);
+    await pool.query(`DELETE FROM seen_names WHERE entry_id = ANY($1)`, [ids]);
+    // Reset to raw so processRawEntries can reprocess correctly
+    await pool.query(
+      `UPDATE scan_entries SET status = 'raw', duplicate_of_id = NULL, duplicate_reason = NULL WHERE id = ANY($1)`,
+      [ids]
+    );
+    console.log(`[Admin] Recovered ${ids.length} self-duplicated entries: ${ids.join(', ')}`);
+    res.json({ recovered: ids.length, ids });
+  } catch (error) {
+    console.error('[Admin] recover-self-dupes error:', error);
+    res.status(500).json({ error: 'Recovery failed' });
+  }
+});
+
+// POST /clean-stale-seen — remove stale seen records for archived entries
+router.post('/clean-stale-seen', async (req: Request, res: Response) => {
+  if (!rateLimit('clean-stale-seen', 1, 10 * 60 * 1000)) {
+    res.status(429).json({ error: 'Recently run. Please wait 10 minutes.' });
+    return;
+  }
+  try {
+    const pool = getPool();
+    // Find archived entries that have seen_names/seen_urls records (should never happen with the fix)
+    const staleNames = await pool.query(
+      `DELETE FROM seen_names WHERE entry_id IN (
+        SELECT id FROM scan_entries WHERE status = 'archived'
+      ) RETURNING entry_id`
+    );
+    const staleUrls = await pool.query(
+      `DELETE FROM seen_urls WHERE first_seen_entry_id IN (
+        SELECT id FROM scan_entries WHERE status = 'archived'
+      ) RETURNING first_seen_entry_id`
+    );
+    const cleanedNames = staleNames.rowCount || 0;
+    const cleanedUrls = staleUrls.rowCount || 0;
+    console.log(`[Admin] Cleaned stale seen records: ${cleanedNames} names, ${cleanedUrls} urls`);
+    res.json({ cleanedNames, cleanedUrls });
+  } catch (error) {
+    console.error('[Admin] clean-stale-seen error:', error);
+    res.status(500).json({ error: 'Cleanup failed' });
+  }
+});
+
+// POST /purge-source — delete all entries from a given scan_source
+router.post('/purge-source', async (req: Request, res: Response) => {
+  if (!rateLimit('purge-source', 1, 30 * 60 * 1000)) {
+    res.status(429).json({ error: 'Recently run. Please wait 30 minutes.' });
+    return;
+  }
+
+  const { source } = req.body;
+  if (!source || typeof source !== 'string') {
+    res.status(400).json({ error: 'source is required (e.g. "forum", "telegram")' });
+    return;
+  }
+
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+
+    // Find all entry IDs for this source
+    const { rows } = await client.query(
+      `SELECT id FROM scan_entries WHERE scan_source = $1`,
+      [source]
+    );
+    const ids = rows.map((r: any) => r.id);
+
+    if (ids.length === 0) {
+      await client.query('ROLLBACK');
+      res.json({ deleted: 0, message: `No entries found with scan_source = '${source}'` });
+      return;
+    }
+
+    // Clear all FK references before deleting entries
+    const { rowCount: seenNames } = await client.query(
+      `DELETE FROM seen_names WHERE entry_id = ANY($1)`, [ids]
+    );
+    const { rowCount: seenUrls } = await client.query(
+      `DELETE FROM seen_urls WHERE first_seen_entry_id = ANY($1)`, [ids]
+    );
+    await client.query(
+      `DELETE FROM distribution_logs WHERE entry_id = ANY($1)`, [ids]
+    );
+    // Clear self-referencing duplicate_of_id pointers
+    await client.query(
+      `UPDATE scan_entries SET duplicate_of_id = NULL WHERE duplicate_of_id = ANY($1)`, [ids]
+    );
+    // Delete the entries themselves
+    const { rowCount: deleted } = await client.query(
+      `DELETE FROM scan_entries WHERE scan_source = $1`, [source]
+    );
+
+    await client.query('COMMIT');
+    console.log(`[Admin] Purged ${deleted} entries with scan_source='${source}' (${seenNames} seen_names, ${seenUrls} seen_urls)`);
+    res.json({ deleted, seenNamesRemoved: seenNames, seenUrlsRemoved: seenUrls });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('[Admin] purge-source error:', error);
+    res.status(500).json({ error: 'Purge failed' });
+  } finally {
+    client.release();
+  }
+});
+
+// POST /classify-backfill — batch-classify UNCHECKED queued/approved entries
+router.post('/classify-backfill', async (req: Request, res: Response) => {
+  if (!rateLimit('classify-backfill', 3, 5 * 60 * 1000)) {
+    res.status(429).json({ error: 'Backfill recently run. Please wait a few minutes.' });
+    return;
+  }
+
+  try {
+    const pool = getPool();
+    const limit = Math.min(Math.max(Number(req.body?.limit) || 50, 1), 200);
+
+    const result = await pool.query(
+      `SELECT id, name, description, source_url, wire FROM scan_entries
+       WHERE classification = 'UNCHECKED' AND status IN ('queued', 'approved')
+       ORDER BY status DESC, created_at DESC
+       LIMIT $1`,
+      [limit]
+    );
+
+    if (result.rows.length === 0) {
+      res.json({ processed: 0, classified: 0, errors: 0 });
+      return;
+    }
+
+    const { classifyBatch } = await import('../services/classifier');
+    const stats = await classifyBatch(result.rows, pool);
+
+    res.json({ processed: result.rows.length, ...stats });
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[ClassifyBackfill] Failed:', error);
+    res.status(500).json({ error: errorMsg });
+  }
+});
+
+// POST /tag-backfill — batch-extract entity tags for entries missing them
+router.post('/tag-backfill', async (req: Request, res: Response) => {
+  if (!rateLimit('tag-backfill', 3, 5 * 60 * 1000)) {
+    res.status(429).json({ error: 'Tag backfill recently run. Please wait a few minutes.' });
+    return;
+  }
+
+  try {
+    const pool = getPool();
+    const limit = Math.min(Math.max(Number(req.body?.limit) || 100, 1), 500);
+
+    const result = await pool.query(
+      `SELECT id, name, description, wire FROM scan_entries
+       WHERE (tags IS NULL OR tags = '{}') AND status IN ('queued', 'approved')
+       ORDER BY status DESC, created_at DESC
+       LIMIT $1`,
+      [limit]
+    );
+
+    if (result.rows.length === 0) {
+      res.json({ processed: 0, tagged: 0, errors: 0 });
+      return;
+    }
+
+    const { tagBatch } = await import('../services/classifier');
+    const stats = await tagBatch(result.rows, pool);
+
+    res.json({ processed: result.rows.length, ...stats });
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[TagBackfill] Failed:', error);
+    res.status(500).json({ error: errorMsg });
+  }
+});
+
+// POST /summary-sync-backfill — historical Telegram summary import
+router.post('/summary-sync-backfill', async (req: Request, res: Response) => {
+  if (!rateLimit('summary-sync-backfill', 1, 30 * 60 * 1000)) {
+    res.status(429).json({ error: 'Backfill recently run. Please wait 30 minutes.' });
+    return;
+  }
+
+  try {
+    const pool = getPool();
+    const requestedHours = typeof req.body?.lookbackHours === 'number' ? req.body.lookbackHours : 8760;
+    const lookbackHours = Math.min(Math.max(1, requestedHours), 17520); // Cap at 2 years
+    console.log(`[SummarySync] Backfill triggered with lookbackHours=${lookbackHours}`);
+    const result = await syncSummariesToScanEntries(pool, lookbackHours);
+    res.json({ success: true, lookbackHours, ...result });
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[SummarySync] Backfill failed:', error);
+    res.status(500).json({ error: errorMsg });
+  }
+});
+
+// POST /clean-orgs — one-time org_profiles cleanup (remove bad data)
+router.post('/clean-orgs', async (_req: Request, res: Response) => {
+  if (!rateLimit('clean-orgs', 1, 30 * 60 * 1000)) {
+    res.status(429).json({ error: 'Cleanup recently run. Please wait 30 minutes.' });
+    return;
+  }
+
+  try {
+    const { runOrgCleanup } = await import('../migrations/cleanup-org-profiles');
+    const pool = getPool();
+    const result = await runOrgCleanup(pool);
+    res.json(result);
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[Admin] Org cleanup failed:', error);
+    res.status(500).json({ error: errorMsg });
+  }
+});
+
+// POST /dedup-orgs — LLM-powered org deduplication
+router.post('/dedup-orgs', async (_req: Request, res: Response) => {
+  if (!rateLimit('dedup-orgs', 1, 30 * 60 * 1000)) {
+    res.status(429).json({ error: 'Dedup recently run. Please wait 30 minutes.' });
+    return;
+  }
+
+  try {
+    const { runOrgDedup } = await import('../migrations/dedup-org-profiles');
+    const pool = getPool();
+    const result = await runOrgDedup(pool);
+    res.json(result);
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[Admin] Org dedup failed:', error);
+    res.status(500).json({ error: errorMsg });
+  }
+});
+
+// POST /enrich-orgs — batch-enrich org profiles via LLM
+router.post('/enrich-orgs', async (req: Request, res: Response) => {
+  if (!rateLimit('enrich-orgs', 1, 10 * 60 * 1000)) {
+    res.status(429).json({ error: 'Enrichment recently run. Please wait 10 minutes.' });
+    return;
+  }
+
+  try {
+    const limit = Math.min(Math.max(Number(req.body?.limit) || 50, 1), 200);
+    const force = req.body?.force === true;
+    const result = await enrichBatch({ force, limit });
+    // Also recompute derived fields after enrichment
+    const derived = await computeDerivedFields();
+    res.json({ ...result, derivedFieldsUpdated: derived.updated });
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[Admin] Org enrichment failed:', error);
+    res.status(500).json({ error: errorMsg });
+  }
+});
+
+export { router as adminRouter };
