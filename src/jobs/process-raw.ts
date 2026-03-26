@@ -19,7 +19,13 @@ import { classifyEntry } from '../services/classifier';
 
 const BATCH_SIZE = 50;
 
+// Concurrency guard: prevents overlapping runs in single-process Node.js.
+// The boolean check-then-set is atomic within a single event loop tick.
+// The timeout safety valve handles the edge case where a run hangs indefinitely
+// (e.g., a DB query never resolves), which would permanently block future runs.
 let isRunning = false;
+let runStartedAt = 0;
+const MAX_RUN_DURATION_MS = 10 * 60 * 1000; // 10 minutes
 
 /**
  * Gate 1: Completeness check.
@@ -79,11 +85,16 @@ export async function processRawEntries(pool?: Pool): Promise<{
   archived: number;
 }> {
   if (isRunning) {
-    console.log('[ProcessRaw] Already running, skipping');
-    return { processed: 0, incomplete: 0, duplicates: 0, queued: 0, archived: 0 };
+    if (Date.now() - runStartedAt > MAX_RUN_DURATION_MS) {
+      console.warn('[ProcessRaw] Previous run appears stuck (>' + (MAX_RUN_DURATION_MS / 60000) + 'min), allowing new run');
+    } else {
+      console.log('[ProcessRaw] Already running, skipping');
+      return { processed: 0, incomplete: 0, duplicates: 0, queued: 0, archived: 0 };
+    }
   }
 
   isRunning = true;
+  runStartedAt = Date.now();
   const stats = { processed: 0, incomplete: 0, duplicates: 0, queued: 0, archived: 0 };
 
   try {
