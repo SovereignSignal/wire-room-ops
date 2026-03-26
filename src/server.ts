@@ -9,7 +9,7 @@ import { isValidUuid, isValidFeedKey, resolveFeedKey } from './utils/validation'
 import { maskConfig, maskCredentials } from './utils/masking';
 import { getFile, listFiles } from './services/storage';
 import { getAvailableWires, closePool, getAllFeeds, ensureFeedsTable, ensureClassificationColumns, getFeedByKey, createFeed, updateFeed, archiveFeed, getEntryCountsByWire, getAllScanPrompts, getScanPromptById, createScanPrompt, updateScanPrompt, deleteScanPrompt, getStatusCounts, getEntriesByStatus, getSeenUrlStats, getSeenUrlsList } from './db';
-import { sendScanDigestEmail, sendResendLinkEmail, sendCsvExportEmail } from './services/email';
+import { sendScanDigestEmail, sendResendLinkEmail } from './services/email';
 import { StoredFile } from './types';
 import { jobQueue } from './services/job-queue';
 import { getAllModels } from './services/models';
@@ -19,10 +19,9 @@ import { runDailyIntake, getDailyQueue, getIntakeStats } from './jobs/daily-inta
 import { getPool, getDistributionConfigs, upsertDistributionConfig, getDistributionLogs, getDistributionStatusBulk, getDistributionStatusForEntries, getDistributionChannels, getDistributionChannelById, createDistributionChannel, updateDistributionChannel, deleteDistributionChannel } from './db';
 import { executeScanPrompt } from './services/grok';
 import { executePerplexityScan } from './services/perplexity';
-import { runOrgExtraction, getOrgProfiles, getOrgById, getEntriesByOrg, ensureOrgProfilesTable } from './services/org-extractor';
-import { mergeOrgs, archiveOrg } from './services/org-merge';
+import { ensureOrgProfilesTable } from './services/org-extractor';
 import { enrichSingleOrg, enrichBatch, computeDerivedFields } from './services/org-enricher';
-import { ensureIntegrationConfigTable, getIntegrationConfigs, getIntegrationById, upsertIntegration, updateIntegration, deleteIntegration, validateNotionToken, validateNotionDatabase, syncOrgsToNotion } from './services/notion-sync';
+import { ensureIntegrationConfigTable } from './services/notion-sync';
 import { withRetry } from './services/processor';
 import { runScanExecution } from './jobs/scan-execution';
 import { runForumScan } from './jobs/forum-scan';
@@ -36,14 +35,17 @@ import { renderLoginPage } from './views/login';
 import { renderErrorPage, renderLegacyDownloadPage, renderExpiredLinkPage, renderResendSuccessPage } from './views/error';
 import { handleTelegramUpdate, registerIntakeWebhook, cleanupPendingEntries } from './services/telegram-adapter';
 import { processRawEntries } from './jobs/process-raw';
-import { runCsvExport } from './jobs/csv-export';
 import { databaseRouter } from './routes/database';
 import { experimentsRouter } from './routes/experiments';
+import { exportRouter } from './routes/export';
+import { providerRouter } from './routes/providers';
+import { orgRouter } from './routes/orgs';
+import { integrationRouter } from './routes/integrations';
 import { runEnrichment } from './jobs/enrichment';
 import { validateForApproval } from './services/approval-guard';
 import { singleEntryAction, bulkEntryAction, ApprovalBlockedError, BulkApprovalBlockedError } from './services/entry-actions';
-import { ensureApiProviderTables, refreshProviderCache, getAllProviders, upsertProvider, testProviderConnection, getCachedProvider } from './services/api-provider';
-import { ensureApiUsageTables, getUsageSummary, getUsageTimeline, getRecentUsage, getModelPricing, upsertModelPricing } from './services/api-usage';
+import { ensureApiProviderTables, refreshProviderCache, getCachedProvider } from './services/api-provider';
+import { ensureApiUsageTables } from './services/api-usage';
 
 const app = express();
 app.use(express.json());
@@ -1727,240 +1729,6 @@ app.post('/api/scan/entries/:id/action', requireAuth, async (req: Request, res: 
   }
 });
 
-// ============================================================
-// Org Profiles API
-// ============================================================
-
-// API: List org profiles
-app.get('/api/orgs', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const wire = req.query.wire as string | undefined;
-    const search = req.query.search as string | undefined;
-    const limit = Math.min(parseInt(req.query.limit as string, 10) || 50, 200);
-    const offset = parseInt(req.query.offset as string, 10) || 0;
-    const { orgs, total } = await getOrgProfiles({ wire, search, limit, offset });
-    res.json({ orgs, total });
-  } catch (err) {
-    console.error('[API] Failed to list orgs:', err);
-    res.status(500).json({ error: 'Failed to list organizations' });
-  }
-});
-
-// API: Get single org with linked entries
-app.get('/api/orgs/:id', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const orgId = parseInt(req.params.id, 10);
-    if (isNaN(orgId)) { res.status(400).json({ error: 'Invalid org ID' }); return; }
-    const org = await getOrgById(orgId);
-    if (!org) { res.status(404).json({ error: 'Org not found' }); return; }
-    const entries = await getEntriesByOrg(orgId);
-    res.json({ org, entries });
-  } catch (err) {
-    console.error('[API] Failed to get org:', err);
-    res.status(500).json({ error: 'Failed to get organization' });
-  }
-});
-
-// API: Run org extraction
-app.post('/api/orgs/extract', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const stats = await runOrgExtraction();
-    res.json({ success: true, ...stats });
-  } catch (err) {
-    console.error('[API] Org extraction failed:', err);
-    res.status(500).json({ error: 'Org extraction failed' });
-  }
-});
-
-// API: Merge two orgs (source into target)
-app.post('/api/orgs/merge', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const { sourceId, targetId } = req.body;
-    const sId = parseInt(sourceId, 10);
-    const tId = parseInt(targetId, 10);
-    if (isNaN(sId) || isNaN(tId)) {
-      res.status(400).json({ error: 'sourceId and targetId must be valid integers' });
-      return;
-    }
-    const result = await mergeOrgs(sId, tId);
-    res.json({ success: true, ...result });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : 'Unknown error';
-    console.error('[API] Org merge failed:', err);
-    res.status(500).json({ error: msg });
-  }
-});
-
-// API: Archive (delete) an org
-app.delete('/api/orgs/:id', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const orgId = parseInt(req.params.id, 10);
-    if (isNaN(orgId)) { res.status(400).json({ error: 'Invalid org ID' }); return; }
-    const result = await archiveOrg(orgId);
-    res.json({ success: true, ...result });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : 'Unknown error';
-    console.error('[API] Org archive failed:', err);
-    res.status(500).json({ error: msg });
-  }
-});
-
-// ============================================================
-// Integrations API (Notion CRM Sync)
-// ============================================================
-
-// GET /api/integrations — list all integrations
-app.get('/api/integrations', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const provider = req.query.provider as string | undefined;
-    const configs = await getIntegrationConfigs(provider);
-    // Mask token
-    const masked = configs.map(c => ({
-      ...c,
-      config: {
-        ...c.config,
-        notion_token: c.config.notion_token ? '****' + c.config.notion_token.slice(-4) : '',
-      },
-    }));
-    res.json(masked);
-  } catch (err) {
-    console.error('[API] Failed to list integrations:', err);
-    res.status(500).json({ error: 'Failed to list integrations' });
-  }
-});
-
-// GET /api/integrations/:id — get single integration
-app.get('/api/integrations/:id', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-    const config = await getIntegrationById(id);
-    if (!config) { res.status(404).json({ error: 'Not found' }); return; }
-    res.json({
-      ...config,
-      config: {
-        ...config.config,
-        notion_token: config.config.notion_token ? '****' + config.config.notion_token.slice(-4) : '',
-      },
-    });
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to get integration' });
-  }
-});
-
-// POST /api/integrations — create integration
-app.post('/api/integrations', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const { provider = 'notion', name, enabled = false, config: configData } = req.body;
-    if (!name) { res.status(400).json({ error: 'name is required' }); return; }
-    const result = await upsertIntegration(provider, name, enabled, configData || {});
-    res.json({
-      ...result,
-      config: {
-        ...result.config,
-        notion_token: result.config.notion_token ? '****' + result.config.notion_token.slice(-4) : '',
-      },
-    });
-  } catch (err) {
-    console.error('[API] Failed to create integration:', err);
-    res.status(500).json({ error: 'Failed to create integration' });
-  }
-});
-
-// PUT /api/integrations/:id — update integration
-app.put('/api/integrations/:id', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-    const { enabled, config: configData } = req.body;
-
-    // Merge config — don't overwrite token if not provided
-    const existing = await getIntegrationById(id);
-    if (!existing) { res.status(404).json({ error: 'Not found' }); return; }
-
-    const mergedConfig = configData
-      ? { ...existing.config, ...configData }
-      : undefined;
-
-    // If token is masked, keep the existing one
-    if (mergedConfig?.notion_token?.startsWith('****')) {
-      mergedConfig.notion_token = existing.config.notion_token;
-    }
-
-    const result = await updateIntegration(id, { enabled, config: mergedConfig });
-    res.json({
-      ...result,
-      config: {
-        ...result.config,
-        notion_token: result.config.notion_token ? '****' + result.config.notion_token.slice(-4) : '',
-      },
-    });
-  } catch (err) {
-    console.error('[API] Failed to update integration:', err);
-    res.status(500).json({ error: 'Failed to update integration' });
-  }
-});
-
-// DELETE /api/integrations/:id
-app.delete('/api/integrations/:id', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-    await deleteIntegration(id);
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to delete integration' });
-  }
-});
-
-// POST /api/integrations/:id/validate — validate Notion token + database
-app.post('/api/integrations/:id/validate', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-    const integration = await getIntegrationById(id);
-    if (!integration) { res.status(404).json({ error: 'Not found' }); return; }
-
-    const token = integration.config.notion_token;
-    if (!token) { res.json({ valid: false, error: 'No token configured' }); return; }
-
-    // Validate token
-    const tokenResult = await validateNotionToken(token);
-    if (!tokenResult.valid) {
-      res.json({ valid: false, error: `Token invalid: ${tokenResult.error}` });
-      return;
-    }
-
-    // Validate database if configured
-    const dbId = integration.config.database_id;
-    if (dbId) {
-      const dbResult = await validateNotionDatabase(token, dbId);
-      if (!dbResult.valid) {
-        res.json({ valid: false, error: `Database not accessible: ${dbResult.error}`, workspace: tokenResult.workspace });
-        return;
-      }
-      res.json({
-        valid: true,
-        workspace: tokenResult.workspace,
-        database: dbResult.title,
-        properties: dbResult.properties,
-      });
-    } else {
-      res.json({ valid: true, workspace: tokenResult.workspace, database: null });
-    }
-  } catch (err) {
-    res.status(500).json({ error: 'Validation failed' });
-  }
-});
-
-// POST /api/integrations/:id/sync — trigger CRM sync
-app.post('/api/integrations/:id/sync', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-    const stats = await syncOrgsToNotion(id);
-    res.json({ success: true, ...stats });
-  } catch (err) {
-    console.error('[API] Sync failed:', err);
-    res.status(500).json({ error: err instanceof Error ? err.message : 'Sync failed' });
-  }
-});
-
 // API: Update entry wire/vertical
 app.patch('/api/scan/entries/:id/wire', requireAuth, async (req: Request, res: Response) => {
   const entryId = parseInt(req.params.id, 10);
@@ -2793,235 +2561,23 @@ app.post('/api/admin/enrich-orgs', requireAuth, async (req: Request, res: Respon
   }
 });
 
-// --- CSV Export ---
+// CSV export API
+app.use('/api/export', requireAuth, exportRouter);
 
-// GET /api/export/csv — direct CSV file download
-app.get('/api/export/csv', requireAuth, async (req: Request, res: Response) => {
-  const hoursBack = Math.min(168, Math.max(1, parseInt(req.query.hoursBack as string, 10) || 24));
-
-  if (!rateLimit('export-csv-download', 5, 5 * 60 * 1000)) {
-    res.status(429).json({ error: 'Export recently generated. Please wait a few minutes.' });
-    return;
-  }
-
-  const format = (req.query.format as string)?.toLowerCase() === 'md' ? 'md' : 'csv';
-
-  try {
-    const pool = getPool();
-    const result = await runCsvExport(pool, hoursBack);
-    if (result.entryCount === 0) {
-      res.status(200).json({ success: true, message: 'No approved entries in the specified timeframe', entryCount: 0 });
-      return;
-    }
-    const dateStr = new Date().toISOString().slice(0, 10);
-    if (format === 'md') {
-      res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
-      res.setHeader('Content-Disposition', `attachment; filename="wireops-export-${dateStr}.md"`);
-      res.send(result.markdownContent);
-    } else {
-      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-      res.setHeader('Content-Disposition', `attachment; filename="wireops-export-${dateStr}.csv"`);
-      res.send(result.csvContent);
-    }
-  } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-    console.error('[Export] Download failed:', error);
-    res.status(500).json({ error: errorMsg });
-  }
-});
-
-// POST /api/export/csv — generate + email CSV export on demand
-app.post('/api/export/csv', requireAuth, async (req: Request, res: Response) => {
-  const hoursBack = Math.min(168, Math.max(1, parseInt(req.body?.hoursBack, 10) || 24));
-
-  if (!rateLimit('export-csv-email', 3, 5 * 60 * 1000)) {
-    res.status(429).json({ error: 'Export email recently sent. Please wait a few minutes.' });
-    return;
-  }
-
-  try {
-    const pool = getPool();
-    const result = await runCsvExport(pool, hoursBack);
-    if (result.entryCount === 0) {
-      res.json({ success: true, message: 'No approved entries in the specified timeframe', entryCount: 0 });
-      return;
-    }
-
-    // Build download links
-    const email = config.email.notificationEmail;
-    const downloadUrls = {
-      csv: result.csvFileId ? createMagicLink(email, result.csvFileId) : null,
-      md: result.mdFileId ? createMagicLink(email, result.mdFileId) : null,
-    };
-
-    // Resolve recipients from any daily-digest schedule's notifyEmails
-    let recipients: string[] | undefined;
-    try {
-      const schedules = await getSchedules();
-      const digestSchedule = schedules.find(s => s.scheduleType === 'daily-digest');
-      if (digestSchedule?.notifyEmails) {
-        recipients = digestSchedule.notifyEmails.split(',').map(e => e.trim()).filter(Boolean);
-      }
-    } catch { /* fall back to default notification email */ }
-
-    await sendCsvExportEmail(result, downloadUrls, recipients);
-    res.json({ success: true, entryCount: result.entryCount, wires: result.wires });
-  } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-    console.error('[Export] CSV email failed:', error);
-    res.status(500).json({ error: errorMsg });
-  }
-});
-
-// --- API Providers ---
-
-const KNOWN_PROVIDERS = new Set(['grok', 'anthropic', 'firecrawl', 'perplexity', 'resend', 'telegram', 'telegram-intake']);
-
-// GET /api/providers — list all providers (masked keys)
-app.get('/api/providers', requireAuth, async (_req: Request, res: Response) => {
-  try {
-    const providers = await getAllProviders();
-    const masked = providers.map(p => ({
-      ...p,
-      api_key: p.api_key ? (p.api_key.length > 8 ? '****' + p.api_key.slice(-4) : '****') : '',
-    }));
-    res.json(masked);
-  } catch (error) {
-    console.error('[Providers] Failed to list:', error);
-    res.status(500).json({ error: 'Failed to list providers' });
-  }
-});
-
-// PUT /api/providers/:provider — upsert provider config
-app.put('/api/providers/:provider', requireAuth, async (req: Request, res: Response) => {
-  const { provider } = req.params;
-  if (!KNOWN_PROVIDERS.has(provider)) {
-    res.status(400).json({ error: `Unknown provider: ${provider}` });
-    return;
-  }
-  const { api_key, base_url, default_model, enabled, display_name } = req.body;
-
-  // Skip masked values (user didn't change the key)
-  const cleanKey = api_key && typeof api_key === 'string' && api_key.startsWith('****') ? undefined : api_key;
-
-  try {
-    const result = await upsertProvider(provider, {
-      api_key: cleanKey,
-      base_url,
-      default_model,
-      enabled,
-      display_name,
-    });
-    res.json({
-      ...result,
-      api_key: result.api_key ? (result.api_key.length > 8 ? '****' + result.api_key.slice(-4) : '****') : '',
-    });
-  } catch (error) {
-    console.error('[Providers] Failed to upsert:', error);
-    res.status(500).json({ error: 'Failed to update provider' });
-  }
-});
-
-// POST /api/providers/:provider/test — test connection
-app.post('/api/providers/:provider/test', requireAuth, async (req: Request, res: Response) => {
-  if (!KNOWN_PROVIDERS.has(req.params.provider)) {
-    res.status(400).json({ success: false, error: `Unknown provider: ${req.params.provider}` });
-    return;
-  }
-  try {
-    const result = await testProviderConnection(req.params.provider);
-    res.json(result);
-  } catch (error) {
-    console.error('[Providers] Test failed:', error);
-    res.status(500).json({ success: false, error: 'Test request failed' });
-  }
-});
-
-// --- API Usage ---
-
-// GET /api/usage/summary — aggregated usage
-app.get('/api/usage/summary', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const days = Math.min(Math.max(Number(req.query.days) || 7, 1), 90);
-    const rows = await getUsageSummary({
-      days,
-      provider: req.query.provider as string | undefined,
-      purpose: req.query.purpose as string | undefined,
-      wire: req.query.wire as string | undefined,
-    });
-    res.json(rows);
-  } catch (error) {
-    console.error('[Usage] Summary failed:', error);
-    res.status(500).json({ error: 'Failed to fetch usage summary' });
-  }
-});
-
-// GET /api/usage/timeline — daily rollup for charts
-app.get('/api/usage/timeline', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const days = Math.min(Math.max(Number(req.query.days) || 7, 1), 90);
-    const rows = await getUsageTimeline({
-      days,
-      provider: req.query.provider as string | undefined,
-      granularity: req.query.granularity === 'hour' ? 'hour' : 'day',
-    });
-    res.json(rows);
-  } catch (error) {
-    console.error('[Usage] Timeline failed:', error);
-    res.status(500).json({ error: 'Failed to fetch usage timeline' });
-  }
-});
-
-// GET /api/usage/recent — last N raw log entries
-app.get('/api/usage/recent', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const rows = await getRecentUsage({
-      limit: Number(req.query.limit) || 50,
-      provider: req.query.provider as string | undefined,
-    });
-    res.json(rows);
-  } catch (error) {
-    console.error('[Usage] Recent failed:', error);
-    res.status(500).json({ error: 'Failed to fetch recent usage' });
-  }
-});
-
-// --- Model Pricing ---
-
-// GET /api/pricing — list all model pricing
-app.get('/api/pricing', requireAuth, async (_req: Request, res: Response) => {
-  try {
-    const rows = await getModelPricing();
-    res.json(rows);
-  } catch (error) {
-    console.error('[Pricing] Failed to list:', error);
-    res.status(500).json({ error: 'Failed to fetch pricing' });
-  }
-});
-
-// PUT /api/pricing/:provider/:model — update pricing for a model
-app.put('/api/pricing/:provider/:model', requireAuth, async (req: Request, res: Response) => {
-  const { provider, model } = req.params;
-  const { input_cost_per_1m, output_cost_per_1m, per_request_cost } = req.body;
-
-  try {
-    const result = await upsertModelPricing(provider, model, {
-      input_cost_per_1m,
-      output_cost_per_1m,
-      per_request_cost,
-    });
-    res.json(result);
-  } catch (error) {
-    console.error('[Pricing] Failed to update:', error);
-    res.status(500).json({ error: 'Failed to update pricing' });
-  }
-});
+// API providers, usage tracking & pricing
+app.use('/api', requireAuth, providerRouter);
 
 // Database introspection API
 app.use('/api/database', requireAuth, databaseRouter);
 
 // Scoring experiments API
 app.use('/api/experiments', requireAuth, experimentsRouter);
+
+// Org profiles API
+app.use('/api/orgs', requireAuth, orgRouter);
+
+// Integrations API (Notion CRM Sync)
+app.use('/api/integrations', requireAuth, integrationRouter);
 
 // Serve React dashboard (built client)
 const clientDist = path.join(__dirname, '../dist/client');
