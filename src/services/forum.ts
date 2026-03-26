@@ -150,6 +150,11 @@ function normalizeUrl(url: string): string {
   return url.toLowerCase().replace(/\/+$/, '');
 }
 
+// Max age for forum discussions: only ingest posts created within this window.
+// The discuss.watch `since` param filters by lastActivityAt (bumps), not createdAt,
+// so old posts with new comments would slip through without this check.
+const MAX_DISCUSSION_AGE_DAYS = 30;
+
 /**
  * Pre-filter discussion titles for grants-ecosystem relevance.
  * Phase 1 (discussions) returns ALL recent activity from a category,
@@ -249,8 +254,20 @@ export async function fetchRecentDiscussions(
       const seenUrls = new Set<string>();
 
       let skippedIrrelevant = 0;
+      let skippedStale = 0;
+      const ageCutoff = Date.now() - MAX_DISCUSSION_AGE_DAYS * 86400000;
+
       for (const item of items) {
         if (!item.url || !item.title) continue;
+
+        // Filter by original post date — reject old posts that were merely bumped
+        if (item.createdAt) {
+          const created = new Date(item.createdAt).getTime();
+          if (created < ageCutoff) {
+            skippedStale++;
+            continue;
+          }
+        }
 
         // Pre-filter: only ingest discussions with grants-ecosystem relevance
         if (!isRelevantDiscussion(item.title)) {
@@ -268,7 +285,7 @@ export async function fetchRecentDiscussions(
           sourceUrl: item.url,
           amount: extractAmount(item.title),
           deadline: null,
-          sourcePublishedAt: item.lastActivityAt || item.createdAt || null,
+          sourcePublishedAt: item.createdAt || item.lastActivityAt || null,
         });
       }
 
@@ -277,7 +294,7 @@ export async function fetchRecentDiscussions(
         totalCount += results.length;
       }
 
-      console.log(`[Forum] Discussions ${category}: ${items.length} items, ${results.length} relevant, ${skippedIrrelevant} filtered`);
+      console.log(`[Forum] Discussions ${category}: ${items.length} items, ${results.length} relevant, ${skippedStale} stale, ${skippedIrrelevant} off-topic`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       console.warn(`[Forum] Discussions ${category} failed: ${msg}`);
@@ -349,9 +366,16 @@ export async function searchForumDiscussions(
       }
 
       const results = data.data || [];
+      const searchAgeCutoff = Date.now() - MAX_DISCUSSION_AGE_DAYS * 86400000;
       for (const item of results) {
         if (allResults.length >= maxResults) break;
         if (!item.url || !item.title) continue;
+
+        // Reject old posts that match keywords but were created long ago
+        if (item.createdAt) {
+          const created = new Date(item.createdAt).getTime();
+          if (created < searchAgeCutoff) continue;
+        }
 
         const normalizedUrl = normalizeUrl(item.url);
         if (seenUrls.has(normalizedUrl)) continue;
