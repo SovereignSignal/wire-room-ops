@@ -150,6 +150,30 @@ function normalizeUrl(url: string): string {
   return url.toLowerCase().replace(/\/+$/, '');
 }
 
+/**
+ * Pre-filter discussion titles for grants-ecosystem relevance.
+ * Phase 1 (discussions) returns ALL recent activity from a category,
+ * so we filter client-side to avoid ingesting random code PRs,
+ * version releases, and unrelated forum chatter.
+ */
+const RELEVANCE_KEYWORDS = [
+  'grant', 'grants', 'funding', 'fund', 'funds', 'funded',
+  'bounty', 'bounties', 'hackathon', 'prize', 'fellowship',
+  'rfp', 'proposal', 'treasury', 'budget', 'allocation',
+  'subsidy', 'sponsorship', 'sponsor', 'donation', 'endowment',
+  'incentive', 'incentives', 'reward', 'rewards',
+  'retro funding', 'retroactive', 'public goods',
+  'ecosystem', 'council', 'committee', 'governance',
+  'milestone', 'deliverable', 'grantee',
+  'open call', 'call for', 'applications open', 'apply',
+  'stipend', 'scholarship', 'residency', 'accelerator',
+];
+
+function isRelevantDiscussion(title: string): boolean {
+  const lower = title.toLowerCase();
+  return RELEVANCE_KEYWORDS.some(kw => lower.includes(kw));
+}
+
 // --- Phase 1: Recent Discussions ---
 
 /**
@@ -224,8 +248,15 @@ export async function fetchRecentDiscussions(
       const results: RawScanResult[] = [];
       const seenUrls = new Set<string>();
 
+      let skippedIrrelevant = 0;
       for (const item of items) {
         if (!item.url || !item.title) continue;
+
+        // Pre-filter: only ingest discussions with grants-ecosystem relevance
+        if (!isRelevantDiscussion(item.title)) {
+          skippedIrrelevant++;
+          continue;
+        }
 
         const normalized = normalizeUrl(item.url);
         if (seenUrls.has(normalized)) continue;
@@ -246,7 +277,7 @@ export async function fetchRecentDiscussions(
         totalCount += results.length;
       }
 
-      console.log(`[Forum] Discussions ${category}: ${items.length} items, ${results.length} unique`);
+      console.log(`[Forum] Discussions ${category}: ${items.length} items, ${results.length} relevant, ${skippedIrrelevant} filtered`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       console.warn(`[Forum] Discussions ${category} failed: ${msg}`);
