@@ -38,6 +38,11 @@ export async function runDripDistribution(pool: Pool): Promise<DripDistributionR
          WHERE se.status = 'approved'
            AND se.wire = $1
            AND se.distributable = true
+           AND se.created_at > NOW() - INTERVAL '30 days'
+           AND (
+             (se.description IS NOT NULL AND LENGTH(TRIM(se.description)) > 50)
+             OR se.enriched_summary IS NOT NULL
+           )
            AND NOT EXISTS (
              SELECT 1 FROM distribution_logs dl
              WHERE dl.entry_id = se.id
