@@ -21,6 +21,9 @@ import { enrichSingleOrg } from './org-enricher';
 export interface ActionOptions {
   quiet?: boolean;
   force?: boolean;
+  actor?: string;   // who is taking this action ('stringer' | 'sov' | 'system')
+  reason?: string;  // why this action was taken (for audit trail)
+  dryRun?: boolean; // if true, validate and return result without committing
 }
 
 export interface SingleActionResult {
@@ -56,6 +59,15 @@ export class BulkApprovalBlockedError extends Error {
     super('Some entries blocked');
     this.name = 'BulkApprovalBlockedError';
   }
+}
+
+// --- Migration: ensure audit columns on scan_entries ---
+
+export async function ensureEntryActionColumns(): Promise<void> {
+  const pool = getPool();
+  await pool.query(`ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS actioned_by TEXT`);
+  await pool.query(`ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS action_reason TEXT`);
+  console.log('[DB] Entry action audit columns ready');
 }
 
 // --- Internal helpers ---
@@ -160,11 +172,21 @@ export async function singleEntryAction(
     }
   }
 
+  // Dry run: return what would happen without committing
+  if (opts.dryRun) {
+    const response: SingleActionResult = {
+      success: true,
+      newStatus,
+      warnings: approvalWarnings.length > 0 ? approvalWarnings : undefined,
+    };
+    return response;
+  }
+
   const distributable = opts.quiet ? false : true;
   const result = await pool.query(
-    `UPDATE scan_entries SET status = $1, distributable = $2, updated_at = NOW() WHERE id = $3
+    `UPDATE scan_entries SET status = $1, distributable = $2, actioned_by = COALESCE($3, actioned_by), action_reason = COALESCE($4, action_reason), updated_at = NOW() WHERE id = $5
      RETURNING id, status, wire, name, description, enriched_summary, quality_score, amount, deadline, source_url, org_id, scan_date, tags`,
-    [newStatus, distributable, entryId]
+    [newStatus, distributable, opts.actor || null, opts.reason || null, entryId]
   );
 
   if (result.rows.length === 0) {
@@ -241,13 +263,18 @@ export async function bulkEntryAction(
     }
   }
 
+  // Dry run: return what would happen without committing
+  if (opts.dryRun) {
+    return { success: true, updated: entryIds.length, newStatus, summaryIds: {} };
+  }
+
   // Bulk update status
   const distributable = opts.quiet ? false : true;
   const result = await pool.query(
-    `UPDATE scan_entries SET status = $1, distributable = $2, updated_at = NOW()
-     WHERE id = ANY($3)
+    `UPDATE scan_entries SET status = $1, distributable = $2, actioned_by = COALESCE($3, actioned_by), action_reason = COALESCE($4, action_reason), updated_at = NOW()
+     WHERE id = ANY($5)
      RETURNING id, status, wire, name, description, enriched_summary, quality_score, amount, deadline, source_url, org_id, scan_date, tags`,
-    [newStatus, distributable, entryIds]
+    [newStatus, distributable, opts.actor || null, opts.reason || null, entryIds]
   );
 
   const updated = result.rows;
@@ -279,4 +306,80 @@ export async function bulkEntryAction(
   }
 
   return { success: true, updated: updated.length, newStatus, summaryIds };
+}
+
+// --- Read helpers ---
+
+export interface ScanEntry {
+  id: number;
+  name: string;
+  description: string | null;
+  source_url: string;
+  wire: string;
+  status: string;
+  quality_score: number | null;
+  classification: string | null;
+  amount: string | null;
+  deadline: string | null;
+  enriched_summary: string | null;
+  scan_source: string;
+  scan_date: Date;
+  actioned_by: string | null;
+  action_reason: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/**
+ * Get a single entry by ID.
+ */
+export async function getEntry(entryId: number): Promise<ScanEntry | null> {
+  const pool = getPool();
+  const result = await pool.query(
+    `SELECT id, name, description, source_url, wire, status, quality_score, classification,
+            amount, deadline, enriched_summary, scan_source, scan_date,
+            actioned_by, action_reason, created_at, updated_at
+     FROM scan_entries WHERE id = $1`,
+    [entryId]
+  );
+  return result.rows.length > 0 ? (result.rows[0] as ScanEntry) : null;
+}
+
+/**
+ * Get queued entries with optional filters.
+ */
+export async function getQueuedEntries(filters?: {
+  wire?: string;
+  source?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<ScanEntry[]> {
+  const pool = getPool();
+  const conditions: string[] = [`status = 'queued'`];
+  const values: any[] = [];
+  let paramIndex = 1;
+
+  if (filters?.wire) {
+    conditions.push(`wire = $${paramIndex++}`);
+    values.push(filters.wire);
+  }
+  if (filters?.source) {
+    conditions.push(`scan_source = $${paramIndex++}`);
+    values.push(filters.source);
+  }
+
+  const limit = filters?.limit || 100;
+  const offset = filters?.offset || 0;
+
+  const result = await pool.query(
+    `SELECT id, name, description, source_url, wire, status, quality_score, classification,
+            amount, deadline, enriched_summary, scan_source, scan_date,
+            actioned_by, action_reason, created_at, updated_at
+     FROM scan_entries
+     WHERE ${conditions.join(' AND ')}
+     ORDER BY quality_score DESC NULLS LAST, created_at DESC
+     LIMIT $${paramIndex++} OFFSET $${paramIndex++}`,
+    [...values, limit, offset]
+  );
+  return result.rows as ScanEntry[];
 }
