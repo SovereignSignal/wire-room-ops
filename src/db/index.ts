@@ -208,13 +208,13 @@ export async function ensureScheduleTable(): Promise<void> {
     UPDATE schedules
     SET schedule_type = 'scan-execution'
     WHERE schedule_type IS NULL
-      OR schedule_type NOT IN ('scan-execution', 'forum-scan', 'daily-digest')
+      OR schedule_type NOT IN ('scan-execution', 'forum-scan', 'daily-digest', 'collect-engagement', 'experiment-loop')
   `);
   await pool.query(`ALTER TABLE schedules DROP CONSTRAINT IF EXISTS schedules_schedule_type_check`);
   await pool.query(`
     ALTER TABLE schedules
     ADD CONSTRAINT schedules_schedule_type_check
-    CHECK (schedule_type IN ('scan-execution', 'forum-scan', 'daily-digest'))
+    CHECK (schedule_type IN ('scan-execution', 'forum-scan', 'daily-digest', 'collect-engagement', 'experiment-loop'))
   `);
 
   // Migrate data from old schedule_config table if it exists
@@ -1872,6 +1872,34 @@ export interface ExportEntry {
   classification: string | null;
   created_at: Date;
   updated_at: Date;
+}
+
+// --- Engagement metrics table ---
+
+export async function ensureEngagementMetricsTable(): Promise<void> {
+  const pool = getPool();
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS engagement_metrics (
+      id SERIAL PRIMARY KEY,
+      entry_id INTEGER NOT NULL,
+      channel TEXT NOT NULL,
+      wire TEXT,
+      external_id TEXT,
+      impressions INTEGER,
+      likes INTEGER,
+      retweets INTEGER,
+      replies INTEGER,
+      quotes INTEGER,
+      bookmarks INTEGER,
+      engagement_score REAL,
+      measured_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      post_age_hours REAL,
+      UNIQUE(entry_id, channel, measured_at)
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_engagement_metrics_entry ON engagement_metrics(entry_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_engagement_metrics_wire ON engagement_metrics(wire)`);
+  console.log('[DB] Engagement metrics table ready');
 }
 
 export async function getApprovedEntriesForExport(hoursBack = 24): Promise<ExportEntry[]> {

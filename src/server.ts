@@ -4,10 +4,11 @@ import cookieParser from 'cookie-parser';
 import { config } from './config';
 import { stopAuthCleanup, ensureSessionsTable } from './services/auth';
 import { requireAuth } from './middleware/auth';
-import { closePool, ensureFeedsTable, ensureClassificationColumns, getPool } from './db';
+import { closePool, ensureFeedsTable, ensureClassificationColumns, ensureEngagementMetricsTable, getPool } from './db';
 import { jobQueue } from './services/job-queue';
 import { getSchedules, addSchedule, initScheduler, stopScheduler, getSchedulerStatus } from './services/scheduler';
 import { ensureOrgProfilesTable } from './services/org-extractor';
+import { ensureEntryActionColumns } from './services/entry-actions';
 import { computeDerivedFields } from './services/org-enricher';
 import { ensureIntegrationConfigTable } from './services/notion-sync';
 import { startSummarySync, stopSummarySync } from './jobs/summary-sync';
@@ -245,6 +246,20 @@ export async function startServer(): Promise<void> {
     await ensureIntegrationConfigTable();
   } catch (error) {
     console.error('Integration config table migration failed (non-fatal):', error);
+  }
+
+  // Ensure entry action audit columns exist (actioned_by, action_reason)
+  try {
+    await ensureEntryActionColumns();
+  } catch (error) {
+    console.error('Entry action columns migration failed (non-fatal):', error);
+  }
+
+  // Ensure engagement_metrics table exists
+  try {
+    await ensureEngagementMetricsTable();
+  } catch (error) {
+    console.error('Engagement metrics table migration failed (non-fatal):', error);
   }
 
   // Ensure API provider + usage tables exist
