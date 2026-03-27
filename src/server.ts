@@ -127,6 +127,12 @@ app.use('/', authRouter);
 // Feed CRUD API
 app.use('/api/feeds', requireAuth, feedRouter);
 
+// Background job triggers + SSE progress + Telegram webhook
+// NOTE: Must be FIRST among /api routes — jobRouter contains the Telegram intake webhook
+// which has NO auth (validated by secret header). If mounted after generic /api+requireAuth
+// routes, Express intercepts the webhook with a 401 before it reaches the handler.
+app.use('/api', jobRouter);
+
 // Scan prompts CRUD + test/review/run
 app.use('/api/scan/prompts', requireAuth, scanPromptRouter);
 
@@ -145,10 +151,6 @@ app.use('/api', requireAuth, scanExecutionRouter);
 
 // Background job triggers + SSE progress + Telegram webhook
 // NOTE: jobRouter contains the Telegram webhook which does NOT use requireAuth.
-// The webhook validates via secret header internally. All other routes in the
-// router use requireAuth as middleware on individual route definitions.
-app.use('/api', jobRouter);
-
 // Models & wires lookup
 app.use('/api', requireAuth, modelRouter);
 
