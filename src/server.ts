@@ -127,14 +127,15 @@ app.use('/', authRouter);
 // Feed CRUD API
 app.use('/api/feeds', requireAuth, feedRouter);
 
-// Schedule, digest & scheduler status API
-app.use('/api', requireAuth, scheduleRouter);
-
 // Scan prompts CRUD + test/review/run
 app.use('/api/scan/prompts', requireAuth, scanPromptRouter);
 
 // Scan entries query, submit, queue, stats, actions, distribution per-entry
+// NOTE: must be before generic /api routes to prevent requireAuth intercepting /api/scan/*
 app.use('/api/scan', requireAuthOrInternalKey, scanEntryRouter);
+
+// Schedule, digest & scheduler status API
+app.use('/api', requireAuth, scheduleRouter);
 
 // Dashboard overview stats
 app.use('/api/dashboard', requireAuth, dashboardRouter);
