@@ -230,7 +230,27 @@ router.get('/entries', async (req: Request, res: Response) => {
     const minScore = isNaN(rawMinScore) ? undefined : Math.max(0, Math.min(100, rawMinScore));
     const excludeSources = req.query.excludeSources ? (req.query.excludeSources as string).split(',').map(s => s.trim()).filter(Boolean) : undefined;
 
+    const autoSummarizeFailed = req.query.autoSummarizeFailed === 'true';
+
     let { entries, total } = await getEntriesByStatus(statuses, { wire, date, promptId, limit, offset, minScore, excludeSources });
+
+    if (autoSummarizeFailed) {
+      const pool = getPool();
+      const failedResult = await pool.query(
+        `SELECT id, name, description, source_url, wire, status, quality_score, classification,
+                amount, deadline, enriched_summary, scan_source, actioned_by, action_reason,
+                created_at, updated_at
+         FROM scan_entries
+         WHERE auto_summarize_failed = true
+           AND ($1::text[] IS NULL OR status = ANY($1))
+           AND ($2::text IS NULL OR wire = $2)
+         ORDER BY updated_at DESC
+         LIMIT $3 OFFSET $4`,
+        [statuses.length > 0 ? statuses : null, wire || null, limit, offset]
+      );
+      entries = failedResult.rows;
+      total = failedResult.rowCount || 0;
+    }
 
     if (includeDistributionStatus && entries.length > 0) {
       const distributionStatus = await getDistributionStatusForEntries(entries.map(entry => entry.id));
@@ -424,6 +444,34 @@ router.post('/entries/:id/redistribute', async (req: Request, res: Response) => 
   }
 });
 
+// POST /entries/:id/retry-summarize — retry auto-summarization for a failed entry
+router.post('/entries/:id/retry-summarize', async (req: Request, res: Response) => {
+  const entryId = parseInt(req.params.id, 10);
+  if (isNaN(entryId)) { res.status(400).json({ error: 'Invalid entry ID' }); return; }
+
+  try {
+    const pool = getPool();
+    const result = await pool.query(
+      `SELECT id, name, description, source_url, wire, amount, deadline FROM scan_entries WHERE id = $1`,
+      [entryId]
+    );
+    if (result.rows.length === 0) { res.status(404).json({ error: 'Entry not found' }); return; }
+
+    const entry = result.rows[0];
+    const { autoSummarizeOnApprove } = await import('../services/auto-summarize');
+    await autoSummarizeOnApprove(
+      entry.id, null, entry.name, entry.description || '', entry.amount, entry.deadline, entry.source_url, entry.wire
+    );
+
+    // Clear the failed flag
+    await pool.query(`UPDATE scan_entries SET auto_summarize_failed = false WHERE id = $1`, [entryId]);
+    res.json({ success: true, entryId });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ error: msg });
+  }
+});
+
 // POST /entries/:id/schedule-distribution — queue an approved entry for drip distribution
 router.post('/entries/:id/schedule-distribution', async (req: Request, res: Response) => {
   const entryId = parseInt(req.params.id, 10);
@@ -540,5 +588,20 @@ router.get('/cost-stats', async (_req: Request, res: Response) => {
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';
     console.error('[CostStats] Failed:', error);
     res.status(500).json({ error: errorMsg });
+  }
+});
+
+// GET /deadline-digest — entries with deadlines in the next N days, grouped by wire
+router.get('/deadline-digest', async (req: Request, res: Response) => {
+  try {
+    const pool = getPool();
+    const days = Math.min(30, Math.max(1, parseInt(req.query.days as string) || 7));
+    const wire = req.query.wire as string | undefined;
+    const { runDeadlineDigest } = await import('../jobs/deadline-digest');
+    const results = await runDeadlineDigest(pool, wire, days);
+    res.json(results);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ error: msg });
   }
 });

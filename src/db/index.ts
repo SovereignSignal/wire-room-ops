@@ -168,7 +168,7 @@ export interface StoredScheduleConfig {
   anthropicModel?: string;
   timezone: string;
   wire?: string;
-  scheduleType?: 'scan-execution' | 'forum-scan' | 'daily-digest' | 'collect-engagement' | 'experiment-loop' | 'drip-distribution';
+  scheduleType?: 'scan-execution' | 'forum-scan' | 'daily-digest' | 'collect-engagement' | 'experiment-loop' | 'drip-distribution' | 'deadline-digest';
   frequencyHours?: number;
   notifyEmails?: string;
   createdAt?: Date;
@@ -208,13 +208,13 @@ export async function ensureScheduleTable(): Promise<void> {
     UPDATE schedules
     SET schedule_type = 'scan-execution'
     WHERE schedule_type IS NULL
-      OR schedule_type NOT IN ('scan-execution', 'forum-scan', 'daily-digest', 'collect-engagement', 'experiment-loop', 'drip-distribution')
+      OR schedule_type NOT IN ('scan-execution', 'forum-scan', 'daily-digest', 'collect-engagement', 'experiment-loop', 'drip-distribution', 'deadline-digest')
   `);
   await pool.query(`ALTER TABLE schedules DROP CONSTRAINT IF EXISTS schedules_schedule_type_check`);
   await pool.query(`
     ALTER TABLE schedules
     ADD CONSTRAINT schedules_schedule_type_check
-    CHECK (schedule_type IN ('scan-execution', 'forum-scan', 'daily-digest', 'collect-engagement', 'experiment-loop', 'drip-distribution'))
+    CHECK (schedule_type IN ('scan-execution', 'forum-scan', 'daily-digest', 'collect-engagement', 'experiment-loop', 'drip-distribution', 'deadline-digest'))
   `);
 
   // Migrate data from old schedule_config table if it exists
@@ -259,7 +259,7 @@ function parseScheduleRow(row: any): StoredScheduleConfig {
     row.schedule_type === 'daily-digest' ? 'daily-digest' :
     row.schedule_type === 'collect-engagement' ? 'collect-engagement' :
     row.schedule_type === 'experiment-loop' ? 'experiment-loop' :
-    row.schedule_type === 'drip-distribution' ? 'drip-distribution' : 'scan-execution';
+    row.schedule_type === 'drip-distribution' ? 'drip-distribution' : row.schedule_type === 'deadline-digest' ? 'deadline-digest' : 'scan-execution';
 
   return {
     id: row.id,
@@ -1930,4 +1930,12 @@ export async function ensureDistributeAfterColumn(): Promise<void> {
     WHERE distribute_after IS NOT NULL
   `);
   console.log('[DB] distribute_after column ready');
+}
+
+export async function ensureAutoSummarizeFailedColumn(): Promise<void> {
+  const pool = getPool();
+  await pool.query(`
+    ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS auto_summarize_failed BOOLEAN DEFAULT FALSE
+  `);
+  console.log('[DB] auto_summarize_failed column ready');
 }

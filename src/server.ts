@@ -5,7 +5,7 @@ import { config } from './config';
 import { stopAuthCleanup, ensureSessionsTable } from './services/auth';
 import { requireAuth } from './middleware/auth';
 import { requireAuthOrInternalKey } from './middleware/internal-auth';
-import { closePool, ensureFeedsTable, ensureClassificationColumns, ensureEngagementMetricsTable, ensureDistributeAfterColumn, getPool } from './db';
+import { closePool, ensureFeedsTable, ensureClassificationColumns, ensureEngagementMetricsTable, ensureDistributeAfterColumn, ensureAutoSummarizeFailedColumn, getPool } from './db';
 import { jobQueue } from './services/job-queue';
 import { getSchedules, addSchedule, initScheduler, stopScheduler, getSchedulerStatus } from './services/scheduler';
 import { ensureOrgProfilesTable } from './services/org-extractor';
@@ -271,6 +271,13 @@ export async function startServer(): Promise<void> {
     await ensureDistributeAfterColumn();
   } catch (error) {
     console.error('distribute_after column migration failed (non-fatal):', error);
+  }
+
+  // Ensure auto_summarize_failed column exists
+  try {
+    await ensureAutoSummarizeFailedColumn();
+  } catch (error) {
+    console.error('auto_summarize_failed column migration failed (non-fatal):', error);
   }
 
   // Ensure API provider + usage tables exist

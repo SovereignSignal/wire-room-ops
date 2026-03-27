@@ -95,5 +95,15 @@ Write a 2-4 sentence newsletter summary. Lead with the organization/program name
     console.log(`[AutoSummarize] Generated summary for entry ${entryId} (${summary.length} chars)`);
   } catch (err) {
     console.error(`[AutoSummarize] Failed for entry ${entryId}:`, err);
+    // Mark entry so it can be retried
+    try {
+      const pool = getPool();
+      await pool.query(
+        `UPDATE scan_entries SET auto_summarize_failed = true WHERE id = $1`,
+        [entryId]
+      );
+    } catch (markErr) {
+      console.error(`[AutoSummarize] Failed to mark entry ${entryId} as failed:`, markErr);
+    }
   }
 }

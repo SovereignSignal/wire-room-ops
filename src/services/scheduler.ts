@@ -10,6 +10,7 @@ import { runDailyDigest, getTopPendingFinds } from '../jobs/daily-digest';
 import { collectXEngagement } from '../scripts/collect-engagement';
 import { runExperimentLoop } from '../scripts/run-experiment-loop';
 import { runDripDistribution } from '../jobs/drip-distribution';
+import { runDeadlineDigest } from '../jobs/deadline-digest';
 import { ensureScheduleTable, getAllSchedules, getScheduleById, createSchedule, updateSchedule, deleteSchedule as dbDeleteSchedule, StoredScheduleConfig, ensureFeedsTable, ensureScanTables, ensureScanPromptsTable, ensureDistributionTables, getPool } from '../db';
 import { getActiveWires } from './intake-core';
 
@@ -25,7 +26,7 @@ export interface ScheduleConfig {
   anthropicModel?: string;
   timezone: string;
   wire?: string; // Optional wire/feed filter
-  scheduleType?: 'scan-execution' | 'forum-scan' | 'daily-digest' | 'collect-engagement' | 'experiment-loop' | 'drip-distribution';
+  scheduleType?: 'scan-execution' | 'forum-scan' | 'daily-digest' | 'collect-engagement' | 'experiment-loop' | 'drip-distribution' | 'deadline-digest';
   frequencyHours?: number; // Sub-daily interval (1-23) for scan-execution
   notifyEmails?: string; // Comma-separated email recipients
 }
@@ -256,6 +257,7 @@ export function formatScheduleDescription(schedule: ScheduleConfig): string {
     schedule.scheduleType === 'collect-engagement' ? 'Collect Engagement' :
     schedule.scheduleType === 'experiment-loop' ? 'Experiment Loop' :
     schedule.scheduleType === 'drip-distribution' ? 'Drip Distribution' :
+    schedule.scheduleType === 'deadline-digest' ? 'Deadline Digest' :
     'Scan Execution';
 
   if (schedule.frequencyHours && schedule.frequencyHours < 24) {
@@ -454,6 +456,17 @@ function createJobExecutor(schedule: ScheduleConfig) {
         status.status = 'success';
         status.error = null;
         console.log(`[Scheduler] Drip distribution completed: ${dripResult.distributed} distributed, ${dripResult.skipped} skipped, ${dripResult.errors} errors`);
+
+      } else if (currentScheduleData.scheduleType === 'deadline-digest') {
+        // ---- Deadline Digest Job ----
+        const pool = getPool();
+        const wire = currentScheduleData.wire || undefined;
+        console.log(`[Scheduler] Running deadline digest for ${wire || 'all wires'}...`);
+        const results = await runDeadlineDigest(pool, wire);
+        const total = results.reduce((sum, r) => sum + r.entries.length, 0);
+        status.status = 'success';
+        status.error = null;
+        console.log(`[Scheduler] Deadline digest: ${total} entries closing soon across ${results.length} wires`);
 
       } else {
         console.warn(`[Scheduler] Unsupported schedule type "${currentScheduleData.scheduleType}" — skipping`);
