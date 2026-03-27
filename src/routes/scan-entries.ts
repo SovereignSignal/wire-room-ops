@@ -425,3 +425,102 @@ router.post('/entries/:id/redistribute', async (req: Request, res: Response) => 
 });
 
 export const scanEntryRouter = router;
+
+// GET /cost-stats — cost and performance analytics for scan prompts (last 30 days)
+router.get('/cost-stats', async (_req: Request, res: Response) => {
+  try {
+    const pool = getPool();
+
+    const result = await pool.query(`
+      WITH scan_costs AS (
+        SELECT
+          COALESCE(SUM(estimated_cost_usd) FILTER (WHERE purpose = 'scan'), 0) AS total_scan_cost,
+          COALESCE(SUM(estimated_cost_usd) FILTER (WHERE purpose = 'classify'), 0) AS total_classify_cost,
+          COALESCE(SUM(estimated_cost_usd), 0) AS total_cost
+        FROM api_usage_log
+        WHERE created_at > NOW() - INTERVAL '30 days'
+        AND provider = 'grok'
+      ),
+      entry_counts AS (
+        SELECT
+          prompt_id,
+          COUNT(*) AS total_entries,
+          COUNT(*) FILTER (WHERE status = 'approved') AS approved_entries,
+          SUM(COUNT(*)) OVER () AS grand_total
+        FROM scan_entries
+        WHERE created_at > NOW() - INTERVAL '30 days'
+        AND prompt_id IS NOT NULL
+        GROUP BY prompt_id
+      ),
+      total_approved AS (
+        SELECT COUNT(*) AS cnt FROM scan_entries
+        WHERE created_at > NOW() - INTERVAL '30 days'
+        AND status = 'approved'
+      )
+      SELECT
+        sp.id, sp.wire, sp.variant, sp.label, sp.tool_type, sp.is_active,
+        COALESCE(ec.total_entries, 0) AS total_entries,
+        COALESCE(ec.approved_entries, 0) AS approved_entries,
+        sc.total_scan_cost,
+        sc.total_classify_cost,
+        sc.total_cost,
+        ta.cnt AS total_approved_30d,
+        CASE WHEN COALESCE(ec.grand_total, 0) > 0
+          THEN ROUND((COALESCE(ec.total_entries, 0)::numeric / ec.grand_total) * sc.total_scan_cost, 4)
+          ELSE 0 END AS estimated_cost
+      FROM scan_prompts sp
+      LEFT JOIN entry_counts ec ON ec.prompt_id = sp.id
+      CROSS JOIN scan_costs sc
+      CROSS JOIN total_approved ta
+      ORDER BY sp.wire, sp.variant
+    `);
+
+    if (result.rows.length === 0) {
+      res.json({ summary: {}, byPrompt: [] });
+      return;
+    }
+
+    const firstRow = result.rows[0];
+    const totalScanCost = parseFloat(firstRow.total_scan_cost) || 0;
+    const totalClassifyCost = parseFloat(firstRow.total_classify_cost) || 0;
+    const totalCost = parseFloat(firstRow.total_cost) || 0;
+    const totalApproved = parseInt(firstRow.total_approved_30d) || 0;
+
+    const byPrompt = result.rows.map((row) => {
+      const totalEntries = parseInt(row.total_entries) || 0;
+      const approvedEntries = parseInt(row.approved_entries) || 0;
+      const estimatedCost = parseFloat(row.estimated_cost) || 0;
+      const approvalRate = totalEntries > 0 ? Math.round((approvedEntries / totalEntries) * 1000) / 10 : 0;
+      const costPerApproved = approvedEntries > 0 ? Math.round((estimatedCost / approvedEntries) * 10000) / 10000 : null;
+
+      return {
+        promptId: row.id,
+        wire: row.wire,
+        variant: row.variant,
+        label: row.label,
+        toolType: row.tool_type,
+        isActive: row.is_active,
+        totalEntries,
+        approvedEntries,
+        approvalRate,
+        estimatedCost,
+        costPerApproved,
+      };
+    });
+
+    res.json({
+      summary: {
+        totalCost30d: Math.round(totalCost * 10000) / 10000,
+        scanCost30d: Math.round(totalScanCost * 10000) / 10000,
+        classifyCost30d: Math.round(totalClassifyCost * 10000) / 10000,
+        totalApproved30d: totalApproved,
+        costPerApproved: totalApproved > 0 ? Math.round((totalCost / totalApproved) * 10000) / 10000 : null,
+      },
+      byPrompt,
+    });
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[CostStats] Failed:', error);
+    res.status(500).json({ error: errorMsg });
+  }
+});

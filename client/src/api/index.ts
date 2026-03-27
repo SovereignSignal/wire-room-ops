@@ -678,3 +678,38 @@ export async function rollbackExperiment(id: string, reason?: string): Promise<v
     throw new Error(data.error || `Failed to rollback experiment: ${res.status}`);
   }
 }
+
+// --- Cost Stats API ---
+
+export interface CostStatsByPrompt {
+  promptId: string;
+  wire: string;
+  variant: string;
+  label: string;
+  toolType: string;
+  isActive: boolean;
+  totalEntries: number;
+  approvedEntries: number;
+  approvalRate: number;
+  estimatedCost: number;
+  costPerApproved: number | null;
+}
+
+export interface CostStatsSummary {
+  totalCost30d: number;
+  scanCost30d: number;
+  classifyCost30d: number;
+  totalApproved30d: number;
+  costPerApproved: number | null;
+}
+
+export interface CostStatsResponse {
+  summary: CostStatsSummary;
+  byPrompt: CostStatsByPrompt[];
+}
+
+export async function fetchCostStats(): Promise<CostStatsResponse> {
+  const res = await authFetch(`${BASE}/scan/cost-stats`);
+  if (!res.ok) throw new Error(`Failed to fetch cost stats: ${res.status}`);
+  return res.json();
+}

@@ -11,8 +11,10 @@ import {
   updateSchedule,
   fetchPromptResults,
   fetchPromptStats,
+  fetchCostStats,
   ScheduleResponse,
   PromptStatsData,
+  CostStatsResponse,
 } from '@/api';
 import {
   Sheet,
@@ -117,20 +119,23 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
 
   // Prompt scorecard state
   const [promptStatsData, setPromptStatsData] = useState<PromptStatsData[]>([]);
+  const [costStats, setCostStats] = useState<CostStatsResponse | null>(null);
   const [scorecardOpen, setScorecardOpen] = useState(false);
   const [overlapStats, setOverlapStats] = useState<{ totalUniqueEntries: number; entriesFoundByMultiple: number; overlapRate: number } | null>(null);
 
   const loadData = useCallback(async () => {
     try {
-      const [promptsData, schedulesData, statsData] = await Promise.all([
+      const [promptsData, schedulesData, statsData, costData] = await Promise.all([
         fetchScanPrompts(),
         fetchSchedules().catch(() => [] as ScheduleResponse[]),
         fetchPromptStats(21).catch(() => ({ prompts: [], overlapStats: { totalUniqueEntries: 0, entriesFoundByMultiple: 0, overlapRate: 0 } })),
+        fetchCostStats().catch(() => null),
       ]);
       setPrompts(promptsData);
       setSchedules(schedulesData);
       setPromptStatsData(statsData.prompts);
       setOverlapStats(statsData.overlapStats);
+      setCostStats(costData);
     } catch {
       toast({ title: 'Error', description: 'Failed to load scan prompts' });
     } finally {
@@ -358,6 +363,20 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
         </button>
       </div>
 
+      {/* Cost Summary Bar */}
+      {costStats && costStats.summary.totalCost30d > 0 && (
+        <div className="flex items-center gap-4 px-4 py-2 bg-card/40 border border-border rounded-lg text-[10px] font-mono">
+          <span className="text-muted-foreground tracking-widest font-display">30-DAY COSTS</span>
+          <span className="text-muted-foreground">Scan: <span className="text-foreground">${costStats.summary.scanCost30d.toFixed(2)}</span></span>
+          <span className="text-muted-foreground">Classify: <span className="text-foreground">${costStats.summary.classifyCost30d.toFixed(2)}</span></span>
+          <span className="text-muted-foreground">Total: <span className="text-cyan-400">${costStats.summary.totalCost30d.toFixed(2)}</span></span>
+          {costStats.summary.costPerApproved !== null && (
+            <span className="text-muted-foreground">Per approved entry: <span className="text-green-400">${costStats.summary.costPerApproved.toFixed(4)}</span></span>
+          )}
+          <span className="text-muted-foreground">{costStats.summary.totalApproved30d} approved</span>
+        </div>
+      )}
+
       {/* Prompt Scorecard */}
       {promptStatsData.length > 0 && (
         <div className="border border-border rounded-lg overflow-hidden">
@@ -391,6 +410,8 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
                     <th className="text-right text-[9px] font-display tracking-widest text-muted-foreground px-2 py-2">APPR%</th>
                     <th className="text-center text-[9px] font-display tracking-widest text-muted-foreground px-2 py-2">CLASS MIX</th>
                     <th className="text-right text-[9px] font-display tracking-widest text-muted-foreground px-2 py-2">PUB%</th>
+                    <th className="text-right text-[9px] font-display tracking-widest text-muted-foreground px-2 py-2">COST</th>
+                    <th className="text-right text-[9px] font-display tracking-widest text-muted-foreground px-2 py-2">$/APPR</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -430,6 +451,13 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
                           </div>
                         </td>
                         <td className={`px-2 py-2 text-xs font-mono text-right ${pubPct > 0 ? 'text-cyan-400' : 'text-muted-foreground/40'}`}>{pubPct}%</td>
+                        {(() => {
+                          const cs = costStats?.byPrompt.find(c => c.promptId === s.promptId);
+                          return <>
+                            <td className="px-2 py-2 text-xs font-mono text-right text-muted-foreground">{cs && cs.estimatedCost > 0 ? `$${cs.estimatedCost.toFixed(2)}` : '—'}</td>
+                            <td className="px-2 py-2 text-xs font-mono text-right text-muted-foreground">{cs?.costPerApproved != null ? `$${cs.costPerApproved.toFixed(3)}` : '—'}</td>
+                          </>;
+                        })()}
                       </tr>
                     );
                   })}
