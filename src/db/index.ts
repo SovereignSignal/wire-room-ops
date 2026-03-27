@@ -168,7 +168,7 @@ export interface StoredScheduleConfig {
   anthropicModel?: string;
   timezone: string;
   wire?: string;
-  scheduleType?: 'scan-execution' | 'forum-scan' | 'daily-digest' | 'collect-engagement' | 'experiment-loop' | 'drip-distribution' | 'deadline-digest';
+  scheduleType?: 'scan-execution' | 'forum-scan' | 'daily-digest' | 'collect-engagement' | 'experiment-loop' | 'drip-distribution' | 'deadline-digest' | 'account-monitor';
   frequencyHours?: number;
   notifyEmails?: string;
   createdAt?: Date;
@@ -208,13 +208,13 @@ export async function ensureScheduleTable(): Promise<void> {
     UPDATE schedules
     SET schedule_type = 'scan-execution'
     WHERE schedule_type IS NULL
-      OR schedule_type NOT IN ('scan-execution', 'forum-scan', 'daily-digest', 'collect-engagement', 'experiment-loop', 'drip-distribution', 'deadline-digest')
+      OR schedule_type NOT IN ('scan-execution', 'forum-scan', 'daily-digest', 'collect-engagement', 'experiment-loop', 'drip-distribution', 'deadline-digest', 'account-monitor')
   `);
   await pool.query(`ALTER TABLE schedules DROP CONSTRAINT IF EXISTS schedules_schedule_type_check`);
   await pool.query(`
     ALTER TABLE schedules
     ADD CONSTRAINT schedules_schedule_type_check
-    CHECK (schedule_type IN ('scan-execution', 'forum-scan', 'daily-digest', 'collect-engagement', 'experiment-loop', 'drip-distribution', 'deadline-digest'))
+    CHECK (schedule_type IN ('scan-execution', 'forum-scan', 'daily-digest', 'collect-engagement', 'experiment-loop', 'drip-distribution', 'deadline-digest', 'account-monitor'))
   `);
 
   // Migrate data from old schedule_config table if it exists
@@ -259,7 +259,7 @@ function parseScheduleRow(row: any): StoredScheduleConfig {
     row.schedule_type === 'daily-digest' ? 'daily-digest' :
     row.schedule_type === 'collect-engagement' ? 'collect-engagement' :
     row.schedule_type === 'experiment-loop' ? 'experiment-loop' :
-    row.schedule_type === 'drip-distribution' ? 'drip-distribution' : row.schedule_type === 'deadline-digest' ? 'deadline-digest' : 'scan-execution';
+    row.schedule_type === 'drip-distribution' ? 'drip-distribution' : row.schedule_type === 'deadline-digest' ? 'deadline-digest' : row.schedule_type === 'account-monitor' ? 'account-monitor' : 'scan-execution';
 
   return {
     id: row.id,
@@ -1938,4 +1938,27 @@ export async function ensureAutoSummarizeFailedColumn(): Promise<void> {
     ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS auto_summarize_failed BOOLEAN DEFAULT FALSE
   `);
   console.log('[DB] auto_summarize_failed column ready');
+}
+
+export async function ensureMonitoredAccountsTable(): Promise<void> {
+  const pool = getPool();
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS monitored_accounts (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      handle TEXT NOT NULL UNIQUE,
+      wire TEXT,
+      source TEXT NOT NULL DEFAULT 'auto',
+      approval_count INTEGER NOT NULL DEFAULT 0,
+      last_approved_at TIMESTAMPTZ,
+      last_checked_at TIMESTAMPTZ,
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_monitored_accounts_enabled 
+    ON monitored_accounts(enabled) WHERE enabled = true
+  `);
+  console.log('[DB] monitored_accounts table ready');
 }

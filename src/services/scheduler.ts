@@ -11,6 +11,7 @@ import { collectXEngagement } from '../scripts/collect-engagement';
 import { runExperimentLoop } from '../scripts/run-experiment-loop';
 import { runDripDistribution } from '../jobs/drip-distribution';
 import { runDeadlineDigest } from '../jobs/deadline-digest';
+import { runAccountMonitor } from '../jobs/account-monitor';
 import { ensureScheduleTable, getAllSchedules, getScheduleById, createSchedule, updateSchedule, deleteSchedule as dbDeleteSchedule, StoredScheduleConfig, ensureFeedsTable, ensureScanTables, ensureScanPromptsTable, ensureDistributionTables, getPool } from '../db';
 import { getActiveWires } from './intake-core';
 
@@ -26,7 +27,7 @@ export interface ScheduleConfig {
   anthropicModel?: string;
   timezone: string;
   wire?: string; // Optional wire/feed filter
-  scheduleType?: 'scan-execution' | 'forum-scan' | 'daily-digest' | 'collect-engagement' | 'experiment-loop' | 'drip-distribution' | 'deadline-digest';
+  scheduleType?: 'scan-execution' | 'forum-scan' | 'daily-digest' | 'collect-engagement' | 'experiment-loop' | 'drip-distribution' | 'deadline-digest' | 'account-monitor';
   frequencyHours?: number; // Sub-daily interval (1-23) for scan-execution
   notifyEmails?: string; // Comma-separated email recipients
 }
@@ -258,6 +259,7 @@ export function formatScheduleDescription(schedule: ScheduleConfig): string {
     schedule.scheduleType === 'experiment-loop' ? 'Experiment Loop' :
     schedule.scheduleType === 'drip-distribution' ? 'Drip Distribution' :
     schedule.scheduleType === 'deadline-digest' ? 'Deadline Digest' :
+    schedule.scheduleType === 'account-monitor' ? 'Account Monitor' :
     'Scan Execution';
 
   if (schedule.frequencyHours && schedule.frequencyHours < 24) {
@@ -456,6 +458,15 @@ function createJobExecutor(schedule: ScheduleConfig) {
         status.status = 'success';
         status.error = null;
         console.log(`[Scheduler] Drip distribution completed: ${dripResult.distributed} distributed, ${dripResult.skipped} skipped, ${dripResult.errors} errors`);
+
+      } else if (currentScheduleData.scheduleType === 'account-monitor') {
+        // ---- Account Monitor Job ----
+        const pool = getPool();
+        console.log(`[Scheduler] Running account monitor...`);
+        const monitorResult = await runAccountMonitor(pool);
+        status.status = 'success';
+        status.error = null;
+        console.log(`[Scheduler] Account monitor: ${monitorResult.processed} checked, ${monitorResult.submitted} submitted`);
 
       } else if (currentScheduleData.scheduleType === 'deadline-digest') {
         // ---- Deadline Digest Job ----

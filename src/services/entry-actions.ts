@@ -217,6 +217,31 @@ export async function singleEntryAction(
     }
 
     scheduleApproveSideEffects(row, summaryId, !!opts.quiet);
+
+    // Track X account if source URL is a tweet — used for auto-promotion
+    if (row.source_url && row.source_url.includes('x.com')) {
+      setImmediate(async () => {
+        try {
+          const match = (row.source_url as string).match(/x\.com\/([^\/\?]+)\/status/);
+          if (match) {
+            const handle = match[1].toLowerCase();
+            if (!['i', 'search', 'intent', 'share', 'hashtag'].includes(handle)) {
+              await pool.query(`
+                INSERT INTO monitored_accounts (handle, wire, source, approval_count, last_approved_at)
+                VALUES ($1, $2, 'auto', 1, NOW())
+                ON CONFLICT (handle) DO UPDATE SET
+                  approval_count = monitored_accounts.approval_count + 1,
+                  last_approved_at = NOW(),
+                  enabled = CASE WHEN monitored_accounts.approval_count + 1 >= 3 THEN true ELSE monitored_accounts.enabled END,
+                  updated_at = NOW()
+              `, [handle, row.wire]);
+            }
+          }
+        } catch (err) {
+          console.warn('[EntryActions] Failed to track monitored account:', err);
+        }
+      });
+    }
   }
 
   const response: SingleActionResult = { success: true, newStatus, summaryId };

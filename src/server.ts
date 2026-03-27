@@ -5,7 +5,7 @@ import { config } from './config';
 import { stopAuthCleanup, ensureSessionsTable } from './services/auth';
 import { requireAuth } from './middleware/auth';
 import { requireAuthOrInternalKey } from './middleware/internal-auth';
-import { closePool, ensureFeedsTable, ensureClassificationColumns, ensureEngagementMetricsTable, ensureDistributeAfterColumn, ensureAutoSummarizeFailedColumn, getPool } from './db';
+import { closePool, ensureFeedsTable, ensureClassificationColumns, ensureEngagementMetricsTable, ensureDistributeAfterColumn, ensureAutoSummarizeFailedColumn, ensureMonitoredAccountsTable, getPool } from './db';
 import { jobQueue } from './services/job-queue';
 import { getSchedules, addSchedule, initScheduler, stopScheduler, getSchedulerStatus } from './services/scheduler';
 import { ensureOrgProfilesTable } from './services/org-extractor';
@@ -22,6 +22,7 @@ import { ensureApiUsageTables } from './services/api-usage';
 import { authRouter } from './routes/auth';
 import { scanExecutionRouter } from './routes/scan-execution';
 import { jobRouter } from './routes/jobs';
+import { accountsRouter } from './routes/accounts';
 import { modelRouter } from './routes/models';
 import { dashboardRouter } from './routes/dashboard';
 import { databaseRouter } from './routes/database';
@@ -177,6 +178,7 @@ app.use('/api/integrations', requireAuth, integrationRouter);
 
 // Admin operations (migrations, backfills, purges)
 app.use('/api/admin', requireAuth, adminRouter);
+app.use('/api/accounts', requireAuthOrInternalKey, accountsRouter);
 
 // ── Static serving & SPA fallback ───────────────────────────
 
@@ -278,6 +280,13 @@ export async function startServer(): Promise<void> {
     await ensureAutoSummarizeFailedColumn();
   } catch (error) {
     console.error('auto_summarize_failed column migration failed (non-fatal):', error);
+  }
+
+  // Ensure monitored_accounts table exists
+  try {
+    await ensureMonitoredAccountsTable();
+  } catch (error) {
+    console.error('monitored_accounts table migration failed (non-fatal):', error);
   }
 
   // Ensure API provider + usage tables exist
