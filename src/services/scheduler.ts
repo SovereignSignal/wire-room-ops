@@ -9,6 +9,7 @@ import { createMagicLink } from './auth';
 import { runDailyDigest, getTopPendingFinds } from '../jobs/daily-digest';
 import { collectXEngagement } from '../scripts/collect-engagement';
 import { runExperimentLoop } from '../scripts/run-experiment-loop';
+import { runDripDistribution } from '../jobs/drip-distribution';
 import { ensureScheduleTable, getAllSchedules, getScheduleById, createSchedule, updateSchedule, deleteSchedule as dbDeleteSchedule, StoredScheduleConfig, ensureFeedsTable, ensureScanTables, ensureScanPromptsTable, ensureDistributionTables, getPool } from '../db';
 import { getActiveWires } from './intake-core';
 
@@ -24,7 +25,7 @@ export interface ScheduleConfig {
   anthropicModel?: string;
   timezone: string;
   wire?: string; // Optional wire/feed filter
-  scheduleType?: 'scan-execution' | 'forum-scan' | 'daily-digest' | 'collect-engagement' | 'experiment-loop';
+  scheduleType?: 'scan-execution' | 'forum-scan' | 'daily-digest' | 'collect-engagement' | 'experiment-loop' | 'drip-distribution';
   frequencyHours?: number; // Sub-daily interval (1-23) for scan-execution
   notifyEmails?: string; // Comma-separated email recipients
 }
@@ -254,6 +255,7 @@ export function formatScheduleDescription(schedule: ScheduleConfig): string {
     schedule.scheduleType === 'daily-digest' ? 'Daily Digest' :
     schedule.scheduleType === 'collect-engagement' ? 'Collect Engagement' :
     schedule.scheduleType === 'experiment-loop' ? 'Experiment Loop' :
+    schedule.scheduleType === 'drip-distribution' ? 'Drip Distribution' :
     'Scan Execution';
 
   if (schedule.frequencyHours && schedule.frequencyHours < 24) {
@@ -429,6 +431,17 @@ function createJobExecutor(schedule: ScheduleConfig) {
         status.status = 'success';
         status.error = null;
         console.log(`[Scheduler] Experiment loop completed`);
+
+      } else if (currentScheduleData.scheduleType === 'drip-distribution') {
+        // ---- Drip Distribution Job ----
+        const pool = getPool();
+        console.log(`[Scheduler] Running drip distribution...`);
+
+        const dripResult = await runDripDistribution(pool);
+
+        status.status = 'success';
+        status.error = null;
+        console.log(`[Scheduler] Drip distribution completed: ${dripResult.distributed} distributed, ${dripResult.skipped} skipped, ${dripResult.errors} errors`);
 
       } else {
         console.warn(`[Scheduler] Unsupported schedule type "${currentScheduleData.scheduleType}" — skipping`);

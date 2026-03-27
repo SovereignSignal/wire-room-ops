@@ -168,7 +168,7 @@ export interface StoredScheduleConfig {
   anthropicModel?: string;
   timezone: string;
   wire?: string;
-  scheduleType?: 'scan-execution' | 'forum-scan' | 'daily-digest' | 'collect-engagement' | 'experiment-loop';
+  scheduleType?: 'scan-execution' | 'forum-scan' | 'daily-digest' | 'collect-engagement' | 'experiment-loop' | 'drip-distribution';
   frequencyHours?: number;
   notifyEmails?: string;
   createdAt?: Date;
@@ -208,13 +208,13 @@ export async function ensureScheduleTable(): Promise<void> {
     UPDATE schedules
     SET schedule_type = 'scan-execution'
     WHERE schedule_type IS NULL
-      OR schedule_type NOT IN ('scan-execution', 'forum-scan', 'daily-digest', 'collect-engagement', 'experiment-loop')
+      OR schedule_type NOT IN ('scan-execution', 'forum-scan', 'daily-digest', 'collect-engagement', 'experiment-loop', 'drip-distribution')
   `);
   await pool.query(`ALTER TABLE schedules DROP CONSTRAINT IF EXISTS schedules_schedule_type_check`);
   await pool.query(`
     ALTER TABLE schedules
     ADD CONSTRAINT schedules_schedule_type_check
-    CHECK (schedule_type IN ('scan-execution', 'forum-scan', 'daily-digest', 'collect-engagement', 'experiment-loop'))
+    CHECK (schedule_type IN ('scan-execution', 'forum-scan', 'daily-digest', 'collect-engagement', 'experiment-loop', 'drip-distribution'))
   `);
 
   // Migrate data from old schedule_config table if it exists
@@ -254,9 +254,12 @@ export async function ensureScheduleTable(): Promise<void> {
 }
 
 function parseScheduleRow(row: any): StoredScheduleConfig {
-  const normalizedScheduleType: 'scan-execution' | 'forum-scan' | 'daily-digest' =
+  const normalizedScheduleType: StoredScheduleConfig['scheduleType'] =
     row.schedule_type === 'forum-scan' ? 'forum-scan' :
-    row.schedule_type === 'daily-digest' ? 'daily-digest' : 'scan-execution';
+    row.schedule_type === 'daily-digest' ? 'daily-digest' :
+    row.schedule_type === 'collect-engagement' ? 'collect-engagement' :
+    row.schedule_type === 'experiment-loop' ? 'experiment-loop' :
+    row.schedule_type === 'drip-distribution' ? 'drip-distribution' : 'scan-execution';
 
   return {
     id: row.id,
