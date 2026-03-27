@@ -31,8 +31,8 @@ export function verifyPrivyToken(token: string): Promise<jwt.JwtPayload> {
   });
 }
 
-// Dev mode: skip auth (set DEV_MODE=true in .env, or auto-detected when Privy credentials are placeholders)
-export const isDevMode = process.env.DEV_MODE === 'true' || !config.privy.appId || config.privy.appId.includes('placeholder');
+// Dev mode: skip auth — ONLY when explicitly set via DEV_MODE=true
+export const isDevMode = process.env.DEV_MODE === 'true';
 
 // Auth middleware - checks session from HttpOnly cookie only
 export async function requireAuth(req: Request, res: Response, next: Function): Promise<void> {

@@ -4,6 +4,12 @@ import { startServer } from './server';
 async function main() {
   console.log('[Startup] Starting Wire Room Ops...');
 
+  // Production safety: refuse to start without Privy auth credentials
+  if (process.env.NODE_ENV === 'production' && !process.env.PRIVY_APP_ID) {
+    console.error('[Startup] FATAL: PRIVY_APP_ID is not set in production. Refusing to start without auth.');
+    process.exit(1);
+  }
+
   try {
     validateConfig();
     console.log('[Startup] Configuration validated');
