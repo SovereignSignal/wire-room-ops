@@ -7,7 +7,6 @@
  */
 
 import { Request, Response, NextFunction } from 'express';
-import { config } from '../config/index.js';
 import { requireAuth } from './auth.js';
 
 export function requireAuthOrInternalKey(req: Request, res: Response, next: NextFunction) {
@@ -15,9 +14,10 @@ export function requireAuthOrInternalKey(req: Request, res: Response, next: Next
 
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.slice(7);
-    if (config.internalApiKey && token === config.internalApiKey) {
+    const internalKey = process.env.INTERNAL_API_KEY;
+    if (internalKey && token === internalKey) {
       // Valid internal key — attach a synthetic agent identity
-      (req as any).session = { userId: 'agent:stringer', isAgent: true };
+      (req as any).agentSession = { userId: 'agent:stringer', isAgent: true };
       return next();
     }
   }
