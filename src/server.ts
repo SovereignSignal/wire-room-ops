@@ -4,6 +4,7 @@ import cookieParser from 'cookie-parser';
 import { config } from './config';
 import { stopAuthCleanup, ensureSessionsTable } from './services/auth';
 import { requireAuth } from './middleware/auth';
+import { requireAuthOrInternalKey } from './middleware/internal-auth';
 import { closePool, ensureFeedsTable, ensureClassificationColumns, ensureEngagementMetricsTable, getPool } from './db';
 import { jobQueue } from './services/job-queue';
 import { getSchedules, addSchedule, initScheduler, stopScheduler, getSchedulerStatus } from './services/scheduler';
@@ -133,7 +134,7 @@ app.use('/api', requireAuth, scheduleRouter);
 app.use('/api/scan/prompts', requireAuth, scanPromptRouter);
 
 // Scan entries query, submit, queue, stats, actions, distribution per-entry
-app.use('/api/scan', requireAuth, scanEntryRouter);
+app.use('/api/scan', requireAuthOrInternalKey, scanEntryRouter);
 
 // Dashboard overview stats
 app.use('/api/dashboard', requireAuth, dashboardRouter);

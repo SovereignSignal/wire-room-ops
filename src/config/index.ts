@@ -75,6 +75,8 @@ export const config = {
     allowedUserId: process.env.TELEGRAM_INTAKE_ALLOWED_USER_ID || '394395765',
   },
 
+  internalApiKey: process.env.INTERNAL_API_KEY || null,
+
 };
 
 export function validateConfig(): void {
