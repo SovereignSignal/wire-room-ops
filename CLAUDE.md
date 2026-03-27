@@ -234,19 +234,7 @@ Pre-approval validation (`src/services/approval-guard.ts`) prevents bad data fro
 - Historical backfill available via `POST /api/admin/summary-sync-backfill`
 
 ### Admin Endpoints
-
-| Method | Path | Purpose | Rate Limit |
-|--------|------|---------|------------|
-| POST | `/api/admin/run-migration` | One-time data cleanup (fix junk fields, expired approvals) | 1 / 30 min |
-| POST | `/api/admin/classify-backfill` | Batch-classify UNCHECKED queued/approved entries | 3 / 5 min |
-| POST | `/api/admin/tag-backfill` | Batch-extract entity tags for entries missing tags | 3 / 5 min |
-| POST | `/api/admin/summary-sync-backfill` | Historical Telegram summary import | 1 / 30 min |
-| POST | `/api/admin/recover-self-dupes` | Recover entries self-marked as duplicate | 1 / 10 min |
-| POST | `/api/admin/clean-stale-seen` | Clean stale entries from seen_urls/seen_names | 1 / 10 min |
-| POST | `/api/admin/clean-orgs` | Clean org profiles (remove empty/junk) | 1 / 30 min |
-| POST | `/api/admin/dedup-orgs` | Merge duplicate org profiles | 1 / 30 min |
-| POST | `/api/admin/enrich-orgs` | LLM-based org profile enrichment | 1 / 10 min |
-| POST | `/api/admin/purge-source` | Delete all entries from a scan_source (cascading cleanup) | 1 / 30 min |
+All `POST /api/admin/*` — rate-limited maintenance operations: `run-migration`, `classify-backfill`, `tag-backfill`, `summary-sync-backfill`, `recover-self-dupes`, `clean-stale-seen`, `clean-orgs`, `dedup-orgs`, `enrich-orgs`, `purge-source`. See `src/routes/admin.ts` for details.
 
 ### Other Tables
 
@@ -260,67 +248,19 @@ Distribution uses `distribution_channels` (managed channels with UUID PK, per-ch
 
 All providers support DB-backed credentials (`api_providers` table) with env var fallback. Model resolution: explicit param > provider.default_model > hardcoded default.
 
-### Grok API (X.ai)
-- **Chat Completions** (`/v1/chat/completions`): Used for newsletter summaries and LLM classification. Default model: `grok-4.20-beta-0309-non-reasoning`
-- **Responses API** (`/v1/responses`): Used for scan execution with `x_search` or `web_search` tools. Default model: `grok-4.20-beta-0309-non-reasoning`
-- Each scan prompt has a `tool_type` column (`x_search`, `web_search`, or `perplexity`) controlling routing
-- Has native X.com/Twitter access via `x_search`; open web results via `web_search`
+- **Grok** (`src/services/grok.ts`): Chat Completions for classification/summaries + Responses API for scan execution (`x_search`/`web_search` tools). Has native X.com access.
+- **Claude** (`src/services/anthropic.ts`): Summarization (Opus) + post generation (Sonnet for cost efficiency). Uses `@anthropic-ai/sdk`.
+- **Perplexity** (`src/services/perplexity.ts`): `sonar-pro` model, natively searches web with citations. For `tool_type: 'perplexity'` prompts.
+- **Firecrawl** (`src/services/scraper.ts`): Web scraping for non-X.com URLs.
+- **Resend** (`src/services/email.ts`): 5 email types (login, notification, test alert, failure alert, resend download link).
 
-### Claude API (Anthropic)
-- Uses official SDK `@anthropic-ai/sdk`
-- Default model for summarization: `claude-opus-4-1-20250805` (with model fallback chain for prompt review)
-- Post generation uses `claude-sonnet-4-6-20250627` for cost efficiency
+## Error Handling & Security
 
-### Perplexity API
-- Chat completions endpoint at `https://api.perplexity.ai/chat/completions`
-- Default model: `sonar-pro`
-- Natively searches the web and returns cited results (no tool configuration needed)
-- Used for deep web research scans (prompts with `tool_type: 'perplexity'`)
-
-### Firecrawl API
-- Endpoint: `https://api.firecrawl.dev/v1/scrape`
-- Returns markdown content from web pages
-- Used only for non-X.com URLs
-
-### Resend API
-- Email service for all notifications
-- 5 email types: login, notification, test alert, failure alert, resend download link
-
-## Error Handling Patterns
-
-### Retry Logic
-`src/services/processor.ts` uses `withRetry()`:
-- Newsletter processing: 3 attempts with jittered exponential backoff (applies to both Grok and Claude calls)
-- Scan execution: 2 attempts (1 retry) — these are expensive Grok Responses API calls
-- Batch concurrency: entries processed 3 at a time via `Promise.all` chunks
-
-### Scrape Fallback
-If Firecrawl fails, Claude uses only the cached summary from the database. Output includes note: `*[Summary based on cached data...]*`
-
-### Job Failure Notifications
-Scheduled jobs that fail send email via `sendScheduledJobFailureEmail()` with error details, then retry once after 5 minutes.
-
-### Concurrent Job Guard
-- `src/server.ts` prevents duplicate manual job execution -- if a scan execution is already running, subsequent requests return 409 with the existing job ID.
-- `src/server.ts` also guards distribution runs per wire -- if distribution for a wire is already running, subsequent requests return 409.
-- `src/services/scheduler.ts` prevents overlapping cron runs via an `executingJobs` set -- if a scheduled job is still running when the next cron tick fires, it is skipped.
-
-### Database Reliability
-- Pool has `on('error')` handler to prevent crash on idle connection drops
-- `ensureScanTables()` DDL wrapped in a transaction for atomicity
-- Scheduler `initScheduler()` properly resets on failure so it can retry
-
-### Security Layers
-- CSRF origin checking on all state-changing requests (POST/PUT/DELETE)
-- Session auth via HttpOnly cookies only (no body fallback)
-- XSS prevention via shared `escapeHtml()` utility and event delegation (no inline handlers)
-- SSE keepalive (30s) prevents proxy timeouts on long-running jobs
-- Open redirect protection via strict path validation on `returnTo` parameter
-
-### Memory Management
-- Job queue, auth tokens, and sessions all have periodic cleanup timers (15-minute intervals)
-- Timers use `.unref()` to not prevent process exit
-- Graceful shutdown stops all timers (scheduler, auth cleanup, job queue cleanup, summary sync)
+- **Retry**: `withRetry()` in `processor.ts` (3 attempts newsletter, 2 for scans). Batch concurrency: 3 at a time.
+- **Concurrent job guard**: Duplicate manual jobs return 409. Scheduler skips overlapping cron runs.
+- **Scrape fallback**: If Firecrawl fails, Claude uses cached summary.
+- **Security**: CSRF origin checking, HttpOnly session cookies, `escapeHtml()` XSS prevention, open redirect protection, SSE keepalive (30s).
+- **Memory**: Cleanup timers (15-min) for job queue, tokens, sessions. `.unref()` timers, graceful shutdown.
 
 ## Testing Locally
 
@@ -359,34 +299,7 @@ Generated files are persisted to Postgres, but sessions and job queues are in-me
 - `RESEND_API_KEY` - Resend email API key
 
 ### Optional
-- `PORT` - Server port (default: 3000)
-- `APP_URL` - Base URL (auto-detected on Railway from `RAILWAY_PUBLIC_DOMAIN`)
-- `ALLOWED_EMAILS` - Comma-separated additional emails for dashboard access
-- `TELEGRAM_BOT_TOKEN` - Telegram Bot API token for channel distribution posting
-- `FORUM_SCAN_ENABLED` - Set to `true` to enable forum scanning
-- `DISCUSS_WATCH_API_URL` - Base URL for discuss.watch API
-- `FROM_EMAIL` - Sender email address for notifications
-- `DB_SSL_REJECT_UNAUTHORIZED` - Set to `false` for local dev without SSL
-- `PERPLEXITY_API_KEY` - Perplexity API key for deep web research scans (variant P prompts)
-- `TELEGRAM_INTAKE_BOT_TOKEN` - Bot token for Telegram intake bot (gracefully disabled if not set)
-- `TELEGRAM_INTAKE_WEBHOOK_SECRET` - Random string for webhook validation
-- `TELEGRAM_INTAKE_ALLOWED_USER_ID` - Telegram user ID of allowed sender (default: 394395765)
-- `INTAKE_WIRES` - Comma-separated fallback wire list if DB has no active feeds
-- `INTAKE_WIRE_KEYWORDS_{WIRE}` - Per-wire keyword overrides (e.g. `INTAKE_WIRE_KEYWORDS_CRYPTO`)
-- `BRAND_AUDIENCE` - Who reads the content (default: "grant seekers")
-- `BRAND_CONTENT_TYPE` - What is scanned for (default: "grant funding opportunities")
-- `BRAND_CONTENT_VERB` - Action word (default: "apply for")
-- `BRAND_NAME` - Display name (default: "The Wire Room")
-- `BRAND_TAGLINE` - Short descriptor (default: "Intelligence Pipeline")
-- `BRAND_COLOR` - Primary accent hex (default: "#2563eb")
-- `BRAND_URL` - Base URL of the ops dashboard
-- `BRAND_FROM_NAME` - Sender display name for outbound email
-- `FORUM_SEARCH_TERMS` - Comma-separated search terms override for forum scanning
-- `QUALITY_FUNDING_TYPES` - JSON array override for funding type keywords
-- `QUALITY_ACTIONABLE_TYPES` - JSON array override for actionable type keywords
-- `FORUM_LOOKBACK_DAYS` - Number of days to look back for forum discussions (default: 2)
-- `START_DATE` - Override start date for date-range queries
-- `END_DATE` - Override end date for date-range queries
+See `.env.example` for full list. Key optional vars: `PORT`, `APP_URL`, `ALLOWED_EMAILS`, `TELEGRAM_BOT_TOKEN`, `PERPLEXITY_API_KEY`, `FORUM_SCAN_ENABLED`, `BRAND_*` (deployment-agnostic config overrides).
 
 ## Feeds System
 
@@ -423,21 +336,6 @@ Automated discovery of grant opportunities via X.com scanning, web search, and f
 8. **Queue**: Classified entries get `status: queued`; NOISE -> `status: archived`
 9. **Approve Guard**: Pre-approval validation blocks entries with empty descriptions or empty URLs from being published; warns on EXPIRED classification
 
-### Key Files
-- `src/jobs/scan-execution.ts` - Orchestrates prompt execution and feeds results to intake
-- `src/jobs/daily-intake.ts` - Main intake pipeline (dedup -> classify -> queue, with classification retry)
-- `src/services/intake.ts` - Parser with 4 strategies + `sanitizeResult()` post-parse cleanup
-- `src/services/intake-core.ts` - Channel-agnostic intake logic (URL extraction, wire detection, DB insert)
-- `src/services/approval-guard.ts` - Pre-approval validation (blocks empty desc/URL; warns on EXPIRED)
-- `src/services/classifier.ts` - Gate 2 LLM classifier (GRANT/NEWS/EXPIRED/NOISE + quality score)
-- `src/services/telegram-adapter.ts` - Telegram intake bot adapter (webhook, inline keyboard, setWebhook)
-- `src/services/dedup.ts` - Two-layer dedup (URL exact + name fuzzy)
-- `src/services/quality-scorer.ts` - Scoring engine with type classification (keywords overrideable via env)
-- `src/services/scan-stats.ts` - Prompt effectiveness metrics (dup rate, avg quality, overlap)
-- `src/services/forum.ts` - discuss.watch API client for forum scanning
-- `src/jobs/forum-scan.ts` - Forum scan orchestrator (search -> intake pipeline, DB-driven default wire)
-- `src/migrations/cleanup-approved-data.ts` - One-time data cleanup for existing bad entries
-
 ### Schedule Types
 - **`scan-execution`**: Daily cron, runs `runScanExecution()` which executes all active prompts for a wire
 - **`forum-scan`**: Daily cron, runs `runForumScan()` which searches discuss.watch forums
@@ -467,15 +365,6 @@ Failed classifications retry once with a 2-second delay. If both attempts fail, 
 
 The legacy rule-based scorer (`src/services/quality-scorer.ts`) is still in the codebase but is no longer used in the main pipeline.
 
-### Common Tasks for Scan Pipeline
-- **Adjusting quality scoring weights**: `src/services/quality-scorer.ts` -- modify point values in `scoreEntry()`
-- **Adding a new feed/wire type**: Via `/api/feeds` POST or add to `SEED_FEEDS` in `src/db/index.ts`
-- **Testing a scan prompt**: `POST /api/scan/prompts/:id/test` -- executes against Grok and returns parsed results
-- **Viewing prompt effectiveness**: `GET /api/scan/prompt-stats?days=7`
-- **Creating a web search prompt**: Set `toolType: 'web_search'` in POST `/api/scan/prompts` (or select "Web Search" in dashboard)
-- **Running a forum scan**: `POST /api/forum/run` with optional `{ "wire": "crypto" }` (requires `FORUM_SCAN_ENABLED=true`)
-- **Adding forum search keywords**: Set `FORUM_SEARCH_TERMS` env var (comma-separated) or edit defaults in `src/services/forum.ts`
-
 ## Distribution System
 
 ### Overview
@@ -491,29 +380,11 @@ Per-feed multi-channel distribution of approved scan entries. Distribution is a 
 - **Types**: `src/types/intake.ts` -- `DistributionChannel` (telegram/discord/slack/x/newsletter), `DistributionStatus`, `DistributionConfig`, `DistributionLog`, `GeneratedPosts`
 
 ### Database Tables
-- **`distribution_channels`**: Managed channels with UUID PK. Columns: `id`, `wire`, `channel` (telegram/discord/slack/x), `name`, `enabled`, `target_id`, `credentials` JSONB (bot tokens, OAuth creds, webhook URLs), `created_at`, `updated_at`. CRUD via Settings > Distribution tab.
-- **`distribution_logs`**: Tracks each send attempt. Columns: `id` (UUID), `entry_id` FK to `scan_entries`, `channel`, `channel_id` (FK to distribution_channels), `wire`, `status` (pending/success/failed), `post_text`, `external_id` (platform post ID), `error_message`, `created_at`. Has unique partial index on `(entry_id, channel) WHERE status IN ('pending','success')` to prevent double-posts.
-- **`distribution_config`**: Legacy table (unused). Replaced by `distribution_channels`.
-
-### API Routes
-| Method | Path | Purpose | Rate Limit |
-|--------|------|---------|------------|
-| GET | `/api/distribution/config` | List all configs (credentials masked) | -- |
-| PUT | `/api/distribution/config/:wire/:channel` | Update channel config (merge, not replace) | -- |
-| POST | `/api/distribution/run/:wire` | Trigger distribution for a wire | 3 per wire / 5 min |
-| GET | `/api/distribution/newsletter/:wire` | Generate newsletter markdown | 5 global / 5 min |
-| GET | `/api/distribution/status/:wire` | Bulk distribution status for approved entries | -- |
-| GET | `/api/scan/entries/:id/distribution` | Distribution logs for a single entry | -- |
-| POST | `/api/scan/entries/:id/redistribute` | Retry failed distribution for an entry | 5 global / 5 min |
+- **`distribution_channels`**: Managed channels (UUID PK, per-channel credentials in JSONB). CRUD via Settings > Distribution tab.
+- **`distribution_logs`**: Per-entry, per-channel send status. Unique partial index on `(entry_id, channel) WHERE status IN ('pending','success')` prevents double-posts.
 
 ### User Flow
-1. Approve entries in the queue (status changes to `approved` -- this already existed)
-2. Go to the feed page for a wire -- the Distribution section shows channel config cards
-3. Click Configure on a channel card to set credentials/channel ID and enable it
-4. Click "Distribute to Channels" to send approved-but-undistributed entries to Telegram + X
-5. Click "Generate Newsletter" to get copyable markdown of undistributed entries
-6. Distribution status is visible as colored pills (TG/X/NL) on the approved tab in the queue page
-7. Failed pills are clickable to retry distribution for that entry and channel
+Approve entries → configure channels in Settings > Distribution → click "Distribute to Channels" for a wire → distribution status shown as colored pills (TG/X/NL) on the approved tab. Failed pills are clickable for retry.
 
 ### Key Design Decisions
 - **Manual trigger, not auto-on-approve**: Distribution is a separate deliberate action so operators can batch-review before sending
@@ -524,20 +395,11 @@ Per-feed multi-channel distribution of approved scan entries. Distribution is a 
 - **Config merge on partial update**: PUT to config endpoint merges new fields into existing JSONB, preventing accidental credential loss
 - **Retry sends only to failed channels**: Redistribution skips channels that already have a `success` or `pending` log entry
 
-### Dashboard UI
-- **Dashboard** (`client/`): React SPA with Settings > Distribution tab showing managed channel cards (TEST/EDIT/DEL actions), Queue tab with approve/decline actions and distribution status pills per entry
-
-### Common Tasks for Distribution
-- **Adding a channel**: Create via Settings > Distribution tab in dashboard, or POST to distribution channels API. Credentials stored in JSONB per channel.
-- **Configuring Telegram**: Set bot token via `TELEGRAM_BOT_TOKEN` env var or `api_providers` DB table. Channel ID (e.g. `@yourchannel`) set in channel config.
-- **Configuring Discord**: Set webhook URL or bot token + channel ID in channel credentials JSONB.
-- **Configuring X/Twitter**: Set all 4 OAuth credentials (apiKey, apiSecret, accessToken, accessSecret) in channel credentials JSONB.
-- **Triggering distribution**: POST `/api/distribution/run/:wire` -- sends to all enabled channels
-- **Generating newsletter**: GET `/api/distribution/newsletter/:wire` -- returns markdown of undistributed approved entries
-- **Retrying a failed send**: POST `/api/scan/entries/:id/redistribute` -- retries only failed channels
-- **Checking distribution status**: GET `/api/distribution/status/:wire` -- bulk status for all approved entries in a wire
-- **Viewing logs for an entry**: GET `/api/scan/entries/:id/distribution` -- full log history
-- **Testing a channel**: POST to distribution channel test endpoint -- sends a test message to verify connectivity
+### Key Endpoints
+- `POST /api/distribution/run/:wire` — trigger distribution for a wire
+- `GET /api/distribution/newsletter/:wire` — generate newsletter markdown
+- `POST /api/scan/entries/:id/redistribute` — retry failed sends
+- Channel CRUD + config via `/api/distribution/config` routes (see `src/routes/distribution.ts`)
 
 ## Operator Signals (Feedback Loop)
 
@@ -568,56 +430,11 @@ Org profiles track organizations mentioned in entries (`org_profiles` table):
 
 ## Approved Entries Export
 
-Cross-wire CSV export of recently approved entries for newsletter composition.
-
-### Key Files
-- `src/db/index.ts` — `getApprovedEntriesForExport(hoursBack)` query (uses `updated_at` since approval sets that timestamp)
-- `src/jobs/csv-export.ts` — `runCsvExport()`: query, build CSV + HTML table, store file via `storeFile()`
-- `src/services/email.ts` — `sendCsvExportEmail()` with inline HTML table + CSV download button
-
-### API Endpoints
-| Method | Path | Purpose | Rate Limit |
-|--------|------|---------|------------|
-| GET | `/api/export/csv?hoursBack=24` | Direct CSV file download (attachment) | 5 global / 5 min |
-| POST | `/api/export/csv` | Generate + email CSV export on demand | 3 global / 5 min |
-
-POST body: `{ "hoursBack": 24 }` (default 24, clamped 1-168). Recipients resolved from daily-digest schedule's `notifyEmails`.
-
-### Scheduler Integration
-Runs automatically after the daily-digest email (non-fatal). Skipped if 0 approved entries in the past 24h.
+Cross-wire CSV export via `src/jobs/csv-export.ts`. `GET /api/export/csv?hoursBack=24` for direct download, `POST /api/export/csv` to generate + email. Runs automatically after daily-digest (skipped if 0 entries).
 
 ## Rate Limiting
 
-In-memory rate limiter in `src/server.ts`:
-| Endpoint | Limit | Window |
-|----------|-------|--------|
-| `/resend-link` | 2 per IP | 30 min |
-| `/api/scan/prompts/:id/test` | 5 global | 5 min |
-| `/api/scan/prompts/test` (draft) | 5 global | 5 min |
-| `/api/scan/prompts/review` | 3 global | 5 min |
-| `/api/scan/prompts/:id/run` | 2 per prompt | 5 min |
-| `/api/scan/run` | 1 global | 15 min |
-| `/api/forum/run` | 1 global | 15 min |
-| `/api/summary-sync` | 3 global | 5 min |
-| `/api/admin/summary-sync-backfill` | 1 global | 30 min |
-| `/api/process-raw` | 3 global | 5 min |
-| `/api/enrich` | 3 global | 5 min |
-| `/api/classify-queue` | 3 global | 5 min |
-| `/api/distribution/run/:wire` | 3 per wire | 5 min |
-| `/api/distribution/newsletter/:wire` | 5 global | 5 min |
-| `/api/scan/entries/:id/redistribute` | 5 global | 5 min |
-| Distribution channel test | 5 global | 5 min |
-| `/api/admin/run-migration` | 1 global | 30 min |
-| `/api/admin/recover-self-dupes` | 1 global | 10 min |
-| `/api/admin/clean-stale-seen` | 1 global | 10 min |
-| `/api/admin/classify-backfill` | 3 global | 5 min |
-| `/api/admin/tag-backfill` | 3 global | 5 min |
-| `/api/admin/clean-orgs` | 1 global | 30 min |
-| `/api/admin/dedup-orgs` | 1 global | 30 min |
-| `/api/admin/enrich-orgs` | 1 global | 10 min |
-| `/api/admin/purge-source` | 1 global | 30 min |
-| `GET /api/export/csv` | 5 global | 5 min |
-| `POST /api/export/csv` | 3 global | 5 min |
+In-memory rate limiter in `src/server.ts`. All expensive/admin endpoints are rate-limited (search code for `checkRateLimit` to see specific limits).
 
 ## Code Style Notes
 
@@ -632,15 +449,6 @@ In-memory rate limiter in `src/server.ts`:
 
 ## Planned / Not Yet Implemented
 
-The following features are planned but not yet built:
-- **Slack/Discord intake adapters** (same `intake-core.ts` interface, new inbound channel adapters -- distribution to these channels already works)
+- **Slack/Discord intake adapters** (same `intake-core.ts` interface, new inbound channel adapters -- distribution already works)
 - **Email inbound ingestion** (URL extraction from forwarded emails)
 - **Automated scheduled distribution** (currently manual trigger only)
-
-Previously planned and now implemented:
-- ~~Multi-channel distribution~~ -- Implemented: Telegram, Discord, Slack, X/Twitter, and newsletter channels (see Distribution System section)
-- ~~Weekly newsletter generation~~ -- Implemented: on-demand newsletter markdown generation via `/api/distribution/newsletter/:wire`
-- ~~Telegram bot ingestion~~ -- Implemented: `telegram-adapter.ts` + `intake-core.ts` with webhook at `/api/telegram/intake-webhook`
-- ~~Deployment-agnostic config~~ -- Implemented: `brand.ts` + env-var driven wire lists, scoring keywords, and AI prompts
-- ~~Data quality gates~~ -- Implemented: parser sanitization, approval guard, classification retry, admin backfill endpoints
-- ~~CRM sync~~ -- Partially implemented: `notion-sync.ts` with DB-backed config via `integration_config` table, org profiles in `org_profiles` table
