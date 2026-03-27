@@ -171,9 +171,16 @@ router.post('/scan/classify-queue', requireAuth, async (req: Request, res: Respo
 
 // API: Telegram intake webhook (no auth — validated by secret header)
 router.post('/telegram/intake-webhook', async (req: Request, res: Response) => {
-  // Always return 200 so Telegram doesn't retry
   const secret = config.telegramIntake.webhookSecret;
-  if (secret && req.headers['x-telegram-bot-api-secret-token'] !== secret) {
+
+  // Reject ALL calls if webhook secret is not configured
+  if (!secret) {
+    res.status(401).json({ error: 'Webhook not configured' });
+    return;
+  }
+
+  // Validate the secret header
+  if (req.headers['x-telegram-bot-api-secret-token'] !== secret) {
     console.warn('[TelegramIntake] Webhook called with invalid secret');
     res.sendStatus(200);
     return;
