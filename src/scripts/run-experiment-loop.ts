@@ -44,9 +44,7 @@ function parseArgs(): { strategy: Strategy } {
   return { strategy };
 }
 
-async function main() {
-  const { strategy } = parseArgs();
-  const pool = createPool();
+export async function runExperimentLoop(pool: Pool, strategy: Strategy = 'random_walk'): Promise<void> {
   const engine = new ExperimentEngine(pool);
 
   try {
@@ -127,9 +125,7 @@ async function main() {
 
   } catch (err) {
     console.error('[Loop] Error:', err);
-    process.exitCode = 1;
-  } finally {
-    await pool.end();
+    throw err;
   }
 }
 
@@ -137,6 +133,18 @@ async function getBestParams(engine: ExperimentEngine): Promise<ScoringParams> {
   // Use the most recent completed experiment's params, or DEFAULT_PARAMS
   const baseline = await engine.getBaseline();
   return baseline?.params ?? DEFAULT_PARAMS;
+}
+
+async function main() {
+  const { strategy } = parseArgs();
+  const pool = createPool();
+  try {
+    await runExperimentLoop(pool, strategy);
+  } catch (err) {
+    process.exitCode = 1;
+  } finally {
+    await pool.end();
+  }
 }
 
 main();

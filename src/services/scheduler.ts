@@ -7,6 +7,8 @@ import { ExperimentEngine } from './experiment-engine';
 import { runCsvExport } from '../jobs/csv-export';
 import { createMagicLink } from './auth';
 import { runDailyDigest, getTopPendingFinds } from '../jobs/daily-digest';
+import { collectXEngagement } from '../scripts/collect-engagement';
+import { runExperimentLoop } from '../scripts/run-experiment-loop';
 import { ensureScheduleTable, getAllSchedules, getScheduleById, createSchedule, updateSchedule, deleteSchedule as dbDeleteSchedule, StoredScheduleConfig, ensureFeedsTable, ensureScanTables, ensureScanPromptsTable, ensureDistributionTables, getPool } from '../db';
 import { getActiveWires } from './intake-core';
 
@@ -22,7 +24,7 @@ export interface ScheduleConfig {
   anthropicModel?: string;
   timezone: string;
   wire?: string; // Optional wire/feed filter
-  scheduleType?: 'scan-execution' | 'forum-scan' | 'daily-digest';
+  scheduleType?: 'scan-execution' | 'forum-scan' | 'daily-digest' | 'collect-engagement' | 'experiment-loop';
   frequencyHours?: number; // Sub-daily interval (1-23) for scan-execution
   notifyEmails?: string; // Comma-separated email recipients
 }
@@ -250,6 +252,8 @@ export function formatScheduleDescription(schedule: ScheduleConfig): string {
   const typeLabel =
     schedule.scheduleType === 'forum-scan' ? 'Forum Scan' :
     schedule.scheduleType === 'daily-digest' ? 'Daily Digest' :
+    schedule.scheduleType === 'collect-engagement' ? 'Collect Engagement' :
+    schedule.scheduleType === 'experiment-loop' ? 'Experiment Loop' :
     'Scan Execution';
 
   if (schedule.frequencyHours && schedule.frequencyHours < 24) {
@@ -403,6 +407,28 @@ function createJobExecutor(schedule: ScheduleConfig) {
         status.status = 'success';
         status.error = null;
         console.log(`[Scheduler] Daily digest completed`);
+
+      } else if (currentScheduleData.scheduleType === 'collect-engagement') {
+        // ---- Collect Engagement Metrics Job ----
+        const pool = getPool();
+        console.log(`[Scheduler] Running engagement metrics collection...`);
+
+        const collected = await collectXEngagement(pool, 4, 8);
+
+        status.status = 'success';
+        status.error = null;
+        console.log(`[Scheduler] Engagement collection completed: ${collected} metrics collected`);
+
+      } else if (currentScheduleData.scheduleType === 'experiment-loop') {
+        // ---- Experiment Loop Job ----
+        const pool = getPool();
+        console.log(`[Scheduler] Running experiment loop...`);
+
+        await runExperimentLoop(pool);
+
+        status.status = 'success';
+        status.error = null;
+        console.log(`[Scheduler] Experiment loop completed`);
 
       } else {
         console.warn(`[Scheduler] Unsupported schedule type "${currentScheduleData.scheduleType}" — skipping`);

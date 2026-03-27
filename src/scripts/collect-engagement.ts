@@ -107,7 +107,7 @@ interface DistributionRow {
   wire: string;
 }
 
-async function collectXEngagement(pool: Pool, ageMinHours: number, ageMaxHours: number): Promise<number> {
+export async function collectXEngagement(pool: Pool, ageMinHours: number, ageMaxHours: number): Promise<number> {
   const bearerToken = process.env.X_BEARER_TOKEN;
   if (!bearerToken) {
     console.error('[Engagement] X_BEARER_TOKEN not set, skipping X engagement collection');

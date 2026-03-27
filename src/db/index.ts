@@ -168,7 +168,7 @@ export interface StoredScheduleConfig {
   anthropicModel?: string;
   timezone: string;
   wire?: string;
-  scheduleType?: 'scan-execution' | 'forum-scan' | 'daily-digest';
+  scheduleType?: 'scan-execution' | 'forum-scan' | 'daily-digest' | 'collect-engagement' | 'experiment-loop';
   frequencyHours?: number;
   notifyEmails?: string;
   createdAt?: Date;
