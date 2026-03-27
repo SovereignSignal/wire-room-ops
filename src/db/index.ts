@@ -1918,3 +1918,16 @@ export async function getApprovedEntriesForExport(hoursBack = 24): Promise<Expor
   );
   return result.rows;
 }
+
+export async function ensureDistributeAfterColumn(): Promise<void> {
+  const pool = getPool();
+  await pool.query(`
+    ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS distribute_after TIMESTAMPTZ
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_scan_entries_distribute_after 
+    ON scan_entries(distribute_after) 
+    WHERE distribute_after IS NOT NULL
+  `);
+  console.log('[DB] distribute_after column ready');
+}

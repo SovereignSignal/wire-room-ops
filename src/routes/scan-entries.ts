@@ -23,7 +23,7 @@ import { isValidUuid, isValidFeedKey } from '../utils/validation';
 import { buildSubmission, buildBatchSubmission } from '../services/intake';
 import { runDailyIntake, getDailyQueue, getIntakeStats } from '../jobs/daily-intake';
 import { getPromptEffectivenessStats } from '../services/scan-stats';
-import { singleEntryAction, bulkEntryAction, ApprovalBlockedError, BulkApprovalBlockedError } from '../services/entry-actions';
+import { singleEntryAction, bulkEntryAction, ApprovalBlockedError, BulkApprovalBlockedError, scheduleForDistribution } from '../services/entry-actions';
 import { retryDistribution } from '../services/distribution';
 
 const router = Router();
@@ -421,6 +421,24 @@ router.post('/entries/:id/redistribute', async (req: Request, res: Response) => 
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';
     console.error('[Distribution] Redistribute failed:', error);
     res.status(500).json({ error: errorMsg });
+  }
+});
+
+// POST /entries/:id/schedule-distribution — queue an approved entry for drip distribution
+router.post('/entries/:id/schedule-distribution', async (req: Request, res: Response) => {
+  const entryId = parseInt(req.params.id, 10);
+  if (isNaN(entryId)) { res.status(400).json({ error: 'Invalid entry ID' }); return; }
+
+  const { distributeAfter } = req.body;
+  const when = distributeAfter ? new Date(distributeAfter) : new Date();
+  if (isNaN(when.getTime())) { res.status(400).json({ error: 'Invalid distributeAfter date' }); return; }
+
+  try {
+    await scheduleForDistribution(entryId, when);
+    res.json({ success: true, entryId, distributeAfter: when.toISOString() });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ error: msg });
   }
 });
 

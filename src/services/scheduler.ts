@@ -295,6 +295,18 @@ function createJobExecutor(schedule: ScheduleConfig) {
       return;
     }
 
+    // Re-check DB enabled flag — ensures disabling in DB takes effect without restart
+    try {
+      const pool = getPool();
+      const freshCheck = await pool.query('SELECT enabled FROM schedules WHERE id = $1', [schedule.id]);
+      if (!freshCheck.rows[0]?.enabled) {
+        console.log(`[Scheduler] Schedule "${schedule.name}" disabled in DB, skipping`);
+        return;
+      }
+    } catch (err) {
+      console.warn(`[Scheduler] Could not verify enabled flag for "${schedule.name}", proceeding`);
+    }
+
     executingJobs.add(schedule.id);
     const status: JobStatus = { lastRun: jobStartTime, status: null, error: null };
     jobStatuses.set(schedule.id, status);

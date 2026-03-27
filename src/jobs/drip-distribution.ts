@@ -31,14 +31,15 @@ export async function runDripDistribution(pool: Pool): Promise<DripDistributionR
 
   for (const wire of wires) {
     try {
-      // Find the oldest approved entry that hasn't been distributed yet
+      // Find the oldest entry explicitly queued for distribution via distribute_after
       const entryResult = await pool.query(
         `SELECT se.id, se.name, se.wire
          FROM scan_entries se
          WHERE se.status = 'approved'
            AND se.wire = $1
            AND se.distributable = true
-           AND se.created_at > NOW() - INTERVAL '30 days'
+           AND se.distribute_after IS NOT NULL
+           AND se.distribute_after <= NOW()
            AND (
              (se.description IS NOT NULL AND LENGTH(TRIM(se.description)) > 50)
              OR se.enriched_summary IS NOT NULL
@@ -47,7 +48,7 @@ export async function runDripDistribution(pool: Pool): Promise<DripDistributionR
              SELECT 1 FROM distribution_logs dl
              WHERE dl.entry_id = se.id
            )
-         ORDER BY se.updated_at ASC
+         ORDER BY se.distribute_after ASC
          LIMIT 1`,
         [wire.key]
       );
