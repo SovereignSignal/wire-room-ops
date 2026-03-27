@@ -44,7 +44,7 @@ import { seedSeenUrlsFromMessages } from '../db';
 
 const DEFAULT_CONFIG: IntakeJobConfig = {
   qualityThreshold: 40,
-  dedupeWindow: 14,
+  dedupeWindow: 180,
   sendBriefing: false,
   briefingMinScore: 60,
 };

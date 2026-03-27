@@ -309,7 +309,7 @@ function createJobExecutor(schedule: ScheduleConfig) {
         const scanResult = await runScanExecution(pool, {
           wire: currentScheduleData.wire || undefined,
           config: {
-            dedupeWindow: currentScheduleData.lookbackDays || 14,
+            dedupeWindow: currentScheduleData.lookbackDays || 180,
           },
         });
 

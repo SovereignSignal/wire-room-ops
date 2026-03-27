@@ -355,7 +355,7 @@ export async function processIntakeMessage(
   if (wire) {
     // Dedup check — fail open if dedup service errors
     try {
-      const dedupResult = await checkDuplicate(getPool(), { sourceUrl: primaryUrl, name, wire }, 30);
+      const dedupResult = await checkDuplicate(getPool(), { sourceUrl: primaryUrl, name, wire }, 180);
       if (dedupResult.isDuplicate) {
         return { status: 'rejected', errorMessage: `Duplicate: already seen as "${dedupResult.matchedEntryName}"` };
       }
@@ -398,7 +398,7 @@ export async function processIntakeMessage(
   console.log(`[IntakeCore] Wire undetected for "${name}", defaulting to "${fallbackWire}"`);
 
   try {
-    const dedupResult = await checkDuplicate(getPool(), { sourceUrl: primaryUrl, name, wire: fallbackWire }, 30);
+    const dedupResult = await checkDuplicate(getPool(), { sourceUrl: primaryUrl, name, wire: fallbackWire }, 180);
     if (dedupResult.isDuplicate) {
       return { status: 'rejected', errorMessage: `Duplicate: already seen as "${dedupResult.matchedEntryName}"` };
     }
@@ -450,7 +450,7 @@ export async function completeWireSelection(
 
   // Dedup check — fail open if dedup service errors
   try {
-    const dedupResult = await checkDuplicate(getPool(), { sourceUrl: entry.sourceUrl, name: entry.name, wire }, 30);
+    const dedupResult = await checkDuplicate(getPool(), { sourceUrl: entry.sourceUrl, name: entry.name, wire }, 180);
     if (dedupResult.isDuplicate) {
       return { status: 'rejected', errorMessage: `Duplicate: already seen as "${dedupResult.matchedEntryName}"` };
     }
@@ -677,7 +677,7 @@ export async function processBatchMessage(
 
     // Dedup check — fail open if dedup service errors
     try {
-      const dedupResult = await checkDuplicate(getPool(), { sourceUrl: entry.sourceUrl, name: entry.name, wire: resolvedWire }, 30);
+      const dedupResult = await checkDuplicate(getPool(), { sourceUrl: entry.sourceUrl, name: entry.name, wire: resolvedWire }, 180);
       if (dedupResult.isDuplicate) {
         result.duplicates++;
         result.failed++;

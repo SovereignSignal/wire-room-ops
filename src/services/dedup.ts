@@ -49,12 +49,15 @@ const SEMI_GENERIC_TOKENS = new Set([
  *
  * @param pool - Postgres connection pool
  * @param entry - The entry to check (needs sourceUrl, name, wire at minimum)
- * @param lookbackDays - How far back to check for duplicates (default 14)
+ * @param lookbackDays - How far back to check for duplicates (default 180)
+ *   Programs run on multi-month cycles and often re-appear under slightly different
+ *   names from different sources. 6 months prevents re-ingestion without blocking
+ *   legitimately new programs.
  */
 export async function checkDuplicate(
   pool: Pool,
   entry: { sourceUrl: string; name: string; wire: string },
-  lookbackDays: number = 14
+  lookbackDays: number = 180
 ): Promise<DedupResult> {
   // Layer 1: URL exact match (fastest)
   // Pass entry name so we can distinguish aggregate URLs (one tweet listing multiple grants)
