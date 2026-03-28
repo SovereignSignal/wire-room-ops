@@ -22,26 +22,41 @@ const WIRE_CATEGORY_MAP: Record<string, string> = {
   oss: 'oss',
 };
 
-// Default search keywords (used when FORUM_SEARCH_TERMS env var is not set)
-const DEFAULT_SEARCH_TERMS = [
-  'grant program',
-  'funding round',
-  'ecosystem fund',
-  'bounty program',
-  'hackathon',
-  'fellowship',
-  'RFP',
-  'grants council',
-  'developer grants',
-  'retroactive funding',
+// Default search keywords by wire (used when FORUM_SEARCH_TERMS env var is not set)
+const DEFAULT_SEARCH_TERMS: Record<string, string[]> = {
+  crypto: [
+    'grant program', 'ecosystem fund', 'grants council', 'bounty program',
+    'retroactive funding', 'public goods', 'RFP', 'hackathon', 'treasury proposal',
+    'developer grants', 'protocol grants', 'DAO funding', 'governance fund',
+  ],
+  ai: [
+    'research grant', 'fellowship', 'compute credits', 'GPU credits', 'AI grant',
+    'research funding', 'PhD fellowship', 'NSF', 'DARPA', 'AI safety grant',
+    'machine learning grant', 'research program', 'funding opportunity',
+    'call for proposals', 'open call', 'hackathon',
+  ],
+  oss: [
+    'grant program', 'FOSS fund', 'open source grant', 'maintainer grant',
+    'security audit', 'bug bounty', 'fellowship', 'contributor program',
+    'sponsorship program', 'developer program', 'funding', 'GSoC', 'Outreachy',
+    'LFX mentorship', 'hackathon', 'call for proposals',
+  ],
+};
+
+const DEFAULT_ALL_TERMS = [
+  'grant program', 'funding round', 'ecosystem fund', 'bounty program',
+  'hackathon', 'fellowship', 'RFP', 'grants council', 'developer grants',
 ];
 
-function getSearchTerms(): string[] {
+function getSearchTerms(wire?: string): string[] {
   const envVal = process.env.FORUM_SEARCH_TERMS;
   if (envVal) {
     return envVal.split(',').map(t => t.trim()).filter(Boolean);
   }
-  return DEFAULT_SEARCH_TERMS;
+  if (wire && DEFAULT_SEARCH_TERMS[wire]) {
+    return DEFAULT_SEARCH_TERMS[wire];
+  }
+  return DEFAULT_ALL_TERMS;
 }
 
 // Rate limit: ~14 req/min = 4.2s between requests
@@ -279,9 +294,19 @@ export async function fetchRecentDiscussions(
         if (seenUrls.has(normalized)) continue;
         seenUrls.add(normalized);
 
+        // Build classifier-friendly description from available context.
+        // /discussions endpoint has no blurb — synthesize from forum name + title.
+        const forumName = item.forum?.name || item.forum?.token || '';
+        const engParts: string[] = [];
+        if ((item.replies ?? 0) > 0) engParts.push(`${item.replies} replies`);
+        const engStr = engParts.length ? ` (${engParts.join(', ')})` : '';
+        const builtDescription = forumName
+          ? `${forumName} forum: ${item.title}${engStr}`
+          : `Grants forum discussion: ${item.title}${engStr}`;
+
         results.push({
           name: item.title,
-          description: '',
+          description: builtDescription,
           sourceUrl: item.url,
           amount: extractAmount(item.title),
           deadline: null,
@@ -319,7 +344,7 @@ export async function searchForumDiscussions(
   options: ForumSearchOptions = {}
 ): Promise<RawScanResult[]> {
   const baseUrl = config.forum.discussWatchBaseUrl;
-  const keywords = options.keywords || getSearchTerms();
+  const keywords = options.keywords || getSearchTerms(options.wire);
   const maxResults = options.maxResults || MAX_RESULTS_PER_RUN;
   const progress = options.onProgress || (() => {});
   const excludeUrls = options.excludeUrls || new Set<string>();
