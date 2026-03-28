@@ -21,7 +21,10 @@ Both share the same PostgreSQL database. This repo writes; the website reads `sc
 
 | File | Purpose |
 |------|---------|
-| `src/server.ts` | Express routes (~80+ API endpoints) |
+| `src/server.ts` | Express setup, route mounting, startup sequence |
+| `src/routes/*.ts` | 17 route modules (all API endpoints) |
+| `src/middleware/*.ts` | Auth (Privy session + internal API key), rate limiting |
+| `src/services/entry-actions.ts` | Approve/decline/restore service layer (agent-ready, audit trail) |
 | `src/config/index.ts` | Env vars; only 4 truly required (DATABASE_URL, NOTIFICATION_EMAIL, PRIVY_APP_ID, PRIVY_APP_SECRET) |
 | `src/config/brand.ts` | Deployment-agnostic brand config |
 | `src/db/index.ts` | All Postgres queries |
@@ -64,7 +67,7 @@ Distribution is manual trigger (not auto-on-approve). Managed via `distribution_
 
 ## Schedule Types
 
-Three types: `scan-execution`, `forum-scan`, `daily-digest`.
+Six types: `scan-execution`, `forum-scan`, `daily-digest`, `collect-engagement`, `experiment-loop`, `drip-distribution`.
 
 ## Dashboard
 

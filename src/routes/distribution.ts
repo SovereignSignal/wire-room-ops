@@ -15,17 +15,16 @@
  * PUT    /distribution/channels/:id                — update channel
  * DELETE /distribution/channels/:id                — delete channel
  * POST   /distribution/channels/:id/test           — test channel
- * GET    /scan/entries/:id/distribution             — distribution logs for entry
- * POST   /scan/entries/:id/redistribute             — retry failed distribution
+ *
+ * Entry-level routes (GET /scan/entries/:id/distribution, POST /scan/entries/:id/redistribute)
+ * are in scan-entries.ts (mounted at /api/scan with requireAuthOrInternalKey).
  */
 
 import { Router, Request, Response } from 'express';
 import {
   getDistributionConfigs,
   upsertDistributionConfig,
-  getDistributionLogs,
   getDistributionStatusBulk,
-  getDistributionStatusForEntries,
   getDistributionChannels,
   getDistributionChannelById,
   createDistributionChannel,
@@ -34,7 +33,7 @@ import {
   getPool,
   getFeedByKey,
 } from '../db';
-import { distributeEntries, retryDistribution, generateNewsletterMarkdown, confirmNewsletterDistribution, sendTestMessage } from '../services/distribution';
+import { distributeEntries, generateNewsletterMarkdown, confirmNewsletterDistribution, sendTestMessage } from '../services/distribution';
 import { maskConfig, maskCredentials } from '../utils/masking';
 import { rateLimit } from '../middleware/rate-limit';
 import { isValidUuid, isValidFeedKey } from '../utils/validation';
@@ -411,55 +410,8 @@ router.post('/distribution/channels/:id/test', async (req: Request, res: Respons
   }
 });
 
-// --- Entry-level distribution routes ---
-
-// GET /scan/entries/:id/distribution — logs for single entry
-router.get('/scan/entries/:id/distribution', async (req: Request, res: Response) => {
-  const entryId = parseInt(req.params.id, 10);
-  if (isNaN(entryId)) {
-    res.status(400).json({ error: 'Invalid entry ID' });
-    return;
-  }
-
-  try {
-    const logs = await getDistributionLogs(entryId);
-    res.json(logs);
-  } catch (error) {
-    console.error('Failed to fetch distribution logs:', error);
-    res.status(500).json({ error: 'Failed to fetch distribution logs' });
-  }
-});
-
-// POST /scan/entries/:id/redistribute — retry failed distribution
-router.post('/scan/entries/:id/redistribute', async (req: Request, res: Response) => {
-  const entryId = parseInt(req.params.id, 10);
-  if (isNaN(entryId)) {
-    res.status(400).json({ error: 'Invalid entry ID' });
-    return;
-  }
-
-  if (!rateLimit('redistribute', 5, 5 * 60 * 1000)) {
-    res.status(429).json({ error: 'Too many retry attempts. Please wait a few minutes.' });
-    return;
-  }
-
-  try {
-    // Look up the entry's wire
-    const pool = getPool();
-    const entryResult = await pool.query('SELECT wire FROM scan_entries WHERE id = $1', [entryId]);
-    if (entryResult.rows.length === 0) {
-      res.status(404).json({ error: 'Entry not found' });
-      return;
-    }
-    const wire = entryResult.rows[0].wire;
-
-    const result = await retryDistribution(entryId, wire);
-    res.json({ success: true, ...result });
-  } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-    console.error('[Distribution] Redistribute failed:', error);
-    res.status(500).json({ error: errorMsg });
-  }
-});
+// NOTE: Entry-level distribution routes (GET /scan/entries/:id/distribution and
+// POST /scan/entries/:id/redistribute) are defined in scan-entries.ts which is
+// mounted at /api/scan with requireAuthOrInternalKey middleware.
 
 export const distributionRouter = router;

@@ -51,11 +51,12 @@ A partial index `idx_scan_entries_approved` on `(wire, created_at DESC) WHERE st
 
 ### Storage Strategy
 - **Generated files** and **schedule configs** are persisted to Postgres (survive restarts)
-- **Sessions, tokens, and job queues** are stored in-memory (reset on restart)
+- **Sessions** are DB-backed (`sessions` table, 7-day expiry, survive deploys; in-memory read-through cache)
+- **Magic link tokens, download tokens, and job queues** are in-memory (reset on restart)
 - Single-instance deployment only
 
 ### Privy Authentication
-Dashboard login is handled via Privy (social/email auth). On successful Privy login, the server verifies the JWT, fetches the user's email from Privy, and checks it against an allowlist: `NOTIFICATION_EMAIL` (always allowed) plus an optional `ALLOWED_EMAILS` env var (comma-separated). Sessions last 24 hours via HttpOnly cookies.
+Dashboard login is handled via Privy (social/email auth). On successful Privy login, the server verifies the JWT, fetches the user's email from Privy, and checks it against an allowlist: `NOTIFICATION_EMAIL` (always allowed) plus an optional `ALLOWED_EMAILS` env var (comma-separated). Sessions last 7 days via HttpOnly cookies (DB-backed, survive deploys).
 
 ## File Structure Quick Reference
 
@@ -66,15 +67,42 @@ client/                       # React/Vite/Tailwind frontend (Lovable wireops-da
 └── ...
 src/
 ├── index.ts              # Entry point - validates config, starts server
-├── server.ts             # Express routes (includes scan, distribution, feed, schedule, intake APIs)
+├── server.ts             # Express setup, route mounting, startup sequence
 ├── config/
 │   ├── index.ts          # Environment variables and validation
-│   └── brand.ts          # Deployment-agnostic brand config (audience, contentType, contentVerb)
+│   ├── brand.ts          # Deployment-agnostic brand config (audience, contentType, contentVerb)
+│   └── db-config.ts      # Persistent DB config file storage
 ├── db/index.ts           # Postgres queries, schedules, feeds, scan tables, scan prompts, distribution tables
+├── middleware/
+│   ├── auth.ts           # Privy session auth (requireAuth middleware)
+│   ├── internal-auth.ts  # Internal API key auth for agent access (requireAuthOrInternalKey)
+│   └── rate-limit.ts     # Shared rate limit helpers
+├── routes/               # Express route modules (mounted in server.ts)
+│   ├── admin.ts          # Admin operations (migrations, backfills, purges)
+│   ├── auth.ts           # Login, logout, session, file download
+│   ├── dashboard.ts      # Overview stats
+│   ├── database.ts       # DB introspection, paginated queries, schema info
+│   ├── distribution.ts   # Distribution config, channels CRUD, run, newsletter
+│   ├── experiments.ts    # Scoring experiments API
+│   ├── export.ts         # CSV export
+│   ├── feeds.ts          # Feed CRUD
+│   ├── integrations.ts   # Notion CRM sync
+│   ├── jobs.ts           # Background job triggers, SSE progress, Telegram webhook
+│   ├── models.ts         # Model & wire lookup
+│   ├── orgs.ts           # Org profiles
+│   ├── providers.ts      # API providers, usage tracking, pricing
+│   ├── scan-entries.ts   # Scan entry queries, submit, queue, actions, distribution per-entry
+│   ├── scan-execution.ts # Scan execution + forum scan triggers
+│   ├── scan-prompts.ts   # Scan prompts CRUD, test, review, run
+│   └── schedules.ts      # Schedule CRUD, scheduler status
+├── scripts/
+│   ├── collect-engagement.ts  # Fetch X/Twitter public_metrics for distributed posts
+│   └── run-experiment-loop.ts # Evaluate and create scoring parameter experiments
 ├── jobs/
 │   ├── daily-digest.ts     # Daily digest email aggregation (all scan activity across wires)
 │   ├── csv-export.ts       # Approved entries CSV export (cross-wire, for newsletter composition)
 │   ├── daily-intake.ts     # Scan intake pipeline orchestrator (parse -> dedup -> classify -> queue)
+│   ├── drip-distribution.ts # Drip-feed one approved entry per wire per run
 │   ├── enrichment.ts       # Enriches thin entries by scraping source URLs and regenerating summaries
 │   ├── forum-scan.ts       # Forum scan orchestrator (discuss.watch -> intake, DB-driven wire list)
 │   ├── process-raw.ts      # Background job to process raw entries through Gate 1 -> dedup -> classify
@@ -83,18 +111,21 @@ src/
 ├── migrations/
 │   ├── cleanup-approved-data.ts  # One-time data cleanup for existing bad entries
 │   ├── cleanup-org-profiles.ts   # Org profile data cleanup
-│   └── dedup-org-profiles.ts     # Org profile deduplication
+│   ├── dedup-org-profiles.ts     # Org profile deduplication
+│   └── scoring-experiments.ts    # Scoring experiments tables migration
 ├── services/
 │   ├── anthropic.ts      # Claude API calls with scraping integration (uses getBrand())
 │   ├── api-provider.ts     # DB-backed API key management with env var fallback (api_providers table)
 │   ├── api-usage.ts        # Fire-and-forget API usage logging + cost estimation (api_usage_log table)
 │   ├── approval-guard.ts   # Pre-approval validation (blocks bad data from reaching website)
-│   ├── auth.ts           # Session tokens, download tokens, cleanup timers
+│   ├── auto-summarize.ts   # Auto-generate newsletter summary on approve (fire-and-forget)
 │   ├── classifier.ts       # Gate 2 LLM classifier (GRANT/NEWS/EXPIRED/NOISE + quality score + tags)
 │   ├── dedup.ts            # URL exact-match and fuzzy name deduplication
 │   ├── discord-channel.ts  # Discord channel posting via REST API (distribution)
 │   ├── distribution.ts     # Distribution orchestrator: send entries to channels, retry, newsletter
 │   ├── email.ts            # Resend email templates (5 types)
+│   ├── entry-actions.ts    # Approve/decline/restore business logic with audit trail (actor/reason/dryRun)
+│   ├── experiment-engine.ts # Scoring parameter experiment lifecycle (create, evaluate, keep/rollback)
 │   ├── forum.ts            # discuss.watch API client (search terms overrideable via FORUM_SEARCH_TERMS)
 │   ├── grok.ts             # Grok Chat + Responses API for X.com content and scans (uses getBrand())
 │   ├── intake.ts           # Scan result parser, URL/name normalization
@@ -124,7 +155,9 @@ src/
 ├── utils/
 │   ├── async.ts          # Shared sleep() utility
 │   ├── html.ts           # Shared escapeHtml() utility
-│   └── url.ts            # Shared normalizeUrl() for URL deduplication
+│   ├── masking.ts        # Credential masking helpers
+│   ├── url.ts            # Shared normalizeUrl() for URL deduplication
+│   └── validation.ts     # Shared validation helpers (isValidUuid, isValidFeedKey, slugifyFeedKey)
 └── types/
     ├── index.ts          # Core TypeScript interfaces
     └── intake.ts         # Scan pipeline + distribution types (ScanEntry, DistributionConfig, etc.)
@@ -133,8 +166,8 @@ src/
 ## Common Tasks
 
 ### Adding a New API Endpoint
-1. Add route in `src/server.ts`
-2. For authenticated routes, use the `requireAuth` middleware (validates HttpOnly session cookie)
+1. Add route handler in the appropriate `src/routes/*.ts` module (or create a new module and mount it in `src/server.ts`)
+2. For authenticated routes, use `requireAuth` (session) or `requireAuthOrInternalKey` (session + agent API key)
 3. Return JSON for `/api/*` routes
 
 ### Modifying the Dashboard UI
@@ -282,7 +315,7 @@ The database query found no `summaries` with `processing_status = 'SUCCESS'` in 
 Scheduler restarts automatically when you save schedule config via the dashboard API.
 
 ### Files disappear after restart
-Generated files are persisted to Postgres, but sessions and job queues are in-memory and reset on restart. Re-login after a restart to access files.
+Generated files are persisted to Postgres. Sessions are DB-backed and survive restarts. Job queues and magic link tokens are in-memory and reset on restart.
 
 ## Environment Variables
 
@@ -299,7 +332,7 @@ Generated files are persisted to Postgres, but sessions and job queues are in-me
 - `RESEND_API_KEY` - Resend email API key
 
 ### Optional
-See `.env.example` for full list. Key optional vars: `PORT`, `APP_URL`, `ALLOWED_EMAILS`, `TELEGRAM_BOT_TOKEN`, `PERPLEXITY_API_KEY`, `FORUM_SCAN_ENABLED`, `BRAND_*` (deployment-agnostic config overrides).
+See `.env.example` for full list. Key optional vars: `PORT`, `APP_URL`, `ALLOWED_EMAILS`, `TELEGRAM_BOT_TOKEN`, `PERPLEXITY_API_KEY`, `FORUM_SCAN_ENABLED`, `BRAND_*` (deployment-agnostic config overrides), `INTERNAL_API_KEY` (agent API access), `X_BEARER_TOKEN` (engagement metrics), `DEV_MODE` (skip auth in dev), `DATA_DIR` (local data storage).
 
 ## Feeds System
 
@@ -337,9 +370,12 @@ Automated discovery of grant opportunities via X.com scanning, web search, and f
 9. **Approve Guard**: Pre-approval validation blocks entries with empty descriptions or empty URLs from being published; warns on EXPIRED classification
 
 ### Schedule Types
-- **`scan-execution`**: Daily cron, runs `runScanExecution()` which executes all active prompts for a wire
-- **`forum-scan`**: Daily cron, runs `runForumScan()` which searches discuss.watch forums
-- **`daily-digest`**: Daily cron, runs `runDailyDigest()` which aggregates 24h scan activity and sends summary email. Auto-derives scan schedules to run before it
+- **`scan-execution`**: Runs `runScanExecution()` — executes all active prompts for a wire
+- **`forum-scan`**: Runs `runForumScan()` — searches discuss.watch forums
+- **`daily-digest`**: Runs `runDailyDigest()` — aggregates 24h scan activity, sends summary email. Auto-derives scan schedules to run before it
+- **`collect-engagement`**: Runs `collectXEngagement()` — fetches X/Twitter public_metrics for recent distributed posts
+- **`experiment-loop`**: Runs `runExperimentLoop()` — evaluates and creates scoring parameter experiments
+- **`drip-distribution`**: Runs `runDripDistribution()` — distributes one approved entry per wire per run
 
 ### Prompt Management
 - Prompts stored in `scan_prompts` table with `wire`, `label`, `prompt_text`, `response_format`, `variant`, `tool_type`, `intent`
@@ -394,6 +430,7 @@ Approve entries → configure channels in Settings > Distribution → click "Dis
 - **Concurrent execution guard**: Prevents double-posting if distribution is triggered while already running (returns 409 with existing job ID)
 - **Config merge on partial update**: PUT to config endpoint merges new fields into existing JSONB, preventing accidental credential loss
 - **Retry sends only to failed channels**: Redistribution skips channels that already have a `success` or `pending` log entry
+- **Drip mode**: `src/jobs/drip-distribution.ts` distributes one entry per wire per run on a schedule, creating a natural stream instead of batch distribution
 
 ### Key Endpoints
 - `POST /api/distribution/run/:wire` — trigger distribution for a wire
@@ -409,6 +446,25 @@ The classifier is calibrated by operator approve/decline decisions (`src/service
 - Formats guidance as a prompt addendum injected into the classifier prompt
 - Results cached for 6 hours to avoid repeated DB queries
 - The classifier (`src/services/classifier.ts`) calls `computeOperatorSignals()` and `formatSignalsForPrompt()` before each classification
+
+## Scoring Experiments
+
+Automated parameter tuning for the quality scorer (`src/services/experiment-engine.ts`):
+- Creates experiments with mutated scoring parameters (random walk, gradient estimate, explore strategies)
+- Evaluates running experiments against baselines (approval rate, engagement, editorial efficiency)
+- Safety triggers auto-rollback experiments that degrade quality
+- Database tables: `scoring_experiments`, `scoring_param_log`, `engagement_metrics`
+- Run via `experiment-loop` schedule type or `npx ts-node src/scripts/run-experiment-loop.ts`
+- Engagement data collected via `collect-engagement` schedule type or `npx ts-node src/scripts/collect-engagement.ts`
+- Dashboard API at `/api/experiments` for viewing history and results
+
+## Entry Actions Service
+
+`src/services/entry-actions.ts` extracts approve/decline/restore logic from HTTP handlers into a reusable service layer. Supports `ActionOptions`: `quiet` (skip distribution), `force` (override validation), `actor` (audit trail — who), `reason` (audit trail — why), `dryRun` (validate without committing). Both `singleEntryAction()` and `bulkEntryAction()` are used by REST API routes and agent integrations. Audit columns: `actioned_by`, `action_reason` on `scan_entries`.
+
+## Internal API Key Auth
+
+`src/middleware/internal-auth.ts` provides `requireAuthOrInternalKey` middleware. Accepts either a valid `INTERNAL_API_KEY` bearer token (for agent/programmatic access) or falls through to standard Privy session auth. Agent requests get a synthetic `agentSession` identity attached to the request. Mounted on `/api/scan` routes to enable The Stringer agent to take entry actions.
 
 ## API Usage Tracking
 
@@ -443,7 +499,7 @@ In-memory rate limiter in `src/server.ts`. All expensive/admin endpoints are rat
 - Login page uses React (via ESM) with Privy + starfield canvas animation; dashboard is a React/Vite/Tailwind SPA (`client/`)
 - Server-rendered views (login/error only) are in `src/views/` with a shared page shell pattern (deep space palette, Orbitron headings)
 - Client-side `escapeHtml()` is defined once in `shared.ts` via `CLIENT_ESCAPE_HTML` constant
-- Validation helpers (`isValidUuid()`, `isValidFeedKey()`) are defined in `server.ts`
+- Validation helpers (`isValidUuid()`, `isValidFeedKey()`, `slugifyFeedKey()`) are defined in `src/utils/validation.ts`
 - Minimal dependencies
 - Error messages include context for debugging
 
@@ -451,4 +507,3 @@ In-memory rate limiter in `src/server.ts`. All expensive/admin endpoints are rat
 
 - **Slack/Discord intake adapters** (same `intake-core.ts` interface, new inbound channel adapters -- distribution already works)
 - **Email inbound ingestion** (URL extraction from forwarded emails)
-- **Automated scheduled distribution** (currently manual trigger only)

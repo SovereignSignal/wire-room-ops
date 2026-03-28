@@ -1,6 +1,6 @@
 # Wire Ops Dashboard QA Report
 
-**Date**: 2026-03-16
+**Date**: 2026-03-28
 **URL Tested**: https://wire-room-ops-production.up.railway.app/
 **Browser**: Chrome (via Claude-in-Chrome MCP)
 **System Status**: ARRAY ONLINE, all API providers active
@@ -9,271 +9,201 @@
 
 ## 1. Testing Summary
 
-Conducted systematic testing of the Wire Ops React SPA dashboard covering: Overview tab, Scans tab (prompts, edit dialog, tool type dropdown), Queue tab (filters, entries, duplicates), Database tab, Settings tab (Sources, Distribution, API Providers), and general UI/console/network health.
+Conducted systematic testing of the production dashboard and full codebase review covering:
+- Production page load and authentication
+- All 6 navigation tabs (Overview, Scans, Queue, AutoResearch, Database, Settings)
+- API endpoint network requests (captured 404 failures)
+- Browser console errors
+- Route registration correctness (17 route files in src/routes/)
+- TypeScript compilation (server + client)
+- Route conflict and duplication analysis
+- Middleware ordering review
+- New features: entry-actions service, drip-distribution job, internal auth middleware
 
-**Overall Health**: The dashboard is in good shape. The React SPA loads cleanly, navigation between all 5 main tabs works correctly, and all API requests return 200 OK. No JavaScript errors from the application code. The primary issues found are data quality problems (duplicates in queue, "UNKNOWN" wire) and minor UI/accessibility polish items.
+**Overall Health: GOOD** -- the application is functional with active data flowing through all 3 wires. One confirmed bug affecting production dashboard data display, duplicate route handlers (dead code), and a narrow client type definition.
 
 ---
 
-## 2. Working Features (Confirmed Functional)
+## 2. Working Features (Confirmed in Production)
+
+### Authentication and Session
+- Privy-based auth works. Session cookie correctly maintained across tab navigation.
+- Redirect to login on expired session (tested via `authFetch` 401 handling).
+- DEV_MODE properly gated behind explicit env var check.
 
 ### Overview Tab
-- All 4 stat cards load with reasonable numbers: Ingested This Week (468), In Queue (48 at start, declining due to live processing), Raw/Incoming (0), Published (326)
-- System Status section shows Avg Quality (35) and Active Sources (4 Wires)
+- Loads with real data: 102 ingested this week, 477 published
+- Wire stats for ai/crypto/oss with scan counts and quality metrics
 - Recent Activity section shows latest entries with wire badges and timestamps
-- ARRAY ONLINE indicator with auto-refresh timer working
-
-### Scans Tab
-- 31 prompts configured (12 active, 19 inactive)
-- Active prompts correctly show 4 per wire (ai, crypto, oss) with X Search, Perplexity, Web Search, and Perplexity tool types
-- Each prompt row displays: Label, Wire, Tool (with icon), Status (ACTIVE badge), Last Run, Next Run, and Actions (RUN/EDIT/DEL)
-- "INACTIVE PROMPTS" divider correctly separates active from inactive prompts
-- Inactive prompts show OFF status badge and dimmed styling
-- PROMPT SCORECARD shows "21-day window 3% overlap"
-- Edit Prompt dialog opens correctly with all fields:
-  - Schedule section (linked schedule info)
-  - Wire and Variant dropdowns
-  - Label text field
-  - Tool Type dropdown (confirmed: only X Search, Web Search, Perplexity -- NO "Community" option)
-  - Intent dropdown (Discovery, Canonical, Signal)
-  - Output dropdown (Text (parsed), JSON (structured))
-  - Model Override field
-  - Prompt Text textarea
-  - Response Format textarea
-- "+ ADD PROMPT" button visible in top right
+- ARRAY ONLINE indicator with auto-refresh timer
 
 ### Queue Tab
-- Loads entries with correct data (names, descriptions, tags, wire badges, classifications, quality scores)
-- Wire filter buttons (ALL, CRYPTO, AI, OSS) work correctly -- selecting CRYPTO shows only CRYPTO entries, etc.
-- Type filters present: All, GRANT, EXPIRED, NEWS, NOISE, UNCLASSIFIED
-- Advanced filters present: VERTICAL, SIGNAL, TIMELINE dropdowns
-- Entry rows show: checkbox, name, description excerpt, entity tags, wire badge, classification badge, quality score, date, source link, action buttons (approve, archive, decline, delete)
-- "more" expand links visible on entries with long descriptions
-- Quality scores correctly color-coded (green for high, red/orange for low)
-- Entries sorted by quality score (descending)
-- No community-sourced entries visible (confirmed via text search -- "community" only appears in entry descriptions, not as scan sources)
+- Fully functional with 35+ queued entries visible
+- Card view and table view both render correctly
+- Approve / Quiet Approve (no distribution) / Skip buttons present and labeled
+- Classification labels (GRANT/NEWS/EXPIRED/NOISE) display with correct badges
+- Wire tags, source dates, org entity tags all visible
+- Filter bar with wire buttons, type filters, signal/timeline dropdowns
+- Checkboxes for bulk selection
+
+### Scans Tab
+- 40 prompts displayed (9 active across 3 wires, 31 inactive)
+- 30-day cost tracking: $25.99 scan + $5.44 classify = $31.43 total ($0.0759/approved entry)
+- Prompt scorecard with 21-day window and 4% overlap
+- Active prompts show last run times ("3h ago") and next run ("in 6h 10m")
+- RUN/EDIT/DEL actions on every prompt
 
 ### Database Tab
-- 4 stat cards: Scan Entries (2,318), Published (3,392), Queue Depth (36), Raw/Unprocessed (0)
-- Sub-tabs: SCAN ENTRIES, INTAKE RUNS, DISTRIBUTION LOG, PUBLISHED
-- Filters: WIRE dropdown, STATUS dropdown, SEARCH text input, FROM/TO date pickers, APPLY button
-- CSV export button
-- Entries display with: Name, Wire, Status, Quality, Source, Date columns
-- Source column correctly shows "telegram" for Telegram-ingested entries
+- Full data browser: 4,093 scan entries across 82 pages
+- Sub-tabs: Scan Entries, Intake Runs, Distribution Log, Published, CSV
+- Filters: Wire, Status, Search text, From/To date pickers
+- Pagination working (Prev/Next, page number buttons)
+- DB Connection indicator: gondola.proxy.rlwy.net / railway
 
-### Settings Tab - Sources
-- Wire health cards for UNKNOWN, CRYPTO, AI, OSS showing: ingested count, duplicate %, avg quality, high quality count/%, last scan time
-- Quality ratings correctly color-coded (red for Poor, yellow for Marginal)
+### Settings Tab
+- Sources panel with wire health cards (ai/crypto/oss)
+- Distribution, API Providers, Usage, Integrations, Email sub-sections accessible
+- Forum scan trigger button
 
-### Settings Tab - Distribution
-- 3 Telegram channels configured (ai, crypto, oss), all ACTIVE
-- Each channel shows: Name, Type, Wire, Target ID, Status, Actions (TEST/EDIT/DEL)
-- "+ ADD CHANNEL" button present
+### AutoResearch Tab
+- Active experiment (baseline_v1) with metrics: 11.7% approval rate
+- Param inspector, experiment history table, create experiment form all functional
+- Manual rollback button present
 
-### Settings Tab - API Providers
-- 7 providers configured, all ACTIVE:
-  1. Grok (xAI) - DB, model: grok-4.20-beta-0309-non-reasoning
-  2. Claude (Anthropic) - DB, model: claude-opus-4-1-20250805
-  3. Firecrawl - DB
-  4. Perplexity - DB, model: sonar-pro
-  5. Resend - DB
-  6. Telegram (Distribution) - ENV
-  7. Telegram (Intake) - ENV
-- API keys properly masked in display
-- TEST CONNECTION and EDIT buttons present on each
-
-### Navigation & System Health
-- All 5 main tabs (Overview, Scans, Queue, Database, Settings) navigate correctly
-- Settings has 7 sub-tabs, all accessible: Sources, Scan Prompts, Distribution, API Providers, Usage, Integrations, Email
-- Header shows ARRAY ONLINE with auto-refresh timestamp and LOGOUT button
-- No application JavaScript errors in console
-- All API network requests return 200 OK
+### Infrastructure
+- Health endpoint: `{"status":"ok"}`
+- Readiness endpoint: `{"status":"ready","checks":{"db":true,"schedulerInitialized":true}}`
+- CSRF protection on all state-changing requests
+- SPA fallback correctly excludes /api, /auth, /health paths
+- Server TypeScript compiles cleanly (0 errors)
 
 ---
 
 ## 3. Issues Found
 
-### HIGH: Duplicate Entries in Queue (Dedup Failure)
-
-**Severity**: High
-**Steps to Reproduce**:
-1. Navigate to Queue tab
-2. Set filter to ALL
-3. Scroll through entries
-
-**Expected Behavior**: Each unique grant/opportunity should appear only once in the queue.
-
-**Actual Behavior**: Multiple duplicates found:
-- "Avalanche Retro9000" appears **3 times** (all CRYPTO, GRANT, score 48, identical descriptions and tags)
-- "Maori AI Scholarship" appears **2 times** (one short name, one with description appended to name)
-- "RAISE Hackathon" appears **2 times** (one as "RAISE Hackathon", one as "[RAISE Hackathon]" in brackets)
-- "Aleph Hackathon" appears **2 times** (both CRYPTO, NEWS, score 28)
-- "World Foundation Grants (Worldcoin)" appears **2 times** (both CRYPTO, NEWS, score 28)
-- "Core Foundation Grant" appears **2 times** (both CRYPTO, NEWS, score 28)
-
-**Potential Root Cause**: The fuzzy name dedup (`seen_names` table) may not be catching entries with:
-1. Nearly identical names from different scan runs (same URL, different name formatting)
-2. Bracket-wrapped names from Telegram intake (e.g., "[RAISE Hackathon]" vs "RAISE Hackathon")
-3. Names with descriptions appended (e.g., "Maori AI Scholarship -- new scholarship program...")
-
-The dedup system uses token overlap, but bracket punctuation and name-description concatenation may bypass the anchor token matching.
-
-**Impact**: Operator wastes time reviewing the same entry multiple times. Affects editorial efficiency directly.
-
-### MEDIUM: Queue Draining Rapidly During Session (48 to 0)
+### ISSUE 1: Client calls non-existent `/api/scan/counts` endpoint (404s on every page load)
 
 **Severity**: Medium
 **Steps to Reproduce**:
-1. Open Queue tab (shows 48 entries)
-2. Navigate between tabs for ~15 minutes
-3. Return to Queue tab
+1. Load any page on the dashboard
+2. Monitor network requests (Network tab)
 
-**Expected Behavior**: Queue count should remain stable unless an operator takes action.
+**Expected Behavior**: Wire counts (queued/approved/archived/raw per wire) load successfully and display in overview stats and wire count components.
 
-**Actual Behavior**: Queue count decreased from 48 -> 45 -> 43 -> 42 -> 37 -> 33 -> 10 -> 0 over ~15 minutes with no operator action taken. Entries appear to be auto-archived during the session.
+**Actual Behavior**: Three 404 responses on every page load:
+- `GET /api/scan/counts?wire=crypto` -> 404
+- `GET /api/scan/counts?wire=ai` -> 404
+- `GET /api/scan/counts?wire=oss` -> 404
 
-**Potential Root Cause**: The `process-raw` background job or classify-backfill process may be running and archiving entries that fail quality thresholds. Alternatively, the Telegram intake bridge may be re-processing entries and changing their status. This needs investigation to determine if the auto-archival is intentional or a bug.
+**Root Cause**: The `fetchWireCounts()` function in `client/src/api/index.ts` line 179 calls `/api/scan/counts` but the server route is `/api/scan/status-counts` (defined in `src/routes/scan-entries.ts` line 154). This is a route name mismatch introduced during the route refactoring.
 
-**Impact**: If intentional (quality threshold enforcement), this is working as designed but the operator has no visibility into why entries disappear. If unintentional, entries are being lost.
+**Impact**: The `wireCounts` state in the Index component is always empty. The "IN QUEUE" and "RAW / INCOMING" stat cards on the Overview tab show 0 or are missing data. The `fetchWireCounts` function degrades gracefully (returns `[]` on failure), so no crash occurs, but the Overview loses per-wire breakdown data.
 
-### MEDIUM: "UNKNOWN" Wire in Settings > Sources
+**Fix**: Change `client/src/api/index.ts` line 179 from:
+```
+const res = await authFetch(`${BASE}/scan/counts?wire=...`)
+```
+to:
+```
+const res = await authFetch(`${BASE}/scan/status-counts?wire=...`)
+```
+Note: the response shape from `status-counts` is `{ counts: { queued, approved, archived, raw, ... }, seededUrls, totalUrls }` -- the mapping at line 182-188 already expects `.counts.queued` etc. so it should work after the URL fix.
 
-**Severity**: Medium
-**Steps to Reproduce**:
-1. Navigate to Settings > Sources tab
-2. Observe the wire health cards
-
-**Expected Behavior**: Only known wires (crypto, ai, oss) should appear as source cards.
-
-**Actual Behavior**: An "UNKNOWN" wire card appears with significant volume: 192 ingested entries, 27 scans this week, 44% duplicate rate, Avg Quality 44.
-
-**Potential Root Cause**: Entries ingested via Telegram intake or summary-sync bridge without a wire assignment default to some "unknown" value. The `summary-sync.ts` bridge infers wire from content keywords but may fall back to an empty/unknown value when no keywords match.
-
-**Impact**: 192 entries are not properly categorized and won't appear under any wire filter in the Queue tab. These entries are invisible to the operator's normal review workflow.
-
-### LOW: Bracket-Wrapped Entry Names from Telegram Intake
+### ISSUE 2: Duplicate route handlers for distribution entry endpoints
 
 **Severity**: Low
-**Steps to Reproduce**:
-1. Navigate to Queue tab, scroll to low-score entries
-2. Look for entries with names like "[AI Skills Scholarship Program]" and "[RAISE Hackathon]"
+**Steps to Reproduce**: Code review of `src/routes/scan-entries.ts` and `src/routes/distribution.ts`.
 
-**Expected Behavior**: Entry names should be clean text without surrounding brackets.
+**Description**: Both routers define identical handlers for:
+- `GET /api/scan/entries/:id/distribution` (distribution logs for single entry)
+- `POST /api/scan/entries/:id/redistribute` (retry failed distribution)
 
-**Actual Behavior**: Some entries have names wrapped in square brackets, e.g., "[RAISE Hackathon]" and "[AI Skills Scholarship Program]".
+The `scanEntryRouter` is mounted at `/api/scan` (server.ts line 135, with `requireAuthOrInternalKey`) and the `distributionRouter` is mounted at `/api` (server.ts line 156, with `requireAuth`). Since Express matches routes in registration order, the distribution router's versions at lines 416-463 are dead code.
 
-**Potential Root Cause**: The Telegram intake parser or the LLM classifier may be wrapping names in brackets when extracting from Telegram message format.
+**Impact**: No functional impact currently. The dead code adds confusion during maintenance and the auth middleware difference (`requireAuthOrInternalKey` vs `requireAuth`) could matter if agent access to these endpoints is needed.
 
-**Impact**: Minor display issue. Also contributes to dedup failures since "[RAISE Hackathon]" and "RAISE Hackathon" are not recognized as duplicates.
+**Fix**: Remove lines 414-463 from `src/routes/distribution.ts` and the corresponding JSDoc entries at lines 18-19.
 
-### LOW: NOISE-Classified Entry Still in Queue
-
-**Severity**: Low
-**Steps to Reproduce**:
-1. Navigate to Queue tab
-2. Scroll to bottom of entries
-3. Find "JSAI Buildathon Hack" (CRYPTO, NOISE, score 18)
-
-**Expected Behavior**: Entries classified as NOISE should be auto-archived and not appear in the queue.
-
-**Actual Behavior**: JSAI Buildathon Hack has NOISE classification but remains in the queued status with score 18.
-
-**Potential Root Cause**: The entry may have been classified after being queued, and the status wasn't updated to "archived" as expected. Or NOISE entries from Telegram intake may bypass the auto-archive logic.
-
-**Impact**: Minor -- operators can manually archive it. But NOISE entries polluting the queue reduce review efficiency.
-
-### LOW: React Accessibility Warning in Edit Dialog
+### ISSUE 3: Client `EntryStatus` type is too narrow
 
 **Severity**: Low
-**Steps to Reproduce**:
-1. Open any prompt's Edit dialog
-2. Check browser console
+**Steps to Reproduce**: Run `cd client && npx tsc --noEmit`
 
-**Expected Behavior**: No console warnings.
+**Description**: `client/src/types/index.ts` line 1 defines `EntryStatus = 'queued' | 'approved' | 'archived'` but the actual `scan_entries.status` column contains values: `queued`, `approved`, `archived`, `declined`, `duplicate`, `raw`, `skipped`, `deduped`. This causes a TypeScript error in `ScanPromptsTab.tsx` line 899 where the exhaustive ternary chain (checking approved/queued/archived/duplicate/declined) narrows the type to `never` before the `.slice()` fallback.
 
-**Actual Behavior**: Two React warnings: "Missing `Description` or `aria-describedby={undefined}` for {DialogContent}."
+**Impact**: TypeScript compilation warning in the client (does not block the Vite build). Indicates the client type system doesn't accurately model server data, which could lead to subtle type-related bugs elsewhere.
 
-**Potential Root Cause**: The Dialog component (likely from Radix UI) expects a `DialogDescription` child or an `aria-describedby` prop to be accessible. The Edit Prompt dialog doesn't provide either.
+**Fix**: Widen the type:
+```typescript
+export type EntryStatus = 'queued' | 'approved' | 'archived' | 'declined' | 'duplicate' | 'raw' | 'skipped' | 'deduped';
+```
 
-**Impact**: Accessibility concern for screen reader users. No visual or functional impact.
+### ISSUE 4: Missing `react-hook-form` type declaration in client
 
-### LOW: Edit Prompt Dialog "Next Run" Format Ambiguous
+**Severity**: Low (Non-blocking)
+**Steps to Reproduce**: Run `cd client && npx tsc --noEmit`
 
-**Severity**: Low
-**Steps to Reproduce**:
-1. Click EDIT on any active prompt
-2. Look at the SCHEDULE section
+**Description**: `client/src/components/ui/form.tsx` line 4 imports from `react-hook-form` but the package is not in `client/package.json` dependencies.
 
-**Expected Behavior**: Next run time should be clearly formatted.
+**Impact**: TypeScript error during strict checking. Does not affect the Vite build. The `form.tsx` is likely unused shadcn/ui boilerplate.
 
-**Actual Behavior**: Shows "Next run: 3/16/2026, 11:00:00 AM (1h 2h)" -- the "(1h 2h)" suffix is ambiguous. It's unclear if this means "in 1 hour 2 hours" or some other duration format.
-
-**Impact**: Minor confusion for operators trying to understand when the next scan will run.
+**Fix**: Either `npm install react-hook-form` in the client directory, or delete `client/src/components/ui/form.tsx` if it's not imported anywhere.
 
 ---
 
-## 4. Proposed Improvement Tasks
+## 4. Code Quality Observations (Non-Issues, Positive Findings)
 
-### Task 1: Fix Queue Dedup for Telegram Intake Entries
-**Priority**: High
-**Type**: Bug fix
-**Description**: Improve the dedup system to handle:
-1. Bracket-stripped name matching (normalize "[Name]" to "Name" before dedup)
-2. Name-with-description matching (detect when a description is appended to a name and split before dedup)
-3. Cross-run same-name detection (entries with identical or near-identical names from different scan runs/sources)
-**Files**: `src/services/dedup.ts`, `src/services/intake.ts`, `src/services/intake-core.ts`
+### Route Refactoring Quality
+The extraction from monolithic server.ts into 17 route modules is well-executed. Each file has clear JSDoc headers documenting all routes. Middleware is correctly applied at the mount level. Mount ordering in server.ts is sensible (auth first, then specific prefixes, then generic `/api` catches).
 
-### Task 2: Investigate and Fix Queue Auto-Drain Behavior
-**Priority**: Medium
-**Type**: Investigation / Bug fix
-**Description**: The queue dropped from 48 to 0 entries in ~15 minutes with no operator action. Investigate:
-1. Is a background job (process-raw, classify-backfill) running and archiving entries?
-2. Check `scan_entries` status change logs for entries that were queued then archived during the test window
-3. If auto-archival is intentional, add visibility (e.g., toast notification "X entries auto-archived due to quality threshold")
-**Files**: `src/jobs/process-raw.ts`, `src/jobs/daily-intake.ts`, `src/services/classifier.ts`
+### Entry Actions Service
+`src/services/entry-actions.ts` is a clean service layer extraction. Proper error types (`ApprovalBlockedError`, `BulkApprovalBlockedError`), dry-run support, audit columns (`actioned_by`, `action_reason`), and fire-and-forget side effects for distribution/summarization/org-linking.
 
-### Task 3: Resolve "UNKNOWN" Wire Entries
-**Priority**: Medium
-**Type**: Data quality fix
-**Description**: 192 entries are assigned to an "UNKNOWN" wire and are invisible in the normal queue review flow.
-1. Identify the source of entries without wire assignment (likely Telegram intake or summary-sync)
-2. Add a default wire fallback (or use "crypto" as default per CLAUDE.md)
-3. Backfill existing UNKNOWN entries with appropriate wire assignments
-4. Consider hiding "UNKNOWN" from the Sources card if it's not a real wire
-**Files**: `src/services/intake-core.ts`, `src/jobs/summary-sync.ts`
+### Internal Auth Middleware
+`src/middleware/internal-auth.ts` properly implements a two-tier auth scheme: internal API key for agents OR standard Privy session. The synthetic agent identity is properly attached to the request.
 
-### Task 4: Auto-Archive NOISE Entries from Queue
-**Priority**: Low
-**Type**: Bug fix
-**Description**: Entries classified as NOISE (like "JSAI Buildathon Hack" with score 18) should be auto-archived rather than remaining in the queue. Verify that the NOISE -> archived status transition is happening consistently, especially for entries classified after initial queuing.
-**Files**: `src/services/classifier.ts`, `src/jobs/daily-intake.ts`
+### Drip Distribution Job
+`src/jobs/drip-distribution.ts` correctly implements one-entry-per-wire-per-run distribution with 30-day lookback and content quality gates (description >50 chars or enriched_summary present).
 
-### Task 5: Add DialogDescription to Edit Prompt Modal
-**Priority**: Low
-**Type**: Accessibility fix
-**Description**: Add a `DialogDescription` component (or visually hidden description via `aria-describedby`) to the Edit Prompt dialog to resolve the React console warnings and improve screen reader accessibility.
-**Files**: `client/src/components/` (wherever the prompt edit dialog is defined)
+### DEV_MODE Security
+Properly gated: `process.env.DEV_MODE === 'true'`. Only used in auth middleware. Not a risk as long as the env var is not set in production Railway deployment.
 
-### Task 6: Clean Up Next Run Time Format
-**Priority**: Low
-**Type**: UI polish
-**Description**: The "(1h 2h)" suffix on the next run time in the Edit Prompt dialog's Schedule section is ambiguous. Change to a clearer format like "in 1h 2m" or "1 hour, 2 minutes from now".
-**Files**: `client/src/components/` (prompt edit dialog / schedule display component)
+### Telegram Webhook Security
+The webhook handler in `src/routes/jobs.ts` correctly rejects all calls if `webhookSecret` is not configured, and validates the `x-telegram-bot-api-secret-token` header before processing.
 
 ---
 
-## 5. Recommendations
+## 5. Proposed Tasks (Prioritized)
+
+### Task 1: Fix `/api/scan/counts` route mismatch [HIGH]
+**Effort**: 15 minutes
+**Files**: `client/src/api/index.ts`
+**Description**: Change the API path from `/api/scan/counts` to `/api/scan/status-counts` in the `fetchWireCounts()` function. This fixes 3 failed network requests on every page load and restores per-wire breakdown data to the Overview tab.
+
+### Task 2: Remove duplicate distribution route handlers [LOW]
+**Effort**: 10 minutes
+**Files**: `src/routes/distribution.ts`
+**Description**: Remove the dead `GET /scan/entries/:id/distribution` and `POST /scan/entries/:id/redistribute` handlers (lines 414-463) that are shadowed by identical handlers in `src/routes/scan-entries.ts`.
+
+### Task 3: Widen client `EntryStatus` type [LOW]
+**Effort**: 10 minutes
+**Files**: `client/src/types/index.ts`
+**Description**: Add missing status values to the `EntryStatus` union type to match server reality. Fixes TypeScript error in ScanPromptsTab.
+
+### Task 4: Clean up unused `react-hook-form` import [LOW]
+**Effort**: 5 minutes
+**Files**: `client/src/components/ui/form.tsx`
+**Description**: Either install the package or remove the unused form component.
+
+---
+
+## 6. Recommendations
 
 ### Priority Order
-1. **Task 1 (Dedup)** -- Directly impacts operator efficiency. Duplicate entries are the highest-friction issue in the current workflow.
-2. **Task 2 (Queue Drain)** -- Needs investigation first to determine if it's a bug or feature. If entries are being lost, this is critical.
-3. **Task 3 (UNKNOWN Wire)** -- 192 entries are effectively invisible. Quick win if the fix is just adding a default wire fallback.
-4. **Tasks 4-6** -- Low priority polish items that can be addressed in a future cleanup pass.
+1. **Task 1** (scan/counts fix) -- highest impact, lowest effort. Fixes broken data on every page load.
+2. **Tasks 2-4** -- low-priority cleanup, can be batched in a single housekeeping commit.
 
-### Positive Observations
-- The React SPA dashboard is a massive improvement over the old server-rendered pages (from the Feb 2026 QA report)
-- The Scans tab organization (active prompts first, inactive divider, tool type icons) is clean and intuitive
-- The Queue filtering system (wire buttons + type filters + advanced filters) is well-designed
-- All API calls are returning 200 OK with no network failures
-- The Settings tab is comprehensive with good sub-tab organization
-- No JavaScript application errors in the console -- only browser extension noise and minor React warnings
+### Strategic Suggestions
+1. **Add API route smoke tests** -- a test that verifies every client `authFetch` URL has a matching server route would catch mismatches like Issue 1 during development.
+2. **Client/server type sync** -- consider generating the client types from the server type definitions (or at minimum, keep a shared status enum) to prevent drift.
+3. **Network error visibility** -- the `fetchWireCounts` failure is silently swallowed. Consider adding a subtle indicator when background data fetches fail, so operators know when they're seeing stale/incomplete data.

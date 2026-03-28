@@ -170,13 +170,13 @@ export async function classifyQueue(wire?: string): Promise<{ classified: number
 }
 
 export async function fetchWireCounts(): Promise<WireCounts[]> {
-  // Fetch queue depth per wire using existing /api/scan/counts endpoint
+  // Fetch queue depth per wire using /api/scan/status-counts endpoint
   // Called once per wire — aggregate across known wires
   try {
     const feeds = await fetchFeeds();
     const results = await Promise.allSettled(
       feeds.map(async (f) => {
-        const res = await authFetch(`${BASE}/scan/counts?wire=${encodeURIComponent(f.key)}`);
+        const res = await authFetch(`${BASE}/scan/status-counts?wire=${encodeURIComponent(f.key)}`);
         if (!res.ok) return null;
         const data = await res.json();
         return {

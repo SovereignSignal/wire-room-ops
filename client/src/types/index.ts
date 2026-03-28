@@ -1,4 +1,4 @@
-export type EntryStatus = 'queued' | 'approved' | 'archived';
+export type EntryStatus = 'queued' | 'approved' | 'archived' | 'declined' | 'duplicate' | 'raw' | 'skipped' | 'deduped';
 
 export type Classification = 'GRANT' | 'EXPIRED' | 'NEWS' | 'NOISE' | 'UNCHECKED';
 

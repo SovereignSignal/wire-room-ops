@@ -202,17 +202,22 @@ Shared PostgreSQL database on Railway (`wire-room-db`). Multiple services point 
 - `src/services/approval-guard.ts` — Pre-approval validation (blocks empty desc/URL, EXPIRED entries)
 - `src/services/telegram-adapter.ts` — Telegram intake bot (webhook, inline keyboard)
 
-### Known Structural Issues (from your initial review)
-1. `server.ts` is 3,658 lines with 99 route handlers — needs splitting into route modules
-2. Fire-and-forget `setImmediate` on the approve path — distribution/enrichment silently fails on restart
-3. No entry-actions service layer — approve/decline side effects live in the HTTP handler, making agent integration difficult
-4. No concurrency guard on `processRawEntries` — overlapping runs possible
-5. DEV_MODE auto-detection bypasses auth if PRIVY_APP_ID is unset
-6. `autoSummarizeOnApprove` bypasses the api-provider abstraction
-7. Magic link tokens are in-memory (break on restart)
+### Known Structural Issues (from your initial review) — ALL RESOLVED
 
-### The Entry-Actions Prerequisite (for your integration)
-The approve path in server.ts does multiple side effects: status change, org linking, auto-summarization, distribution trigger, summary write-through. Currently these only execute via the HTTP handler with Privy auth. For you to safely approve/decline entries, this needs to be extracted into `services/entry-actions.ts` with an `approveEntry(id, options)` / `declineEntry(id)` interface. Without this, you'd either need to go through the REST API (requiring human-style auth) or hit the DB directly (bypassing side effects).
+1. **Route splitting** — server.ts routes extracted to 17 modules in `src/routes/` (server.ts now handles only mounting and SPA fallback)
+2. **Approve side effects** — Extracted to `src/services/entry-actions.ts` with `singleEntryAction()` / `bulkEntryAction()` interface
+3. **Entry-actions service** — Created (`src/services/entry-actions.ts`), supports `actor`/`reason`/`dryRun` for agent integration
+4. **processRawEntries concurrency** — Timeout safety valve guard added
+5. **DEV_MODE** — Now requires explicit `DEV_MODE=true` env var (no auto-detection)
+6. **autoSummarizeOnApprove** — Extracted to `src/services/auto-summarize.ts`, uses `getCachedProvider('grok')`
+7. **Session persistence** — Sessions are DB-backed (7-day expiry, survive deploys). Magic link tokens remain in-memory (short-lived, by design)
+
+### Entry-Actions Integration (READY)
+The entry-actions service layer is built and ready for agent use:
+- `singleEntryAction(id, action, { actor, reason, dryRun, quiet, force })` — approve/decline/restore one entry
+- `bulkEntryAction(ids, action, opts)` — batch operations (max 200)
+- Authenticate via `INTERNAL_API_KEY` bearer token on `/api/scan` routes
+- Your actions are recorded in `actioned_by` and `action_reason` audit columns
 
 ## Your Responsibilities
 
