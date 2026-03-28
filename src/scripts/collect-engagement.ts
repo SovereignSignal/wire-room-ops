@@ -159,7 +159,16 @@ export async function collectXEngagement(pool: Pool, ageMinHours: number, ageMax
             (entry_id, channel, wire, external_id, impressions, likes, retweets,
              replies, quotes, bookmarks, engagement_score, measured_at, post_age_hours)
           VALUES ($1, 'x', $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), $11)
-          ON CONFLICT (entry_id, channel, measured_at) DO NOTHING
+          ON CONFLICT (entry_id, channel, (measured_at::date)) DO UPDATE SET
+            impressions = EXCLUDED.impressions,
+            likes = EXCLUDED.likes,
+            retweets = EXCLUDED.retweets,
+            replies = EXCLUDED.replies,
+            quotes = EXCLUDED.quotes,
+            bookmarks = EXCLUDED.bookmarks,
+            engagement_score = EXCLUDED.engagement_score,
+            post_age_hours = EXCLUDED.post_age_hours,
+            measured_at = EXCLUDED.measured_at
         `, [
           entry.entry_id, entry.wire, tweet.id,
           m.impression_count, m.like_count, m.retweet_count,
@@ -214,4 +223,6 @@ async function main() {
   }
 }
 
-main();
+if (require.main === module) {
+  main();
+}

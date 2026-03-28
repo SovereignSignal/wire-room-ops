@@ -23,11 +23,11 @@ const router = Router();
 /** Validate schedule numeric parameters. Returns error string or null. */
 function validateScheduleParams(body: Record<string, any>): string | null {
   const { dayOfWeek, hour, minute, lookbackDays, scheduleType, frequencyHours, notifyEmails } = body;
-  if (scheduleType && !['scan-execution', 'forum-scan', 'daily-digest'].includes(scheduleType)) {
-    return 'scheduleType must be "scan-execution", "forum-scan", or "daily-digest"';
+  if (scheduleType && !['scan-execution', 'forum-scan', 'daily-digest', 'collect-engagement', 'experiment-loop', 'drip-distribution'].includes(scheduleType)) {
+    return 'scheduleType must be one of: scan-execution, forum-scan, daily-digest, collect-engagement, experiment-loop, drip-distribution';
   }
-  if (typeof dayOfWeek === 'number' && (dayOfWeek < 0 || dayOfWeek > 6)) {
-    return 'dayOfWeek must be between 0 (Sunday) and 6 (Saturday)';
+  if (typeof dayOfWeek === 'number' && (dayOfWeek < 0 || dayOfWeek > 7)) {
+    return 'dayOfWeek must be between 0 (Sunday) and 6 (Saturday), or 7 for daily';
   }
   if (typeof hour === 'number' && (hour < 0 || hour > 23)) {
     return 'hour must be between 0 and 23';

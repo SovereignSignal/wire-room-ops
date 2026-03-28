@@ -269,7 +269,8 @@ router.get('/entries', async (req: Request, res: Response) => {
 
 // POST /entries/bulk-action — bulk approve/decline/reviewlater/restore
 router.post('/entries/bulk-action', async (req: Request, res: Response) => {
-  const { ids, action, quiet } = req.body;
+  const { ids, action, quiet, actor, reason, dryRun } = req.body;
+  const agentSession = (req as any).agentSession;
 
   if (!Array.isArray(ids) || ids.length === 0) {
     res.status(400).json({ error: 'ids must be a non-empty array' });
@@ -290,6 +291,9 @@ router.post('/entries/bulk-action', async (req: Request, res: Response) => {
     const result = await bulkEntryAction(entryIds, action, {
       quiet: !!quiet,
       force: req.query.force === 'true',
+      actor: actor || agentSession?.userId || undefined,
+      reason: reason || undefined,
+      dryRun: !!dryRun,
     });
     res.json(result);
   } catch (error) {
@@ -319,12 +323,16 @@ router.post('/entries/:id/action', async (req: Request, res: Response) => {
     return;
   }
 
-  const { action, quiet } = req.body;
+  const { action, quiet, actor, reason, dryRun } = req.body;
+  const agentSession = (req as any).agentSession;
 
   try {
     const result = await singleEntryAction(entryId, action, {
       quiet: !!quiet,
       force: req.query.force === 'true',
+      actor: actor || agentSession?.userId || undefined,
+      reason: reason || undefined,
+      dryRun: !!dryRun,
     });
     res.json(result);
   } catch (error) {

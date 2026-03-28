@@ -6,8 +6,9 @@
  * 2. A valid Privy session (existing requireAuth fallback)
  */
 
+import crypto from 'crypto';
 import { Request, Response, NextFunction } from 'express';
-import { requireAuth } from './auth.js';
+import { requireAuth } from './auth';
 
 export function requireAuthOrInternalKey(req: Request, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
@@ -15,7 +16,8 @@ export function requireAuthOrInternalKey(req: Request, res: Response, next: Next
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.slice(7);
     const internalKey = process.env.INTERNAL_API_KEY;
-    if (internalKey && token === internalKey) {
+    if (internalKey && token.length === internalKey.length &&
+        crypto.timingSafeEqual(Buffer.from(token), Buffer.from(internalKey))) {
       // Valid internal key — attach a synthetic agent identity
       (req as any).agentSession = { userId: 'agent:stringer', isAgent: true };
       return next();
