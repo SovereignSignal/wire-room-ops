@@ -42,11 +42,12 @@ export async function runDripDistribution(pool: Pool): Promise<DripDistributionR
            AND se.distribute_after <= NOW()
            AND (
              (se.description IS NOT NULL AND LENGTH(TRIM(se.description)) > 50)
-             OR se.enriched_summary IS NOT NULL
+             OR (se.enriched_summary IS NOT NULL AND LENGTH(TRIM(se.enriched_summary)) > 0)
            )
            AND NOT EXISTS (
              SELECT 1 FROM distribution_logs dl
              WHERE dl.entry_id = se.id
+               AND dl.status IN ('success', 'pending')
            )
          ORDER BY se.distribute_after ASC
          LIMIT 1`,

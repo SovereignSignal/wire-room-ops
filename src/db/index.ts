@@ -1902,6 +1902,16 @@ export async function ensureEngagementMetricsTable(): Promise<void> {
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_engagement_metrics_entry ON engagement_metrics(entry_id)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_engagement_metrics_wire ON engagement_metrics(wire)`);
+  // Functional unique index: one measurement per entry+channel per calendar day
+  // (The original UNIQUE(entry_id, channel, measured_at) is a no-op due to NOW() precision)
+  try {
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_engagement_metrics_daily_unique
+      ON engagement_metrics (entry_id, channel, (measured_at::date))
+    `);
+  } catch (err) {
+    console.warn('[DB] Could not create daily unique index on engagement_metrics (may have duplicate rows):', err);
+  }
   console.log('[DB] Engagement metrics table ready');
 }
 
