@@ -288,8 +288,10 @@ router.post('/entries/bulk-action', async (req: Request, res: Response) => {
   }
 
   try {
+    // Agent calls (internal API key) always use quiet=true — no auto-distribution
+    const isAgent = !!(agentSession?.isAgent);
     const result = await bulkEntryAction(entryIds, action, {
-      quiet: !!quiet,
+      quiet: isAgent ? true : !!quiet,
       force: req.query.force === 'true',
       actor: actor || agentSession?.userId || undefined,
       reason: reason || undefined,
@@ -327,8 +329,10 @@ router.post('/entries/:id/action', async (req: Request, res: Response) => {
   const agentSession = (req as any).agentSession;
 
   try {
+    // Agent calls (internal API key) always use quiet=true — no auto-distribution
+    const isAgent = !!(agentSession?.isAgent);
     const result = await singleEntryAction(entryId, action, {
-      quiet: !!quiet,
+      quiet: isAgent ? true : !!quiet,
       force: req.query.force === 'true',
       actor: actor || agentSession?.userId || undefined,
       reason: reason || undefined,
