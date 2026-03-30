@@ -4,6 +4,8 @@ import { DatabaseEntry } from '../types';
 import type { ToolType } from '../types/intake';
 import { logApiUsage } from './api-usage';
 import { getCachedProvider } from './api-provider';
+import { fetchThreadContext, type ThreadContext } from './x-thread';
+import { getPool } from '../db';
 
 function buildGrokPrompt(): string {
   const brand = getBrand();
@@ -46,9 +48,52 @@ interface GrokResponse {
 const DEFAULT_GROK_MODEL = 'grok-4.20-beta-0309-non-reasoning';
 
 export async function summarizeWithGrok(entry: DatabaseEntry, model?: string): Promise<string> {
-  const prompt = buildGrokPrompt()
-    .replace('{existing_summary}', entry.quick_summary)
-    .replace('{url}', entry.url);
+  // Fetch thread context for X.com URLs
+  let threadContext: ThreadContext | null = null;
+  if (isXcomUrl(entry.url)) {
+    threadContext = await fetchThreadContext(entry.url);
+  }
+
+  // Store thread metadata on the entry if thread detected
+  if (threadContext?.isThread) {
+    try {
+      const pool = getPool();
+      await pool.query(
+        `UPDATE scan_entries SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb WHERE url = $2`,
+        [JSON.stringify({ thread_context: { authorHandle: threadContext.authorHandle, tweetCount: threadContext.tweetCount } }), entry.url]
+      );
+    } catch (metaErr) {
+      console.warn(`[Grok] Failed to store thread metadata for ${entry.url}:`, metaErr);
+    }
+  }
+
+  let prompt: string;
+  if (threadContext?.isThread) {
+    const brand = getBrand();
+    prompt = `You have access to X.com posts. This is an AGGREGATOR THREAD by @${threadContext.authorHandle} (${threadContext.authorName}) containing ${threadContext.tweetCount} tweets.
+
+Original URL: ${entry.url}
+Reference summary (may be outdated): ${entry.quick_summary}
+
+FULL THREAD TEXT:
+${threadContext.fullThreadText}
+
+IMPORTANT: This thread lists MULTIPLE programs/opportunities. Summarize ALL of them, not just the first one.
+
+Write a newsletter entry for the ${brand.name} newsletter that covers ALL programs mentioned in the thread.
+
+REQUIREMENTS:
+- Lead with the aggregator context: who posted and how many items
+- List each program/opportunity with its key details (amounts, deadlines, eligibility)
+- 4-8 sentences, roughly 100-250 words (longer than usual because multiple items)
+- Plain prose, flowing paragraphs, no bullet points
+- Include ALL specific numbers: funding amounts, token quantities, dates
+- Do not use: crucial, significantly, innovative, exciting, revolutionary, game-changing, foster, comprehensive`;
+  } else {
+    prompt = buildGrokPrompt()
+      .replace('{existing_summary}', entry.quick_summary)
+      .replace('{url}', entry.url);
+  }
 
   const provider = getCachedProvider('grok');
   const apiKey = provider?.api_key || config.apis.grok.apiKey;
