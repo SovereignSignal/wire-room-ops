@@ -7,6 +7,8 @@
 
 import { getPool } from '../db';
 import { getCachedProvider } from './api-provider';
+import { fetchThreadContext, type ThreadContext } from './x-thread';
+import { isXcomUrl } from './grok';
 
 const DEFAULT_GROK_MODEL = 'grok-4.20-beta-0309-non-reasoning';
 const DEFAULT_GROK_BASE_URL = 'https://api.x.ai/v1';
@@ -45,7 +47,42 @@ export async function autoSummarizeOnApprove(
     const cleanDesc = cleanText(description);
     const cleanName = cleanText(name);
 
-    const prompt = `You are writing a concise opportunity summary for a ${wireLabel} newsletter.
+    // Fetch thread context for X.com URLs
+    let threadContext: ThreadContext | null = null;
+    if (sourceUrl && isXcomUrl(sourceUrl)) {
+      threadContext = await fetchThreadContext(sourceUrl);
+    }
+
+    let prompt: string;
+    if (threadContext?.isThread) {
+      prompt = `You are writing an opportunity summary for a ${wireLabel} newsletter.
+
+This entry comes from an AGGREGATOR THREAD by @${threadContext.authorHandle} (${threadContext.authorName}) containing ${threadContext.tweetCount} tweets.
+
+Grant name: ${cleanName}
+${amount ? `Amount: ${amount}` : ''}
+${deadline ? `Deadline: ${deadline}` : ''}
+${sourceUrl ? `Source: ${sourceUrl}` : ''}
+
+FULL THREAD TEXT:
+${threadContext.fullThreadText}
+
+Original description: ${cleanDesc}
+
+IMPORTANT: This thread lists MULTIPLE programs/opportunities. Summarize ALL of them.
+Write a 4-8 sentence newsletter summary covering all programs. Lead with the aggregator context. Include all specific numbers. Plain prose, no bullet points, no fluff. Max 250 words.`;
+
+      // Store thread metadata on the entry
+      try {
+        await pool.query(
+          `UPDATE scan_entries SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb WHERE id = $2`,
+          [JSON.stringify({ thread_context: { authorHandle: threadContext.authorHandle, tweetCount: threadContext.tweetCount } }), entryId]
+        );
+      } catch (metaErr) {
+        console.warn(`[AutoSummarize] Failed to store thread metadata for entry ${entryId}:`, metaErr);
+      }
+    } else {
+      prompt = `You are writing a concise opportunity summary for a ${wireLabel} newsletter.
 
 Grant name: ${cleanName}
 ${amount ? `Amount: ${amount}` : ''}
@@ -54,6 +91,7 @@ ${sourceUrl && sourceUrl.startsWith('http') ? `Source: ${sourceUrl}` : ''}
 Description: ${cleanDesc}
 
 Write a 2-4 sentence newsletter summary. Lead with the organization/program name and a strong action verb. Include all specific numbers (amounts, dates, eligibility requirements). Plain prose, no bullet points, no fluff, no hype words. Max 120 words.`;
+    }
 
     const response = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
