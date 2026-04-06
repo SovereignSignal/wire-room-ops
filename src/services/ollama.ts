@@ -19,6 +19,7 @@ interface OllamaChatResponse {
   message: {
     role: string;
     content: string;
+    thinking?: string;
   };
   done: boolean;
   prompt_eval_count?: number;
@@ -92,7 +93,11 @@ export async function summarizeWithOllama(entry: DatabaseEntry, model?: string):
 
   const data = await response.json() as OllamaChatResponse;
 
-  if (!data.message?.content) {
+  // Kimi K2.5 puts response in 'thinking' field, not 'content'
+  const rawText = data.message?.content || data.message?.thinking || '';
+  const summary = rawText.trim();
+
+  if (!summary) {
     throw new Error('Ollama API returned empty response');
   }
 
@@ -103,7 +108,7 @@ export async function summarizeWithOllama(entry: DatabaseEntry, model?: string):
     tokens_out: data.eval_count,
   });
 
-  return data.message.content.trim();
+  return summary;
 }
 
 /**
@@ -166,7 +171,10 @@ Write a 2-4 sentence newsletter summary. Lead with the organization/program name
   }
 
   const data = await response.json() as OllamaChatResponse;
-  const summary = data.message?.content?.trim();
+
+  // Kimi K2.5 puts response in 'thinking' field, not 'content'
+  const rawText = data.message?.content || data.message?.thinking || '';
+  const summary = rawText.trim();
 
   logApiUsage({
     provider: 'ollama', model: useModel, purpose: 'auto-summarize',
