@@ -1,11 +1,15 @@
 import { DatabaseEntry, ProcessedEntry, ProcessingStats } from '../types';
 import { summarizeWithGrok, isXcomUrl } from './grok';
 import { summarizeWithOpus } from './anthropic';
+import { summarizeWithOllama } from './ollama';
+import { getCachedProvider } from './api-provider';
+import { config } from '../config';
 import { sleep } from '../utils/async';
 
 export interface ModelOptions {
   grokModel?: string;
   anthropicModel?: string;
+  ollamaModel?: string;
 }
 
 const RETRY_DELAYS = [1000, 2000, 4000];
@@ -34,6 +38,11 @@ export async function withRetry<T>(
 
 export async function processEntry(entry: DatabaseEntry, models?: ModelOptions): Promise<ProcessedEntry> {
   const isXcom = isXcomUrl(entry.url);
+  const pref = config.summarize.provider;
+  const ollamaAvailable = pref !== 'grok' && !!getCachedProvider('ollama')?.api_key;
+
+  // X.com URLs always use Grok (native X access). Non-X.com: Ollama if available, else Opus.
+  const method = isXcom ? 'grok' : (ollamaAvailable ? 'ollama' : 'opus');
 
   const baseResult: ProcessedEntry = {
     id: entry.id,
@@ -44,13 +53,15 @@ export async function processEntry(entry: DatabaseEntry, models?: ModelOptions):
     source: entry.source,
     wire: entry.wire,
     enrichedSummary: '',
-    processingMethod: isXcom ? 'grok' : 'opus',
+    processingMethod: method,
   };
 
   try {
     const summary = await withRetry(async () => {
       if (isXcom) {
         return await summarizeWithGrok(entry, models?.grokModel);
+      } else if (method === 'ollama') {
+        return await summarizeWithOllama(entry, models?.ollamaModel);
       } else {
         return await summarizeWithOpus(entry, models?.anthropicModel);
       }

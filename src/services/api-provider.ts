@@ -77,6 +77,12 @@ const PROVIDER_DEFAULTS: Record<string, { displayName: string; envKey: () => str
     baseUrl: () => null,
     defaultModel: null,
   },
+  ollama: {
+    displayName: 'Ollama Cloud',
+    envKey: () => config.apis.ollama.apiKey,
+    baseUrl: () => config.apis.ollama.baseUrl,
+    defaultModel: 'kimi-k2.5:cloud',
+  },
 };
 
 // ---- In-memory cache ----
@@ -282,6 +288,26 @@ export async function testProviderConnection(provider: string): Promise<{ succes
           headers: { 'Authorization': `Bearer ${cached.api_key}` },
         });
         if (res.status === 401 || res.status === 403) throw new Error('Invalid API key');
+        return { success: true, latencyMs: Date.now() - start };
+      }
+
+      case 'ollama': {
+        const ollamaBase = cached.base_url || 'https://ollama.com/api';
+        const res = await fetch(`${ollamaBase}/chat`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${cached.api_key}`,
+          },
+          body: JSON.stringify({
+            model: cached.default_model || 'kimi-k2.5:cloud',
+            messages: [{ role: 'user', content: 'ping' }],
+            stream: false,
+            options: { num_predict: 1 },
+          }),
+        });
+        if (res.status === 401 || res.status === 403) throw new Error('Invalid API key');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return { success: true, latencyMs: Date.now() - start };
       }
 

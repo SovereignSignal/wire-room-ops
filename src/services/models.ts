@@ -194,11 +194,22 @@ function getPerplexityModels(): ModelInfo[] {
   ];
 }
 
+function getOllamaModels(): ModelInfo[] {
+  const provider = getCachedProvider('ollama');
+  if (!provider?.api_key) return [];
+
+  return [
+    { id: 'kimi-k2.5:cloud', displayName: 'Kimi K2.5 (Cloud)', created: new Date('2025-07-01'), provider: 'ollama' },
+    { id: 'qwen3:32b', displayName: 'Qwen3 32B (Cloud)', created: new Date('2025-05-01'), provider: 'ollama' },
+    { id: 'llama4:scout', displayName: 'Llama 4 Scout (Cloud)', created: new Date('2025-04-01'), provider: 'ollama' },
+  ];
+}
+
 export async function getAllModels(): Promise<Record<string, ModelInfo[]>> {
   const [grok, anthropic] = await Promise.all([
     getGrokModels(),
     getAnthropicModels(),
   ]);
 
-  return { grok, anthropic, perplexity: getPerplexityModels() };
+  return { grok, anthropic, perplexity: getPerplexityModels(), ollama: getOllamaModels() };
 }

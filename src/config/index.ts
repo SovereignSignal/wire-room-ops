@@ -28,6 +28,14 @@ export const config = {
       apiKey: process.env.FIRECRAWL_API_KEY || '',
       baseUrl: 'https://api.firecrawl.dev/v1',
     },
+    ollama: {
+      apiKey: process.env.OLLAMA_API_KEY || '',
+      baseUrl: process.env.OLLAMA_BASE_URL || 'https://ollama.com/api',
+    },
+  },
+
+  summarize: {
+    provider: (process.env.SUMMARIZE_PROVIDER || 'auto') as 'auto' | 'ollama' | 'grok',
   },
   
   email: {
@@ -89,6 +97,7 @@ export function validateConfig(): void {
     ['ANTHROPIC_API_KEY', config.apis.anthropic.apiKey],
     ['GROK_API_KEY', config.apis.grok.apiKey],
     ['FIRECRAWL_API_KEY', config.apis.firecrawl.apiKey],
+    ['OLLAMA_API_KEY', config.apis.ollama.apiKey],
     ['RESEND_API_KEY', config.email.resendApiKey],
   ];
 
