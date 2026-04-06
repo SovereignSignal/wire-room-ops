@@ -51,7 +51,7 @@ const PROVIDER_DEFAULTS: Record<string, { displayName: string; envKey: () => str
     displayName: 'Ollama Cloud',
     envKey: () => config.apis.ollama.apiKey,
     baseUrl: () => config.apis.ollama.baseUrl,
-    defaultModel: 'gemma3:4b',
+    defaultModel: 'kimi-k2.5',
   },
   firecrawl: {
     displayName: 'Firecrawl',

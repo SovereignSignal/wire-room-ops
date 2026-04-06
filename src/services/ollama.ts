@@ -11,7 +11,7 @@ import { DatabaseEntry } from '../types';
 import { logApiUsage } from './api-usage';
 import { getCachedProvider } from './api-provider';
 
-const DEFAULT_OLLAMA_MODEL = 'gemma3:4b';
+const DEFAULT_OLLAMA_MODEL = 'kimi-k2.5';
 const DEFAULT_OLLAMA_BASE_URL = 'https://ollama.com/api';
 
 interface OllamaChatResponse {
@@ -141,7 +141,7 @@ ${opts.deadline ? `Deadline: ${opts.deadline}` : ''}
 ${opts.sourceUrl && opts.sourceUrl.startsWith('http') ? `Source: ${opts.sourceUrl}` : ''}
 Description: ${opts.description}
 
-Write a 2-4 sentence newsletter summary. Lead with the organization/program name and a strong action verb. Include all specific numbers (amounts, dates, eligibility requirements). Plain prose, no bullet points, no fluff, no hype words. Max 120 words.`;
+Write ONLY the final newsletter summary below. No thinking, no explanation, no markdown formatting. 2-4 sentences. Lead with the organization/program name and a strong action verb. Include all specific numbers (amounts, dates, eligibility requirements). Plain prose, no bullet points, no fluff, no hype words. Max 120 words.`;
 
   const start = Date.now();
 
