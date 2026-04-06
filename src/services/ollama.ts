@@ -11,7 +11,7 @@ import { DatabaseEntry } from '../types';
 import { logApiUsage } from './api-usage';
 import { getCachedProvider } from './api-provider';
 
-const DEFAULT_OLLAMA_MODEL = 'kimi-k2.5';
+const DEFAULT_OLLAMA_MODEL = 'gpt-oss:20b';
 const DEFAULT_OLLAMA_BASE_URL = 'https://ollama.com/api';
 
 interface OllamaChatResponse {
