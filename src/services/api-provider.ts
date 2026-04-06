@@ -47,6 +47,12 @@ const PROVIDER_DEFAULTS: Record<string, { displayName: string; envKey: () => str
     baseUrl: () => null,
     defaultModel: 'claude-opus-4-1-20250805',
   },
+  ollama: {
+    displayName: 'Ollama Cloud',
+    envKey: () => config.apis.ollama.apiKey,
+    baseUrl: () => config.apis.ollama.baseUrl,
+    defaultModel: 'kimi-k2.5:cloud',
+  },
   firecrawl: {
     displayName: 'Firecrawl',
     envKey: () => config.apis.firecrawl.apiKey,
@@ -76,12 +82,6 @@ const PROVIDER_DEFAULTS: Record<string, { displayName: string; envKey: () => str
     envKey: () => config.telegramIntake.botToken,
     baseUrl: () => null,
     defaultModel: null,
-  },
-  ollama: {
-    displayName: 'Ollama Cloud',
-    envKey: () => config.apis.ollama.apiKey,
-    baseUrl: () => config.apis.ollama.baseUrl,
-    defaultModel: 'kimi-k2.5:cloud',
   },
 };
 
