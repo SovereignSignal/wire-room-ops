@@ -56,7 +56,7 @@ export async function summarizeWithOllama(entry: DatabaseEntry, model?: string):
 
   const provider = getCachedProvider('ollama');
   const apiKey = provider?.api_key || config.apis.ollama.apiKey;
-  const baseUrl = provider?.base_url || config.apis.ollama.baseUrl || DEFAULT_OLLAMA_BASE_URL;
+  const baseUrl = provider?.base_url || DEFAULT_OLLAMA_BASE_URL;
   const useModel = model || provider?.default_model || DEFAULT_OLLAMA_MODEL;
   const start = Date.now();
 
@@ -120,7 +120,7 @@ export async function ollamaAutoSummarize(opts: {
 }): Promise<string | null> {
   const provider = getCachedProvider('ollama');
   const apiKey = provider?.api_key || config.apis.ollama.apiKey;
-  const baseUrl = provider?.base_url || config.apis.ollama.baseUrl || DEFAULT_OLLAMA_BASE_URL;
+  const baseUrl = provider?.base_url || DEFAULT_OLLAMA_BASE_URL;
   const useModel = provider?.default_model || DEFAULT_OLLAMA_MODEL;
 
   if (!apiKey) return null;
