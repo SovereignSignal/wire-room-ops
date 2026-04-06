@@ -390,14 +390,34 @@ router.patch('/entries/:id/wire', async (req: Request, res: Response) => {
 
     const primaryWire = wireArray[0];
     const pool = getPool();
+    
+    // Get current wire before update
+    const currentResult = await pool.query(
+      `SELECT wire, name FROM scan_entries WHERE id = $1`,
+      [entryId]
+    );
+    
+    if (currentResult.rows.length === 0) {
+      res.status(404).json({ error: 'Entry not found' });
+      return;
+    }
+    
+    const currentWire = currentResult.rows[0].wire;
+    const entryName = currentResult.rows[0].name;
+    
+    // Update scan_entries
     const result = await pool.query(
       `UPDATE scan_entries SET wire = $1, wires = $2, updated_at = NOW() WHERE id = $3 RETURNING id, wire, wires`,
       [primaryWire, wireArray, entryId]
     );
 
-    if (result.rows.length === 0) {
-      res.status(404).json({ error: 'Entry not found' });
-      return;
+    // Also update seen_names to keep wire in sync for dedup
+    if (currentWire !== primaryWire) {
+      await pool.query(
+        `UPDATE seen_names SET wire = $1 WHERE entry_id = $2`,
+        [primaryWire, entryId]
+      );
+      console.log(`[WireUpdate] Updated entry #${entryId} wire: ${currentWire} → ${primaryWire} (also updated seen_names)`);
     }
 
     res.json({ success: true, wire: result.rows[0].wire, wires: result.rows[0].wires });
