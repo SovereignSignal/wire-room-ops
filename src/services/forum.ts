@@ -176,21 +176,47 @@ const MAX_DISCUSSION_AGE_DAYS = 30;
  * so we filter client-side to avoid ingesting random code PRs,
  * version releases, and unrelated forum chatter.
  */
+// Tightened relevance filter — must indicate ACTIVE funding opportunity.
+// Removed: proposal (catches GSoC proposals), governance/milestone/deliverable (catches discussions),
+// council/committee (catches governance), ecosystem (too broad).
 const RELEVANCE_KEYWORDS = [
-  'grant', 'grants', 'funding', 'fund', 'funds', 'funded',
-  'bounty', 'bounties', 'hackathon', 'prize', 'fellowship',
-  'rfp', 'proposal', 'treasury', 'budget', 'allocation',
-  'subsidy', 'sponsorship', 'sponsor', 'donation', 'endowment',
-  'incentive', 'incentives', 'reward', 'rewards',
-  'retro funding', 'retroactive', 'public goods',
-  'ecosystem', 'council', 'committee', 'governance',
-  'milestone', 'deliverable', 'grantee',
-  'open call', 'call for', 'applications open', 'apply',
-  'stipend', 'scholarship', 'residency', 'accelerator',
+  // Core funding signals
+  'grant program', 'grants program', 'funding opportunity', 'funding round',
+  'bounty program', 'bug bounty', 'hackathon', 'fellowship program',
+  'rfp', 'treasury proposal', 'budget proposal', 'funded by',
+  'sponsorship program', 'developer program', 'contributor program',
+  'open call', 'call for proposals', 'applications open', 'apply now',
+  // Program names
+  'GSoC', 'Google Summer of Code', 'Outreachy', 'LFX', 'Ethereum Foundation',
+  'retro funding', 'retroactive funding', 'public goods funding',
+  // Active opportunity indicators
+  'applications are open', 'deadline', 'apply here', 'accepting applications',
+  'rolling applications', 'stipend', 'scholarship program', 'residency program',
+  'accelerator program', 'incubator program', 'grant round',
+];
+
+// Titles that indicate student proposals, project updates, or releases — not funding opportunities.
+// These should be EXCLUDED even if they match relevance keywords.
+const EXCLUSION_PATTERNS = [
+  /\[gsoc\s*\d*\].*:.*proposal/i,  // "[GSoC 2026] Project: Proposal"
+  /\[gsoc\d*\].*:.*proposal/i,      // "[GSoC2026] Project: Proposal"
+  /proposal review/i,                // "GSoC 2026] Proposal Review"
+  /\[draft proposal\]/i,            // "[Draft Proposal] ..."
+  /looking for speaker/i,            // "Conference looking for speakers"
+  /\[ann\]/i,                       // Software announcements
+  /release\s+v?\d/i,                // Version releases
+  /rfc:\s/i,                        // RFC discussions
+  /^re:\s/i,                        // Reply threads
 ];
 
 function isRelevantDiscussion(title: string): boolean {
   const lower = title.toLowerCase();
+  
+  // Exclude project proposals, releases, and discussions
+  if (EXCLUSION_PATTERNS.some(p => p.test(title))) {
+    return false;
+  }
+  
   return RELEVANCE_KEYWORDS.some(kw => lower.includes(kw));
 }
 
