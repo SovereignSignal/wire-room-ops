@@ -11,7 +11,7 @@ import { DatabaseEntry } from '../types';
 import { logApiUsage } from './api-usage';
 import { getCachedProvider } from './api-provider';
 
-const DEFAULT_OLLAMA_MODEL = 'gpt-oss:20b';
+const DEFAULT_OLLAMA_MODEL = 'gpt-oss:120b';
 const DEFAULT_OLLAMA_BASE_URL = 'https://ollama.com/api';
 
 interface OllamaChatResponse {
@@ -172,9 +172,27 @@ Write ONLY the final newsletter summary below. No thinking, no explanation, no m
 
   const data = await response.json() as OllamaChatResponse;
 
-  // Kimi K2.5 puts response in 'thinking' field, not 'content'
+  // GPT-OSS models output to 'content' but may have 'thinking' too. Use content preferentially.
   const rawText = data.message?.content || data.message?.thinking || '';
-  const summary = rawText.trim();
+  
+  // Extract just the summary — look for actual output after thinking
+  let summary = rawText.trim();
+  
+  // If there's a clear separator like "Probably:" or "Make sure it's only", extract after the last such marker
+  const markers = ['Probably:', 'Probably', 'Make sure it', 'Provide exactly that'];
+  for (const marker of markers) {
+    const idx = summary.lastIndexOf(marker);
+    if (idx !== -1) {
+      const after = summary.slice(idx + marker.length).trim();
+      if (after.length > 50) {
+        summary = after;
+        break;
+      }
+    }
+  }
+  
+  // Clean up any quotes or extra whitespace
+  summary = summary.replace(/^["']|["']$/g, '').trim();
 
   logApiUsage({
     provider: 'ollama', model: useModel, purpose: 'auto-summarize',
