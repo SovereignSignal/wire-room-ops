@@ -31,6 +31,7 @@ export const config = {
     ollama: {
       apiKey: process.env.OLLAMA_API_KEY || '',
       baseUrl: 'https://ollama.com/api',
+      defaultModel: process.env.OLLAMA_DEFAULT_MODEL || 'gpt-oss:120b',
     },
   },
 

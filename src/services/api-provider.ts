@@ -51,7 +51,7 @@ const PROVIDER_DEFAULTS: Record<string, { displayName: string; envKey: () => str
     displayName: 'Ollama Cloud',
     envKey: () => config.apis.ollama.apiKey,
     baseUrl: () => config.apis.ollama.baseUrl,
-    defaultModel: 'gpt-oss:120b',
+    defaultModel: config.apis.ollama.defaultModel,
   },
   firecrawl: {
     displayName: 'Firecrawl',
