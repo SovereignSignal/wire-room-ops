@@ -145,7 +145,7 @@ export async function ensureApiUsageTables(): Promise<void> {
     ['anthropic', 'claude-opus-4-1-20250805', 15.0, 75.0, null],
     ['anthropic', 'claude-sonnet-4-6-20250627', 3.0, 15.0, null],
     ['perplexity', 'sonar-pro', 3.0, 15.0, null],
-    ['ollama', 'kimi-k2.5:cloud', 0.50, 1.50, null],
+    ['ollama', 'gemma3:4b', 0.10, 0.30, null],
     ['firecrawl', 'scrape', 0, 0, 0.01],
     ['resend', 'email', 0, 0, 0.001],
   ];
