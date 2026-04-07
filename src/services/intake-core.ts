@@ -14,6 +14,56 @@ import { checkDuplicate, registerSeen } from '../services/dedup';
 import { classifyEntry } from '../services/classifier';
 import { getActiveParams } from './quality-scorer';
 
+// ────────────────────────────────────────────────────────────────────────────────────
+// URL Title Fetcher
+// ────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Fetch a URL and extract the page title.
+ * Used when forwarded messages have generic names (e.g., "Fortune", "Bloomberg").
+ */
+async function fetchUrlTitle(url: string): Promise<string | null> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+    
+    const resp = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; StringerBot/1.0; +https://sovereignsignal.com)',
+        'Accept': 'text/html,application/xhtml+xml',
+      },
+    });
+    clearTimeout(timeout);
+    
+    if (!resp.ok) return null;
+    
+    const html = await resp.text();
+    
+    // Extract title from <title> tag
+    const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+    if (titleMatch) {
+      let title = titleMatch[1].trim();
+      // Clean up common title patterns: "Title | Site Name" or "Title - Site Name"
+      title = title.replace(/\s*[|–—]\s*[^|–—]+$/, '');
+      title = title.replace(/\s*[-]([^\-]+)$/, '');
+      // Decode HTML entities
+      title = title.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"');
+      return title.slice(0, 200); // Limit length
+    }
+    
+    // Fallback: try <h1>
+    const h1Match = html.match(/<h1[^>]*>([^<]+)<\/h1>/i);
+    if (h1Match) {
+      return h1Match[1].trim().slice(0, 200);
+    }
+    
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Public types
 // ────────────────────────────────────────────────────────────────────────────
@@ -346,7 +396,26 @@ export async function processIntakeMessage(
   const allUrls = [...new Set([...passedUrls, ...textUrls])];
   const primaryUrl = allUrls[0] || `https://t.me/manual/${Date.now()}`;
 
-  const name = buildName(text, allUrls[0] || null);
+  let name = buildName(text, allUrls[0] || null);
+  
+  // Check if name is too generic (short or just publication name)
+  // If so, try to fetch the actual title from the URL
+  const GENERIC_NAME_PATTERNS = [
+    /^(Source|Fortune|Bloomberg|Washington Times|AWS Blog|AI Grant|Faegre Drinker|Nixon Peabody|Bankless|Mean CEO|ETC Journal|Bitcoin News|FX Leaders|Stacks Forum)$/i,
+    /^Source:\s/i,
+    /^[A-Z][a-z]+$/,  // Single capitalized word
+  ];
+  
+  const isGenericName = name.length < 25 || GENERIC_NAME_PATTERNS.some(p => p.test(name));
+  
+  if (isGenericName && allUrls.length > 0) {
+    const fetchedTitle = await fetchUrlTitle(allUrls[0]);
+    if (fetchedTitle && fetchedTitle.length > name.length) {
+      console.log(`[IntakeCore] Fetched better title: "${fetchedTitle}" (was "${name}")`);
+      name = fetchedTitle;
+    }
+  }
+  
   const scanDate = new Date().toISOString().slice(0, 10);
 
   // Detect wire
