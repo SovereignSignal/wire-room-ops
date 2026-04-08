@@ -133,9 +133,10 @@ async function checkUrlMatch(
     // If we have both names, check if they're similar enough to be the same entry.
     // Dissimilar names with the same URL = aggregate post (don't flag as duplicate).
     if (entryName && matchedName && !areNamesSimilar(entryName, matchedName)) {
-      // Cap aggregate URLs: if 3+ entries already share this URL, treat as duplicate.
+      // Cap aggregate URLs: if 2+ entries already share this URL, treat as duplicate.
       // This prevents listicle pages ("Top 50 Grants") from flooding the queue
-      // while still allowing tweets/posts that list 2-3 distinct grants.
+      // while still allowing tweets/posts that list 2 distinct grants.
+      // NOTE: Lowered from 3 to 2 to catch cross-day duplicates (same URL, different extraction).
       const countResult = await pool.query(
         `SELECT COUNT(*)::int AS cnt FROM scan_entries
          WHERE source_url = $1 AND wire = $2
@@ -143,7 +144,7 @@ async function checkUrlMatch(
         [sourceUrl, wire]
       );
       const existingCount = countResult.rows[0]?.cnt || 0;
-      if (existingCount >= 3) {
+      if (existingCount >= 2) {
         return {
           isDuplicate: true,
           matchType: 'url_exact',
