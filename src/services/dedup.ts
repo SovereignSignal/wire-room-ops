@@ -115,11 +115,14 @@ async function checkUrlMatch(
 ): Promise<DedupResult> {
   const normalized = normalizeUrl(sourceUrl);
 
+  // Only match against approved/queued entries — declined/archived entries
+  // should not block new submissions (a better version may come in later).
   const result = await pool.query(
     `SELECT su.first_seen_entry_id, se.name, su.url
      FROM seen_urls su
-     LEFT JOIN scan_entries se ON se.id = su.first_seen_entry_id
+     JOIN scan_entries se ON se.id = su.first_seen_entry_id
      WHERE su.normalized_url = $1 AND su.wire = $2
+       AND se.status IN ('approved', 'queued')
      LIMIT 1`,
     [normalized, wire]
   );
@@ -250,13 +253,15 @@ async function checkNameMatch(
     };
   }
 
-  // First try exact normalized name match
+  // First try exact normalized name match — only against approved/queued entries.
+  // Declined/archived entries should not block new submissions.
   const exactResult = await pool.query(
     `SELECT sn.entry_id, se.name
      FROM seen_names sn
      JOIN scan_entries se ON se.id = sn.entry_id
      WHERE sn.name_normalized = $1 AND sn.wire = $2
        AND sn.first_seen >= CURRENT_DATE - INTERVAL '1 day' * $3
+       AND se.status IN ('approved', 'queued')
      ORDER BY sn.first_seen ASC
      LIMIT 1`,
     [normalized, wire, lookbackDays]
@@ -273,14 +278,15 @@ async function checkNameMatch(
     };
   }
 
-  // Then try token overlap matching using GIN index
-  // Find entries that share at least 2 tokens with this name
+  // Then try token overlap matching using GIN index — only against approved/queued.
   const tokenResult = await pool.query(
     `SELECT sn.entry_id, sn.name_original, sn.name_tokens
      FROM seen_names sn
+     JOIN scan_entries se ON se.id = sn.entry_id
      WHERE sn.wire = $1
        AND sn.first_seen >= CURRENT_DATE - INTERVAL '1 day' * $2
        AND sn.name_tokens && $3::text[]
+       AND se.status IN ('approved', 'queued')
      ORDER BY sn.first_seen ASC`,
     [wire, lookbackDays, tokens]
   );
@@ -305,8 +311,10 @@ async function checkNameMatch(
     }
   }
 
-  // Threshold: 0.6 means at least 60% of tokens overlap
-  const FUZZY_THRESHOLD = 0.6;
+  // Threshold: 0.85 means near-exact name matches only.
+  // "Ethereum Foundation PhD Fellowship" vs "Ethereum Foundation Grants" won't match (~0.5).
+  // "Gitcoin Grants Round 20" vs "Gitcoin Grants Round 20 Open" will match (~0.9).
+  const FUZZY_THRESHOLD = 0.85;
 
   if (bestMatch && bestMatch.score >= FUZZY_THRESHOLD) {
     return {
