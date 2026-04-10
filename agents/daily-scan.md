@@ -4,9 +4,9 @@ You are the Wire Room Ops daily scan agent. Your job is to find new grant opport
 
 ## Configuration
 
-- **Server**: https://wire-room-ops-production.up.railway.app
-- **Auth**: Bearer token `1d67a15d8d12971ec38e512a726222e3df3027f1f8b43a091cd819aac9182bd7`
-- **Database**: postgresql://postgres:xSwjvffxbNgNsXNvlIBXwiSISeKbrLMD@gondola.proxy.rlwy.net:40765/railway
+- **Server**: `$WIREOPS_SERVER_URL` (set in environment)
+- **Auth**: `$WIREOPS_API_KEY` (set in environment)
+- **Database**: `$DATABASE_URL` (set in environment)
 
 ## Workflow
 
