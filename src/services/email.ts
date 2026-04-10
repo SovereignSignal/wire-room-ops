@@ -524,3 +524,90 @@ ${brand.name}`.trim();
 
   console.log(`[Email] CSV export email sent to: ${Array.isArray(to) ? to.join(', ') : to}`);
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Agent scan brief
+// ────────────────────────────────────────────────────────────────────────────
+
+export interface AgentBriefEntry {
+  name: string;
+  wire: string;
+  score: number;
+  sourceUrl: string;
+  action: 'approved' | 'archived' | 'queued';
+}
+
+export async function sendAgentBriefEmail(brief: {
+  date: string;
+  entries: AgentBriefEntry[];
+  searchesDone: number;
+  totalFound: number;
+  skippedDuplicates: number;
+}, recipients?: string[]): Promise<void> {
+  const brand = getBrand();
+  const approved = brief.entries.filter(e => e.action === 'approved');
+  const queued = brief.entries.filter(e => e.action === 'queued');
+  const archived = brief.entries.filter(e => e.action === 'archived');
+  const dashboardUrl = config.app.url;
+
+  function entryRow(e: AgentBriefEntry): string {
+    const name = e.sourceUrl
+      ? `<a href="${escapeHtml(e.sourceUrl)}" style="color:#0088cc;text-decoration:none;">${escapeHtml(e.name)}</a>`
+      : escapeHtml(e.name);
+    return `<tr>
+      <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#222;">${name}</td>
+      <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#666;">${escapeHtml(e.wire)}</td>
+      <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#444;text-align:center;${MONO}">${e.score}</td>
+    </tr>`;
+  }
+
+  function entryTable(entries: AgentBriefEntry[]): string {
+    if (entries.length === 0) return '<p style="margin:4px 0;font-size:12px;color:#999;">None</p>';
+    return `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #eee;">
+      <tr>
+        <th style="padding:6px 8px;text-align:left;font-size:11px;color:#666;border-bottom:2px solid #ddd;">Name</th>
+        <th style="padding:6px 8px;text-align:left;font-size:11px;color:#666;border-bottom:2px solid #ddd;">Wire</th>
+        <th style="padding:6px 8px;text-align:center;font-size:11px;color:#666;border-bottom:2px solid #ddd;">Score</th>
+      </tr>
+      ${entries.map(entryRow).join('')}
+    </table>`;
+  }
+
+  const body = `
+    <p style="margin:0 0 16px;font-size:14px;color:#222;">
+      <strong>${brief.totalFound}</strong> found &middot;
+      <strong>${approved.length}</strong> auto-approved &middot;
+      <strong>${queued.length}</strong> need your review &middot;
+      <strong>${archived.length}</strong> auto-archived &middot;
+      <strong>${brief.skippedDuplicates}</strong> duplicates skipped
+    </p>
+    ${queued.length > 0 ? `${sectionLabel('Needs your review')}${entryTable(queued)}${emailBtn(dashboardUrl, 'Review in Dashboard')}` : ''}
+    ${approved.length > 0 ? `${sectionLabel('Auto-approved')}${entryTable(approved)}` : ''}
+    ${archived.length > 0 ? `${sectionLabel('Auto-archived')}${entryTable(archived)}` : ''}
+    <p style="margin:16px 0 0;color:#999;font-size:11px;">${brief.searchesDone} searches executed</p>`;
+
+  const htmlContent = emailShell(`Agent Scan Brief \u2014 ${brief.date}`, body);
+
+  const textContent = `WIREOPS AGENT BRIEF — ${brief.date}
+
+${brief.totalFound} found | ${approved.length} auto-approved | ${queued.length} need review | ${archived.length} auto-archived | ${brief.skippedDuplicates} duplicates
+
+${queued.length > 0 ? 'NEEDS YOUR REVIEW:\n' + queued.map(e => `  - [${e.wire}] ${e.name} (score: ${e.score})`).join('\n') + '\n' : ''}
+${approved.length > 0 ? 'AUTO-APPROVED:\n' + approved.map(e => `  - [${e.wire}] ${e.name} (score: ${e.score})`).join('\n') + '\n' : ''}
+Review: ${dashboardUrl}
+
+---
+${brand.name}`.trim();
+
+  const to = recipients && recipients.length > 0 ? recipients : config.email.notificationEmail;
+
+  await sendWithTracking({
+    from: `${brand.fromName} <${config.email.fromEmail}>`,
+    to,
+    subject: `WireOps Agent \u2014 ${brief.date} | ${brief.totalFound} found, ${queued.length} need review`,
+    html: htmlContent,
+    text: textContent,
+  });
+
+  console.log(`[Email] Agent brief sent to: ${Array.isArray(to) ? to.join(', ') : to}`);
+}

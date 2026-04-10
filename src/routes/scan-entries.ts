@@ -637,3 +637,40 @@ router.get('/deadline-digest', async (req: Request, res: Response) => {
     res.status(500).json({ error: msg });
   }
 });
+
+// ── Agent endpoints ───────────────────────────��─────────────────────────────
+
+// GET /agent/approval-patterns — recent approved/declined examples for agent few-shot learning
+router.get('/agent/approval-patterns', rateLimit(5, 60000), async (_req: Request, res: Response) => {
+  try {
+    const pool = getPool();
+    const approved = await pool.query(
+      `SELECT name, wire, quality_score, classification, scan_source,
+              LEFT(description, 200) as description, source_url
+       FROM scan_entries
+       WHERE status = 'approved'
+       ORDER BY created_at DESC LIMIT 30`
+    );
+    const declined = await pool.query(
+      `SELECT name, wire, quality_score, classification, scan_source,
+              LEFT(description, 200) as description, action_reason
+       FROM scan_entries
+       WHERE status = 'declined'
+       ORDER BY created_at DESC LIMIT 30`
+    );
+    res.json({ approved: approved.rows, declined: declined.rows });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
+  }
+});
+
+// POST /agent/send-brief — send the daily agent brief email
+router.post('/agent/send-brief', rateLimit(3, 60000), async (req: Request, res: Response) => {
+  try {
+    const { sendAgentBriefEmail } = await import('../services/email');
+    await sendAgentBriefEmail(req.body);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
+  }
+});
