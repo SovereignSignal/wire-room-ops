@@ -115,31 +115,29 @@ async function checkUrlMatch(
 ): Promise<DedupResult> {
   const normalized = normalizeUrl(sourceUrl);
 
-  // Only match against approved/queued entries — declined/archived entries
-  // should not block new submissions (a better version may come in later).
+  // Match against approved, queued, AND declined entries.
+  // Only archived (auto-filtered junk) is excluded — those may deserve a second look.
   const result = await pool.query(
     `SELECT su.first_seen_entry_id, se.name, su.url
      FROM seen_urls su
      JOIN scan_entries se ON se.id = su.first_seen_entry_id
      WHERE su.normalized_url = $1 AND su.wire = $2
-       AND se.status IN ('approved', 'queued')
+       AND se.status IN ('approved', 'queued', 'declined')
      LIMIT 1`,
     [normalized, wire]
   );
 
   if (result.rows.length > 0) {
     const row = result.rows[0];
-    const entryId = row.first_seen_entry_id; // null for seeded wire URLs
+    const entryId = row.first_seen_entry_id;
     const matchedName: string | null = row.name;
-    const displayName = matchedName || row.url;  // fall back to URL if no scan_entry
+    const displayName = matchedName || row.url;
 
-    // If we have both names, check if they're similar enough to be the same entry.
-    // Dissimilar names with the same URL = aggregate post (don't flag as duplicate).
-    if (entryName && matchedName && !areNamesSimilar(entryName, matchedName)) {
-      // Cap aggregate URLs: if 2+ entries already share this URL, treat as duplicate.
-      // This prevents listicle pages ("Top 50 Grants") from flooding the queue
-      // while still allowing tweets/posts that list 2 distinct grants.
-      // NOTE: Lowered from 3 to 2 to catch cross-day duplicates (same URL, different extraction).
+    // Name similarity escape: ONLY for social media aggregate URLs (x.com, twitter.com).
+    // One tweet can list multiple distinct grants — different names from same URL is valid.
+    // For direct source pages (nlnet.nl, sovereign.tech, etc.), same URL = same thing, period.
+    const isSocialUrl = /^https?:\/\/(x\.com|twitter\.com)\//i.test(sourceUrl);
+    if (isSocialUrl && entryName && matchedName && !areNamesSimilar(entryName, matchedName)) {
       const countResult = await pool.query(
         `SELECT COUNT(*)::int AS cnt FROM scan_entries
          WHERE source_url = $1 AND wire = $2
@@ -158,14 +156,13 @@ async function checkUrlMatch(
         };
       }
 
-      // Under the cap — allow as distinct entry from aggregate URL
       return {
         isDuplicate: false,
         matchType: null,
         matchedEntryId: null,
         matchedEntryName: null,
         confidence: 0,
-        reason: `URL matches entry #${entryId} ("${matchedName}") but names differ — treating as distinct entry from aggregate URL (${existingCount + 1} of 3 max)`,
+        reason: `Social URL matches entry #${entryId} ("${matchedName}") but names differ — treating as distinct entry (${existingCount + 1} of 2 max)`,
       };
     }
 
@@ -261,7 +258,7 @@ async function checkNameMatch(
      JOIN scan_entries se ON se.id = sn.entry_id
      WHERE sn.name_normalized = $1 AND sn.wire = $2
        AND sn.first_seen >= CURRENT_DATE - INTERVAL '1 day' * $3
-       AND se.status IN ('approved', 'queued')
+       AND se.status IN ('approved', 'queued', 'declined')
      ORDER BY sn.first_seen ASC
      LIMIT 1`,
     [normalized, wire, lookbackDays]
@@ -286,7 +283,7 @@ async function checkNameMatch(
      WHERE sn.wire = $1
        AND sn.first_seen >= CURRENT_DATE - INTERVAL '1 day' * $2
        AND sn.name_tokens && $3::text[]
-       AND se.status IN ('approved', 'queued')
+       AND se.status IN ('approved', 'queued', 'declined')
      ORDER BY sn.first_seen ASC`,
     [wire, lookbackDays, tokens]
   );
