@@ -641,7 +641,11 @@ router.get('/deadline-digest', async (req: Request, res: Response) => {
 // ── Agent endpoints ───────────────────────────��─────────────────────────────
 
 // GET /agent/approval-patterns — recent approved/declined examples for agent few-shot learning
-router.get('/agent/approval-patterns', rateLimit(5, 60000), async (_req: Request, res: Response) => {
+router.get('/agent/approval-patterns', async (_req: Request, res: Response) => {
+  if (!rateLimit('agent-approval-patterns', 5, 60000)) {
+    res.status(429).json({ error: 'Rate limit exceeded' });
+    return;
+  }
   try {
     const pool = getPool();
     const approved = await pool.query(
@@ -665,7 +669,11 @@ router.get('/agent/approval-patterns', rateLimit(5, 60000), async (_req: Request
 });
 
 // POST /agent/send-brief — send the daily agent brief email
-router.post('/agent/send-brief', rateLimit(3, 60000), async (req: Request, res: Response) => {
+router.post('/agent/send-brief', async (req: Request, res: Response) => {
+  if (!rateLimit('agent-send-brief', 3, 60000)) {
+    res.status(429).json({ error: 'Rate limit exceeded' });
+    return;
+  }
   try {
     const { sendAgentBriefEmail } = await import('../services/email');
     await sendAgentBriefEmail(req.body);
