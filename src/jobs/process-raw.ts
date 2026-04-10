@@ -181,7 +181,7 @@ export async function processRawEntries(pool?: Pool): Promise<{
                 : String(row.scan_date),
             });
 
-            // Always queue — human reviews everything. Score is set by Gate 2 below.
+            // Temporarily queue — Gate 2 below may auto-archive based on classification/score.
             await db.query(
               `UPDATE scan_entries
                SET quality_score = 0,
@@ -202,7 +202,17 @@ export async function processRawEntries(pool?: Pool): Promise<{
                 wire: row.wire,
                 intent: row.prompt_intent || undefined,
               });
-              const classStatus = classResult.classification === 'NOISE' ? 'archived' : 'queued';
+              // Auto-archive: NOISE, low-score NEWS, and anything scoring below 30.
+              // Only genuinely promising entries should reach the operator queue.
+              const shouldArchive =
+                classResult.classification === 'NOISE' ||
+                (classResult.classification === 'NEWS' && classResult.qualityScore < 45) ||
+                classResult.qualityScore < 30;
+              const classStatus = shouldArchive ? 'archived' : 'queued';
+              if (shouldArchive) {
+                stats.queued--; // was pre-counted as queued above
+                stats.archived++;
+              }
               await db.query(
                 `UPDATE scan_entries
                  SET classification = $1,
