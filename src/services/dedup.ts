@@ -66,21 +66,9 @@ export async function checkDuplicate(
     return urlResult;
   }
 
-  // Layer 2: Fuzzy name match
-  // Skip name dedup for auto-generated "Manual: ..." names — these are bare URL
-  // submissions where the name is derived from the domain/path, not real program names.
-  // Dedup for these relies solely on Layer 1 (URL exact match).
-  if (!entry.name.startsWith('Manual:')) {
-    const nameResult = await checkNameMatch(
-      pool,
-      entry.name,
-      entry.wire,
-      lookbackDays
-    );
-    if (nameResult.isDuplicate) {
-      return nameResult;
-    }
-  }
+  // Layer 2: Fuzzy name match — DISABLED.
+  // Was causing too many false positives (blocking legitimate different programs
+  // from the same org). URL exact match is the only dedup gate now.
 
   // No match found
   return {

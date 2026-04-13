@@ -202,17 +202,8 @@ export async function processRawEntries(pool?: Pool): Promise<{
                 wire: row.wire,
                 intent: row.prompt_intent || undefined,
               });
-              // Auto-archive: NOISE, low-score NEWS, and anything scoring below 30.
-              // Only genuinely promising entries should reach the operator queue.
-              const shouldArchive =
-                classResult.classification === 'NOISE' ||
-                (classResult.classification === 'NEWS' && classResult.qualityScore < 45) ||
-                classResult.qualityScore < 30;
-              const classStatus = shouldArchive ? 'archived' : 'queued';
-              if (shouldArchive) {
-                stats.queued--; // was pre-counted as queued above
-                stats.archived++;
-              }
+              // Everything goes to queue — no auto-archive. Agent curates manually.
+              const classStatus = 'queued';
               await db.query(
                 `UPDATE scan_entries
                  SET classification = $1,

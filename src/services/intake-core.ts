@@ -379,12 +379,8 @@ async function insertEntry(entry: {
 async function classifyAndQueue(entryId: number, name: string, description: string, sourceUrl: string, wire: string): Promise<void> {
   try {
     const result = await classifyEntry({ name, description, source_url: sourceUrl, wire });
-    // Auto-archive: NOISE, low-score NEWS, and anything scoring below 30.
-    const shouldArchive =
-      result.classification === 'NOISE' ||
-      (result.classification === 'NEWS' && result.qualityScore < 45) ||
-      result.qualityScore < 30;
-    const newStatus = shouldArchive ? 'archived' : 'queued';
+    // Everything goes to queue — no auto-archive. Agent curates manually.
+    const newStatus = 'queued';
     const pool = getPool();
     await pool.query(
       `UPDATE scan_entries
