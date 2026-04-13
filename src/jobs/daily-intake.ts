@@ -220,10 +220,22 @@ export async function runDailyIntake(
   progress('Running deduplication...', 30);
   let duplicatesFound = 0;
   const uniqueEntryIds: number[] = [];
+  const seenUrlsInBatch = new Set<string>(); // Within-batch URL dedup
 
   for (const idx of validIndices) {
     const item = allResults[idx];
     const entryId = insertedIds[idx];
+
+    // Within-batch dedup: catch same URL appearing multiple times in one scan
+    const normalizedBatchUrl = normalizeUrl(item.result.sourceUrl);
+    if (seenUrlsInBatch.has(normalizedBatchUrl)) {
+      await pool.query(
+        `UPDATE scan_entries SET status = 'duplicate', duplicate_reason = $1 WHERE id = $2`,
+        ['Duplicate URL within same batch', entryId]
+      );
+      duplicatesFound++;
+      continue;
+    }
 
     const dedupResult = await checkDuplicate(
       pool,
@@ -262,6 +274,7 @@ export async function runDailyIntake(
         wire: item.wire,
         scanDate: item.scanDate,
       });
+      seenUrlsInBatch.add(normalizedBatchUrl);
     }
 
     // Progress update every 10 entries

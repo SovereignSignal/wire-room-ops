@@ -13,6 +13,8 @@ import { getPool, getAllFeeds } from '../db';
 import { checkDuplicate, registerSeen } from '../services/dedup';
 import { classifyEntry } from '../services/classifier';
 import { getActiveParams } from './quality-scorer';
+import { scrapeUrl, isScrapableUrl, truncateContent } from './scraper';
+import { normalizeUrl } from '../utils/url';
 
 // ────────────────────────────────────────────────────────────────────────────────────
 // URL Title Fetcher
@@ -60,6 +62,49 @@ async function fetchUrlTitle(url: string): Promise<string | null> {
     
     return null;
   } catch {
+    return null;
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Bare URL detection + scraping
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Detect if a message is essentially just bare URL(s) with negligible text.
+ */
+function isBareUrlMessage(text: string, urls: string[]): boolean {
+  if (urls.length === 0) return false;
+  let stripped = text;
+  for (const url of urls) stripped = stripped.replace(url, '');
+  return stripped.replace(/\s+/g, ' ').trim().length < 20;
+}
+
+/**
+ * Scrape a URL via Firecrawl and extract a real name + description.
+ * Returns null for Twitter/X URLs (handled natively by Grok) or non-scrapable URLs.
+ */
+async function scrapeForIntake(url: string): Promise<{
+  name: string | null;
+  description: string | null;
+  scrapedContent: string | null;
+} | null> {
+  if (/^https?:\/\/(x\.com|twitter\.com)\//i.test(url)) return null;
+  if (!isScrapableUrl(url)) return null;
+  try {
+    const result = await scrapeUrl(url);
+    if (!result.success || !result.content) return null;
+    const truncated = truncateContent(result.content, 4000);
+    let name = result.title || null;
+    if (!name) {
+      const h = truncated.match(/^#+ (.+)/m);
+      if (h) name = h[1].trim().slice(0, 120);
+    }
+    const preview = truncated.slice(0, 500).replace(/\n{3,}/g, '\n\n').trim();
+    const description = [result.title, preview].filter(Boolean).join('\n\n') || null;
+    return { name, description, scrapedContent: truncated };
+  } catch (err) {
+    console.error(`[IntakeCore] scrapeForIntake failed for ${url}:`, err);
     return null;
   }
 }
@@ -402,29 +447,42 @@ export async function processIntakeMessage(
   const primaryUrl = allUrls[0] || `https://t.me/manual/${Date.now()}`;
 
   let name = buildName(text, allUrls[0] || null);
-  
-  // Check if name is too generic (short or just publication name)
-  // If so, try to fetch the actual title from the URL
-  const GENERIC_NAME_PATTERNS = [
-    /^(Source|Fortune|Bloomberg|Washington Times|AWS Blog|AI Grant|Faegre Drinker|Nixon Peabody|Bankless|Mean CEO|ETC Journal|Bitcoin News|FX Leaders|Stacks Forum)$/i,
-    /^Source:\s/i,
-    /^[A-Z][a-z]+$/,  // Single capitalized word
-  ];
-  
-  const isGenericName = name.length < 25 || GENERIC_NAME_PATTERNS.some(p => p.test(name));
-  
-  if (isGenericName && allUrls.length > 0) {
-    const fetchedTitle = await fetchUrlTitle(allUrls[0]);
-    if (fetchedTitle && fetchedTitle.length > name.length) {
-      console.log(`[IntakeCore] Fetched better title: "${fetchedTitle}" (was "${name}")`);
-      name = fetchedTitle;
+
+  // Pre-scrape bare URL messages for better data quality
+  let scrapedContent: string | null = null;
+  let effectiveDescription = text;
+  if (isBareUrlMessage(text, allUrls) && allUrls.length > 0) {
+    console.log(`[IntakeCore] Bare URL detected, scraping ${allUrls[0]}...`);
+    const scraped = await scrapeForIntake(allUrls[0]);
+    if (scraped) {
+      scrapedContent = scraped.scrapedContent;
+      if (scraped.name && scraped.name.length > name.length) name = scraped.name;
+      if (scraped.description) effectiveDescription = scraped.description;
+      console.log(`[IntakeCore] Scraped: name="${name}", desc=${effectiveDescription.length} chars`);
     }
   }
-  
+
+  // If scraping didn't run, try lightweight title fetch for generic names
+  if (!scrapedContent) {
+    const GENERIC_NAME_PATTERNS = [
+      /^(Source|Fortune|Bloomberg|Washington Times|AWS Blog|AI Grant|Faegre Drinker|Nixon Peabody|Bankless|Mean CEO|ETC Journal|Bitcoin News|FX Leaders|Stacks Forum)$/i,
+      /^Source:\s/i,
+      /^[A-Z][a-z]+$/,
+    ];
+    const isGenericName = name.length < 25 || GENERIC_NAME_PATTERNS.some(p => p.test(name));
+    if (isGenericName && allUrls.length > 0) {
+      const fetchedTitle = await fetchUrlTitle(allUrls[0]);
+      if (fetchedTitle && fetchedTitle.length > name.length) {
+        console.log(`[IntakeCore] Fetched better title: "${fetchedTitle}" (was "${name}")`);
+        name = fetchedTitle;
+      }
+    }
+  }
+
   const scanDate = new Date().toISOString().slice(0, 10);
 
-  // Detect wire
-  const wire = detectWire(text, wires);
+  // Detect wire — use scraped content for better keyword matching
+  const wire = detectWire(scrapedContent || text, wires);
 
   if (wire) {
     // Dedup check — fail open if dedup service errors
@@ -440,7 +498,7 @@ export async function processIntakeMessage(
     try {
       const id = await insertEntry({
         name,
-        description: text,
+        description: effectiveDescription,
         sourceUrl: primaryUrl,
         wire,
         scanDate,
@@ -448,13 +506,10 @@ export async function processIntakeMessage(
         scanSource,
         experimentId,
       });
-      // Register in dedup tables immediately so future scans won't re-discover this entry.
-      // classifyAndQueue (below) promotes status from raw→queued before processRawEntries
-      // runs, so processRawEntries never sees these entries. ON CONFLICT DO NOTHING makes
-      // double-registration harmless.
       await registerSeen(getPool(), { id, sourceUrl: primaryUrl, name, wire, scanDate });
-      // Fire-and-forget classification so entry gets scored before next intake run
-      setImmediate(() => classifyAndQueue(id, name, text, primaryUrl, wire));
+      // Classify with full scraped content if available, otherwise use effective description
+      const classifyDesc = scrapedContent || effectiveDescription;
+      setImmediate(() => classifyAndQueue(id, name, classifyDesc, primaryUrl, wire));
       return {
         status: 'inserted',
         entryId: id,
@@ -483,7 +538,7 @@ export async function processIntakeMessage(
   try {
     const id = await insertEntry({
       name,
-      description: text,
+      description: effectiveDescription,
       sourceUrl: primaryUrl,
       wire: fallbackWire,
       scanDate,
@@ -492,8 +547,8 @@ export async function processIntakeMessage(
       experimentId,
     });
     await registerSeen(getPool(), { id, sourceUrl: primaryUrl, name, wire: fallbackWire, scanDate });
-    // Fire-and-forget classification so entry gets scored before next intake run
-    setImmediate(() => classifyAndQueue(id, name, text, primaryUrl, fallbackWire));
+    const classifyDesc = scrapedContent || effectiveDescription;
+    setImmediate(() => classifyAndQueue(id, name, classifyDesc, primaryUrl, fallbackWire));
     return {
       status: 'inserted',
       entryId: id,
@@ -725,6 +780,7 @@ export async function processBatchMessage(
 
   const result: BatchIntakeResult = { inserted: 0, duplicates: 0, errors: 0, failed: 0, entries: [] };
   const toClassify: Array<{ id: number; name: string; description: string; sourceUrl: string; wire: string }> = [];
+  const seenInBatch = new Set<string>(); // Within-batch URL dedup
 
   for (const entry of entries) {
     // Detect wire from combined name + description
@@ -749,7 +805,16 @@ export async function processBatchMessage(
     }
     const resolvedWire = (entry as typeof entry & { _resolvedWire?: string })._resolvedWire || wire!;
 
-    // Dedup check — fail open if dedup service errors
+    // Within-batch dedup: catch same URL appearing multiple times in one submission
+    const normalizedBatchUrl = normalizeUrl(entry.sourceUrl);
+    if (seenInBatch.has(normalizedBatchUrl)) {
+      result.duplicates++;
+      result.failed++;
+      result.entries.push({ name: entry.name, wire: resolvedWire, error: 'Duplicate URL within batch', isDuplicate: true });
+      continue;
+    }
+
+    // DB dedup check — fail open if dedup service errors
     try {
       const dedupResult = await checkDuplicate(getPool(), { sourceUrl: entry.sourceUrl, name: entry.name, wire: resolvedWire }, 180);
       if (dedupResult.isDuplicate) {
@@ -774,6 +839,7 @@ export async function processBatchMessage(
         experimentId,
       });
       await registerSeen(getPool(), { id, sourceUrl: entry.sourceUrl, name: entry.name, wire: resolvedWire, scanDate });
+      seenInBatch.add(normalizedBatchUrl);
       toClassify.push({ id, name: entry.name, description: entry.description, sourceUrl: entry.sourceUrl, wire: resolvedWire });
       result.inserted++;
       result.entries.push({ name: entry.name, wire: resolvedWire, id });
