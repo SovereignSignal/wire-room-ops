@@ -99,6 +99,33 @@ Manual operator intake via @GrantWireSummarizer_bot. Source: `telegram`, variant
 
 ---
 
+## Agent Scan Log
+
+### 2026-04-23 — Daily Grant Scan
+
+**Status:** Script generated, API blocked (Railway infrastructure allowlist). Operator must run `agent-scan-2026-04-23.sh` from an allowed host.
+
+**New finds (not in Apr 21 script):**
+- **Constellation Astra Fellowship Fall 2026** (AI) — $8,400/month stipend + $15K/month compute. Deadline May 3. Tier 1 (explicitly named in editorial standards). URL: https://constellation.org/programs/astra
+- **Stellar SCF #43 Build Award** (Crypto) — Up to $150K XLM per project, milestone-based. Deadline April 26 ⚠️ URGENT. URL: https://communityfund.stellar.org/
+
+**Carried over from Apr 21 (may already be in DB):**
+- Anthropic Fellows Jul 2026 (AI, Apr 26 deadline ⚠️)
+- OpenAI Safety Fellowship 2026-27 (AI, May 3)
+- Schmidt Sciences Trustworthy AI RFP (AI, May 17)
+- Foresight Institute AI Nodes (AI, Apr 30)
+- Pivotal Research Q3 2026 (AI, May 3)
+- HRF Bitcoin Development Fund (Crypto, rolling)
+- NLnet NGI Zero Commons Fund 13th Call (OSS, June 1)
+- GitHub SOSF Session 4 (OSS, rolling)
+
+**Dropped:**
+- EF PhD Fellowship — deadline April 22 PASSED
+
+**Searches run:** 28 | **Candidates found:** ~25 | **Submitted:** 10 (after editorial filter) | **Skipped aggregator sources:** ~10 | **Too old:** ~5
+
+---
+
 ## Key Metrics (as of 2026-03-28)
 
 | Source | Approval Rate | Notes |
