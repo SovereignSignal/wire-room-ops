@@ -121,6 +121,18 @@ test('parseBatchEntries handles Grok scans with header, t.co links, and via-post
   assert.equal(parsed[2].sourceUrl, 'https://t.co/wPo1P52O9836');
 });
 
+test('parseBatchEntries strips Grok citation suffixes from X status URLs', () => {
+  const content = [
+    '[Humanity AI $18M Grants] — Philanthropic initiative with $10M open call forthcoming.',
+    'Deadline: None listed',
+    'Link: https://x.com/StartingUpGood/status/205427501505964886818',
+  ].join('\n');
+
+  const parsed = parseBatchEntries(content);
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0].sourceUrl, 'https://x.com/StartingUpGood/status/2054275015059648868');
+});
+
 test('classification prompt tells Grok to downgrade small random hackathons', () => {
   const prompt = buildClassificationPrompt({
     name: 'Youth AI Hackathon',

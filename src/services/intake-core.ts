@@ -621,6 +621,18 @@ export interface BatchIntakeResult {
  *   - Markdown links: "[Name](url)" appearing 2+ times (newsletters/briefings)
  *   - Structured: Multiple "Link: https://..." lines (Telegram strips ** to bold rendering)
  */
+/**
+ * Grok sometimes appends citation footnote digits directly after X status IDs
+ * when emitting URL lists, creating dead links like /status/<tweet-id>18.
+ * Current X snowflake IDs are 19 digits, so trim obvious overlong IDs.
+ */
+function normalizeParsedSourceUrl(url: string): string {
+  return url
+    .replace(/\/?$/, '')
+    .replace(/(https?:\/\/(?:www\.)?(?:x|twitter)\.com\/[^\s/]+\/status\/)(\d{20,})(.*)$/i,
+      (_match, prefix: string, id: string, suffix: string) => `${prefix}${id.slice(0, 19)}${suffix}`);
+}
+
 export function isBatchMessage(text: string): boolean {
   // Numbered list format
   if (/^\s*1\.\s+\*\*/.test(text)) return true;
@@ -739,9 +751,10 @@ export function parseBatchEntries(text: string): Array<{ name: string; descripti
     // Extract URL from Link: line or any https:// in chunk
     const linkMatch = chunk.match(/Link:\s*<?(\bhttps?:\/\/[^\s>]+)/i);
     const urlMatch = chunk.match(/\bhttps?:\/\/[^\s<>)]+/);
-    const hasDirectUrl = Boolean(linkMatch?.[1] || urlMatch?.[0]);
+    const rawSourceUrl = (linkMatch?.[1] || urlMatch?.[0] || '').trim();
+    const hasDirectUrl = Boolean(rawSourceUrl);
     const sourceUrl = hasDirectUrl
-      ? (linkMatch?.[1] || urlMatch?.[0] || '').trim()
+      ? normalizeParsedSourceUrl(rawSourceUrl)
       : `https://manual/needs-source/${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     // Extract deadline
