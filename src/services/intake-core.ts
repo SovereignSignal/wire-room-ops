@@ -637,7 +637,7 @@ export function isBatchMessage(text: string): boolean {
 
   // Structured format without ** (Telegram renders bold and strips markers):
   // Multiple "Link: <url>" lines = structured batch
-  const linkLines = text.match(/^Link:\s*https?:\/\//gim);
+  const linkLines = text.match(/^Link:\s*.+$/gim);
   if (linkLines && linkLines.length >= 2) return true;
   // Single entry with both Deadline: and Link: (Telegram split of larger batch)
   if (linkLines && linkLines.length === 1 && /\nDeadline:/i.test(text)) return true;
@@ -652,9 +652,12 @@ export function isBatchMessage(text: string): boolean {
  *   Bold:      **Name** — Description / Deadline: X / Link: <url>
  *   Markdown:  [Name](url) — Description (newsletters/briefings)
  */
-function parseBatchEntries(text: string): Array<{ name: string; description: string; sourceUrl: string; deadline?: string }> {
-  // Strip trailing "Total: N results..." line
-  const cleaned = text.replace(/\n*Total:\s*\d+\s+results?[^\n]*$/i, '').trim();
+export function parseBatchEntries(text: string): Array<{ name: string; description: string; sourceUrl: string; deadline?: string }> {
+  // Strip Grok count headers/footers like "Total: 18 results after dedup...016".
+  const cleaned = text
+    .replace(/^\s*Total:\s*\d+\s+results?[^\n]*(?:\n|$)/i, '')
+    .replace(/\n*Total:\s*\d+\s+results?[^\n]*$/i, '')
+    .trim();
 
   // Detect format: numbered vs bold-name vs markdown-link
   const isNumbered = /^\s*\d+\.\s+/.test(cleaned);
@@ -686,31 +689,23 @@ function parseBatchEntries(text: string): Array<{ name: string; description: str
     });
   } else {
     // Plain-text structured format (Telegram stripped ** markers):
-    // Split on blank lines or before lines that look like entry starts (Name — Description)
-    // Each entry block has: Name — Description, Deadline: ..., Link: ...
-    chunks = cleaned.split(/\n\s*\n/).filter(c => {
-      const trimmed = c.trim();
-      // Must contain a Link: line to be a valid entry
-      return trimmed.length > 0 && /Link:\s*https?:\/\//i.test(trimmed);
-    });
-
-    // Fallback: if blank-line split produced fewer chunks than Link: lines,
-    // entries are run together without blank lines. Re-split by accumulating
-    // lines into blocks that end when a new "Link:" line starts a new entry.
-    const linkLineCount = (cleaned.match(/^Link:\s*https?:\/\//gim) || []).length;
-    if (chunks.length < linkLineCount && linkLineCount >= 2) {
-      chunks = [];
-      let block = '';
-      for (const line of cleaned.split('\n')) {
-        // A "Link:" line closes the current entry after it's appended
-        block += line + '\n';
-        if (/^Link:\s*https?:\/\//i.test(line.trim())) {
-          chunks.push(block.trim());
-          block = '';
-        }
+    // Split on any structured Link: line, including placeholders like
+    // "Link: (via post)". URL-less but strong leads should be preserved for
+    // source verification instead of silently dropped.
+    chunks = [];
+    let block = '';
+    for (const line of cleaned.split('\n')) {
+      const trimmed = line.trim();
+      block += line + '\n';
+      if (/^Link:\s*.+/i.test(trimmed)) {
+        chunks.push(block.trim());
+        block = '';
       }
-      // Remaining lines without a Link: are discarded (incomplete entry)
-      chunks = chunks.filter(c => c.length > 0 && /Link:\s*https?:\/\//i.test(c));
+    }
+    chunks = chunks.filter(c => c.length > 0 && /^Link:\s*.+/im.test(c));
+
+    if (chunks.length === 0) {
+      chunks = cleaned.split(/\n\s*\n/).filter(c => c.trim().length > 0);
     }
   }
 
@@ -737,13 +732,17 @@ function parseBatchEntries(text: string): Array<{ name: string; description: str
     const name = rawName
       .replace(/\s*—.*$/, '')
       .replace(/^\d+\.\s+/, '')  // safety: strip any remaining numbered prefix
+      .replace(/^\[+|\]+$/g, '') // Grok often wraps names in brackets: [Program Name]
       .trim()
       .slice(0, 120);
 
     // Extract URL from Link: line or any https:// in chunk
     const linkMatch = chunk.match(/Link:\s*<?(\bhttps?:\/\/[^\s>]+)/i);
     const urlMatch = chunk.match(/\bhttps?:\/\/[^\s<>)]+/);
-    const sourceUrl = (linkMatch?.[1] || urlMatch?.[0] || '').trim() || `https://manual/${Date.now()}`;
+    const hasDirectUrl = Boolean(linkMatch?.[1] || urlMatch?.[0]);
+    const sourceUrl = hasDirectUrl
+      ? (linkMatch?.[1] || urlMatch?.[0] || '').trim()
+      : `https://manual/needs-source/${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     // Extract deadline
     const deadlineMatch = chunk.match(/Deadline:\s*([^\n]+)/i);
@@ -753,6 +752,9 @@ function parseBatchEntries(text: string): Array<{ name: string; description: str
     const descMatch = chunk.match(/\*\*[^*]+\*\*\s*[—–\-]\s*([\s\S]+?)(?:\n(?:Deadline|Link):|\s*$)/)
       || withoutPrefix.match(/^[^—–]+[—–]\s*([\s\S]+?)(?:\n(?:Deadline|Link):|\s*$)/);
     let description = descMatch ? descMatch[1].trim() : chunk.replace(/^\d+\.\s*/, '').trim();
+    if (!hasDirectUrl) {
+      description += '\nNeeds source verification: Grok supplied a via-post or missing-link placeholder.';
+    }
     if (deadline && deadline.toLowerCase() !== 'none listed') {
       description += `\nDeadline: ${deadline}`;
     }

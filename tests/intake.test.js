@@ -8,6 +8,8 @@ const {
   parseAmount,
   parseStructuredOutput,
 } = require('../src/services/intake');
+const { parseBatchEntries } = require('../src/services/intake-core');
+const { buildClassificationPrompt } = require('../src/services/classifier');
 
 test('parseAmount supports major fiat symbols and codes', () => {
   const eur = parseAmount('\u20AC125M');
@@ -93,4 +95,41 @@ test('parseStructuredOutput parses JSON payloads', () => {
   assert.equal(parsed.results[0].amount, '$50,000');
   assert.equal(parsed.results[0].sourcePublishedAt, '2026-03-01T00:00:00.000Z');
   assert.equal(parsed.strategy, 'json');
+});
+
+test('parseBatchEntries handles Grok scans with header, t.co links, and via-post placeholders', () => {
+  const content = [
+    'Total: 3 results after dedup and filtering.016',
+    '[RAIN Fellowship 2026] — For mid-career African researchers partnering with Oxford on AI & emerging tech solutions for Energy, Agriculture, & Health.',
+    'Deadline: May 15, 2026',
+    'Link: https://webportalapp.com/sp/login/afox-visiting-fellowship-application-202658',
+    'Isambard AI Grant — 10k GPU hours on UK supercomputer for Risk-aware Time-series Foundation Models research.',
+    'Deadline: None listed (proposal accepted)',
+    'Link: (via post mentioning acceptance)53',
+    'Apart Research Secure Program Synthesis Fellowship — Related to AI safety/infra (via TAIS 2026).',
+    'Deadline: None listed',
+    'Link: https://t.co/wPo1P52O9836',
+  ].join('\n');
+
+  const parsed = parseBatchEntries(content);
+  assert.equal(parsed.length, 3);
+  assert.equal(parsed[0].name, 'RAIN Fellowship 2026');
+  assert.equal(parsed[0].deadline, 'May 15, 2026');
+  assert.equal(parsed[1].name, 'Isambard AI Grant');
+  assert.match(parsed[1].sourceUrl, /^https:\/\/manual\/needs-source\//);
+  assert.match(parsed[1].description, /needs source verification/i);
+  assert.equal(parsed[2].sourceUrl, 'https://t.co/wPo1P52O9836');
+});
+
+test('classification prompt tells Grok to downgrade small random hackathons', () => {
+  const prompt = buildClassificationPrompt({
+    name: 'Youth AI Hackathon',
+    description: 'Two-day local student event with no material funding listed',
+    source_url: 'https://example.org/youth-ai-hackathon',
+    wire: 'ai',
+  });
+
+  assert.match(prompt, /small random hackathons/i);
+  assert.match(prompt, /sizable/i);
+  assert.match(prompt, /prominent organizations/i);
 });

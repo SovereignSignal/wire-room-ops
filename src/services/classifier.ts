@@ -30,7 +30,7 @@ export interface ClassificationResult {
 
 const VALID_CLASSIFICATIONS = new Set<Classification>(['GRANT', 'EXPIRED', 'NEWS', 'NOISE']);
 
-function buildClassificationPrompt(entry: {
+export function buildClassificationPrompt(entry: {
   name: string;
   description: string;
   source_url: string;
@@ -66,6 +66,9 @@ Scoring philosophy:
 - Programs from major orgs (Google, Mozilla, Linux Foundation, Ethereum Foundation, Uniswap, Gitcoin, major universities, government bodies, established DAOs) = inherently high credibility.
 - High-quality news from credible orgs can score HIGHER than low-quality grants from unknown projects.
 - A $500 hackathon from an unknown project with hype language = low score (15-25).
+- Small random hackathons, local student events, or hiring-funnel competitions are noise unless they are sizable, materially funded, and backed by prominent organizations. Penalize hard when prize/funding amount, credible organizer, or serious ecosystem relevance is missing.
+- Hackathon scoring ceiling: unknown/local/student hackathons with vague prizes should be NOISE or NEWS at 0-30. Corporate hackathons without a material cash/grant pool should usually be NEWS at 25-45 even when hosted by a recognizable company. Only prominent, materially funded ecosystem hackathons with serious builder pipeline signal should reach 50+.
+- Sizable hackathons from prominent organizations with material prize pools can be useful, but they should score below comparable direct grants/fellowships unless they create meaningful funding or builder pipeline signal.
 - A Linux Foundation or Mozilla program update with real substance = high score (60-75) even without a direct application link.
 - A well-documented $50K+ grant from an established org with clear eligibility and deadline = highest score (75-95).
 - Hype language, promotional shilling, unknown microcap project = score penalty.
