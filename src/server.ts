@@ -37,6 +37,7 @@ import { adminRouter } from './routes/admin';
 import { distributionRouter } from './routes/distribution';
 import { scanPromptRouter } from './routes/scan-prompts';
 import { scanEntryRouter } from './routes/scan-entries';
+import { grantsIntelRouter } from './routes/grants-intel';
 
 const app = express();
 app.use(express.json());
@@ -166,6 +167,9 @@ app.use('/api', requireAuth, providerRouter);
 
 // Database introspection API
 app.use('/api/database', requireAuth, databaseRouter);
+
+// Grants intelligence intake / four-pillar review view
+app.use('/api/grants-intel', requireAuth, grantsIntelRouter);
 
 // Scoring experiments API
 app.use('/api/experiments', requireAuth, experimentsRouter);

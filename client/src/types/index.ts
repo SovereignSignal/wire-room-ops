@@ -125,6 +125,64 @@ export interface DbStats {
   distribution_log: { total: number; sent_24h: number };
 }
 
+export interface GrantsIntelSourceRun {
+  track: 'A' | 'B' | 'C' | string;
+  source_name: string;
+  status: string;
+  runs: number;
+  records_normalized: number;
+  last_finished: string | null;
+}
+
+export interface GrantsIntelRoutingCount {
+  track: string;
+  routing: string;
+  count: number;
+}
+
+export interface GrantsIntelPillars {
+  landscape_observations: number;
+  opportunity_candidates: number;
+  wire_candidates: number;
+  writing_inputs: number;
+}
+
+export interface GrantsIntelSummary {
+  sourceRuns: GrantsIntelSourceRun[];
+  routingCounts: GrantsIntelRoutingCount[];
+  pillars: GrantsIntelPillars;
+  recentWire: { wire: string; status: string; count: number }[];
+}
+
+export interface GrantsIntelObservation {
+  id: number;
+  run_id: string;
+  track: string;
+  source_name: string;
+  source_domain: string | null;
+  wire: string | null;
+  title: string;
+  organization: string | null;
+  opportunity_type: string | null;
+  description: string | null;
+  url: string | null;
+  apply_url: string | null;
+  deadline: string | null;
+  amount: string | null;
+  currency: string | null;
+  ecosystem: string | null;
+  status: string | null;
+  confidence: string | number | null;
+  routing: string | null;
+  dedupe_key: string;
+  observed_at: string;
+  matched_scan_entry_id: number | null;
+  matched_scan_entry_name: string | null;
+  matched_scan_entry_status: string | null;
+  matched_scan_entry_created_at: string | null;
+  match_status: 'already_in_wire_room' | 'known_grant_archive' | 'new_to_wire_room';
+}
+
 export interface ScanPrompt {
   id: string;
   wire: string;

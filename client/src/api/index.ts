@@ -1,4 +1,4 @@
-import { ScanEntry, WireCounts, DbStats, DbTableResponse, ScanPrompt, ScoringExperiment, ScoringParams, ParamMutation, DEFAULT_PARAMS } from '@/types';
+import { ScanEntry, WireCounts, DbStats, DbTableResponse, ScanPrompt, ScoringExperiment, ScoringParams, ParamMutation, DEFAULT_PARAMS, GrantsIntelSummary, GrantsIntelObservation } from '@/types';
 
 const BASE = "/api";
 
@@ -243,6 +243,21 @@ export async function fetchDbTable<T>(
 export async function fetchDbStats(): Promise<DbStats> {
   const res = await authFetch(`${BASE}/database/stats`);
   if (!res.ok) throw new Error(`Failed to fetch DB stats: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchGrantsIntelSummary(): Promise<GrantsIntelSummary> {
+  const res = await authFetch(`${BASE}/grants-intel/summary`);
+  if (!res.ok) throw new Error(`Failed to fetch grants intel summary: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchGrantsIntelObservations(params: { wire?: string; routing?: string; track?: string; limit?: number } = {}): Promise<{ observations: GrantsIntelObservation[]; count: number }> {
+  const q = new URLSearchParams(
+    Object.fromEntries(Object.entries(params).filter(([, v]) => v != null && v !== '').map(([k, v]) => [k, String(v)]))
+  ).toString();
+  const res = await authFetch(`${BASE}/grants-intel/observations${q ? '?' + q : ''}`);
+  if (!res.ok) throw new Error(`Failed to fetch grants intel observations: ${res.status}`);
   return res.json();
 }
 
