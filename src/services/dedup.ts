@@ -103,14 +103,16 @@ async function checkUrlMatch(
 ): Promise<DedupResult> {
   const normalized = normalizeUrl(sourceUrl);
 
-  // Match against approved, queued, AND declined entries.
+  // Match against active intake states, including raw.
+  // Batch classification is async, so a second paste can arrive while the first
+  // copy is still raw. Excluding raw lets exact URL duplicates slip through.
   // Only archived (auto-filtered junk) is excluded — those may deserve a second look.
   const result = await pool.query(
     `SELECT su.first_seen_entry_id, se.name, su.url
      FROM seen_urls su
      JOIN scan_entries se ON se.id = su.first_seen_entry_id
      WHERE su.normalized_url = $1 AND su.wire = $2
-       AND se.status IN ('approved', 'queued', 'declined')
+       AND se.status IN ('raw', 'approved', 'queued', 'declined')
      LIMIT 1`,
     [normalized, wire]
   );

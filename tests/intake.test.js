@@ -9,6 +9,7 @@ const {
   parseStructuredOutput,
 } = require('../src/services/intake');
 const { parseBatchEntries } = require('../src/services/intake-core');
+const { checkDuplicate } = require('../src/services/dedup');
 const { buildClassificationPrompt } = require('../src/services/classifier');
 
 test('parseAmount supports major fiat symbols and codes', () => {
@@ -151,6 +152,33 @@ test('parseBatchEntries splits inline Deadline Link batch lines from Grok scans'
   assert.equal(parsed[1].deadline, 'May 17, 2026');
   assert.equal(parsed[2].name, 'Google Data Center Community AI Fellowship 2026');
   assert.equal(parsed[2].deadline, 'July 12, 2026 (priority)');
+});
+
+test('dedup checks raw entries so rapid double-pastes do not slip through', async () => {
+  const calls = [];
+  const pool = {
+    query: async (sql, params) => {
+      calls.push({ sql, params });
+      assert.match(sql, /'raw'/);
+      return {
+        rows: [{
+          first_seen_entry_id: 123,
+          name: 'GOAT AI Builder Grants Program',
+          url: 'https://x.com/GOATNetwork/status/2054873355162104296',
+        }],
+      };
+    },
+  };
+
+  const result = await checkDuplicate(pool, {
+    sourceUrl: 'https://x.com/GOATNetwork/status/2054873355162104296',
+    name: 'GOAT AI Builder Grants Program',
+    wire: 'crypto',
+  });
+
+  assert.equal(result.isDuplicate, true);
+  assert.equal(result.matchedEntryId, 123);
+  assert.equal(calls.length, 1);
 });
 
 test('classification prompt tells Grok to downgrade small random hackathons', () => {
