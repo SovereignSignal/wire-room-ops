@@ -654,6 +654,13 @@ export function isBatchMessage(text: string): boolean {
   // Single entry with both Deadline: and Link: (Telegram split of larger batch)
   if (linkLines && linkLines.length === 1 && /\nDeadline:/i.test(text)) return true;
 
+  // Inline Grok batch format: one full entry per line, e.g.
+  // "Name — Description. Deadline: June 7, 2026 Link: https://..."
+  const inlineStructuredLines = text
+    .split('\n')
+    .filter(line => /^[^\n—–]{3,}\s*[—–]\s+.+\bDeadline:\s+.+\bLink:\s+https?:\/\//i.test(line.trim()));
+  if (inlineStructuredLines.length >= 2) return true;
+
   return false;
 }
 
@@ -701,23 +708,34 @@ export function parseBatchEntries(text: string): Array<{ name: string; descripti
     });
   } else {
     // Plain-text structured format (Telegram stripped ** markers):
-    // Split on any structured Link: line, including placeholders like
-    // "Link: (via post)". URL-less but strong leads should be preserved for
-    // source verification instead of silently dropped.
-    chunks = [];
-    let block = '';
-    for (const line of cleaned.split('\n')) {
-      const trimmed = line.trim();
-      block += line + '\n';
-      if (/^Link:\s*.+/i.test(trimmed)) {
-        chunks.push(block.trim());
-        block = '';
-      }
-    }
-    chunks = chunks.filter(c => c.length > 0 && /^Link:\s*.+/im.test(c));
+    // Split inline one-entry-per-line Grok batches first, e.g.
+    // "Name — Description. Deadline: June 7, 2026 Link: https://...".
+    const inlineStructuredLines = cleaned
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => /^[^\n—–]{3,}\s*[—–]\s+.+\bDeadline:\s+.+\bLink:\s+https?:\/\//i.test(line));
 
-    if (chunks.length === 0) {
-      chunks = cleaned.split(/\n\s*\n/).filter(c => c.trim().length > 0);
+    if (inlineStructuredLines.length >= 2) {
+      chunks = inlineStructuredLines;
+    } else {
+      // Split on any structured Link: line, including placeholders like
+      // "Link: (via post)". URL-less but strong leads should be preserved for
+      // source verification instead of silently dropped.
+      chunks = [];
+      let block = '';
+      for (const line of cleaned.split('\n')) {
+        const trimmed = line.trim();
+        block += line + '\n';
+        if (/^Link:\s*.+/i.test(trimmed)) {
+          chunks.push(block.trim());
+          block = '';
+        }
+      }
+      chunks = chunks.filter(c => c.length > 0 && /^Link:\s*.+/im.test(c));
+
+      if (chunks.length === 0) {
+        chunks = cleaned.split(/\n\s*\n/).filter(c => c.trim().length > 0);
+      }
     }
   }
 
@@ -758,12 +776,12 @@ export function parseBatchEntries(text: string): Array<{ name: string; descripti
       : `https://manual/needs-source/${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     // Extract deadline
-    const deadlineMatch = chunk.match(/Deadline:\s*([^\n]+)/i);
+    const deadlineMatch = chunk.match(/Deadline:\s*([\s\S]+?)(?:\s+Link:|\n|$)/i);
     const deadline = deadlineMatch ? deadlineMatch[1].trim() : undefined;
 
     // Build clean description: name — description text, append deadline if present
-    const descMatch = chunk.match(/\*\*[^*]+\*\*\s*[—–\-]\s*([\s\S]+?)(?:\n(?:Deadline|Link):|\s*$)/)
-      || withoutPrefix.match(/^[^—–]+[—–]\s*([\s\S]+?)(?:\n(?:Deadline|Link):|\s*$)/);
+    const descMatch = chunk.match(/\*\*[^*]+\*\*\s*[—–\-]\s*([\s\S]+?)(?:\n(?:Deadline|Link):|\s+Deadline:|\s*$)/)
+      || withoutPrefix.match(/^[^—–]+[—–]\s*([\s\S]+?)(?:\n(?:Deadline|Link):|\s+Deadline:|\s*$)/);
     let description = descMatch ? descMatch[1].trim() : chunk.replace(/^\d+\.\s*/, '').trim();
     if (!hasDirectUrl) {
       description += '\nNeeds source verification: Grok supplied a via-post or missing-link placeholder.';

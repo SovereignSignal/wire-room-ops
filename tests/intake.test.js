@@ -133,6 +133,26 @@ test('parseBatchEntries strips Grok citation suffixes from X status URLs', () =>
   assert.equal(parsed[0].sourceUrl, 'https://x.com/StartingUpGood/status/2054275015059648868');
 });
 
+test('parseBatchEntries splits inline Deadline Link batch lines from Grok scans', () => {
+  const content = [
+    'MATS Autumn 2026 Fellowship — Fully-funded 10-week research fellowship for aspiring AI alignment, security & governance researchers/field-builders in Berkeley + London with stipend and compute support.58 Deadline: June 7, 2026 Link: https://x.com/MATSprogram/status/2054646467068146058',
+    'Inuka Tech Fellowship 2026 — Fully sponsored Data Analytics & AI fellowship for Kenyan youth with industry-ready skills and apprenticeship exposure.4 Deadline: May 17, 2026 Link: https://x.com/PLPAfrica/status/2054501611649610134',
+    'Google Data Center Community AI Fellowship 2026 — Fully funded AI + Entrepreneurship program with global exposure.3 Deadline: July 12, 2026 (priority) Link: https://x.com/opportunitiesfy/status/2054524557437145368',
+    'Total: 3 results after dedup and filtering.',
+  ].join('\n');
+
+  const parsed = parseBatchEntries(content);
+  assert.equal(parsed.length, 3);
+  assert.equal(parsed[0].name, 'MATS Autumn 2026 Fellowship');
+  assert.equal(parsed[0].deadline, 'June 7, 2026');
+  assert.equal(parsed[0].sourceUrl, 'https://x.com/MATSprogram/status/2054646467068146058');
+  assert.match(parsed[0].description, /^Fully-funded 10-week research fellowship/);
+  assert.equal(parsed[1].name, 'Inuka Tech Fellowship 2026');
+  assert.equal(parsed[1].deadline, 'May 17, 2026');
+  assert.equal(parsed[2].name, 'Google Data Center Community AI Fellowship 2026');
+  assert.equal(parsed[2].deadline, 'July 12, 2026 (priority)');
+});
+
 test('classification prompt tells Grok to downgrade small random hackathons', () => {
   const prompt = buildClassificationPrompt({
     name: 'Youth AI Hackathon',
