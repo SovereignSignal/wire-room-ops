@@ -627,10 +627,23 @@ export interface BatchIntakeResult {
  * Current X snowflake IDs are 19 digits, so trim obvious overlong IDs.
  */
 function normalizeParsedSourceUrl(url: string): string {
-  return url
-    .replace(/\/?$/, '')
-    .replace(/(https?:\/\/(?:www\.)?(?:x|twitter)\.com\/[^\s/]+\/status\/)(\d{20,})(.*)$/i,
-      (_match, prefix: string, id: string, suffix: string) => `${prefix}${id.slice(0, 19)}${suffix}`);
+  let normalized = url.replace(/\/?$/, '');
+
+  normalized = normalized.replace(/(https?:\/\/(?:www\.)?(?:x|twitter)\.com\/[^\s/]+\/status\/)(\d{20,})(.*)$/i,
+    (_match, prefix: string, id: string, suffix: string) => `${prefix}${id.slice(0, 19)}${suffix}`);
+
+  // Grok often appends citation digits directly to non-X URLs too:
+  //   https://www.circle.com/grant27 -> https://www.circle.com/grant
+  //   https://example.org/some-slug/37 -> https://example.org/some-slug
+  // Keep this conservative: only strip short trailing numeric footnotes from
+  // alphabetic slug endings, and avoid query strings.
+  if (!/[?#]/.test(normalized) && !/^https?:\/\/(?:www\.)?(?:x|twitter)\.com\//i.test(normalized)) {
+    normalized = normalized
+      .replace(/([a-z][a-z-]{2,})\d{1,3}$/i, '$1')
+      .replace(/([a-z][a-z-]{2,})\/\d{1,3}$/i, '$1');
+  }
+
+  return normalized;
 }
 
 export function isBatchMessage(text: string): boolean {

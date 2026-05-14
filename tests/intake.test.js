@@ -154,6 +154,18 @@ test('parseBatchEntries splits inline Deadline Link batch lines from Grok scans'
   assert.equal(parsed[2].deadline, 'July 12, 2026 (priority)');
 });
 
+test('parseBatchEntries strips Grok citation suffixes from direct URLs', () => {
+  const content = [
+    'Circle Developer Grants Program on Arc — Funding for teams building on Arc. Deadline: None listed Link: https://www.circle.com/grant27',
+    'Tether Developer Grants Program — Developer grants on open stack. Deadline: Rolling Link: https://tether.io/news/tether-launches-developer-grants-program-to-fund-local-first-ai-and-payments-infrastructure/37',
+  ].join('\n');
+
+  const parsed = parseBatchEntries(content);
+  assert.equal(parsed.length, 2);
+  assert.equal(parsed[0].sourceUrl, 'https://www.circle.com/grant');
+  assert.equal(parsed[1].sourceUrl, 'https://tether.io/news/tether-launches-developer-grants-program-to-fund-local-first-ai-and-payments-infrastructure');
+});
+
 test('parseBatchEntries preserves inline Grok rows with placeholder links', () => {
   const content = [
     'Arbitrum Open House Buildathon & Founder House — Open call for early-stage builders with $415,000 in prizes and grants via 3-week online Buildathon (starts May 25) plus IRL event in London (July 10-12), including direct access to Arbitrum Foundation, workshops, and support for top teams.123 Deadline: May 25 (Buildathon) Link: https://openhouse.arbitrum.io/',
