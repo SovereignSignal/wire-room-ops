@@ -658,7 +658,7 @@ export function isBatchMessage(text: string): boolean {
   // "Name — Description. Deadline: June 7, 2026 Link: https://..."
   const inlineStructuredLines = text
     .split('\n')
-    .filter(line => /^[^\n—–]{3,}\s*[—–]\s+.+\bDeadline:\s+.+\bLink:\s+https?:\/\//i.test(line.trim()));
+    .filter(line => /^[^\n—–]{3,}\s*[—–]\s+.+\bDeadline:\s+.+\bLink:\s+.+/i.test(line.trim()));
   if (inlineStructuredLines.length >= 2) return true;
 
   return false;
@@ -713,7 +713,7 @@ export function parseBatchEntries(text: string): Array<{ name: string; descripti
     const inlineStructuredLines = cleaned
       .split('\n')
       .map(line => line.trim())
-      .filter(line => /^[^\n—–]{3,}\s*[—–]\s+.+\bDeadline:\s+.+\bLink:\s+https?:\/\//i.test(line));
+      .filter(line => /^[^\n—–]{3,}\s*[—–]\s+.+\bDeadline:\s+.+\bLink:\s+.+/i.test(line));
 
     if (inlineStructuredLines.length >= 2) {
       chunks = inlineStructuredLines;

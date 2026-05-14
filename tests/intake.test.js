@@ -154,6 +154,27 @@ test('parseBatchEntries splits inline Deadline Link batch lines from Grok scans'
   assert.equal(parsed[2].deadline, 'July 12, 2026 (priority)');
 });
 
+test('parseBatchEntries preserves inline Grok rows with placeholder links', () => {
+  const content = [
+    'Arbitrum Open House Buildathon & Founder House — Open call for early-stage builders with $415,000 in prizes and grants via 3-week online Buildathon (starts May 25) plus IRL event in London (July 10-12), including direct access to Arbitrum Foundation, workshops, and support for top teams.123 Deadline: May 25 (Buildathon) Link: https://openhouse.arbitrum.io/',
+    'Ethereum Foundation Ecosystem Support Program (ESP) — Grants for ecosystem development projects, including Q1 2026 funding for initiatives like Ethereum Korea coordination and integration efforts.10 Deadline: None listed (ongoing) Link: https://esp.ethereum.foundation/funded-projects',
+    'Celo Prezenti Frontier Pool — Up to $25,000 per project for teams building protocols, tooling, and infrastructure services for the Celo agent economy (must deploy on Celo mainnet).13 Deadline: June 30, 2026 Link: Post by @prezenti_grants',
+    'Gitcoin / Impact Certificates (Hypercerts) — Shift to retroactive funding model using onchain tokens for already-completed work, rewarding verified impact instead of speculative grants, with yield-powered rounds via partners like Octant.721 Deadline: Rolling / None listed Link: Posts by @owockibot and @gitcoin',
+    'Protocol Guild / Retro Funding Discussion — Ongoing dialogue on challenges and improvements for retroactive public goods funding (e.g., QF/RPGF) to better support core Ethereum infrastructure and devs.33 Deadline: None listed Link: Post by @trent_vanepps',
+    'Total: 5 results after dedup and filtering.',
+  ].join('\n');
+
+  const parsed = parseBatchEntries(content);
+  assert.equal(parsed.length, 5);
+  assert.equal(parsed[0].name, 'Arbitrum Open House Buildathon & Founder House');
+  assert.equal(parsed[1].sourceUrl, 'https://esp.ethereum.foundation/funded-projects');
+  assert.equal(parsed[2].name, 'Celo Prezenti Frontier Pool');
+  assert.match(parsed[2].sourceUrl, /^https:\/\/manual\/needs-source\//);
+  assert.match(parsed[2].description, /needs source verification/i);
+  assert.equal(parsed[3].name, 'Gitcoin / Impact Certificates (Hypercerts)');
+  assert.equal(parsed[4].name, 'Protocol Guild / Retro Funding Discussion');
+});
+
 test('dedup checks raw entries so rapid double-pastes do not slip through', async () => {
   const calls = [];
   const pool = {
