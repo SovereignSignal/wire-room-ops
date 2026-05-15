@@ -13,12 +13,14 @@ import { getCachedProvider } from './api-provider';
 import { computeOperatorSignals, formatSignalsForPrompt } from './operator-signals';
 
 export type Classification = 'GRANT' | 'EXPIRED' | 'NEWS' | 'NOISE' | 'UNCHECKED';
+export type OperatorRoute = 'publish' | 'source_check' | 'park' | 'decline' | 'relationship_signal';
 
 export interface ClassificationResult {
   classification: Classification;
   reason: string;
   qualityScore: number;
   scoreReason: string;
+  operatorRoute?: OperatorRoute;
   tags: string[];
   extracted: {
     amount?: string;
@@ -29,6 +31,7 @@ export interface ClassificationResult {
 }
 
 const VALID_CLASSIFICATIONS = new Set<Classification>(['GRANT', 'EXPIRED', 'NEWS', 'NOISE']);
+const VALID_OPERATOR_ROUTES = new Set<OperatorRoute>(['publish', 'source_check', 'park', 'decline', 'relationship_signal']);
 
 export function buildClassificationPrompt(entry: {
   name: string;
@@ -82,12 +85,21 @@ Score ranges:
 - 20-39: Low — unknown source, thin content, small or questionable opportunity
 - 0-19: Noise — hype/shill, spam, irrelevant, or completely empty content
 ${operatorGuidance ? '\n' + operatorGuidance + '\n' : ''}
+## Operator Route
+Return operator_route separately from classification. Allowed operator_route values: publish | source_check | park | decline | relationship_signal
+- publish: strong Wire item Sov is likely to approve for public distribution.
+- source_check: promising item that needs canonical URL, deadline, amount, duplicate, or status verification before publishing.
+- park: real but low-priority item, weak Wire fit, generic scholarship, local fellowship, academic job, or background signal.
+- decline: stale, closed, duplicate, tiny hackathon, hype, spam, or wrong-lane item.
+- relationship_signal: useful BD, landscape, funder, or ecosystem signal, but not a direct Wire post.
+
+For Telegram/Grok batch intake, be strict: real academic positions, local scholarships, and generic fellowships are often GRANT by content type but park by operator_route unless they are unusually strategic for grants intelligence. Announcements about awarded funding are usually relationship_signal or park, not publish.
 Also extract if available: amount, deadline, eligibility, summary.
 
 Also extract entity tags: 1-5 short labels for the organizations, protocols, platforms, or projects specifically named in this entry. Use canonical names (e.g., "Ethereum Foundation" not "EF", "Gitcoin" not "Gitcoin Grants"). Only include entities directly relevant — not generic terms like "blockchain" or "web3". If a specific chain (Ethereum, Solana) is mentioned, include it.
 
 Respond in JSON only, no markdown:
-{"classification":"GRANT","quality_score":72,"score_reason":"Linux Foundation mentorship program — credible org, actionable for OSS contributors, clear structure","reason":"Open application for LFX Mentorship 2026","tags":["Linux Foundation","LFX Mentorship"],"extracted":{"amount":"$6,000 stipend","deadline":"April 15 2026","eligibility":"Open source contributors","summary":"One sentence."}}`;
+{"classification":"GRANT","quality_score":72,"operator_route":"publish","score_reason":"Linux Foundation mentorship program — credible org, actionable for OSS contributors, clear structure","reason":"Open application for LFX Mentorship 2026","tags":["Linux Foundation","LFX Mentorship"],"extracted":{"amount":"$6,000 stipend","deadline":"April 15 2026","eligibility":"Open source contributors","summary":"One sentence."}}`;
 }
 
 export async function classifyEntry(entry: {
@@ -161,12 +173,16 @@ export async function classifyEntry(entry: {
 
     const rawTags = Array.isArray(parsed.tags) ? parsed.tags : [];
     const tags = rawTags.filter((t: unknown): t is string => typeof t === 'string' && t.length > 0 && t.length <= 60).slice(0, 5);
+    const operatorRoute = typeof parsed.operator_route === 'string' && VALID_OPERATOR_ROUTES.has(parsed.operator_route)
+      ? parsed.operator_route as OperatorRoute
+      : undefined;
 
     return {
       classification,
       reason: String(parsed.reason || ''),
       qualityScore,
       scoreReason: String(parsed.score_reason || ''),
+      operatorRoute,
       tags,
       extracted: {
         amount: parsed.extracted?.amount || undefined,

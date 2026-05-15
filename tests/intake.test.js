@@ -8,7 +8,12 @@ const {
   parseAmount,
   parseStructuredOutput,
 } = require('../src/services/intake');
-const { parseBatchEntries } = require('../src/services/intake-core');
+const {
+  determinePostClassificationStatus,
+  normalizeDeadlineForDb,
+  parseBatchEntries,
+  semanticBatchKey,
+} = require('../src/services/intake-core');
 const { checkDuplicate } = require('../src/services/dedup');
 const { buildClassificationPrompt } = require('../src/services/classifier');
 
@@ -214,7 +219,7 @@ test('dedup checks raw entries so rapid double-pastes do not slip through', asyn
   assert.equal(calls.length, 1);
 });
 
-test('classification prompt tells Grok to downgrade small random hackathons', () => {
+test('classification prompt asks for operator route separate from content type', () => {
   const prompt = buildClassificationPrompt({
     name: 'Youth AI Hackathon',
     description: 'Two-day local student event with no material funding listed',
@@ -225,4 +230,26 @@ test('classification prompt tells Grok to downgrade small random hackathons', ()
   assert.match(prompt, /small random hackathons/i);
   assert.match(prompt, /sizable/i);
   assert.match(prompt, /prominent organizations/i);
+  assert.match(prompt, /operator_route/i);
+  assert.match(prompt, /publish \| source_check \| park \| decline \| relationship_signal/i);
+});
+
+test('post-classification status only queues publish and source-check routes', () => {
+  assert.equal(determinePostClassificationStatus({ classification: 'GRANT', qualityScore: 88, operatorRoute: 'publish' }), 'queued');
+  assert.equal(determinePostClassificationStatus({ classification: 'GRANT', qualityScore: 70, operatorRoute: 'source_check' }), 'queued');
+  assert.equal(determinePostClassificationStatus({ classification: 'NEWS', qualityScore: 68, operatorRoute: 'relationship_signal' }), 'archived');
+  assert.equal(determinePostClassificationStatus({ classification: 'NOISE', qualityScore: 18, operatorRoute: 'decline' }), 'archived');
+});
+
+test('normalizeDeadlineForDb extracts parseable dates and ignores rolling placeholders', () => {
+  assert.equal(normalizeDeadlineForDb('Deadline: June 24, 2026'), '2026-06-24');
+  assert.equal(normalizeDeadlineForDb('Deadline: May 25 (Buildathon)', '2026-05-15'), '2026-05-25');
+  assert.equal(normalizeDeadlineForDb('Rolling / None listed'), null);
+  assert.equal(normalizeDeadlineForDb('Not listed (ongoing)'), null);
+});
+
+test('semanticBatchKey collapses same program variants before insert', () => {
+  assert.equal(semanticBatchKey('OCRA AI Accelerator Grant Program 2026'), semanticBatchKey('OCRA AI Accelerator Grant Program'));
+  assert.equal(semanticBatchKey('CDR Hackathon (Story Protocol)'), semanticBatchKey('CDR Hackathon on Story Protocol'));
+  assert.equal(semanticBatchKey('Global Majority AI Fellowship 2026'), semanticBatchKey('Global Majority AI Fellowship (Heinrich Böll Foundation)'));
 });

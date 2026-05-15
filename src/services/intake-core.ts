@@ -11,7 +11,7 @@
 
 import { getPool, getAllFeeds } from '../db';
 import { checkDuplicate, registerSeen } from '../services/dedup';
-import { classifyEntry } from '../services/classifier';
+import { classifyEntry, type Classification, type OperatorRoute } from '../services/classifier';
 import { getActiveParams } from './quality-scorer';
 import { scrapeUrl, isScrapableUrl, truncateContent } from './scraper';
 import { normalizeUrl } from '../utils/url';
@@ -354,16 +354,17 @@ async function insertEntry(entry: {
   submittedBy: string;
   scanSource: string;
   status?: string;
+  deadline?: string | null;
   experimentId?: string | null;
 }): Promise<number> {
   const pool = getPool();
   const status = entry.status ?? 'raw'; // Raw entries flow through the classification pipeline
   const res = await pool.query(
     `INSERT INTO scan_entries
-     (name, description, source_url, wire, prompt_variant, scan_source, scan_date, status, submitted_by, experiment_id)
-     VALUES ($1, $2, $3, $4, 'N', $5, $6, $7, $8, $9)
+     (name, description, source_url, wire, prompt_variant, scan_source, scan_date, status, submitted_by, deadline, experiment_id)
+     VALUES ($1, $2, $3, $4, 'N', $5, $6, $7, $8, $9, $10)
      RETURNING id`,
-    [entry.name, entry.description, entry.sourceUrl, entry.wire, entry.scanSource, entry.scanDate, status, entry.submittedBy, entry.experimentId ?? null]
+    [entry.name, entry.description, entry.sourceUrl, entry.wire, entry.scanSource, entry.scanDate, status, entry.submittedBy, entry.deadline ?? null, entry.experimentId ?? null]
   );
   return res.rows[0].id;
 }
@@ -372,35 +373,63 @@ async function insertEntry(entry: {
 // Post-insert classification (fire-and-forget)
 // ────────────────────────────────────────────────────────────────────────────
 
+export function determinePostClassificationStatus(result: {
+  classification: Classification;
+  qualityScore: number;
+  operatorRoute?: OperatorRoute;
+}): 'queued' | 'archived' {
+  if (result.operatorRoute === 'publish' || result.operatorRoute === 'source_check') return 'queued';
+  return 'archived';
+}
+
+export function normalizeDeadlineForDb(value?: string | null, referenceDate = new Date().toISOString().slice(0, 10)): string | null {
+  if (!value) return null;
+  const cleaned = value
+    .replace(/^\s*Deadline:\s*/i, '')
+    .replace(/\([^)]*\)/g, ' ')
+    .trim();
+
+  if (!cleaned || /\b(none|not listed|rolling|ongoing|tbd|n\/a|no deadline)\b/i.test(cleaned)) return null;
+
+  const refYear = new Date(referenceDate).getUTCFullYear();
+  const dateText = /\b\d{4}\b/.test(cleaned) ? cleaned : `${cleaned} ${refYear}`;
+  const parsed = new Date(dateText);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString().slice(0, 10);
+}
+
 /**
- * Classify a newly-inserted raw entry and promote it to 'queued'.
+ * Classify a newly-inserted raw entry and promote only publish/source-check
+ * routes to the review queue. Everything else is archived to avoid queue spam.
  * Runs async — caller does not wait for completion.
  */
 async function classifyAndQueue(entryId: number, name: string, description: string, sourceUrl: string, wire: string): Promise<void> {
   try {
     const result = await classifyEntry({ name, description, source_url: sourceUrl, wire });
-    // Everything goes to queue — no auto-archive. Agent curates manually.
-    const newStatus = 'queued';
+    const newStatus = determinePostClassificationStatus(result);
+    const dbDeadline = normalizeDeadlineForDb(result.extracted.deadline);
     const pool = getPool();
     await pool.query(
       `UPDATE scan_entries
        SET quality_score = $1, quality_breakdown = $2, status = $8,
            classification = $3, classification_reason = $4,
            metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
-           tags = $6
+           tags = $6,
+           deadline = COALESCE(deadline, $9)
        WHERE id = $7 AND status = 'raw'`,
       [
         result.qualityScore,
-        JSON.stringify({ scoreReason: result.scoreReason }),
+        JSON.stringify({ scoreReason: result.scoreReason, operatorRoute: result.operatorRoute }),
         result.classification,
         result.reason,
-        JSON.stringify(result.extracted),
+        JSON.stringify({ ...result.extracted, operator_route: result.operatorRoute }),
         result.tags,
         entryId,
         newStatus,
+        dbDeadline,
       ]
     );
-    console.log(`[IntakeCore] Classified entry #${entryId}: ${result.classification} → ${newStatus} (score: ${result.qualityScore})`);
+    console.log(`[IntakeCore] Classified entry #${entryId}: ${result.classification}/${result.operatorRoute || 'unrouted'} → ${newStatus} (score: ${result.qualityScore})`);
   } catch (err) {
     // Fallback: promote to queued with score 0 so it's still visible
     console.error(`[IntakeCore] Classification failed for entry #${entryId}, queuing with score 0:`, err);
@@ -646,6 +675,31 @@ function normalizeParsedSourceUrl(url: string): string {
   return normalized;
 }
 
+export function semanticBatchKey(name: string): string {
+  return name
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[()]/g, ' ')
+    .replace(/\b(20\d{2}|program|grant|grants|fellowship|challenge|hackathon|on|the|official|foundation|heinrich|boll|boell)\b/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .sort()
+    .join(' ');
+}
+
+export function isBetterBatchSource(candidateUrl: string, existingUrl: string): boolean {
+  const rank = (url: string) => {
+    if (/^https:\/\/manual\/needs-source\//i.test(url)) return 0;
+    if (/^https?:\/\/(?:www\.)?(?:x|twitter)\.com\/grok\//i.test(url)) return 1;
+    if (/^https?:\/\/(?:www\.)?(?:x|twitter)\.com\//i.test(url)) return 2;
+    return 3;
+  };
+  return rank(candidateUrl) > rank(existingUrl);
+}
+
 export function isBatchMessage(text: string): boolean {
   // Numbered list format
   if (/^\s*1\.\s+\*\*/.test(text)) return true;
@@ -817,10 +871,26 @@ export async function processBatchMessage(
   const text = msg.text.trim();
   const wires = await getActiveWires();
   const scanDate = new Date().toISOString().slice(0, 10);
-  const entries = parseBatchEntries(text);
+  let entries = parseBatchEntries(text);
+  const parsedCount = entries.length;
+  const bestBySemanticKey = new Map<string, typeof entries[number]>();
+  for (const entry of entries) {
+    const key = semanticBatchKey(entry.name);
+    const existing = bestBySemanticKey.get(key);
+    if (!existing || isBetterBatchSource(entry.sourceUrl, existing.sourceUrl)) {
+      bestBySemanticKey.set(key, entry);
+    }
+  }
+  entries = Array.from(bestBySemanticKey.values());
   const { experimentId } = await getActiveParams();
 
-  const result: BatchIntakeResult = { inserted: 0, duplicates: 0, errors: 0, failed: 0, entries: [] };
+  const result: BatchIntakeResult = {
+    inserted: 0,
+    duplicates: parsedCount - entries.length,
+    errors: 0,
+    failed: 0,
+    entries: [],
+  };
   const toClassify: Array<{ id: number; name: string; description: string; sourceUrl: string; wire: string }> = [];
   const seenInBatch = new Set<string>(); // Within-batch URL dedup
 
@@ -878,6 +948,7 @@ export async function processBatchMessage(
         scanDate,
         submittedBy: msg.senderId,
         scanSource,
+        deadline: normalizeDeadlineForDb(entry.deadline, scanDate),
         experimentId,
       });
       await registerSeen(getPool(), { id, sourceUrl: entry.sourceUrl, name: entry.name, wire: resolvedWire, scanDate });
