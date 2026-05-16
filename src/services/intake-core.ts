@@ -377,8 +377,9 @@ export function determinePostClassificationStatus(result: {
   classification: Classification;
   qualityScore: number;
   operatorRoute?: OperatorRoute;
-}): 'queued' | 'archived' {
+}, scanSource = 'manual-intake'): 'queued' | 'archived' {
   if (result.operatorRoute === 'publish' || result.operatorRoute === 'source_check') return 'queued';
+  if (scanSource === 'telegram' && (result.operatorRoute === 'park' || result.operatorRoute === 'relationship_signal')) return 'queued';
   return 'archived';
 }
 
@@ -403,10 +404,10 @@ export function normalizeDeadlineForDb(value?: string | null, referenceDate = ne
  * routes to the review queue. Everything else is archived to avoid queue spam.
  * Runs async — caller does not wait for completion.
  */
-async function classifyAndQueue(entryId: number, name: string, description: string, sourceUrl: string, wire: string): Promise<void> {
+async function classifyAndQueue(entryId: number, name: string, description: string, sourceUrl: string, wire: string, scanSource = 'manual-intake'): Promise<void> {
   try {
     const result = await classifyEntry({ name, description, source_url: sourceUrl, wire });
-    const newStatus = determinePostClassificationStatus(result);
+    const newStatus = determinePostClassificationStatus(result, scanSource);
     const dbDeadline = normalizeDeadlineForDb(result.extracted.deadline);
     const pool = getPool();
     await pool.query(
@@ -534,7 +535,7 @@ export async function processIntakeMessage(
       await registerSeen(getPool(), { id, sourceUrl: primaryUrl, name, wire, scanDate });
       // Classify with full scraped content if available, otherwise use effective description
       const classifyDesc = scrapedContent || effectiveDescription;
-      setImmediate(() => classifyAndQueue(id, name, classifyDesc, primaryUrl, wire));
+      setImmediate(() => classifyAndQueue(id, name, classifyDesc, primaryUrl, wire, scanSource));
       return {
         status: 'inserted',
         entryId: id,
@@ -573,7 +574,7 @@ export async function processIntakeMessage(
     });
     await registerSeen(getPool(), { id, sourceUrl: primaryUrl, name, wire: fallbackWire, scanDate });
     const classifyDesc = scrapedContent || effectiveDescription;
-    setImmediate(() => classifyAndQueue(id, name, classifyDesc, primaryUrl, fallbackWire));
+    setImmediate(() => classifyAndQueue(id, name, classifyDesc, primaryUrl, fallbackWire, scanSource));
     return {
       status: 'inserted',
       entryId: id,
@@ -616,7 +617,7 @@ export async function completeWireSelection(
     const id = await insertEntry({ ...entry, wire, experimentId });
     await registerSeen(getPool(), { id, sourceUrl: entry.sourceUrl, name: entry.name, wire, scanDate: entry.scanDate });
     // Fire-and-forget classification
-    setImmediate(() => classifyAndQueue(id, entry.name, entry.description, entry.sourceUrl, wire));
+    setImmediate(() => classifyAndQueue(id, entry.name, entry.description, entry.sourceUrl, wire, 'telegram'));
     return {
       status: 'inserted',
       entryId: id,
@@ -891,7 +892,7 @@ export async function processBatchMessage(
     failed: 0,
     entries: [],
   };
-  const toClassify: Array<{ id: number; name: string; description: string; sourceUrl: string; wire: string }> = [];
+  const toClassify: Array<{ id: number; name: string; description: string; sourceUrl: string; wire: string; scanSource: string }> = [];
   const seenInBatch = new Set<string>(); // Within-batch URL dedup
 
   for (const entry of entries) {
@@ -953,7 +954,7 @@ export async function processBatchMessage(
       });
       await registerSeen(getPool(), { id, sourceUrl: entry.sourceUrl, name: entry.name, wire: resolvedWire, scanDate });
       seenInBatch.add(normalizedBatchUrl);
-      toClassify.push({ id, name: entry.name, description: entry.description, sourceUrl: entry.sourceUrl, wire: resolvedWire });
+      toClassify.push({ id, name: entry.name, description: entry.description, sourceUrl: entry.sourceUrl, wire: resolvedWire, scanSource });
       result.inserted++;
       result.entries.push({ name: entry.name, wire: resolvedWire, id });
     } catch (err) {
@@ -968,7 +969,7 @@ export async function processBatchMessage(
   if (toClassify.length > 0) {
     setImmediate(async () => {
       for (const e of toClassify) {
-        await classifyAndQueue(e.id, e.name, e.description, e.sourceUrl, e.wire);
+        await classifyAndQueue(e.id, e.name, e.description, e.sourceUrl, e.wire, e.scanSource);
       }
     });
   }

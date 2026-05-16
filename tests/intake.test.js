@@ -234,11 +234,21 @@ test('classification prompt asks for operator route separate from content type',
   assert.match(prompt, /publish \| source_check \| park \| decline \| relationship_signal/i);
 });
 
-test('post-classification status only queues publish and source-check routes', () => {
-  assert.equal(determinePostClassificationStatus({ classification: 'GRANT', qualityScore: 88, operatorRoute: 'publish' }), 'queued');
-  assert.equal(determinePostClassificationStatus({ classification: 'GRANT', qualityScore: 70, operatorRoute: 'source_check' }), 'queued');
-  assert.equal(determinePostClassificationStatus({ classification: 'NEWS', qualityScore: 68, operatorRoute: 'relationship_signal' }), 'archived');
-  assert.equal(determinePostClassificationStatus({ classification: 'NOISE', qualityScore: 18, operatorRoute: 'decline' }), 'archived');
+test('post-classification status keeps accepted Telegram park items visible for review', () => {
+  assert.equal(determinePostClassificationStatus({ classification: 'GRANT', qualityScore: 88, operatorRoute: 'publish' }, 'telegram'), 'queued');
+  assert.equal(determinePostClassificationStatus({ classification: 'GRANT', qualityScore: 70, operatorRoute: 'source_check' }, 'telegram'), 'queued');
+  assert.equal(determinePostClassificationStatus({ classification: 'GRANT', qualityScore: 52, operatorRoute: 'park' }, 'telegram'), 'queued');
+  assert.equal(determinePostClassificationStatus({ classification: 'NEWS', qualityScore: 55, operatorRoute: 'park' }, 'telegram'), 'queued');
+  assert.equal(determinePostClassificationStatus({ classification: 'NEWS', qualityScore: 62, operatorRoute: 'relationship_signal' }, 'telegram'), 'queued');
+  assert.equal(determinePostClassificationStatus({ classification: 'NOISE', qualityScore: 18, operatorRoute: 'decline' }, 'telegram'), 'archived');
+});
+
+test('post-classification status keeps non-Telegram park items out of the queue', () => {
+  assert.equal(determinePostClassificationStatus({ classification: 'GRANT', qualityScore: 88, operatorRoute: 'publish' }, 'manual-intake'), 'queued');
+  assert.equal(determinePostClassificationStatus({ classification: 'GRANT', qualityScore: 70, operatorRoute: 'source_check' }, 'manual-intake'), 'queued');
+  assert.equal(determinePostClassificationStatus({ classification: 'NEWS', qualityScore: 68, operatorRoute: 'relationship_signal' }, 'manual-intake'), 'archived');
+  assert.equal(determinePostClassificationStatus({ classification: 'GRANT', qualityScore: 52, operatorRoute: 'park' }, 'manual-intake'), 'archived');
+  assert.equal(determinePostClassificationStatus({ classification: 'NOISE', qualityScore: 18, operatorRoute: 'decline' }, 'manual-intake'), 'archived');
 });
 
 test('normalizeDeadlineForDb extracts parseable dates and ignores rolling placeholders', () => {
