@@ -148,8 +148,8 @@ app.use('/api', requireAuth, scheduleRouter);
 // Dashboard overview stats
 app.use('/api/dashboard', requireAuth, dashboardRouter);
 
-// Scan execution + forum scan triggers (auth applied inside router)
-app.use('/api', requireAuth, scanExecutionRouter);
+// Scan execution + forum scan triggers (dashboard auth or internal agent key)
+app.use('/api', requireAuthOrInternalKey, scanExecutionRouter);
 
 // Background job triggers + SSE progress + Telegram webhook
 // NOTE: jobRouter contains the Telegram webhook which does NOT use requireAuth.
@@ -169,7 +169,7 @@ app.use('/api', requireAuth, providerRouter);
 app.use('/api/database', requireAuth, databaseRouter);
 
 // Grants intelligence intake / four-pillar review view
-app.use('/api/grants-intel', requireAuth, grantsIntelRouter);
+app.use('/api/grants-intel', requireAuthOrInternalKey, grantsIntelRouter);
 
 // Scoring experiments API
 app.use('/api/experiments', requireAuth, experimentsRouter);

@@ -15,6 +15,7 @@ import { Router, Request, Response } from 'express';
 import { config } from '../config';
 import { rateLimit } from '../middleware/rate-limit';
 import { requireAuth } from '../middleware/auth';
+import { requireAuthOrInternalKey } from '../middleware/internal-auth';
 import { jobQueue } from '../services/job-queue';
 import { getPool } from '../db';
 import { syncSummariesToScanEntries } from '../jobs/summary-sync';
@@ -24,8 +25,8 @@ import { handleTelegramUpdate } from '../services/telegram-adapter';
 
 const router = Router();
 
-// SSE endpoint for job progress (auth required)
-router.get('/job/:jobId/progress', requireAuth, (req: Request, res: Response) => {
+// SSE endpoint for job progress (dashboard auth or internal agent key)
+router.get('/job/:jobId/progress', requireAuthOrInternalKey, (req: Request, res: Response) => {
   const { jobId } = req.params;
   const job = jobQueue.getJob(jobId);
 
