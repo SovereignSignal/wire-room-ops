@@ -14,7 +14,7 @@ const {
   parseBatchEntries,
   semanticBatchKey,
 } = require('../src/services/intake-core');
-const { checkDuplicate } = require('../src/services/dedup');
+const { checkDuplicate, findRelatedOpportunity } = require('../src/services/dedup');
 const { buildClassificationPrompt } = require('../src/services/classifier');
 
 test('parseAmount supports major fiat symbols and codes', () => {
@@ -262,4 +262,58 @@ test('semanticBatchKey collapses same program variants before insert', () => {
   assert.equal(semanticBatchKey('OCRA AI Accelerator Grant Program 2026'), semanticBatchKey('OCRA AI Accelerator Grant Program'));
   assert.equal(semanticBatchKey('CDR Hackathon (Story Protocol)'), semanticBatchKey('CDR Hackathon on Story Protocol'));
   assert.equal(semanticBatchKey('Global Majority AI Fellowship 2026'), semanticBatchKey('Global Majority AI Fellowship (Heinrich Böll Foundation)'));
+});
+
+test('related opportunity detection flags alternate-source matches without making them duplicates', async () => {
+  const calls = [];
+  const pool = {
+    query: async (sql, params) => {
+      calls.push({ sql, params });
+      assert.match(sql, /seen_names/);
+      return {
+        rows: [{
+          entry_id: 456,
+          name_original: 'Sovereign Tech Fund Open Source Infrastructure Grants',
+          name_tokens: ['sovereign', 'tech', 'fund', 'open', 'source', 'infrastructure', 'grants'],
+          source_url: 'https://www.sovereign.tech/programs/open-source-infrastructure',
+          status: 'approved',
+        }],
+      };
+    },
+  };
+
+  const relation = await findRelatedOpportunity(pool, {
+    sourceUrl: 'https://x.com/sovtechfund/status/2055000000000000000',
+    name: 'Sovereign Tech Fund Open Source Infrastructure Grants applications open',
+    wire: 'oss',
+  });
+
+  assert.equal(relation.isRelated, true);
+  assert.equal(relation.matchedEntryId, 456);
+  assert.equal(relation.relationType, 'alternate_source');
+  assert.ok(relation.confidence >= 0.85);
+  assert.equal(calls.length, 1);
+});
+
+test('related opportunity detection ignores weak same-org matches so organic results stay visible as clean', async () => {
+  const pool = {
+    query: async () => ({
+      rows: [{
+        entry_id: 789,
+        name_original: 'Optimism Foundation Governance Update',
+        name_tokens: ['optimism', 'foundation', 'governance', 'update'],
+        source_url: 'https://optimism.io/news/governance-update',
+        status: 'approved',
+      }],
+    }),
+  };
+
+  const relation = await findRelatedOpportunity(pool, {
+    sourceUrl: 'https://example.org/optimism-developer-grants',
+    name: 'Optimism Developer Grants Program',
+    wire: 'crypto',
+  });
+
+  assert.equal(relation.isRelated, false);
+  assert.equal(relation.matchedEntryId, null);
 });

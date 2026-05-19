@@ -11,7 +11,7 @@
  */
 
 import type { Pool } from 'pg';
-import type { DedupResult, ScanEntry } from '../types/intake';
+import type { DedupResult, RelatedOpportunityResult, ScanEntry } from '../types/intake';
 import { normalizeUrl, normalizeName, extractNameTokens } from './intake';
 
 /**
@@ -377,6 +377,31 @@ function tokenOverlapScore(tokensA: string[], tokensB: string[]): number {
   return intersection / minSize;
 }
 
+const RELATED_NOISE_TOKENS = new Set([
+  'application', 'applications', 'apply', 'open', 'opens', 'opened', 'announced',
+  'announcement', 'accepting', 'launch', 'launched', 'program', 'grant', 'grants',
+]);
+
+function relationNameTokens(name: string): string[] {
+  return normalizeName(name)
+    .split(' ')
+    .filter(token => token.length > 2 && !RELATED_NOISE_TOKENS.has(token));
+}
+
+function relationOverlapScore(nameA: string, nameB: string): number {
+  const tokensA = relationNameTokens(nameA);
+  const tokensB = relationNameTokens(nameB);
+  if (tokensA.length < 2 || tokensB.length < 2) return 0;
+
+  const setA = new Set(tokensA);
+  const setB = new Set(tokensB);
+  let intersection = 0;
+  for (const token of Array.from(setA)) {
+    if (setB.has(token)) intersection++;
+  }
+  return intersection / Math.min(setA.size, setB.size);
+}
+
 // ============================================================
 // Registration: Add entries to the seen tables
 // ============================================================
@@ -426,6 +451,99 @@ export async function registerSeen(
   } finally {
     client.release();
   }
+}
+
+// ============================================================
+// Soft Related Opportunity Detection
+// ============================================================
+
+/**
+ * Find a likely prior appearance of the same opportunity without blocking the
+ * current row. This is the review-intelligence layer: it annotates alternate
+ * source links and sibling-ish replays so Sov can make the call in queue.
+ */
+export async function findRelatedOpportunity(
+  pool: Pool,
+  entry: { sourceUrl: string; name: string; wire: string },
+  lookbackDays: number = 180
+): Promise<RelatedOpportunityResult> {
+  const tokens = extractNameTokens(entry.name);
+  if (tokens.length < 2) {
+    return {
+      isRelated: false,
+      relationType: null,
+      matchedEntryId: null,
+      matchedEntryName: null,
+      matchedSourceUrl: null,
+      matchedStatus: null,
+      confidence: 0,
+      reason: 'No significant tokens in name',
+    };
+  }
+
+  const result = await pool.query(
+    `SELECT sn.entry_id, sn.name_original, sn.name_tokens, se.source_url, se.status
+     FROM seen_names sn
+     JOIN scan_entries se ON se.id = sn.entry_id
+     WHERE sn.wire = $1
+       AND sn.first_seen >= CURRENT_DATE - INTERVAL '1 day' * $2
+       AND sn.name_tokens && $3::text[]
+       AND se.status IN ('approved', 'queued', 'declined')
+     ORDER BY sn.first_seen DESC`,
+    [entry.wire, lookbackDays, tokens]
+  );
+
+  let bestMatch: {
+    entryId: number;
+    name: string;
+    sourceUrl: string | null;
+    status: any;
+    score: number;
+  } | null = null;
+
+  for (const row of result.rows) {
+    if (normalizeUrl(row.source_url || '') === normalizeUrl(entry.sourceUrl)) continue;
+    const score = Math.max(
+      tokenOverlapScore(tokens, row.name_tokens || []),
+      relationOverlapScore(entry.name, row.name_original || '')
+    );
+    if (score > (bestMatch?.score || 0)) {
+      bestMatch = {
+        entryId: row.entry_id,
+        name: row.name_original,
+        sourceUrl: row.source_url || null,
+        status: row.status || null,
+        score,
+      };
+    }
+  }
+
+  const ALTERNATE_SOURCE_THRESHOLD = 0.66;
+  if (bestMatch && bestMatch.score >= ALTERNATE_SOURCE_THRESHOLD) {
+    return {
+      isRelated: true,
+      relationType: 'alternate_source',
+      matchedEntryId: bestMatch.entryId,
+      matchedEntryName: bestMatch.name,
+      matchedSourceUrl: bestMatch.sourceUrl,
+      matchedStatus: bestMatch.status,
+      confidence: bestMatch.score,
+      reason: `Likely alternate source for entry #${bestMatch.entryId}: "${bestMatch.name}" (${Math.round(bestMatch.score * 100)}% token overlap)`,
+    };
+  }
+
+  return {
+    isRelated: false,
+    relationType: null,
+    matchedEntryId: null,
+    matchedEntryName: null,
+    matchedSourceUrl: null,
+    matchedStatus: null,
+    confidence: bestMatch?.score || 0,
+    reason: bestMatch
+      ? `Best related candidate "${bestMatch.name}" scored ${Math.round(bestMatch.score * 100)}% below review threshold`
+      : 'No related opportunity candidates found',
+  };
 }
 
 // ============================================================

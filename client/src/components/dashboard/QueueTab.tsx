@@ -34,6 +34,21 @@ function ClassificationBadge({ classification }: { classification?: Classificati
   );
 }
 
+function RelatedSourceBadge({ entry }: { entry: ScanEntry }) {
+  const related = entry.metadata?.related_source;
+  if (!related) return null;
+  const confidence = typeof related.confidence === 'number' ? ` ${Math.round(related.confidence * 100)}%` : '';
+  const label = related.relation_type === 'alternate_source' ? 'ALT SRC' : 'RELATED';
+  return (
+    <span
+      title={related.reason || `Related to ${related.matched_entry_name || `entry #${related.matched_entry_id}`}`}
+      className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-mono font-medium border border-cyan-400/50 text-cyan-300 bg-cyan-500/10"
+    >
+      {label}{confidence}
+    </span>
+  );
+}
+
 // Fallback colors for known wires; unknown wires get a neutral style
 const wireColors: Record<string, string> = {
   crypto: 'bg-violet-500/20 text-violet-400 border-violet-500/40 hover:bg-violet-500/30',
@@ -371,6 +386,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                 <WireSelector wire={entry.wire} wires={entry.wires} entryId={entry.id} onWiresChange={handleWiresChange} availableWires={availableWires} />
               </div>
               <ClassificationBadge classification={entry.classification} />
+              <RelatedSourceBadge entry={entry} />
               <ScoreBadge score={entry.quality_score} />
               {entry.source_published_at && (
                 <span className="text-[10px] font-mono text-muted-foreground">
@@ -478,6 +494,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                 </td>
                 <td className="px-2">
                   <ClassificationBadge classification={entry.classification} />
+                  <RelatedSourceBadge entry={entry} />
                 </td>
                 <td className="px-2">
                   <ScoreBadge score={entry.quality_score} />

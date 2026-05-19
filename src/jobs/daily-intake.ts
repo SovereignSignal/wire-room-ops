@@ -33,7 +33,7 @@ import {
   extractNameTokens,
   isUsefulUrl,
 } from '../services/intake';
-import { checkDuplicate, registerSeen } from '../services/dedup';
+import { checkDuplicate, findRelatedOpportunity, registerSeen } from '../services/dedup';
 // quality-scorer.ts replaced by LLM scoring in classifier.ts
 import { getActiveParams } from '../services/quality-scorer';
 import { seedSeenUrlsFromMessages } from '../db';
@@ -259,11 +259,46 @@ export async function runDailyIntake(
       );
       duplicatesFound++;
     } else {
-      // Mark as deduped (passed)
-      await pool.query(
-        `UPDATE scan_entries SET status = 'deduped' WHERE id = $1`,
-        [entryId]
+      // Mark as deduped (passed), then annotate if it looks like an alternate source
+      const relatedResult = await findRelatedOpportunity(
+        pool,
+        {
+          sourceUrl: item.result.sourceUrl,
+          name: item.result.name,
+          wire: item.wire,
+        },
+        config.dedupeWindow
       );
+
+      if (relatedResult.isRelated) {
+        await pool.query(
+          `UPDATE scan_entries
+           SET status = 'deduped',
+               metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb,
+               operator_notes = CONCAT_WS(E'\n', NULLIF(operator_notes, ''), $2)
+           WHERE id = $3`,
+          [
+            JSON.stringify({
+              related_source: {
+                relation_type: relatedResult.relationType,
+                matched_entry_id: relatedResult.matchedEntryId,
+                matched_entry_name: relatedResult.matchedEntryName,
+                matched_source_url: relatedResult.matchedSourceUrl,
+                matched_status: relatedResult.matchedStatus,
+                confidence: relatedResult.confidence,
+                reason: relatedResult.reason,
+              },
+            }),
+            `Possible alternate source: ${relatedResult.matchedEntryName} (#${relatedResult.matchedEntryId})`,
+            entryId,
+          ]
+        );
+      } else {
+        await pool.query(
+          `UPDATE scan_entries SET status = 'deduped' WHERE id = $1`,
+          [entryId]
+        );
+      }
       uniqueEntryIds.push(entryId);
 
       // Register in seen tables so future entries can match against this one

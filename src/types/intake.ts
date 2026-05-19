@@ -106,6 +106,22 @@ export interface DedupResult {
 }
 
 /**
+ * Review-visible relation to prior material. This is deliberately softer than
+ * DedupResult: related entries stay in the queue unless exact URL dedup catches
+ * them elsewhere.
+ */
+export interface RelatedOpportunityResult {
+  isRelated: boolean;
+  relationType: 'alternate_source' | 'sibling_track' | null;
+  matchedEntryId: number | null;
+  matchedEntryName: string | null;
+  matchedSourceUrl: string | null;
+  matchedStatus: ScanStatus | null;
+  confidence: number;
+  reason: string;
+}
+
+/**
  * Quality score breakdown for a single entry.
  */
 export interface QualityBreakdown {

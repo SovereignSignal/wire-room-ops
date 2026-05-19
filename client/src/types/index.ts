@@ -25,6 +25,15 @@ export interface ScanEntry {
     deadline?: string;
     eligibility?: string;
     summary?: string;
+    related_source?: {
+      relation_type?: 'alternate_source' | 'sibling_track' | string;
+      matched_entry_id?: number;
+      matched_entry_name?: string;
+      matched_source_url?: string | null;
+      matched_status?: string | null;
+      confidence?: number;
+      reason?: string;
+    };
   };
   source_published_at?: string | null;
   distributable?: boolean;

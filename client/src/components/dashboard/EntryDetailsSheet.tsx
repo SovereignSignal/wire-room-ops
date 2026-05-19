@@ -182,6 +182,31 @@ export function EntryDetailsSheet({ entry, onClose }: EntryDetailsSheetProps) {
                 </div>
               </div>
 
+              {entry.metadata?.related_source && (
+                <div className="glow-card p-4 space-y-2 border-cyan-400/30">
+                  <div className="flex items-center gap-1.5 text-[10px] text-cyan-300 uppercase tracking-wider">
+                    <ExternalLink className="w-3 h-3" />
+                    Possible Alternate Source
+                  </div>
+                  <div className="text-sm font-mono text-muted-foreground bg-cyan-500/5 p-3 rounded space-y-2">
+                    <div>{entry.metadata.related_source.matched_entry_name || `Entry #${entry.metadata.related_source.matched_entry_id}`}</div>
+                    {entry.metadata.related_source.matched_source_url && (
+                      <a
+                        href={entry.metadata.related_source.matched_source_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-xs text-cyan-300 hover:text-cyan-200 transition-colors font-mono"
+                      >
+                        Prior source <ExternalLink className="w-3 h-3" />
+                      </a>
+                    )}
+                    {entry.metadata.related_source.reason && (
+                      <div className="text-[10px] text-muted-foreground/70">{entry.metadata.related_source.reason}</div>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {entry.operator_notes && (
                 <div className="glow-card p-4 space-y-2 border-status-warning/30">
                   <div className="flex items-center gap-1.5 text-[10px] text-status-warning uppercase tracking-wider">
