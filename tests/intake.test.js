@@ -234,12 +234,12 @@ test('classification prompt asks for operator route separate from content type',
   assert.match(prompt, /publish \| source_check \| park \| decline \| relationship_signal/i);
 });
 
-test('post-classification status keeps accepted Telegram park items visible for review', () => {
+test('post-classification status keeps only publish and source-check Telegram items visible for review', () => {
   assert.equal(determinePostClassificationStatus({ classification: 'GRANT', qualityScore: 88, operatorRoute: 'publish' }, 'telegram'), 'queued');
   assert.equal(determinePostClassificationStatus({ classification: 'GRANT', qualityScore: 70, operatorRoute: 'source_check' }, 'telegram'), 'queued');
-  assert.equal(determinePostClassificationStatus({ classification: 'GRANT', qualityScore: 52, operatorRoute: 'park' }, 'telegram'), 'queued');
-  assert.equal(determinePostClassificationStatus({ classification: 'NEWS', qualityScore: 55, operatorRoute: 'park' }, 'telegram'), 'queued');
-  assert.equal(determinePostClassificationStatus({ classification: 'NEWS', qualityScore: 62, operatorRoute: 'relationship_signal' }, 'telegram'), 'queued');
+  assert.equal(determinePostClassificationStatus({ classification: 'GRANT', qualityScore: 52, operatorRoute: 'park' }, 'telegram'), 'archived');
+  assert.equal(determinePostClassificationStatus({ classification: 'NEWS', qualityScore: 55, operatorRoute: 'park' }, 'telegram'), 'archived');
+  assert.equal(determinePostClassificationStatus({ classification: 'NEWS', qualityScore: 62, operatorRoute: 'relationship_signal' }, 'telegram'), 'archived');
   assert.equal(determinePostClassificationStatus({ classification: 'NOISE', qualityScore: 18, operatorRoute: 'decline' }, 'telegram'), 'archived');
 });
 

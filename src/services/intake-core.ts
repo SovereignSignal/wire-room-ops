@@ -379,7 +379,6 @@ export function determinePostClassificationStatus(result: {
   operatorRoute?: OperatorRoute;
 }, scanSource = 'manual-intake'): 'queued' | 'archived' {
   if (result.operatorRoute === 'publish' || result.operatorRoute === 'source_check') return 'queued';
-  if (scanSource === 'telegram' && (result.operatorRoute === 'park' || result.operatorRoute === 'relationship_signal')) return 'queued';
   return 'archived';
 }
 
