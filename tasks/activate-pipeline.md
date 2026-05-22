@@ -1,6 +1,6 @@
 # Activate Automated Scan Pipeline
 
-> **Obsolete**: This task tracker references the original A/B/C prompt architecture which has been superseded. See STRINGER.md for the current 9-prompt architecture (3 per wire: X-scan, Web Search, Perplexity).
+> **Obsolete**: This task tracker references the original A/B/C prompt architecture and stale publish path. Do not use it as live operating guidance. See STRINGER.md and CLAUDE.md for the current 9-prompt architecture, routing rules, and distribution behavior.
 
 ## Goal
 Replace manual daily Grok scans with the automated pipeline: prompts execute on schedule, results get deduped/scored/queued, Sov reviews and approves from the dashboard.
@@ -43,8 +43,8 @@ All: `toolType: "x_search"`, `isActive: true`, `responseFormat: ""`
 - [ ] Monitor progress via SSE (dashboard shows progress bar)
 - [ ] Full run of 3 prompts takes ~3-5 min
 - [ ] Check the queue page (/queue) for results
-- [ ] Verify: quality scores look reasonable, dedup is working, good entries score >= 40
-- [ ] Approve a few entries to test the full flow through to thewireroom.xyz
+- [ ] Verify: quality scores look reasonable, dedup is working, and source-specific routing is behaving as expected
+- [ ] Approve a few entries to test the full flow through configured distribution channels
 - [ ] Repeat for ai and oss wires
 
 ---

@@ -8,14 +8,14 @@ This guide is for running the **current** `wire-room-ops` service in production.
 - Normalize, deduplicate, and quality-score leads.
 - Give operators a review queue.
 - Distribute approved entries to Telegram channels, X/Twitter, and newsletter.
-- Publish to the website by setting `scan_entries.status = 'approved'`.
+- Write approved entries through to the shared `summaries` table for downstream readers.
 
 The system is deployment-agnostic: swap brand config and prompts to run any vertical (grants, consulting leads, research intel, etc.).
 
 ## What It Is Not (in this repo)
 
 - Notion CRM sync is partially built (`notion-sync.ts`, `org_profiles` table) but not fully production-hardened.
-- No automated scheduled distribution (manual trigger only).
+- Distribution can run per-entry on approval, manually in batches, or by drip schedule when configured.
 - No inbound email ingestion (planned).
 
 ## Production Checklist
@@ -94,7 +94,8 @@ Tool types:
 - `x_search` for X-native discovery (Grok Responses API)
 - `web_search` for broader web discovery (Grok Responses API)
 - `perplexity` for deep web research (Perplexity sonar-pro, requires PERPLEXITY_API_KEY)
-- `community` for Reddit + Hacker News search (free public APIs, no auth needed)
+
+The database has legacy allowance for `community`, but current prompt APIs accept `x_search`, `web_search`, and `perplexity`.
 
 Start with 2-3 prompts per wire and test each prompt:
 
@@ -134,6 +135,11 @@ Supported schedule types:
 - `scan-execution`
 - `forum-scan`
 - `daily-digest`
+- `collect-engagement`
+- `experiment-loop`
+- `drip-distribution`
+- `deadline-digest`
+- `account-monitor`
 
 Example schedule:
 
@@ -243,4 +249,4 @@ To deploy Wire Room Ops for a different vertical (e.g. consulting leads, researc
 
 ## Session Persistence
 
-Sessions are stored in-memory and reset on every restart/deploy. Session expiry is 24 hours via HttpOnly cookies. Re-login is required after each deployment.
+Sessions are stored in Postgres with a 7-day expiry and survive deploys. Magic links, download tokens, pending intake selections, rate-limit state, and job progress are in-memory and reset on restart.

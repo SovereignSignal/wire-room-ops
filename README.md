@@ -22,13 +22,13 @@ Deployed as The Wire Room (grants wire) but designed to be deployment-agnostic â
 1. Prompts are stored in `scan_prompts` with a `tool_type` (x_search, web_search, perplexity) and `intent` (discovery, canonical, signal).
 2. `scan-execution` (or manual trigger) routes to the correct provider per tool_type.
 3. Results are parsed into structured entries via 4 parser strategies.
-4. Intake pipeline inserts raw rows, deduplicates against `seen_urls` + `seen_names`, classifies + scores via LLM (Grok), and moves entries to `queued` or `archived`.
+4. Intake pipeline inserts raw rows, deduplicates primarily by normalized URL, classifies + scores via LLM (Grok), and moves entries to `queued` or `archived` according to the active intake path.
 5. Operator reviews queue in dashboard and sets action:
    - `approve` -> `status = 'approved'`
    - `decline` -> `status = 'declined'`
    - `reviewlater` -> `status = 'skipped'`
 6. Operator triggers distribution from the feed page -- approved entries are sent to configured channels (Telegram, Discord, Slack, X/Twitter, newsletter).
-7. Approved entries are distributed to configured channels (Telegram, X, newsletter, email). Note: the-wire-room frontend (thewireroom.xyz) is deprecated; distribution now goes directly to Telegram channels, X, newsletter, and daily digest email under the Sovereign Signal brand.
+7. Approved entries can be distributed to configured channels (Telegram, Discord, Slack, X, newsletter/email). Dashboard approvals auto-distribute unless `quiet` is used; internal agent approvals are quiet by default. Note: the-wire-room frontend (thewireroom.xyz) is deprecated; distribution now goes directly to channels under the Sovereign Signal brand.
 
 ## Features
 
@@ -237,6 +237,11 @@ Supported schedule types:
 - `scan-execution`
 - `forum-scan`
 - `daily-digest`
+- `collect-engagement`
+- `experiment-loop`
+- `drip-distribution`
+- `deadline-digest`
+- `account-monitor`
 
 Notes:
 
@@ -246,13 +251,13 @@ Notes:
 
 ## Quality Scoring
 
-Quality scoring is done by the Grok LLM classifier (`src/services/classifier.ts`) in a single API call that classifies entries (GRANT/NEWS/EXPIRED/NOISE) and assigns a 0-100 quality score. NOISE entries are archived; entries scoring >= 40 are queued for review.
+Quality scoring is done by the Grok LLM classifier (`src/services/classifier.ts`) in a single API call that classifies entries (GRANT/NEWS/EXPIRED/NOISE), assigns a 0-100 quality score, extracts metadata, and returns an `operator_route`. Current queue/archive behavior is source-specific: scan execution archives `NOISE`, raw background processing queues complete non-duplicates, and Telegram/manual intake uses `operator_route`. The score is a review and ranking signal, not a universal queue threshold.
 
 The legacy rule-based scorer (`src/services/quality-scorer.ts`) is still in the codebase but is no longer used in the main pipeline.
 
 ## Distribution
 
-Per-feed multi-channel distribution of approved entries. Triggered manually from the feed dashboard (not auto-on-approve).
+Per-feed multi-channel distribution of approved entries. Dashboard approvals trigger per-entry distribution by default; `quiet` approvals and internal agent approvals skip distribution. Operators can also run manual batch distribution from the feed dashboard.
 
 Five channel types: **Telegram**, **Discord**, **Slack**, **X/Twitter**, **Newsletter** (copyable markdown).
 
@@ -270,7 +275,7 @@ Channel credentials are managed via the `distribution_channels` table (Settings 
 - `generated_files`
 - `distribution_channels`
 - `distribution_logs`
-- `distribution_config` (legacy, unused)
+- `distribution_config` (legacy compatibility path; still read by distribution service)
 - `api_providers`
 - `api_usage_log`
 - `model_pricing`
@@ -355,7 +360,7 @@ The `client/` directory contains a React/Vite/Tailwind frontend (Lovable wireops
 ## Development Notes
 
 - TypeScript strict mode, CommonJS output.
-- In-memory stores are used for sessions/tokens/job-progress and are reset on restart.
+- Sessions are DB-backed and survive deploys. Magic links, download tokens, pending intake selections, rate-limit state, and job progress are in-memory and reset on restart.
 - Wire list is DB-driven (from `feeds` table), not hardcoded. Fallback via `INTAKE_WIRES` env var.
 - Brand/audience config is env-var driven via `src/config/brand.ts` â€” AI prompts, emails, and scoring use `getBrand()` instead of hardcoded values.
 - The queue/status model is the publication contract with distribution channels (Telegram, X, newsletter, email).

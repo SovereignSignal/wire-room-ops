@@ -189,7 +189,7 @@ export function GrantsIntelTab() {
                   <TableCell><Badge className={badgeClass(item.routing || '')}>{item.routing || 'raw_only'}</Badge></TableCell>
                   <TableCell>
                     <div className="space-y-1">
-                      <Badge className={badgeClass(item.match_status)}>{item.match_status.replaceAll('_', ' ')}</Badge>
+                      <Badge className={badgeClass(item.match_status)}>{item.match_status.replace(/_/g, ' ')}</Badge>
                       {item.matched_scan_entry_name && (
                         <div className="text-[11px] text-muted-foreground">{item.matched_scan_entry_status}: {item.matched_scan_entry_name}</div>
                       )}

@@ -1,6 +1,6 @@
 # Wire Room Ops: Session Handoff
 
-> **Historical document**: This handoff was written during an earlier session. Some env vars and architectural references (thewireroom.xyz, DISTRIBUTION_ENABLED, TELEGRAM_CHANNEL_* vars) no longer exist. See CLAUDE.md and STRINGER.md for current state.
+> **Historical document**: This handoff was written during an earlier session and should not be used as live operating guidance. Some env vars and architectural references (thewireroom.xyz, DISTRIBUTION_ENABLED, TELEGRAM_CHANNEL_* vars) no longer exist. See CLAUDE.md and STRINGER.md for current state.
 
 ## March 9, 2026 — Theme, Intake Bot, Deployment-Agnostic Refactor
 
@@ -177,7 +177,7 @@ Sort order: A=0, B=1, C=2 within each wire.
    - Quality scoring via `scoreEntry()` (src/services/quality-scorer.ts)
    - Entries scoring >= 40 get `status: queued`, below threshold gets `status: archived`
 6. Queued entries appear in the dashboard for review
-7. Approving an entry sets `status: approved` (immediately visible on thewireroom.xyz) and triggers distribution if enabled
+7. Approving an entry sets `status: approved` and triggers configured distribution unless the approval is quiet
 
 Full run of 9 prompts takes ~9-14 minutes.
 
@@ -216,13 +216,13 @@ Queue threshold: 40. Max possible: 100.
 
 ### Near-term (once daily scans are validated)
 
-5. **Enable distribution** for the crypto Telegram channel first (it has the audience). Set `DISTRIBUTION_ENABLED=true` in Railway env vars and configure the Telegram channel ID.
+5. **Enable distribution** for the crypto Telegram channel first (it has the audience). Configure channel credentials in Settings > Distribution.
 
 6. **Set up the aggregated X account** and configure X credentials for distribution.
 
 7. **Enable forum scanning** if desired (`FORUM_SCAN_ENABLED=true`). The discuss.watch integration searches 150+ Discourse forums.
 
-8. **Tune quality scoring and dedup** based on what the pipeline surfaces. Adjust weights in quality-scorer.ts or the threshold if too much noise or too many good entries are being filtered.
+8. **Tune quality scoring and dedup** based on what the pipeline surfaces. Use operator-signal feedback and classifier/routing calibration before changing legacy rule-based scoring.
 
 ### Longer-term
 
@@ -259,13 +259,10 @@ DATABASE_URL, ANTHROPIC_API_KEY, GROK_API_KEY, FIRECRAWL_API_KEY,
 RESEND_API_KEY, NOTIFICATION_EMAIL, PRIVY_APP_ID, PRIVY_APP_SECRET
 ```
 
-Need to set for distribution:
+Historical distribution env vars from the old path:
 ```
-DISTRIBUTION_ENABLED=true
-TELEGRAM_CHANNEL_CRYPTO=@cryptograntwire (or numeric channel ID)
-TELEGRAM_CHANNEL_AI=@aigrantwire
-TELEGRAM_CHANNEL_OSS=@ossgrantwire
-X_CRYPTO_API_KEY, X_CRYPTO_API_SECRET, X_CRYPTO_ACCESS_TOKEN, X_CRYPTO_ACCESS_TOKEN_SECRET
+Current distribution credentials are managed via Settings > Distribution / `distribution_channels`; do not add DISTRIBUTION_ENABLED or TELEGRAM_CHANNEL_* vars.
+X_CRYPTO_API_KEY, X_CRYPTO_API_SECRET, X_CRYPTO_ACCESS_TOKEN, X_CRYPTO_ACCESS_TOKEN_SECRET may still be needed if X posting is configured.
 ```
 
 Optional:

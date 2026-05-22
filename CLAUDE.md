@@ -25,7 +25,7 @@ Both repos share the **same PostgreSQL database**. This repo is the primary writ
 
 ### Approve = Publish Flow
 
-When an operator clicks "Approve" on a queued scan entry (via the dashboard), the entry's status changes to `approved`. There is no separate publish step -- approved entries are distributed to configured channels (Telegram, X, newsletter, email) via the Distribution System.
+When an operator clicks "Approve" on a queued scan entry (via the dashboard), the entry's status changes to `approved`, the entry is written through to `summaries` when available, and per-entry distribution is triggered unless the approval is quiet. Internal API-key agent approvals are forced quiet. Operators can also run manual batch distribution.
 
 A partial index `idx_scan_entries_approved` on `(wire, created_at DESC) WHERE status = 'approved'` optimizes queries against approved entries.
 
@@ -234,11 +234,11 @@ Status distribution (typical): ~46% duplicate, ~22% archived, ~17% queued, ~12% 
 INGESTION (raw data)                    THE REFINERY (processing)               PUBLISHING
 ┌─────────────────┐                     ┌───────────────────┐                   ┌──────────────┐
 │ X/Grok Scans    │──┐                  │ Gate 1: Complete  │──incomplete──→ archived
-│ Web Search      │  ├──→ scan_entries ──│ Gate 2: Classify  │──NOISE──────→ archived
+│ Web Search      │  ├──→ scan_entries ──│ Gate 2: Classify  │──NOISE/park*→ archived
 │ Forum Scan      │  │    (status=raw)   │ Deduplication     │──duplicate──→ duplicate
-│ Telegram Bridge │──┘                  │ Quality Score     │──low score──→ archived
+│ Telegram Bridge │──┘                  │ Quality Score     │──path rules→ queued/archived
 │ Manual Paste    │                     └───────┬───────────┘
-└─────────────────┘                             │ score >= 40
+└─────────────────┘                             │ source-specific routing
                                                 ▼
                                          queued (editorial queue)
                                                 │ operator review
@@ -246,10 +246,12 @@ INGESTION (raw data)                    THE REFINERY (processing)               
                                          approved ──→ distribution channels (TG, X, newsletter, email)
 ```
 
+`*` Queue/archive rules are not identical for every intake path. Scan execution archives `NOISE`; raw background processing queues complete non-duplicates even when classification is weak; Telegram/manual intake uses `operator_route`, keeping Telegram `park` and `relationship_signal` items visible for review. `quality_score` ranks and explains items but is no longer a universal queue threshold.
+
 ### Dedup Tables
 
 - **`seen_urls`**: Exact URL match. Composite unique on `(normalized_url, wire)`. Handles aggregate URLs (same URL, different entries) via name similarity check.
-- **`seen_names`**: Fuzzy token overlap. GIN index on `name_tokens`. Unique on `(entry_id)`. Requires anchor token (non-generic) overlap to prevent false positives.
+- **`seen_names`**: Stores normalized names and tokens for review intelligence and alternate-source detection. Hard duplicate blocking currently relies on URL exact match; fuzzy name blocking is intentionally disabled after false positives.
 
 ### Approval Validation Guard
 
@@ -275,7 +277,7 @@ Schedule configuration uses a `schedules` table with UUID primary keys, supporti
 
 The `feeds` table manages dynamic wire/feed types, seeded from `SEED_FEEDS` and auto-discovered from `channel_configs`. Scan prompts are stored in `scan_prompts` with CRUD support.
 
-Distribution uses `distribution_channels` (managed channels with UUID PK, per-channel credentials in JSONB) and `distribution_logs` (tracks per-entry, per-channel send status with a unique partial index to prevent double-posts). Legacy `distribution_config` table exists but is unused.
+Distribution uses `distribution_channels` (managed channels with UUID PK, per-channel credentials in JSONB) and `distribution_logs` (tracks per-entry, per-channel send status with a unique partial index to prevent double-posts). Legacy `distribution_config` remains a compatibility path and is still read by the distribution service.
 
 ## API Integration Details
 
@@ -293,7 +295,7 @@ All providers support DB-backed credentials (`api_providers` table) with env var
 - **Concurrent job guard**: Duplicate manual jobs return 409. Scheduler skips overlapping cron runs.
 - **Scrape fallback**: If Firecrawl fails, Claude uses cached summary.
 - **Security**: CSRF origin checking, HttpOnly session cookies, `escapeHtml()` XSS prevention, open redirect protection, SSE keepalive (30s).
-- **Memory**: Cleanup timers (15-min) for job queue, tokens, sessions. `.unref()` timers, graceful shutdown.
+- **Memory**: Cleanup timers (15-min) for job queue, one-time tokens, and pending intake selections. Sessions are DB-backed with an in-memory read-through cache. Timers use `.unref()` and graceful shutdown hooks.
 
 ## Testing Locally
 
@@ -363,10 +365,10 @@ Automated discovery of grant opportunities via X.com scanning, web search, and f
 2. **Parse**: `intake.ts` extracts structured results via 4 parser strategies (structured text, JSON, X-post format, lenient numbered list). All strategies extract `sourcePublishedAt` when available (Published/Announced/Updated dates)
 3. **Sanitize**: Post-parse `sanitizeResult()` cleans all parsed output — strips leading/trailing brackets from names, truncates names >120 chars, rejects junk deadlines (>50 chars, contains URLs/semicolons), discards suspicious small amounts (<$100 bare), moves excess name text into description
 4. **Insert**: Raw results written to `scan_entries` with `status: raw`
-5. **Gate 1 — Completeness**: Entries with empty `source_url` or missing critical fields are flagged/archived before dedup
-6. **Dedup**: `dedup.ts` checks against `seen_urls` (exact URL match) and `seen_names` (fuzzy token overlap)
+5. **Gate 1 — Completeness**: Entries with empty/garbage `source_url` or missing critical fields are archived or marked incomplete before dedup, depending on intake path
+6. **Dedup**: `dedup.ts` blocks exact URL repeats via `seen_urls`. `seen_names` remains useful for related-opportunity/alternate-source signals, but fuzzy name blocking is disabled.
 7. **Gate 2 — LLM Classify + Score**: `classifier.ts` calls Grok to classify (GRANT/NEWS/EXPIRED/NOISE) and score (0-100) in one call. Failed classifications retry once with 2-second delay.
-8. **Queue**: Classified entries get `status: queued`; NOISE -> `status: archived`
+8. **Queue/archive**: Source-specific behavior: scan execution archives `NOISE`; raw background processing queues complete non-duplicates; Telegram/manual intake uses `operator_route`.
 9. **Approve Guard**: Pre-approval validation blocks entries with empty descriptions or empty URLs from being published; warns on EXPIRED classification
 
 ### Schedule Types
@@ -376,6 +378,8 @@ Automated discovery of grant opportunities via X.com scanning, web search, and f
 - **`collect-engagement`**: Runs `collectXEngagement()` — fetches X/Twitter public_metrics for recent distributed posts
 - **`experiment-loop`**: Runs `runExperimentLoop()` — evaluates and creates scoring parameter experiments
 - **`drip-distribution`**: Runs `runDripDistribution()` — distributes one approved entry per wire per run
+- **`deadline-digest`**: Runs `runDeadlineDigest()` — finds entries closing soon
+- **`account-monitor`**: Runs `runAccountMonitor()` — polls monitored X accounts for new URLs
 
 ### Prompt Management
 - Prompts stored in `scan_prompts` table with `wire`, `label`, `prompt_text`, `response_format`, `variant`, `tool_type`, `intent`
@@ -397,7 +401,7 @@ Quality scoring is done by the Grok LLM classifier (`src/services/classifier.ts`
 2. Assigns a 0-100 quality score based on information value
 3. Extracts structured data (amount, deadline, eligibility, summary) into `metadata` JSONB
 
-Failed classifications retry once with a 2-second delay. If both attempts fail, entries are queued with score 0 and classification UNCHECKED. A backfill endpoint (`POST /api/admin/classify-backfill`) can batch-classify UNCHECKED entries later.
+Failed classifications retry once with a 2-second delay in scan execution. If classification still fails, entries generally remain visible with score 0 and classification UNCHECKED. A backfill endpoint (`POST /api/admin/classify-backfill`) can batch-classify UNCHECKED entries later.
 
 The legacy rule-based scorer (`src/services/quality-scorer.ts`) is still in the codebase but is no longer used in the main pipeline.
 
@@ -423,7 +427,7 @@ Per-feed multi-channel distribution of approved scan entries. Distribution is a 
 Approve entries → configure channels in Settings > Distribution → click "Distribute to Channels" for a wire → distribution status shown as colored pills (TG/X/NL) on the approved tab. Failed pills are clickable for retry.
 
 ### Key Design Decisions
-- **Manual trigger, not auto-on-approve**: Distribution is a separate deliberate action so operators can batch-review before sending
+- **Approve distribution**: Normal dashboard approvals trigger per-entry distribution. Quiet approvals and internal agent approvals skip distribution. Manual batch distribution remains available for approved-but-undistributed entries.
 - **Claude Sonnet for post generation**: Uses a smaller model (not Opus) for cost efficiency when generating tweets and Telegram posts
 - **Template fallback**: If AI post generation fails, a structured template is used instead
 - **3-second inter-entry delay**: Respects X/Twitter rate limits during batch distribution

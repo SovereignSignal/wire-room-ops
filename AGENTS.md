@@ -13,9 +13,9 @@ Deployment-agnostic: brand, audience, and content type are env-var driven via `s
 | Repo | Role |
 |------|------|
 | `wire-room-ops` (this repo) | Backend pipeline + admin dashboard |
-| `the-wire-room` | Public-facing Next.js website |
+| `the-wire-room` | Deprecated public-facing Next.js website |
 
-Both share the same PostgreSQL database. This repo writes; the website reads `scan_entries WHERE status = 'approved'`.
+Both share the same PostgreSQL database, but the website is no longer the primary output. This repo is the primary writer and now distributes approved entries directly to Telegram, X, newsletter/email, and other configured channels.
 
 ## Key Files
 
@@ -56,18 +56,20 @@ All API keys can be managed via the `api_providers` DB table (Settings > API Pro
 Sources (X scan, web search, Perplexity, forums, Telegram, manual)
   -> Parse (4 strategies) -> Sanitize -> Insert (status: raw)
   -> Gate 1: Completeness -> Dedup (URL + fuzzy name)
-  -> Gate 2: LLM Classify + Score (Grok) -> Queue (score >= 40) or Archive
-  -> Operator review -> Approve -> Website + Distribution channels
+  -> Gate 2: LLM Classify + Score (Grok) -> Queue or Archive based on intake path
+  -> Operator review -> Approve -> Distribution channels + summaries write-through
 ```
+
+Current behavior is source-specific: scan execution archives `NOISE`, raw background processing queues complete non-duplicates for review, and Telegram/manual intake uses `operator_route` to decide queue vs archive. `quality_score` is a review signal, not a universal queue gate.
 
 ## Distribution Channels
 
 Five channel types: **telegram**, **discord**, **slack**, **x** (Twitter), **newsletter** (markdown).
-Distribution is manual trigger (not auto-on-approve). Managed via `distribution_channels` table.
+Approving through the dashboard triggers per-entry distribution unless `quiet` is used. Internal API-key agent approvals force quiet mode. Manual batch distribution is also available. Managed channels live in `distribution_channels`; legacy `distribution_config` is still supported for compatibility.
 
 ## Schedule Types
 
-Six types: `scan-execution`, `forum-scan`, `daily-digest`, `collect-engagement`, `experiment-loop`, `drip-distribution`.
+Eight types: `scan-execution`, `forum-scan`, `daily-digest`, `collect-engagement`, `experiment-loop`, `drip-distribution`, `deadline-digest`, `account-monitor`.
 
 ## Dashboard
 

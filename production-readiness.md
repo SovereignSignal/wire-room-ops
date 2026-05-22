@@ -34,7 +34,7 @@ Wire Room Ops should reliably:
 
 ## Hard Requirements Before Going Live
 
-1. All 8 required env vars configured in host (DATABASE_URL, ANTHROPIC_API_KEY, GROK_API_KEY, FIRECRAWL_API_KEY, RESEND_API_KEY, NOTIFICATION_EMAIL, PRIVY_APP_ID, PRIVY_APP_SECRET).
+1. All 4 required env vars configured in host (`DATABASE_URL`, `NOTIFICATION_EMAIL`, `PRIVY_APP_ID`, `PRIVY_APP_SECRET`). Provider API keys can be configured via env vars or Settings > API Providers.
 2. Privy login tested end-to-end with allowlisted user.
 3. Email test alert succeeds (`POST /api/test-alert`).
 4. At least one scan prompt per active wire tested (`/api/scan/prompts/:id/test`).
@@ -48,7 +48,7 @@ These features are gracefully disabled when their env vars are absent:
 
 | Feature | Required Env Vars | Notes |
 |---------|-------------------|-------|
-| Telegram channel distribution | `TELEGRAM_BOT_TOKEN` | Channel ID per wire in `distribution_config` |
+| Telegram channel distribution | `TELEGRAM_BOT_TOKEN` or managed channel credentials | Managed in `distribution_channels`; legacy `distribution_config` is still read for compatibility |
 | Telegram intake bot | `TELEGRAM_INTAKE_BOT_TOKEN` | Also set `TELEGRAM_INTAKE_WEBHOOK_SECRET` and `TELEGRAM_INTAKE_ALLOWED_USER_ID` |
 | Forum scanning | `FORUM_SCAN_ENABLED=true` | Optionally `DISCUSS_WATCH_API_URL` |
 | Perplexity deep web scans | `PERPLEXITY_API_KEY` | For variant P prompts |
@@ -74,13 +74,14 @@ Run after deploy:
 
 ## Known Constraints (Current Architecture)
 
-- Sessions/tokens/job-progress are in-memory and reset on restart.
-- Single-instance assumptions are baked into several in-memory components.
+- Sessions are DB-backed and survive deploys.
+- Magic links, download tokens, pending intake selections, rate-limit state, and job progress are in-memory and reset on restart.
+- Single-instance assumptions remain in several in-memory components.
 - DEV mode auth bypass exists and must remain disabled in production.
 
 ## Roadmap for "Hardened" Production
 
-1. Persist sessions/rate-limit state (Redis or DB) for restart resilience.
+1. Persist rate-limit state, job progress, pending intake selections, and one-time tokens for restart resilience.
 2. Add structured logging + request IDs for incident debugging.
 3. Add automated smoke test workflow against deployed environment.
 4. Add dashboard metrics panel for run success rate and queue throughput.

@@ -1,6 +1,6 @@
 # Wire Architecture
 
-> **Note**: Parts of this document are outdated. The Wire Room frontend (thewireroom.xyz) is deprecated. The system now distributes to Telegram channels, X, newsletter, and email under the Sovereign Signal brand. The 5-layer architecture described in STRINGER.md is the current reference.
+> **Historical note**: Parts of this document are outdated and should not be used as an operational runbook. The Wire Room frontend (thewireroom.xyz) is deprecated. The system now distributes to Telegram channels, X, newsletter, and email under the Sovereign Signal brand. `CLAUDE.md` and `STRINGER.md` are the current references.
 
 > The intelligence-to-distribution pipeline. Config-driven, operator-agnostic, deployable for any domain.
 
@@ -54,7 +54,7 @@ flowchart TD
 
     subgraph DIST["Layer 4 — Sovereign Signal: Distribution"]
         DB["Canonical DB\nPer-vertical Postgres tables\nSource of truth"]
-        WIREROOM["The Wire Room\nthewireroom.xyz\nPublic live feed across all beats"]
+        WIREROOM["Deprecated website\nthewireroom.xyz\nNo longer primary output"]
         TG["Telegram Channels\nPer-beat, subscribers self-select"]
         XFEED["X Account\nOne unified feed, all verticals tagged"]
         NL["Weekly Newsletter\nCross-vertical synthesis\nSubstack"]
@@ -144,7 +144,7 @@ Channel Adapter                  Intake Core
 
 ```
 queued → approved → [distributed via distribution_logs]
-queued → archived  (low score, expired deadline, duplicate)
+queued → archived  (source-specific routing, expired deadline, duplicate)
 queued → review_queue (UNSURE — needs user decision)
 ```
 
@@ -159,7 +159,7 @@ Wire Room Stack
 ├── wire-room-ops/       Backend: scan pipeline, dedup, scoring, distribution, ingestion
 │   ├── src/             Server-side: Express, pipeline, adapters
 │   └── client/          React/Vite/Tailwind dashboard (Lovable design, served as SPA)
-├── the-wire-room/       Frontend: public-facing wire display (Next.js)
+├── the-wire-room/       Deprecated frontend: public-facing wire display (Next.js)
 └── The Operator         Agent: reads queue, routes, learns from feedback
 ```
 
@@ -201,7 +201,7 @@ The Operator's job:
 - **X:** @SovGrantWire (unified, all verticals tagged)
 - **Newsletter:** Substack (manual publish from generated drafts)
 - **Backend:** Railway (wire-room-ops)
-- **Frontend:** thewireroom.xyz (the-wire-room, Next.js)
+- **Frontend:** thewireroom.xyz is deprecated; primary outputs are Telegram, X, newsletter, and email
 - **Operator:** SovsClaw (OpenClaw agent, reads DB directly)
 
 ---
