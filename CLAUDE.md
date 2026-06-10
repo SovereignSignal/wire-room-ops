@@ -53,6 +53,7 @@ A partial index `idx_scan_entries_approved` on `(wire, created_at DESC) WHERE st
 - **Generated files** and **schedule configs** are persisted to Postgres (survive restarts)
 - **Sessions** are DB-backed (`sessions` table, 7-day expiry, survive deploys; in-memory read-through cache)
 - **Magic link tokens, download tokens, and job queues** are in-memory (reset on restart)
+- **Small job state** (summary-sync watermark, agent daily-scan briefs) lives in the `app_state` KV table (`getAppState`/`setAppState` in `src/db/index.ts`)
 - Single-instance deployment only
 
 ### Privy Authentication
@@ -107,7 +108,7 @@ src/
 │   ├── forum-scan.ts       # Forum scan orchestrator (discuss.watch -> intake, DB-driven wire list)
 │   ├── process-raw.ts      # Background job to process raw entries through Gate 1 -> dedup -> classify
 │   ├── scan-execution.ts   # Automated scan execution (prompt fetch -> Grok/Perplexity -> intake)
-│   └── summary-sync.ts     # Sync tele-sum summaries into scan_entries as approved (7-day lookback)
+│   └── summary-sync.ts     # Sync tele-sum summaries into scan_entries as approved (watermark-based)
 ├── migrations/
 │   ├── cleanup-approved-data.ts  # One-time data cleanup for existing bad entries
 │   ├── cleanup-org-profiles.ts   # Org profile data cleanup
@@ -263,7 +264,7 @@ Pre-approval validation (`src/services/approval-guard.ts`) prevents bad data fro
 ### The Telegram Bridge
 
 `summary-sync.ts` bridges `tele-sum`'s `summaries` table → `scan_entries` (as `status=approved`):
-- Runs every 15 minutes, 7-day lookback window
+- Runs every 15 minutes with a high-water mark stored in `app_state` (1-hour overlap; falls back to a 7-day lookback on first run or after errors)
 - Idempotent: skips entries where `source_url` already exists in `scan_entries`
 - Infers wire from content keywords (AI/OSS detection, defaults to crypto)
 - Historical backfill available via `POST /api/admin/summary-sync-backfill`
@@ -374,7 +375,7 @@ Automated discovery of grant opportunities via X.com scanning, web search, and f
 ### Schedule Types
 - **`scan-execution`**: Runs `runScanExecution()` — executes all active prompts for a wire
 - **`forum-scan`**: Runs `runForumScan()` — searches discuss.watch forums
-- **`daily-digest`**: Runs `runDailyDigest()` — aggregates 24h scan activity, sends summary email. Auto-derives scan schedules to run before it
+- **`daily-digest`**: Runs `runDailyDigest()` — the single combined morning email: 24h scan activity, the agent scan brief (recorded via `POST /api/scan/agent/send-brief` into `app_state`), per-source intake breakdown (incl. parked counts), and top-10 queue snapshot. Sends every day (quiet days still report queue state); the run is marked failed if the email send fails. Auto-derives scan schedules to run before it
 - **`collect-engagement`**: Runs `collectXEngagement()` — fetches X/Twitter public_metrics for recent distributed posts
 - **`experiment-loop`**: Runs `runExperimentLoop()` — evaluates and creates scoring parameter experiments
 - **`drip-distribution`**: Runs `runDripDistribution()` — distributes one approved entry per wire per run
