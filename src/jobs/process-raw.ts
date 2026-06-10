@@ -149,6 +149,9 @@ export async function processRawEntries(pool?: Pool): Promise<{
               sourceUrl: row.source_url,
               name: row.name,
               wire: row.wire,
+              // Row is already inserted as raw — exclude it or the name layer
+              // matches the row against itself (self-duplicate).
+              excludeEntryId: row.id,
             },
             14 // lookback days
           );

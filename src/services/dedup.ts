@@ -56,12 +56,21 @@ const SEMI_GENERIC_TOKENS = new Set([
  */
 export async function checkDuplicate(
   pool: Pool,
-  entry: { sourceUrl: string; name: string; wire: string },
+  entry: {
+    sourceUrl: string;
+    name: string;
+    wire: string;
+    /** The entry's own scan_entries id, for callers that insert BEFORE
+     *  dedup-checking (daily-intake, process-raw). Without it, the name
+     *  layer matches the entry against its own freshly inserted raw row
+     *  and marks it a duplicate of itself. */
+    excludeEntryId?: number;
+  },
   lookbackDays: number = 180
 ): Promise<DedupResult> {
   // Layer 1: URL exact match (fastest)
   // Pass entry name so we can distinguish aggregate URLs (one tweet listing multiple grants)
-  const urlResult = await checkUrlMatch(pool, entry.sourceUrl, entry.wire, entry.name);
+  const urlResult = await checkUrlMatch(pool, entry.sourceUrl, entry.wire, entry.name, entry.excludeEntryId);
   if (urlResult.isDuplicate) {
     return urlResult;
   }
@@ -72,7 +81,7 @@ export async function checkDuplicate(
   // URLs (x.com status vs project page), so the URL layer can't see it.
   // Matching scan_entries directly (not seen_names) also covers entries that
   // never went through registerSeen, e.g. historical summary-sync rows.
-  const nameResult = await checkExactNameMatch(pool, entry.name, entry.wire, lookbackDays);
+  const nameResult = await checkExactNameMatch(pool, entry.name, entry.wire, lookbackDays, entry.excludeEntryId);
   if (nameResult.isDuplicate) {
     return nameResult;
   }
@@ -110,7 +119,8 @@ async function checkUrlMatch(
   pool: Pool,
   sourceUrl: string,
   wire: string,
-  entryName?: string
+  entryName?: string,
+  excludeEntryId?: number
 ): Promise<DedupResult> {
   const normalized = normalizeUrl(sourceUrl);
 
@@ -124,8 +134,9 @@ async function checkUrlMatch(
      JOIN scan_entries se ON se.id = su.first_seen_entry_id
      WHERE su.normalized_url = $1 AND su.wire = $2
        AND se.status IN ('raw', 'approved', 'queued', 'declined')
+       AND ($3::int IS NULL OR su.first_seen_entry_id != $3)
      LIMIT 1`,
-    [normalized, wire]
+    [normalized, wire, excludeEntryId ?? null]
   );
 
   if (result.rows.length > 0) {
@@ -142,8 +153,9 @@ async function checkUrlMatch(
       const countResult = await pool.query(
         `SELECT COUNT(*)::int AS cnt FROM scan_entries
          WHERE source_url = $1 AND wire = $2
-           AND status NOT IN ('duplicate', 'archived')`,
-        [sourceUrl, wire]
+           AND status NOT IN ('duplicate', 'archived')
+           AND ($3::int IS NULL OR id != $3)`,
+        [sourceUrl, wire, excludeEntryId ?? null]
       );
       const existingCount = countResult.rows[0]?.cnt || 0;
       if (existingCount >= 2) {
@@ -209,7 +221,8 @@ async function checkExactNameMatch(
   pool: Pool,
   name: string,
   wire: string,
-  lookbackDays: number
+  lookbackDays: number,
+  excludeEntryId?: number
 ): Promise<DedupResult> {
   const noMatch: DedupResult = {
     isDuplicate: false,
@@ -228,9 +241,10 @@ async function checkExactNameMatch(
      WHERE lower(btrim(name)) = $1 AND wire = $2
        AND status IN ('raw', 'queued', 'approved', 'declined')
        AND created_at >= NOW() - INTERVAL '1 day' * $3
+       AND ($4::int IS NULL OR id != $4)
      ORDER BY created_at ASC
      LIMIT 1`,
-    [normalized, wire, lookbackDays]
+    [normalized, wire, lookbackDays, excludeEntryId ?? null]
   );
 
   if (result.rows.length > 0) {

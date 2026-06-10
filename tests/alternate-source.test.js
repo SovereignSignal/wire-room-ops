@@ -13,7 +13,7 @@ if (!DB_URL) {
 }
 
 const { getPool, closePool } = require('../src/db');
-const { annotateAlternateSource, registerSeen } = require('../src/services/dedup');
+const { annotateAlternateSource, registerSeen, checkDuplicate } = require('../src/services/dedup');
 
 async function insertEntry(pool, name, url) {
   const res = await pool.query(
@@ -70,6 +70,29 @@ test('registerSeen reports a conflict when another entry owns the URL', async ()
     await pool.query(`DELETE FROM seen_names WHERE entry_id IN ($1, $2)`, [first, second]);
     await pool.query(`DELETE FROM seen_urls WHERE first_seen_entry_id IN ($1, $2)`, [first, second]);
     await pool.query(`DELETE FROM scan_entries WHERE id IN ($1, $2)`, [first, second]);
+  }
+});
+
+test('checkDuplicate does not match an entry against its own raw row', async () => {
+  const pool = getPool();
+  const name = 'Self Dedup Regression Program ' + process.pid;
+  const url = 'https://example.com/self-dedup-' + process.pid;
+  const id = await insertEntry(pool, name, url);
+  try {
+    // The exact-name layer matches scan_entries including status 'raw'.
+    // Insert-first callers (daily-intake, process-raw) must exclude the
+    // entry's own id or every new unique name is a duplicate of itself.
+    const withExclusion = await checkDuplicate(pool, { sourceUrl: url, name, wire: 'oss', excludeEntryId: id }, 180);
+    assert.equal(withExclusion.isDuplicate, false, 'own row must not count as a duplicate');
+
+    // A genuinely different entry with the same name must still match.
+    const secondId = await insertEntry(pool, name, url + '-other');
+    const secondCheck = await checkDuplicate(pool, { sourceUrl: url + '-other', name, wire: 'oss', excludeEntryId: secondId }, 180);
+    assert.equal(secondCheck.isDuplicate, true, 'a distinct same-name entry must match');
+    assert.equal(secondCheck.matchedEntryId, id, 'match should point at the first entry');
+    await pool.query(`DELETE FROM scan_entries WHERE id = $1`, [secondId]);
+  } finally {
+    await pool.query(`DELETE FROM scan_entries WHERE id = $1`, [id]);
   }
 });
 

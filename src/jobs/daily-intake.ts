@@ -264,6 +264,9 @@ export async function runDailyIntake(
         sourceUrl: item.result.sourceUrl,
         name: item.result.name,
         wire: item.wire,
+        // Entry is already inserted as raw — exclude it or the name layer
+        // matches the entry against itself.
+        excludeEntryId: entryId,
       },
       config.dedupeWindow
     );
