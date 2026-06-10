@@ -264,8 +264,8 @@ router.delete('/:id', async (req: Request, res: Response) => {
 
 // POST /test — test-run an unsaved prompt draft
 router.post('/test', async (req: Request, res: Response) => {
-  if (!rateLimit('scan-prompt-test', 5, 5 * 60 * 1000)) {
-    res.status(429).json({ error: 'Too many test requests. Max 5 per 5 minutes.' });
+  if (!rateLimit('scan-prompt-test', 15, 5 * 60 * 1000)) {
+    res.status(429).json({ error: 'Too many test requests. Max 15 per 5 minutes.' });
     return;
   }
 
@@ -313,8 +313,8 @@ router.post('/:id/test', async (req: Request, res: Response) => {
     return;
   }
 
-  if (!rateLimit('scan-prompt-test', 5, 5 * 60 * 1000)) {
-    res.status(429).json({ error: 'Too many test requests. Max 5 per 5 minutes.' });
+  if (!rateLimit('scan-prompt-test', 15, 5 * 60 * 1000)) {
+    res.status(429).json({ error: 'Too many test requests. Max 15 per 5 minutes.' });
     return;
   }
 

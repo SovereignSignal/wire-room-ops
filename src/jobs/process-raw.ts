@@ -164,14 +164,10 @@ export async function processRawEntries(pool?: Pool): Promise<{
             );
             stats.duplicates++;
           } else {
-            // Mark as deduped
-            await db.query(
-              `UPDATE scan_entries SET status = 'deduped' WHERE id = $1 AND status = 'raw'`,
-              [row.id]
-            );
-
-            // Register in seen tables
-            await registerSeen(db, {
+            // Claim the URL first — atomic guard against a concurrent path
+            // (e.g. a synchronous dashboard submit) registering the same URL
+            // between our checkDuplicate and registerSeen.
+            const claim = await registerSeen(db, {
               id: row.id,
               sourceUrl: row.source_url,
               name: row.name,
@@ -180,6 +176,23 @@ export async function processRawEntries(pool?: Pool): Promise<{
                 ? row.scan_date.toISOString().split('T')[0]
                 : String(row.scan_date),
             });
+
+            if (claim.urlConflict) {
+              await db.query(
+                `UPDATE scan_entries
+                 SET status = 'duplicate', duplicate_of_id = $1, duplicate_reason = $2
+                 WHERE id = $3 AND status = 'raw'`,
+                [claim.conflictEntryId, 'URL claimed by concurrent submission', row.id]
+              );
+              stats.duplicates++;
+              continue;
+            }
+
+            // Mark as deduped
+            await db.query(
+              `UPDATE scan_entries SET status = 'deduped' WHERE id = $1 AND status = 'raw'`,
+              [row.id]
+            );
 
             // Temporarily queue — Gate 2 below may auto-archive based on classification/score.
             await db.query(

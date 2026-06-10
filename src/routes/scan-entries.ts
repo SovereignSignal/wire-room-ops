@@ -62,9 +62,19 @@ router.post('/submit', async (req: Request, res: Response) => {
     );
 
     const pool = getPool();
-    const summary = await runDailyIntake(pool, [submission]);
+    // Agent (internal-key) submissions return fast: entries are inserted raw
+    // and the background processor handles dedup/classify/queue within ~5 min.
+    // Synchronous processing held the connection through LLM classification,
+    // which read as a hang to API clients and caused retry storms.
+    const isAgent = Boolean((req as any).agentSession);
+    const summary = await runDailyIntake(pool, [submission], isAgent ? { insertOnly: true } : {});
 
-    res.json({ success: true, summary });
+    res.json({
+      success: true,
+      summary,
+      processing: isAgent ? 'background' : 'complete',
+      ...(isAgent ? { note: 'Entries inserted; dedup/classification completes in the background within ~5 minutes. Do NOT retry this request.' } : {}),
+    });
   } catch (error) {
     console.error('Scan submit failed:', error);
     res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });

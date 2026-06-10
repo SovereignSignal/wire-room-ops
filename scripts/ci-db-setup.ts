@@ -24,6 +24,8 @@ import {
   closePool,
 } from '../src/db';
 import { ensureEntryActionColumns } from '../src/services/entry-actions';
+import { runScoringExperimentsMigration } from '../src/migrations/scoring-experiments';
+import { getPool } from '../src/db';
 
 async function main(): Promise<void> {
   if (!process.env.DATABASE_URL) {
@@ -43,6 +45,7 @@ async function main(): Promise<void> {
   await ensureAppStateTable();
   await ensureMonitoredAccountsTable();
   await ensureEntryActionColumns();
+  await runScoringExperimentsMigration(getPool());
 
   console.log('[CI] Database schema ready');
 }

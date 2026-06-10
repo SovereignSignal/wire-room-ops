@@ -478,6 +478,14 @@ function relationOverlapScore(nameA: string, nameB: string): number {
  * Register a new entry in both seen_urls and seen_names tables.
  * Call this after an entry passes dedup and gets inserted.
  */
+export interface RegisterSeenResult {
+  /** True when another entry already owns this URL — the caller lost a
+   *  concurrent race and should mark its entry as a duplicate. */
+  urlConflict: boolean;
+  /** The entry id that owns the URL when urlConflict is true. */
+  conflictEntryId: number | null;
+}
+
 export async function registerSeen(
   pool: Pool,
   entry: {
@@ -487,7 +495,7 @@ export async function registerSeen(
     wire: string;
     scanDate: string;
   }
-): Promise<void> {
+): Promise<RegisterSeenResult> {
   const normalized_url = normalizeUrl(entry.sourceUrl);
   const normalized_name = normalizeName(entry.name);
   const tokens = extractNameTokens(entry.name);
@@ -496,29 +504,85 @@ export async function registerSeen(
   try {
     await client.query('BEGIN');
 
-    // Register URL (upsert, ignore conflict on normalized_url + wire)
-    await client.query(
+    // Register URL. ON CONFLICT DO NOTHING + RETURNING lets us detect when a
+    // concurrent identical submission already claimed this URL — previously
+    // both entries sailed through dedup and ended up queued side by side.
+    const urlRes = await client.query(
       `INSERT INTO seen_urls (url, normalized_url, first_seen_entry_id, first_seen_date, wire)
        VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (normalized_url, wire) DO NOTHING`,
+       ON CONFLICT (normalized_url, wire) DO NOTHING
+       RETURNING id`,
       [entry.sourceUrl, normalized_url, entry.id, entry.scanDate, entry.wire]
     );
 
-    // Register name (idempotent — retries won't create duplicates)
-    await client.query(
-      `INSERT INTO seen_names (name_original, name_normalized, name_tokens, entry_id, wire, first_seen)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (entry_id) DO NOTHING`,
-      [entry.name, normalized_name, tokens, entry.id, entry.wire, entry.scanDate]
-    );
+    let urlConflict = false;
+    let conflictEntryId: number | null = null;
+    if (urlRes.rowCount === 0) {
+      const existing = await client.query(
+        `SELECT first_seen_entry_id FROM seen_urls WHERE normalized_url = $1 AND wire = $2`,
+        [normalized_url, entry.wire]
+      );
+      const ownerId = existing.rows[0]?.first_seen_entry_id ?? null;
+      // Re-registering the same entry (e.g. a reprocessed raw row) is not a conflict
+      if (ownerId !== null && ownerId !== entry.id) {
+        urlConflict = true;
+        conflictEntryId = ownerId;
+      }
+    }
+
+    if (!urlConflict) {
+      // Register name (idempotent — retries won't create duplicates)
+      await client.query(
+        `INSERT INTO seen_names (name_original, name_normalized, name_tokens, entry_id, wire, first_seen)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (entry_id) DO NOTHING`,
+        [entry.name, normalized_name, tokens, entry.id, entry.wire, entry.scanDate]
+      );
+    }
 
     await client.query('COMMIT');
+    return { urlConflict, conflictEntryId };
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
   } finally {
     client.release();
   }
+}
+
+/**
+ * Annotate an entry as a likely alternate source of an existing one.
+ * Extracted from daily-intake so the SQL is unit-testable: the operator_notes
+ * parameter needs an explicit ::text cast because CONCAT_WS is variadic "any"
+ * and PostgreSQL cannot infer the parameter type without it (error 42P18).
+ */
+export async function annotateAlternateSource(
+  pool: Pool,
+  entryId: number,
+  related: RelatedOpportunityResult
+): Promise<void> {
+  await pool.query(
+    `UPDATE scan_entries
+     SET status = 'deduped',
+         metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb,
+         operator_notes = CONCAT_WS(E'\n', NULLIF(operator_notes, ''), $2::text)
+     WHERE id = $3`,
+    [
+      JSON.stringify({
+        related_source: {
+          relation_type: related.relationType,
+          matched_entry_id: related.matchedEntryId,
+          matched_entry_name: related.matchedEntryName,
+          matched_source_url: related.matchedSourceUrl,
+          matched_status: related.matchedStatus,
+          confidence: related.confidence,
+          reason: related.reason,
+        },
+      }),
+      `Possible alternate source: ${related.matchedEntryName} (#${related.matchedEntryId})`,
+      entryId,
+    ]
+  );
 }
 
 // ============================================================
