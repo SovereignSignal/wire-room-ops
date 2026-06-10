@@ -5,7 +5,7 @@ import { config } from './config';
 import { stopAuthCleanup, ensureSessionsTable } from './services/auth';
 import { requireAuth } from './middleware/auth';
 import { requireAuthOrInternalKey } from './middleware/internal-auth';
-import { closePool, ensureFeedsTable, ensureClassificationColumns, ensureEngagementMetricsTable, ensureDistributeAfterColumn, ensureAutoSummarizeFailedColumn, ensureMonitoredAccountsTable, getPool } from './db';
+import { closePool, ensureFeedsTable, ensureClassificationColumns, ensureEngagementMetricsTable, ensureDistributeAfterColumn, ensureAutoSummarizeFailedColumn, ensureOperatorNotesColumn, ensureMonitoredAccountsTable, getPool } from './db';
 import { jobQueue } from './services/job-queue';
 import { getSchedules, addSchedule, initScheduler, stopScheduler, getSchedulerStatus } from './services/scheduler';
 import { ensureOrgProfilesTable } from './services/org-extractor';
@@ -135,8 +135,8 @@ app.use('/api/feeds', requireAuth, feedRouter);
 // routes, Express intercepts the webhook with a 401 before it reaches the handler.
 app.use('/api', jobRouter);
 
-// Scan prompts CRUD + test/review/run
-app.use('/api/scan/prompts', requireAuth, scanPromptRouter);
+// Scan prompts CRUD + test/review/run (internal key allowed for agent-driven scans)
+app.use('/api/scan/prompts', requireAuthOrInternalKey, scanPromptRouter);
 
 // Scan entries query, submit, queue, stats, actions, distribution per-entry
 // NOTE: must be before generic /api routes to prevent requireAuth intercepting /api/scan/*
@@ -284,6 +284,13 @@ export async function startServer(): Promise<void> {
     await ensureAutoSummarizeFailedColumn();
   } catch (error) {
     console.error('auto_summarize_failed column migration failed (non-fatal):', error);
+  }
+
+  // Ensure operator_notes column exists
+  try {
+    await ensureOperatorNotesColumn();
+  } catch (error) {
+    console.error('operator_notes column migration failed (non-fatal):', error);
   }
 
   // Ensure monitored_accounts table exists

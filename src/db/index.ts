@@ -1950,6 +1950,14 @@ export async function ensureAutoSummarizeFailedColumn(): Promise<void> {
   console.log('[DB] auto_summarize_failed column ready');
 }
 
+export async function ensureOperatorNotesColumn(): Promise<void> {
+  const pool = getPool();
+  await pool.query(`
+    ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS operator_notes TEXT
+  `);
+  console.log('[DB] operator_notes column ready');
+}
+
 export async function ensureMonitoredAccountsTable(): Promise<void> {
   const pool = getPool();
   await pool.query(`
