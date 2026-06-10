@@ -119,6 +119,40 @@ export async function runDailyDigest(pool: Pool): Promise<DailyDigestResult> {
 
 import type { TopFindEntry } from '../services/email';
 
+export interface SourceBreakdownRow {
+  wire: string;
+  source: string;
+  total: number;
+  queued: number;
+  approved: number;
+  archived: number;
+  duplicates: number;
+  parked: number;
+}
+
+/**
+ * Per-wire, per-source intake breakdown for the last 24 hours, including how
+ * many entries the operator routing parked (kept in DB, not published).
+ */
+export async function getSourceBreakdown(pool: Pool): Promise<SourceBreakdownRow[]> {
+  const { rows } = await pool.query<SourceBreakdownRow>(`
+    SELECT
+      wire,
+      COALESCE(scan_source, 'unknown') AS source,
+      COUNT(*)::int AS total,
+      COUNT(*) FILTER (WHERE status = 'queued')::int AS queued,
+      COUNT(*) FILTER (WHERE status = 'approved')::int AS approved,
+      COUNT(*) FILTER (WHERE status = 'archived')::int AS archived,
+      COUNT(*) FILTER (WHERE status = 'duplicate')::int AS duplicates,
+      COUNT(*) FILTER (WHERE metadata->>'operator_route' = 'park')::int AS parked
+    FROM scan_entries
+    WHERE created_at >= NOW() - INTERVAL '24 hours'
+    GROUP BY wire, COALESCE(scan_source, 'unknown')
+    ORDER BY wire, total DESC
+  `);
+  return rows;
+}
+
 /**
  * Fetch the top N pending entries by quality score for inclusion in the digest email.
  */

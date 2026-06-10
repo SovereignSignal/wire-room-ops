@@ -668,16 +668,31 @@ router.get('/agent/approval-patterns', async (_req: Request, res: Response) => {
   }
 });
 
-// POST /agent/send-brief — send the daily agent brief email
+// POST /agent/send-brief — record the daily agent brief.
+// The brief is persisted to app_state and folded into the next daily digest
+// email (single combined morning email) rather than sent as its own email.
 router.post('/agent/send-brief', async (req: Request, res: Response) => {
   if (!rateLimit('agent-send-brief', 3, 60000)) {
     res.status(429).json({ error: 'Rate limit exceeded' });
     return;
   }
   try {
-    const { sendAgentBriefEmail } = await import('../services/email');
-    await sendAgentBriefEmail(req.body);
-    res.json({ success: true });
+    const { getAppState, setAppState } = await import('../db');
+    const brief = (req.body && typeof req.body === 'object') ? req.body : {};
+    const date = typeof brief.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(brief.date)
+      ? brief.date
+      : new Date().toISOString().slice(0, 10);
+    const key = `agent-brief:${date}`;
+    const existing = await getAppState<{ runs: unknown[] }>(key);
+    const runs = Array.isArray(existing?.runs) ? existing.runs : [];
+    runs.push({ ...brief, receivedAt: new Date().toISOString() });
+    await setAppState(key, { runs });
+    res.json({
+      success: true,
+      stored: true,
+      runs: runs.length,
+      note: 'Brief recorded; it will be included in the daily digest email.',
+    });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
   }

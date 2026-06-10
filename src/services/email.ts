@@ -334,6 +334,21 @@ export interface TopFindEntry {
   source_url: string | null;
 }
 
+/** One run recorded via POST /api/scan/agent/send-brief. */
+export interface AgentBriefRun {
+  date?: string;
+  entries?: AgentBriefEntry[];
+  searchesDone?: number;
+  totalFound?: number;
+  skippedDuplicates?: number;
+  receivedAt?: string;
+}
+
+/** Stored shape in app_state under `agent-brief:<date>`. */
+export interface StoredAgentBrief {
+  runs: AgentBriefRun[];
+}
+
 export async function sendDailyDigestEmail(
   digest: import('../jobs/daily-digest').DailyDigestResult,
   dashboardUrl: string,
@@ -341,7 +356,9 @@ export async function sendDailyDigestEmail(
   topFinds?: TopFindEntry[],
   csvExport?: import('../jobs/csv-export').CsvExportResult,
   downloadUrls?: { csv: string | null; md: string | null },
-  experimentStatus?: { name: string; entriesScored: number; approvalRate: number; status: string } | null
+  experimentStatus?: { name: string; entriesScored: number; approvalRate: number; status: string } | null,
+  agentBrief?: StoredAgentBrief | null,
+  sourceBreakdown?: import('../jobs/daily-digest').SourceBreakdownRow[]
 ): Promise<void> {
   const brand = getBrand();
   const reviewUrl = `${dashboardUrl.replace(/\/$/, '')}/queue`;
@@ -380,11 +397,69 @@ export async function sendDailyDigestEmail(
     }
   }
 
+  // Agent scan brief (recorded by the daily-grant-scan agent)
+  let agentBriefHtml = '';
+  let agentBriefText = '';
+  if (agentBrief && agentBrief.runs && agentBrief.runs.length > 0) {
+    const runLines = agentBrief.runs.map(run => {
+      const submitted = (run.entries || []).map(e =>
+        `<li style="font-size:12px;color:#222;margin:2px 0;">${e.sourceUrl ? `<a href="${escapeHtml(e.sourceUrl)}" style="color:#0088cc;text-decoration:none;">${escapeHtml(e.name)}</a>` : escapeHtml(e.name)} <span style="color:#888;">(${escapeHtml(e.wire)})</span></li>`
+      ).join('');
+      return `<p style="margin:0 0 4px;font-size:12px;color:#555;">${run.searchesDone ?? 0} searches &middot; ${run.totalFound ?? 0} found &middot; ${(run.entries || []).length} submitted &middot; ${run.skippedDuplicates ?? 0} duplicates skipped</p>${submitted ? `<ul style="margin:0 0 8px;padding-left:18px;">${submitted}</ul>` : '<p style="margin:0 0 8px;font-size:12px;color:#999;">Nothing new submitted — quiet window.</p>'}`;
+    }).join('');
+    agentBriefHtml = `
+      ${sectionLabel('Agent Scan')}
+      ${runLines}`;
+    agentBriefText = '\nAGENT SCAN\n' + agentBrief.runs.map(run =>
+      `  ${run.searchesDone ?? 0} searches | ${run.totalFound ?? 0} found | ${(run.entries || []).length} submitted | ${run.skippedDuplicates ?? 0} dupes skipped` +
+      (run.entries || []).map(e => `\n    - [${e.wire}] ${e.name}`).join('')
+    ).join('\n') + '\n';
+  } else if (agentBrief !== undefined) {
+    agentBriefHtml = `
+      ${sectionLabel('Agent Scan')}
+      <p style="margin:0 0 16px;font-size:12px;color:#999;">No agent scan brief received today</p>`;
+    agentBriefText = '\nAGENT SCAN\nNo agent scan brief received today\n';
+  }
+
+  // Intake by source (last 24h)
+  let sourceHtml = '';
+  let sourceText = '';
+  if (sourceBreakdown && sourceBreakdown.length > 0) {
+    const srcRows = sourceBreakdown.map(s =>
+      `<tr>
+        <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#222;text-transform:uppercase;">${escapeHtml(s.wire)}</td>
+        <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#666;">${escapeHtml(s.source)}</td>
+        <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#222;text-align:center;">${s.total}</td>
+        <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#0088cc;text-align:center;font-weight:${s.queued > 0 ? '700' : '400'};">${s.queued}</td>
+        <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#666;text-align:center;">${s.approved}</td>
+        <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#999;text-align:center;">${s.duplicates}</td>
+        <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#999;text-align:center;">${s.parked}</td>
+      </tr>`
+    ).join('');
+    sourceHtml = `
+      ${sectionLabel('Intake by Source (24h)')}
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-bottom:16px;">
+        <tr>
+          <th style="padding:4px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:left;">Wire</th>
+          <th style="padding:4px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:left;">Source</th>
+          <th style="padding:4px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:center;">In</th>
+          <th style="padding:4px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:center;">Queued</th>
+          <th style="padding:4px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:center;">Approved</th>
+          <th style="padding:4px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:center;">Dupes</th>
+          <th style="padding:4px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:center;">Parked</th>
+        </tr>
+        ${srcRows}
+      </table>`;
+    sourceText = '\nINTAKE BY SOURCE (24H)\n' + sourceBreakdown.map(s =>
+      `  ${s.wire.padEnd(8)} ${s.source.padEnd(14)} in:${s.total} queued:${s.queued} approved:${s.approved} dupes:${s.duplicates} parked:${s.parked}`
+    ).join('\n') + '\n';
+  }
+
   // Top pending
   let topFindsHtml = '';
   let topFindsText = '';
   if (topFinds && topFinds.length > 0) {
-    const rows = topFinds.slice(0, 5).map(e => {
+    const rows = topFinds.slice(0, 10).map(e => {
       const nameCell = e.source_url
         ? `<a href="${escapeHtml(e.source_url)}" style="color:#0088cc;text-decoration:none;">${escapeHtml(e.name)}</a>`
         : escapeHtml(e.name);
@@ -406,7 +481,7 @@ export async function sendDailyDigestEmail(
         </tr>
         ${rows}
       </table>`;
-    topFindsText = '\nTOP PENDING\n' + topFinds.slice(0, 5).map(e =>
+    topFindsText = '\nTOP PENDING\n' + topFinds.slice(0, 10).map(e =>
       `  [${e.quality_score}] ${e.name} | ${e.amount || '\u2014'} | ${e.wire}`
     ).join('\n');
   }
@@ -433,6 +508,7 @@ export async function sendDailyDigestEmail(
 
   const body = `
     <p style="margin:0 0 20px;font-size:14px;color:#222;">${summaryLine}</p>
+    ${agentBriefHtml}
     ${experimentHtml}
     ${sectionLabel('By Wire')}
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-bottom:20px;">
@@ -445,6 +521,7 @@ export async function sendDailyDigestEmail(
       </tr>
       ${wireRows}
     </table>
+    ${sourceHtml}
     ${topFindsHtml}
     ${approvedEntriesHtml}
     ${digest.totalPendingReview > 0
@@ -456,10 +533,10 @@ export async function sendDailyDigestEmail(
   const textContent = `WIREOPS - ${digest.date}
 
 ${digest.totalNewUnique} new finds. ${digest.totalPendingReview > 0 ? `${digest.totalPendingReview} pending review.` : 'Queue is clear.'}
-${experimentText}
+${agentBriefText}${experimentText}
 BY WIRE
 ${wireText}
-${topFindsText}
+${sourceText}${topFindsText}
 ${approvedEntriesText}
 ${digest.totalPendingReview > 0 ? `\nReview: ${reviewUrl}` : `\nDashboard: ${dashboardUrl}`}
 

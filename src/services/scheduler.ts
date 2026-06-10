@@ -6,13 +6,13 @@ import { sendTestAlertEmail, sendScheduledJobFailureEmail, sendDailyDigestEmail 
 import { ExperimentEngine } from './experiment-engine';
 import { runCsvExport } from '../jobs/csv-export';
 import { createMagicLink } from './auth';
-import { runDailyDigest, getTopPendingFinds } from '../jobs/daily-digest';
+import { runDailyDigest, getTopPendingFinds, getSourceBreakdown, SourceBreakdownRow } from '../jobs/daily-digest';
 import { collectXEngagement } from '../scripts/collect-engagement';
 import { runExperimentLoop } from '../scripts/run-experiment-loop';
 import { runDripDistribution } from '../jobs/drip-distribution';
 import { runDeadlineDigest } from '../jobs/deadline-digest';
 import { runAccountMonitor } from '../jobs/account-monitor';
-import { ensureScheduleTable, getAllSchedules, getScheduleById, createSchedule, updateSchedule, deleteSchedule as dbDeleteSchedule, StoredScheduleConfig, ensureFeedsTable, ensureScanTables, ensureScanPromptsTable, ensureDistributionTables, getPool } from '../db';
+import { ensureScheduleTable, getAllSchedules, getScheduleById, createSchedule, updateSchedule, deleteSchedule as dbDeleteSchedule, StoredScheduleConfig, ensureFeedsTable, ensureScanTables, ensureScanPromptsTable, ensureDistributionTables, getPool, getAppState } from '../db';
 import { getActiveWires } from './intake-core';
 
 export interface ScheduleConfig {
@@ -364,10 +364,29 @@ function createJobExecutor(schedule: ScheduleConfig) {
         console.log(`[Scheduler] Running daily digest...`);
 
         const digest = await runDailyDigest(pool);
-        const topFinds = digest.totalPendingReview > 0 ? await getTopPendingFinds(pool, 5) : [];
+        const topFinds = digest.totalPendingReview > 0 ? await getTopPendingFinds(pool, 10) : [];
         console.log(`[Scheduler] Daily digest: hasActivity=${digest.hasActivity}, newUnique=${digest.totalNewUnique}, pending=${digest.totalPendingReview}`);
 
-        if (digest.hasActivity) {
+        // Agent scan brief stored by POST /api/scan/agent/send-brief (if any ran today)
+        let agentBrief: import('./email').StoredAgentBrief | null = null;
+        try {
+          agentBrief = await getAppState<import('./email').StoredAgentBrief>(`agent-brief:${digest.date}`);
+        } catch (briefErr) {
+          console.error(`[Scheduler] Failed to load agent brief:`, briefErr);
+        }
+
+        // Per-source intake breakdown for the last 24h
+        let sourceBreakdown: SourceBreakdownRow[] = [];
+        try {
+          sourceBreakdown = await getSourceBreakdown(pool);
+        } catch (sbErr) {
+          console.error(`[Scheduler] Failed to compute source breakdown:`, sbErr);
+        }
+
+        let digestEmailError: string | null = null;
+
+        // Always send the daily digest email — quiet days still report queue state
+        {
           const dashboardUrl = config.app.url;
           const recipients = currentScheduleData.notifyEmails
             ? currentScheduleData.notifyEmails.split(',').map(e => e.trim()).filter(Boolean)
@@ -413,18 +432,23 @@ function createJobExecutor(schedule: ScheduleConfig) {
 
           // Send single consolidated email
           try {
-            await sendDailyDigestEmail(digest, dashboardUrl, recipients, topFinds, csvResult, downloadUrls, experimentStatus);
+            await sendDailyDigestEmail(digest, dashboardUrl, recipients, topFinds, csvResult, downloadUrls, experimentStatus, agentBrief, sourceBreakdown);
             console.log(`[Scheduler] Daily digest email sent (${digest.totalNewUnique} new, ${csvResult?.entryCount ?? 0} approved)`);
           } catch (emailErr) {
             console.error(`[Scheduler] Failed to send daily digest email:`, emailErr);
+            digestEmailError = emailErr instanceof Error ? emailErr.message : String(emailErr);
           }
-        } else {
-          console.log(`[Scheduler] Daily digest: no activity today, skipping email`);
         }
 
-        status.status = 'success';
-        status.error = null;
-        console.log(`[Scheduler] Daily digest completed`);
+        if (digestEmailError) {
+          status.status = 'failed';
+          status.error = `Digest email failed: ${digestEmailError}`;
+          console.error(`[Scheduler] Daily digest completed but email failed: ${digestEmailError}`);
+        } else {
+          status.status = 'success';
+          status.error = null;
+          console.log(`[Scheduler] Daily digest completed`);
+        }
 
       } else if (currentScheduleData.scheduleType === 'collect-engagement') {
         // ---- Collect Engagement Metrics Job ----
