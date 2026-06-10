@@ -98,7 +98,7 @@ export interface ScanEntry {
  */
 export interface DedupResult {
   isDuplicate: boolean;
-  matchType: 'url_exact' | 'name_fuzzy' | 'url_and_name' | null;
+  matchType: 'url_exact' | 'name_exact' | 'name_fuzzy' | 'url_and_name' | null;
   matchedEntryId: number | null;
   matchedEntryName: string | null;
   confidence: number;               // 0-1 confidence in the match

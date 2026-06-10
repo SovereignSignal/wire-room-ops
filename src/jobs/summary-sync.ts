@@ -11,6 +11,7 @@
 
 import type { Pool } from 'pg';
 import { getActiveWires } from '../services/intake-core';
+import { checkDuplicate, registerSeen } from '../services/dedup';
 import { getAppState, setAppState } from '../db';
 
 // High-water mark: created_at of the newest summary we have fully processed.
@@ -139,6 +140,17 @@ export async function syncSummariesToScanEntries(
         continue;
       }
 
+      const wire = await inferWire(row.title, row.description || '', row.wire);
+
+      // Cross-source dedup: the same program often already exists under a
+      // DIFFERENT url (x.com status vs project page) from manual intake or a
+      // scan — the raw source_url check above can't see those.
+      const dedupResult = await checkDuplicate(pool, { sourceUrl, name: row.title, wire }, 180);
+      if (dedupResult.isDuplicate) {
+        result.skipped++;
+        continue;
+      }
+
       // Parse entities for amount/deadline
       let entities = row.entities || {};
       if (typeof entities === 'string') {
@@ -154,15 +166,16 @@ export async function syncSummariesToScanEntries(
       const orgs = entities.orgs || entities.protocols || [];
       const tags = Array.isArray(orgs) ? orgs.filter((t: unknown): t is string => typeof t === 'string').slice(0, 5) : [];
 
-      const wire = await inferWire(row.title, row.description || '', row.wire);
+      const scanDate = new Date(row.created_at).toISOString().split('T')[0];
 
       // Insert as approved scan_entry
-      await pool.query(`
+      const inserted = await pool.query(`
         INSERT INTO scan_entries (
           name, description, source_url, amount, deadline,
           wire, prompt_variant, scan_source, scan_date,
           status, quality_score, tags, created_at
         ) VALUES ($1, $2, $3, $4, $5, $6, 'N', 'telegram', $7, 'approved', 85, $8, $9)
+        RETURNING id
       `, [
         row.title,
         row.description || '',
@@ -170,10 +183,20 @@ export async function syncSummariesToScanEntries(
         amount,
         deadline,
         wire,
-        new Date(row.created_at).toISOString().split('T')[0], // scan_date
+        scanDate,
         tags,
         row.created_at, // preserve original timestamp
       ]);
+
+      // Register in seen_urls/seen_names so the intake pipeline's dedup can
+      // see telegram-synced entries too (it was blind to them before).
+      await registerSeen(pool, {
+        id: inserted.rows[0].id,
+        sourceUrl,
+        name: row.title,
+        wire,
+        scanDate,
+      });
 
       result.synced++;
     } catch (err) {

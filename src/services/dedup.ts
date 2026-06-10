@@ -66,6 +66,17 @@ export async function checkDuplicate(
     return urlResult;
   }
 
+  // Layer 1.5: Exact name match (case-insensitive) against scan_entries.
+  // This is the cross-source duplicate vector: the same program arrives from
+  // manual intake, web search, and the telegram summary-sync under DIFFERENT
+  // URLs (x.com status vs project page), so the URL layer can't see it.
+  // Matching scan_entries directly (not seen_names) also covers entries that
+  // never went through registerSeen, e.g. historical summary-sync rows.
+  const nameResult = await checkExactNameMatch(pool, entry.name, entry.wire, lookbackDays);
+  if (nameResult.isDuplicate) {
+    return nameResult;
+  }
+
   // Layer 2: Fuzzy name match — DISABLED.
   // Was causing too many false positives (blocking legitimate different programs
   // from the same org). URL exact match is the only dedup gate now.
@@ -178,6 +189,63 @@ async function checkUrlMatch(
     confidence: 0,
     reason: '',
   };
+}
+
+// ============================================================
+// Layer 1.5: Exact Name Match
+// ============================================================
+
+/**
+ * Check if an entry with the identical (case-insensitive) name already exists
+ * on this wire. Deliberately exact-only — the token-overlap fuzzy layer stays
+ * disabled because of false positives, but two entries whose names match
+ * character-for-character within the lookback window are the same program.
+ *
+ * Archived copies don't block (auto-filtered junk may deserve a second look),
+ * matching the URL layer's status policy. Declined copies DO block: the
+ * operator already saw this program and said no.
+ */
+async function checkExactNameMatch(
+  pool: Pool,
+  name: string,
+  wire: string,
+  lookbackDays: number
+): Promise<DedupResult> {
+  const noMatch: DedupResult = {
+    isDuplicate: false,
+    matchType: null,
+    matchedEntryId: null,
+    matchedEntryName: null,
+    confidence: 0,
+    reason: '',
+  };
+
+  const normalized = name.trim().toLowerCase();
+  if (!normalized) return noMatch;
+
+  const result = await pool.query(
+    `SELECT id, name FROM scan_entries
+     WHERE lower(btrim(name)) = $1 AND wire = $2
+       AND status IN ('raw', 'queued', 'approved', 'declined')
+       AND created_at >= NOW() - INTERVAL '1 day' * $3
+     ORDER BY created_at ASC
+     LIMIT 1`,
+    [normalized, wire, lookbackDays]
+  );
+
+  if (result.rows.length > 0) {
+    const row = result.rows[0];
+    return {
+      isDuplicate: true,
+      matchType: 'name_exact',
+      matchedEntryId: row.id,
+      matchedEntryName: row.name,
+      confidence: 1.0,
+      reason: `Exact name match with entry #${row.id}: "${row.name}"`,
+    };
+  }
+
+  return noMatch;
 }
 
 /**
