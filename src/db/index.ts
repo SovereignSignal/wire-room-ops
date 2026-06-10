@@ -1958,6 +1958,36 @@ export async function ensureOperatorNotesColumn(): Promise<void> {
   console.log('[DB] operator_notes column ready');
 }
 
+// ── app_state: small DB-backed key/value store for job state ────────────────
+// Used for the summary-sync watermark and the agent daily-scan brief.
+
+export async function ensureAppStateTable(): Promise<void> {
+  const pool = getPool();
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS app_state (
+      key TEXT PRIMARY KEY,
+      value JSONB NOT NULL,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  console.log('[DB] app_state table ready');
+}
+
+export async function getAppState<T = unknown>(key: string): Promise<T | null> {
+  const pool = getPool();
+  const { rows } = await pool.query(`SELECT value FROM app_state WHERE key = $1`, [key]);
+  return rows.length > 0 ? (rows[0].value as T) : null;
+}
+
+export async function setAppState(key: string, value: unknown): Promise<void> {
+  const pool = getPool();
+  await pool.query(
+    `INSERT INTO app_state (key, value, updated_at) VALUES ($1, $2::jsonb, NOW())
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+    [key, JSON.stringify(value)]
+  );
+}
+
 export async function ensureMonitoredAccountsTable(): Promise<void> {
   const pool = getPool();
   await pool.query(`

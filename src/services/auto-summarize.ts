@@ -96,6 +96,7 @@ Write a 2-4 sentence newsletter summary. Lead with the organization/program name
 
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
+    signal: AbortSignal.timeout(120_000),
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${grok.api_key}`,

@@ -79,6 +79,7 @@ ${orgList}`;
 
   const response = await fetch(`${config.apis.grok.baseUrl}/chat/completions`, {
     method: 'POST',
+    signal: AbortSignal.timeout(120_000),
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${config.apis.grok.apiKey}`,

@@ -127,6 +127,7 @@ export async function classifyEntry(entry: {
 
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
+    signal: AbortSignal.timeout(120_000),
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`,
@@ -209,6 +210,17 @@ export async function classifyBatch(
   const delayMs = options?.delayMs || 500;
   let classified = 0;
   let errors = 0;
+
+  // Pre-warm operator signals per wire so concurrent classifyEntry calls hit the
+  // cache instead of stampeding the 30-day history query.
+  const wires = [...new Set(entries.map(e => e.wire))];
+  for (const wire of wires) {
+    try {
+      await computeOperatorSignals(wire);
+    } catch (err) {
+      console.error(`[Classifier] Failed to pre-warm operator signals for ${wire}:`, err);
+    }
+  }
 
   // Process in chunks of `concurrency`
   for (let i = 0; i < entries.length; i += concurrency) {
@@ -293,6 +305,7 @@ export async function tagBatch(
       const start = Date.now();
       const response = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
+        signal: AbortSignal.timeout(120_000),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${apiKey}`,

@@ -67,6 +67,7 @@ export async function summarizeWithOllama(entry: DatabaseEntry, model?: string):
 
   const response = await fetch(`${baseUrl}/chat`, {
     method: 'POST',
+    signal: AbortSignal.timeout(180_000),
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`,
@@ -147,6 +148,7 @@ Write ONLY the final newsletter summary below. No thinking, no explanation, no m
 
   const response = await fetch(`${baseUrl}/chat`, {
     method: 'POST',
+    signal: AbortSignal.timeout(180_000),
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`,

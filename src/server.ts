@@ -5,7 +5,7 @@ import { config } from './config';
 import { stopAuthCleanup, ensureSessionsTable } from './services/auth';
 import { requireAuth } from './middleware/auth';
 import { requireAuthOrInternalKey } from './middleware/internal-auth';
-import { closePool, ensureFeedsTable, ensureClassificationColumns, ensureEngagementMetricsTable, ensureDistributeAfterColumn, ensureAutoSummarizeFailedColumn, ensureOperatorNotesColumn, ensureMonitoredAccountsTable, getPool } from './db';
+import { closePool, ensureFeedsTable, ensureClassificationColumns, ensureEngagementMetricsTable, ensureDistributeAfterColumn, ensureAutoSummarizeFailedColumn, ensureOperatorNotesColumn, ensureAppStateTable, ensureMonitoredAccountsTable, getPool } from './db';
 import { jobQueue } from './services/job-queue';
 import { getSchedules, addSchedule, initScheduler, stopScheduler, getSchedulerStatus } from './services/scheduler';
 import { ensureOrgProfilesTable } from './services/org-extractor';
@@ -291,6 +291,13 @@ export async function startServer(): Promise<void> {
     await ensureOperatorNotesColumn();
   } catch (error) {
     console.error('operator_notes column migration failed (non-fatal):', error);
+  }
+
+  // Ensure app_state KV table exists (summary-sync watermark, agent briefs)
+  try {
+    await ensureAppStateTable();
+  } catch (error) {
+    console.error('app_state table migration failed (non-fatal):', error);
   }
 
   // Ensure monitored_accounts table exists

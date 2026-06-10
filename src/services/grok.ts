@@ -103,6 +103,7 @@ REQUIREMENTS:
 
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
+    signal: AbortSignal.timeout(120_000),
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`,
@@ -178,6 +179,7 @@ export async function executeScanPrompt(
   // Use the Responses API with x_search tool for real-time X.com scanning
   const response = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
+    signal: AbortSignal.timeout(300_000),
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`,

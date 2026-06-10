@@ -11,6 +11,11 @@
 
 import type { Pool } from 'pg';
 import { getActiveWires } from '../services/intake-core';
+import { getAppState, setAppState } from '../db';
+
+// High-water mark: created_at of the newest summary we have fully processed.
+// Avoids re-scanning the whole 7-day window every 15 minutes.
+const WATERMARK_KEY = 'summary-sync:watermark';
 
 // Wire inference keyword lists — loaded from env or built-in defaults
 const DEFAULT_AI_KEYWORDS = ['ai ', 'artificial intelligence', 'machine learning', 'llm', 'gpt', 'openai', 'anthropic', 'deepmind', 'neural', 'transformer'];
@@ -66,8 +71,16 @@ export async function syncSummariesToScanEntries(
 ): Promise<SyncResult> {
   const result: SyncResult = { synced: 0, skipped: 0, errors: 0 };
 
-  // Fetch recent successful summaries with their message URLs
-  const { rows: summaries } = await pool.query(`
+  // Use the high-water mark when available (with a 1-hour overlap for
+  // late-arriving rows); fall back to the full lookback window on first run.
+  let watermark: string | null = null;
+  try {
+    watermark = await getAppState<string>(WATERMARK_KEY);
+  } catch {
+    // app_state table may not exist yet — fall back to full lookback
+  }
+
+  const baseQuery = `
     SELECT
       s.id AS summary_id,
       s.title,
@@ -78,10 +91,22 @@ export async function syncSummariesToScanEntries(
       m.extracted_urls
     FROM summaries s
     LEFT JOIN messages m ON s.message_id = m.id
-    WHERE s.processing_status = 'SUCCESS'
+    WHERE s.processing_status = 'SUCCESS'`;
+
+  // Fetch recent successful summaries with their message URLs
+  const { rows: summaries } = watermark
+    ? await pool.query(
+        `${baseQuery}
+      AND s.created_at >= ($1::timestamptz - INTERVAL '1 hour')
+    ORDER BY s.created_at ASC`,
+        [watermark]
+      )
+    : await pool.query(
+        `${baseQuery}
       AND s.created_at >= NOW() - INTERVAL '1 hour' * $1
-    ORDER BY s.created_at ASC
-  `, [lookbackHours]);
+    ORDER BY s.created_at ASC`,
+        [lookbackHours]
+      );
 
   if (summaries.length === 0) {
     return result;
@@ -159,6 +184,17 @@ export async function syncSummariesToScanEntries(
 
   if (result.synced > 0) {
     console.log(`[SummarySync] Synced ${result.synced} summaries → scan_entries (skipped: ${result.skipped}, errors: ${result.errors})`);
+  }
+
+  // Advance the watermark only on clean runs so errored rows get retried.
+  // Rows are ordered ASC, so the last row holds the max created_at.
+  if (summaries.length > 0 && result.errors === 0) {
+    try {
+      const newest = summaries[summaries.length - 1].created_at;
+      await setAppState(WATERMARK_KEY, new Date(newest).toISOString());
+    } catch (err) {
+      console.error('[SummarySync] Failed to advance watermark (non-fatal):', err);
+    }
   }
 
   return result;
