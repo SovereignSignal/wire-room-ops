@@ -779,11 +779,17 @@ export async function ensureScanTables(): Promise<void> {
 
   // Phase 5 migration: ensure summaries table accepts scan-pipeline entries
   // (message_id and category_id must be nullable for entries with no tele-sum origin)
+  // Wrapped in a savepoint: a failed statement aborts the surrounding Postgres
+  // transaction, which would silently roll back ALL the tables above on a
+  // fresh database where summaries doesn't exist.
+  await client.query('SAVEPOINT summaries_migration');
   try {
     await client.query(`ALTER TABLE summaries ALTER COLUMN message_id DROP NOT NULL`);
     await client.query(`ALTER TABLE summaries ALTER COLUMN category_id DROP NOT NULL`);
+    await client.query('RELEASE SAVEPOINT summaries_migration');
   } catch {
     // summaries table may not exist yet — that's OK, it's an external table
+    await client.query('ROLLBACK TO SAVEPOINT summaries_migration');
   }
 
     await client.query('COMMIT');
