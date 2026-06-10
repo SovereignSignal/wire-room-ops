@@ -412,7 +412,7 @@ Per-feed multi-channel distribution of approved scan entries. Distribution is a 
 
 ### Architecture
 - **Orchestrator**: `src/services/distribution.ts` -- coordinates sending approved-but-undistributed entries to all enabled channels for a wire, with retry support and newsletter markdown generation
-- **Post generator**: `src/services/post-generator.ts` -- uses Claude Sonnet 4.6 (`claude-sonnet-4-6-20250627`) to generate a tweet (280 chars) and Telegram HTML post per entry. Falls back to a template if AI generation fails
+- **Post generator**: `src/services/post-generator.ts` -- uses Claude Sonnet 4.6 (`claude-sonnet-4-6`) to generate a tweet (280 chars) and Telegram HTML post per entry. Falls back to a template if AI generation fails
 - **Telegram client**: `src/services/telegram-channel.ts` -- sends HTML-formatted posts to Telegram channels via Bot API. Bot token from `TELEGRAM_BOT_TOKEN` env var or `api_providers` DB table
 - **Discord client**: `src/services/discord-channel.ts` -- sends messages to Discord channels via REST API (webhook URL or bot token in `distribution_channels` credentials)
 - **X/Twitter client**: `src/services/x-client.ts` -- posts tweets via `twitter-api-v2`. OAuth credentials stored in `distribution_channels` JSONB per wire

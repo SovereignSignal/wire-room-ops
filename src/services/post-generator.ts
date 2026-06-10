@@ -8,7 +8,7 @@ import type { GeneratedPosts } from '../types/intake';
 import { escapeHtml } from '../utils/html';
 import { logApiUsage } from './api-usage';
 
-const MODEL = 'claude-sonnet-4-6-20250627';
+const MODEL = 'claude-sonnet-4-6';
 
 const WIRE_CONTEXT: Record<string, string> = {
   crypto: 'crypto/blockchain grants and funding',
