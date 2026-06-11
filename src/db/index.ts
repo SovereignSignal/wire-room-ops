@@ -663,7 +663,7 @@ export async function ensureScanTables(): Promise<void> {
     scan_source TEXT NOT NULL DEFAULT 'x-scan',
     scan_date DATE NOT NULL,
     status TEXT NOT NULL DEFAULT 'raw'
-      CHECK (status IN ('raw','deduped','duplicate','queued','enriched','published','archived','skipped','approved','declined')),
+      CHECK (status IN ('raw','deduped','duplicate','queued','enriched','published','archived','skipped','approved','declined','incomplete')),
     quality_score INTEGER,
     quality_breakdown JSONB,
     duplicate_of_id INTEGER REFERENCES scan_entries(id),
@@ -882,13 +882,16 @@ export async function ensureScanPromptsTable(): Promise<void> {
     ALTER TABLE scan_prompts ADD COLUMN IF NOT EXISTS variant TEXT CHECK (variant IN ('A', 'B', 'C'))
   `);
 
-  // Phase 2: Allow queue action statuses (skipped, approved, declined)
+  // Phase 2: Allow queue action statuses (skipped, approved, declined).
+  // Must stay in sync with ensureClassificationColumns — this runs AFTER it
+  // at startup, so dropping 'incomplete' here silently reverts that migration
+  // (caused the 2026-06-11 process-raw crash-loop on Gate 1 failures).
   await pool.query(`
     ALTER TABLE scan_entries DROP CONSTRAINT IF EXISTS scan_entries_status_check
   `);
   await pool.query(`
     ALTER TABLE scan_entries ADD CONSTRAINT scan_entries_status_check
-      CHECK (status IN ('raw','deduped','duplicate','queued','enriched','published','archived','skipped','approved','declined'))
+      CHECK (status IN ('raw','deduped','duplicate','queued','enriched','published','archived','skipped','approved','declined','incomplete'))
   `);
 
   // Phase 3 migration: tool_type column for x_search vs web_search
