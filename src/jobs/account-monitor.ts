@@ -17,6 +17,8 @@ interface MonitoredAccount {
   handle: string;
   wire: string | null;
   x_user_id: string | null;
+  kind?: string;
+  person_name?: string | null;
 }
 
 interface Tweet {
@@ -69,13 +71,15 @@ export async function runAccountMonitor(pool: Pool): Promise<AccountMonitorResul
 
   const result: AccountMonitorResult = { processed: 0, submitted: 0, skipped: 0, errors: 0, disabled: 0 };
 
-  // Get enabled accounts (cap at 40 — efficiency guard; trim the watch list
-  // in monitored_accounts.enabled rather than letting it grow unbounded)
+  // Get enabled accounts — orgs + the key people behind programs (contacts
+  // layer). Cap at 60 (efficiency guard); least-recently-checked first so new
+  // additions get picked up promptly and coverage rotates if over the cap.
   const accountsResult = await pool.query<MonitoredAccount>(
-    `SELECT id, handle, wire, x_user_id FROM monitored_accounts WHERE enabled = true ORDER BY last_checked_at ASC NULLS FIRST LIMIT 40`
+    `SELECT id, handle, wire, x_user_id, kind, person_name FROM monitored_accounts WHERE enabled = true ORDER BY last_checked_at ASC NULLS FIRST LIMIT 60`
   );
   const accounts = accountsResult.rows;
-  console.log(`[AccountMonitor] Checking ${accounts.length} accounts`);
+  const peopleCount = accounts.filter(a => a.kind === 'person').length;
+  console.log(`[AccountMonitor] Checking ${accounts.length} accounts (${peopleCount} people, ${accounts.length - peopleCount} orgs)`);
 
   const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000); // 24h ago
 

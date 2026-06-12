@@ -2016,6 +2016,13 @@ export async function ensureMonitoredAccountsTable(): Promise<void> {
   // Cache the resolved X user_id so the monitor doesn't re-resolve every handle
   // on every run (the dominant cost driver before this).
   await pool.query(`ALTER TABLE monitored_accounts ADD COLUMN IF NOT EXISTS x_user_id TEXT`);
+  // People support: the monitor watches org accounts AND the key people behind
+  // programs (grants leads, fund designers) — the contacts layer + early-signal
+  // watch. kind='org' (default) or 'person'.
+  await pool.query(`ALTER TABLE monitored_accounts ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'org'`);
+  await pool.query(`ALTER TABLE monitored_accounts ADD COLUMN IF NOT EXISTS person_name TEXT`);
+  await pool.query(`ALTER TABLE monitored_accounts ADD COLUMN IF NOT EXISTS role TEXT`);
+  await pool.query(`ALTER TABLE monitored_accounts ADD COLUMN IF NOT EXISTS linked_program TEXT`);
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_monitored_accounts_enabled
     ON monitored_accounts(enabled) WHERE enabled = true
