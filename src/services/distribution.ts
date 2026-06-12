@@ -145,6 +145,24 @@ async function dispatchToManagedChannel(
   const creds = mc.credentials || {};
   const targetId = mc.targetId;
 
+  // Idempotency guard: the unique index only prevents duplicate LOGS after
+  // the fact — without this check a repeat call (re-approve, multi-wire
+  // redistribute) would re-SEND before the log insert fails. Never re-send
+  // to a channel that already has a pending/success log for this entry.
+  try {
+    const existing = await getPool().query(
+      `SELECT 1 FROM distribution_logs
+       WHERE entry_id = $1 AND channel = $2
+         AND COALESCE(channel_id, '00000000-0000-0000-0000-000000000000') = $3::uuid
+         AND status IN ('pending', 'success')
+       LIMIT 1`,
+      [entry.id, channel, mc.id]
+    );
+    if (existing.rows.length > 0) return 'skipped';
+  } catch (err) {
+    console.error('[Distribution] Idempotency check failed, proceeding:', err);
+  }
+
   if (channel === 'telegram') {
     const token = creds.bot_token || getTelegramBotToken();
     if (!token || !targetId) {
@@ -367,14 +385,6 @@ async function dispatchToChannel(
  * not the entire backlog of approved-but-undistributed entries.
  */
 export async function distributeEntry(entryId: number, wire: string): Promise<DistributeResult> {
-  const configs = await getDistributionConfigs(wire);
-  const enabledConfigs = configs.filter(c => c.enabled && c.channel !== 'newsletter');
-  const managedChannels = await getEnabledDistributionChannelsForWire(wire);
-
-  if (enabledConfigs.length === 0 && managedChannels.length === 0) {
-    return { wire, totalEntries: 0, distributed: 0, failed: 0, skipped: 0, details: [] };
-  }
-
   const pool = getPool();
   const entryResult = await pool.query(
     `SELECT * FROM scan_entries WHERE id = $1 AND status = 'approved' AND distributable IS NOT FALSE`,
@@ -386,33 +396,53 @@ export async function distributeEntry(entryId: number, wire: string): Promise<Di
   }
 
   const entry = entryResult.rows[0];
-  const telegramBotToken = getTelegramBotToken();
-  const posts = await generatePosts({
-    name: entry.name,
-    description: entry.description || '',
-    amount: entry.amount,
-    deadline: entry.deadline,
-    sourceUrl: entry.source_url,
-  }, wire);
 
+  // Multi-wire fan-out: an entry tagged to multiple wires (wires[] column,
+  // set via the queue's wire selector) posts to EVERY tagged wire's channels.
+  // Single-wire entries behave exactly as before. The unique partial index
+  // on distribution_logs (entry_id, channel, channel_id) prevents double-posts
+  // to the same channel across repeated calls.
+  const wireList: string[] = Array.from(new Set(
+    Array.isArray(entry.wires) && entry.wires.length > 0 ? entry.wires : [entry.wire || wire]
+  ));
+
+  const telegramBotToken = getTelegramBotToken();
   const detail: DistributeResult['details'][0] = { entryId: entry.id, name: entry.name, channels: {} };
   const result: DistributeResult = { wire, totalEntries: 1, distributed: 0, failed: 0, skipped: 0, details: [detail] };
+  const multiWire = wireList.length > 1;
 
-  for (const cfg of enabledConfigs) {
-    const channelResult = await dispatchToChannel(cfg, entry, posts, telegramBotToken);
-    detail.channels[cfg.channel] = channelResult;
-    if (channelResult === 'success') result.distributed++;
-    if (channelResult === 'failed') result.failed++;
-    if (channelResult === 'skipped') result.skipped++;
-  }
+  for (const w of wireList) {
+    const configs = await getDistributionConfigs(w);
+    const enabledConfigs = configs.filter(c => c.enabled && c.channel !== 'newsletter');
+    const managedChannels = await getEnabledDistributionChannelsForWire(w);
 
-  for (const mc of managedChannels) {
-    const channelResult = await dispatchToManagedChannel(mc, entry, posts);
-    const channelKey = `${mc.channel}:${mc.id.slice(0, 8)}`;
-    detail.channels[channelKey] = channelResult;
-    if (channelResult === 'success') result.distributed++;
-    if (channelResult === 'failed') result.failed++;
-    if (channelResult === 'skipped') result.skipped++;
+    if (enabledConfigs.length === 0 && managedChannels.length === 0) continue;
+
+    // Posts are generated per wire so each channel gets its wire's branding
+    const posts = await generatePosts({
+      name: entry.name,
+      description: entry.description || '',
+      amount: entry.amount,
+      deadline: entry.deadline,
+      sourceUrl: entry.source_url,
+    }, w);
+
+    for (const cfg of enabledConfigs) {
+      const channelResult = await dispatchToChannel(cfg, entry, posts, telegramBotToken);
+      detail.channels[multiWire ? `${w}/${cfg.channel}` : cfg.channel] = channelResult;
+      if (channelResult === 'success') result.distributed++;
+      if (channelResult === 'failed') result.failed++;
+      if (channelResult === 'skipped') result.skipped++;
+    }
+
+    for (const mc of managedChannels) {
+      const channelResult = await dispatchToManagedChannel(mc, entry, posts);
+      const channelKey = multiWire ? `${w}/${mc.channel}:${mc.id.slice(0, 8)}` : `${mc.channel}:${mc.id.slice(0, 8)}`;
+      detail.channels[channelKey] = channelResult;
+      if (channelResult === 'success') result.distributed++;
+      if (channelResult === 'failed') result.failed++;
+      if (channelResult === 'skipped') result.skipped++;
+    }
   }
 
   return result;

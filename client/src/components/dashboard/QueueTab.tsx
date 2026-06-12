@@ -128,10 +128,21 @@ function WireSelector({ wire, wires, entryId, onWiresChange, availableWires = []
   onWiresChange: (id: string, wires: string[]) => void;
   availableWires?: { key: string; displayName: string }[];
 }) {
-  const options = availableWires.length > 0 ? availableWires.map(w => w.key) : [wire];
+  // Self-heal: if the page-mount wires fetch failed (e.g. a deploy blip),
+  // refetch lazily when the dropdown is opened instead of staying broken
+  // for the rest of the session.
+  const [fetchedWires, setFetchedWires] = useState<{ key: string; displayName: string }[]>([]);
+  const effectiveWires = availableWires.length > 0 ? availableWires : fetchedWires;
+  const options = effectiveWires.length > 0 ? effectiveWires.map(w => w.key) : [wire];
   const selected = (wires && wires.length > 0) ? wires : [wire];
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (open && effectiveWires.length === 0) {
+      fetchWires().then(ws => { if (ws.length > 0) setFetchedWires(ws); }).catch(() => {});
+    }
+  }, [open, effectiveWires.length]);
 
   useEffect(() => {
     if (!open) return;
