@@ -449,7 +449,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
 
       {/* Desktop table view */}
       <div className="hidden md:block glow-card overflow-x-auto overflow-y-visible">
-        <table className="ops-table table-fixed w-full">
+        <table className="ops-table w-full">
           <thead>
             <tr>
               <th className="w-[36px] px-2">
@@ -459,11 +459,11 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                   className="border-primary/50 data-[state=checked]:bg-primary data-[state=checked]:border-primary"
                 />
               </th>
-              <th className="w-[38%]">Name</th>
-              <th className="w-[96px] px-2">Wire</th>
-              <th className="w-[70px] px-2">Score</th>
-              <th className="w-[104px] px-2">Src</th>
-              <th className="w-[300px] px-2">Actions</th>
+              <th className="px-2">Name</th>
+              <th className="w-[112px] px-2">Wire</th>
+              <th className="w-[88px] px-2">Score</th>
+              <th className="w-[128px] px-2">Src</th>
+              <th className="w-[268px] px-2">Actions</th>
             </tr>
           </thead>
           <tbody>
