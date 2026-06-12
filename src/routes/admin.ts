@@ -40,6 +40,22 @@ router.post('/run-migration', async (_req: Request, res: Response) => {
   }
 });
 
+// POST /contacts-sync — reconcile the Notion Contacts DB → people-monitor
+router.post('/contacts-sync', async (_req: Request, res: Response) => {
+  if (!rateLimit('contacts-sync', 3, 5 * 60 * 1000)) {
+    res.status(429).json({ error: 'Recently run. Please wait a few minutes.' });
+    return;
+  }
+  try {
+    const { runContactsSync } = await import('../jobs/contacts-sync');
+    const result = await runContactsSync(getPool());
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (error) {
+    console.error('[Admin] contacts-sync error:', error);
+    res.status(500).json({ error: 'Contacts sync failed' });
+  }
+});
+
 // POST /recover-self-dupes — recover entries where duplicate_of_id = own id
 router.post('/recover-self-dupes', async (req: Request, res: Response) => {
   if (!rateLimit('recover-self-dupes', 1, 10 * 60 * 1000)) {

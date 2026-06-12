@@ -124,7 +124,7 @@ interface NotionPage {
   properties: Record<string, any>;
 }
 
-async function notionRequest(
+export async function notionRequest(
   method: string,
   path: string,
   token: string,
@@ -265,7 +265,7 @@ export async function syncOrgsToNotion(integrationId: number): Promise<{
 /**
  * Query all pages from a Notion database (handles pagination).
  */
-async function queryAllNotionPages(token: string, databaseId: string): Promise<NotionPage[]> {
+export async function queryAllNotionPages(token: string, databaseId: string): Promise<NotionPage[]> {
   const allPages: NotionPage[] = [];
   let startCursor: string | undefined;
   let hasMore = true;

@@ -424,6 +424,19 @@ export async function startServer(): Promise<void> {
   const intakeCleanupTimer = setInterval(cleanupPendingEntries, 15 * 60 * 1000);
   intakeCleanupTimer.unref();
 
+  // Contacts sync every 30 min: Notion Contacts DB → people-monitor control surface
+  const contactsSync = async () => {
+    try {
+      const { runContactsSync } = await import('./jobs/contacts-sync');
+      await runContactsSync(getPool());
+    } catch (error) {
+      console.error('[ContactsSync] Scheduled run failed:', error);
+    }
+  };
+  const contactsSyncTimer = setInterval(contactsSync, 30 * 60 * 1000);
+  contactsSyncTimer.unref();
+  setTimeout(contactsSync, 25_000); // once shortly after startup
+
   const server = app.listen(config.app.port, () => {
     console.log(`Server running on port ${config.app.port}`);
   });
