@@ -758,7 +758,7 @@ export async function ensureScanTables(): Promise<void> {
   `);
   await client.query(`
     ALTER TABLE scan_entries ADD CONSTRAINT scan_entries_scan_source_check
-      CHECK (scan_source IN ('x-scan', 'web-search', 'perplexity', 'community', 'telegram', 'telegram-intake', 'manual-intake', 'email', 'forum'))
+      CHECK (scan_source IN ('x-scan', 'web-search', 'perplexity', 'community', 'telegram', 'telegram-intake', 'manual-intake', 'email', 'forum', 'x-monitor'))
   `);
   await client.query(`
     ALTER TABLE scan_entries DROP CONSTRAINT IF EXISTS scan_entries_prompt_variant_check

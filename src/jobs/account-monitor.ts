@@ -97,7 +97,7 @@ export async function runAccountMonitor(pool: Pool): Promise<AccountMonitorResul
         ) || [];
 
         for (const url of urls) {
-          await processIntakeMessage(
+          const intakeResult = await processIntakeMessage(
             {
               text: `${tweet.text}\n${url}`,
               urls: [url],
@@ -107,7 +107,18 @@ export async function runAccountMonitor(pool: Pool): Promise<AccountMonitorResul
             },
             'x-monitor'
           );
-          result.submitted++;
+          // Count actual outcomes — 'submitted' must mean an entry was created,
+          // not merely that intake was called (the 2026-06-12 inaugural run
+          // reported 120 submitted while every insert failed on the scan_source
+          // check constraint).
+          if (intakeResult.status === 'inserted') {
+            result.submitted++;
+          } else if (intakeResult.status === 'rejected') {
+            result.skipped++;
+          } else {
+            result.errors++;
+            console.error(`[AccountMonitor] Intake error for ${url} (@${account.handle}): ${intakeResult.errorMessage}`);
+          }
         }
       }
 
