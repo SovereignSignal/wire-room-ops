@@ -15,6 +15,7 @@ import { classifyEntry, type Classification, type OperatorRoute } from '../servi
 import { getActiveParams } from './quality-scorer';
 import { scrapeUrl, isScrapableUrl, truncateContent } from './scraper';
 import { normalizeUrl } from '../utils/url';
+import { blockedSourceDomain } from '../services/source-filter';
 
 // ────────────────────────────────────────────────────────────────────────────────────
 // URL Title Fetcher
@@ -408,6 +409,11 @@ async function classifyAndQueue(entryId: number, name: string, description: stri
     const result = await classifyEntry({ name, description, source_url: sourceUrl, wire });
     const newStatus = determinePostClassificationStatus(result, scanSource);
     const dbDeadline = normalizeDeadlineForDb(result.extracted.deadline);
+    // Correct the wire when the classifier confidently identifies a different
+    // in-scope domain (fixes the intake default-to-crypto guess).
+    const correctedWire = (result.inScope && result.detectedWire
+      && ['crypto', 'ai', 'oss'].includes(result.detectedWire) && result.detectedWire !== wire)
+      ? result.detectedWire : null;
     const pool = getPool();
     await pool.query(
       `UPDATE scan_entries
@@ -415,21 +421,23 @@ async function classifyAndQueue(entryId: number, name: string, description: stri
            classification = $3, classification_reason = $4,
            metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
            tags = $6,
-           deadline = COALESCE(deadline, $9)
+           deadline = COALESCE(deadline, $9),
+           wire = COALESCE($10, wire)
        WHERE id = $7 AND status = 'raw'`,
       [
         result.qualityScore,
         JSON.stringify({ scoreReason: result.scoreReason, operatorRoute: result.operatorRoute }),
         result.classification,
         result.reason,
-        JSON.stringify({ ...result.extracted, operator_route: result.operatorRoute }),
+        JSON.stringify({ ...result.extracted, operator_route: result.operatorRoute, in_scope: result.inScope, detected_wire: result.detectedWire }),
         result.tags,
         entryId,
         newStatus,
         dbDeadline,
+        correctedWire,
       ]
     );
-    console.log(`[IntakeCore] Classified entry #${entryId}: ${result.classification}/${result.operatorRoute || 'unrouted'} → ${newStatus} (score: ${result.qualityScore})`);
+    console.log(`[IntakeCore] Classified entry #${entryId}: ${result.classification}/${result.operatorRoute || 'unrouted'}${result.inScope ? '' : ' [OFF-SCOPE]'}${correctedWire ? ` wire→${correctedWire}` : ''} → ${newStatus} (score: ${result.qualityScore})`);
   } catch (err) {
     // Fallback: promote to queued with score 0 so it's still visible
     console.error(`[IntakeCore] Classification failed for entry #${entryId}, queuing with score 0:`, err);
@@ -470,6 +478,13 @@ export async function processIntakeMessage(
   const passedUrls = msg.urls || [];
   const allUrls = [...new Set([...passedUrls, ...textUrls])];
   const primaryUrl = allUrls[0] || `https://t.me/manual/${Date.now()}`;
+
+  // Gate 1: reject known Tier-3 aggregator sources before they cost a
+  // classification call (opportunitydesk, afredac, menterprise, …).
+  const blockedDomain = blockedSourceDomain(primaryUrl);
+  if (blockedDomain) {
+    return { status: 'rejected', errorMessage: `Blocked aggregator source: ${blockedDomain}` };
+  }
 
   let name = buildName(text, allUrls[0] || null);
 
@@ -916,6 +931,15 @@ export async function processBatchMessage(
       Object.assign(entry, { _resolvedWire: resolvedWire });
     }
     const resolvedWire = (entry as typeof entry & { _resolvedWire?: string })._resolvedWire || wire!;
+
+    // Gate 1: reject known Tier-3 aggregator sources
+    const batchBlocked = blockedSourceDomain(entry.sourceUrl);
+    if (batchBlocked) {
+      result.errors++;
+      result.failed++;
+      result.entries.push({ name: entry.name, wire: resolvedWire, error: `Blocked aggregator source: ${batchBlocked}` });
+      continue;
+    }
 
     // Within-batch dedup: catch same URL appearing multiple times in one submission
     const normalizedBatchUrl = normalizeUrl(entry.sourceUrl);

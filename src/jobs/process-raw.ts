@@ -218,8 +218,12 @@ export async function processRawEntries(pool?: Pool): Promise<{
                 wire: row.wire,
                 intent: row.prompt_intent || undefined,
               });
-              // Everything goes to queue — no auto-archive. Agent curates manually.
-              const classStatus = 'queued';
+              // In-scope items queue for the agent to curate; off-scope items
+              // (real opportunities outside crypto/AI/OSS) are archived.
+              const classStatus = classResult.inScope ? 'queued' : 'archived';
+              const correctedWire = (classResult.inScope && classResult.detectedWire
+                && ['crypto', 'ai', 'oss'].includes(classResult.detectedWire) && classResult.detectedWire !== row.wire)
+                ? classResult.detectedWire : null;
               await db.query(
                 `UPDATE scan_entries
                  SET classification = $1,
@@ -228,17 +232,19 @@ export async function processRawEntries(pool?: Pool): Promise<{
                      quality_breakdown = $4,
                      metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
                      tags = $6,
-                     status = $8
+                     status = $8,
+                     wire = COALESCE($9, wire)
                  WHERE id = $7`,
                 [
                   classResult.classification,
                   classResult.reason,
                   classResult.qualityScore,
-                  JSON.stringify({ scoreReason: classResult.scoreReason }),
+                  JSON.stringify({ scoreReason: classResult.scoreReason, in_scope: classResult.inScope, detected_wire: classResult.detectedWire }),
                   JSON.stringify(classResult.extracted),
                   classResult.tags,
                   row.id,
                   classStatus,
+                  correctedWire,
                 ]
               );
             } catch (classError) {

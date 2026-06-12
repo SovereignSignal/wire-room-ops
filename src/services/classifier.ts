@@ -22,6 +22,13 @@ export interface ClassificationResult {
   scoreReason: string;
   operatorRoute?: OperatorRoute;
   tags: string[];
+  /** Domain-scope gate: false = a real opportunity but OUTSIDE our three
+   *  domains (general scholarship, bio/health fellowship, etc.). Off-scope
+   *  is routed to NOISE regardless of how credible the program is. */
+  inScope: boolean;
+  /** The wire the classifier judges correct from the content ('crypto'|'ai'|
+   *  'oss'), or 'off_domain'. Used to correct a wrong intake wire-guess. */
+  detectedWire?: 'crypto' | 'ai' | 'oss' | 'off_domain';
   extracted: {
     amount?: string;
     deadline?: string;
@@ -48,11 +55,20 @@ export function buildClassificationPrompt(entry: {
     ? '\n## Prompt Intent: Discovery\nThis entry came from a discovery prompt. Penalize if there is no evidence of recent activity (announcement, post, update within last 30 days).'
     : '';
 
-  return `You are an intelligence analyst for a grants and funding intelligence feed. Classify AND score this entry. The entry is currently tagged for the "${entry.wire}" wire but you should verify this is correct — if the content is clearly about a different domain (e.g., an AI grant tagged as crypto), note it in your reason.
+  return `You are an intelligence analyst for a grants and funding intelligence feed. Classify AND score this entry. The entry is currently tagged for the "${entry.wire}" wire but you must VERIFY and CORRECT this.
 
 Name: ${entry.name}
 Description: ${entry.description}
 URL: ${entry.source_url}${intentGuidance}
+
+## Domain Scope (CRITICAL — check this first)
+This feed covers ONLY these three domains:
+- crypto: blockchain / web3 / crypto grants, ecosystem funds, protocol & DAO funding, public-goods rounds.
+- ai: AI safety, AI alignment, AI research funding, AI compute-credit programs, and AI-focused government/foundation calls.
+- oss: open-source software funding — maintainer grants, foundation programs (NLnet, Sovereign Tech, OpenSSF, Linux Foundation, etc.), OSS security funding.
+
+Set "in_scope": false when the content is a REAL funding opportunity but OUTSIDE all three domains — e.g. general academic scholarships (Rhodes, Knight-Hennessy), biology/medical/health fellowships (EMBO), humanities, neuroscience, unrelated government recognitions, business-plan competitions, study-abroad programs. Off-scope items are NOISE no matter how prestigious or well-funded — a real Rhodes Scholarship is still off-scope. When in_scope is false, set classification to NOISE.
+Set "wire" to the correct domain ("crypto" | "ai" | "oss") when in scope, or "off_domain" when in_scope is false. Do not keep a wrong wire just because the entry arrived tagged that way.
 
 ## Classification
 Classify as exactly one of:
@@ -99,7 +115,7 @@ Also extract if available: amount, deadline, eligibility, summary.
 Also extract entity tags: 1-5 short labels for the organizations, protocols, platforms, or projects specifically named in this entry. Use canonical names (e.g., "Ethereum Foundation" not "EF", "Gitcoin" not "Gitcoin Grants"). Only include entities directly relevant — not generic terms like "blockchain" or "web3". If a specific chain (Ethereum, Solana) is mentioned, include it.
 
 Respond in JSON only, no markdown:
-{"classification":"GRANT","quality_score":72,"operator_route":"publish","score_reason":"Linux Foundation mentorship program — credible org, actionable for OSS contributors, clear structure","reason":"Open application for LFX Mentorship 2026","tags":["Linux Foundation","LFX Mentorship"],"extracted":{"amount":"$6,000 stipend","deadline":"April 15 2026","eligibility":"Open source contributors","summary":"One sentence."}}`;
+{"classification":"GRANT","in_scope":true,"wire":"oss","quality_score":72,"operator_route":"publish","score_reason":"Linux Foundation mentorship program — credible org, actionable for OSS contributors, clear structure","reason":"Open application for LFX Mentorship 2026","tags":["Linux Foundation","LFX Mentorship"],"extracted":{"amount":"$6,000 stipend","deadline":"April 15 2026","eligibility":"Open source contributors","summary":"One sentence."}}`;
 }
 
 export async function classifyEntry(entry: {
@@ -156,7 +172,7 @@ export async function classifyEntry(entry: {
   });
 
   if (!content) {
-    return { classification: 'UNCHECKED', reason: 'empty_response', qualityScore: 0, scoreReason: '', tags: [], extracted: {} };
+    return { classification: 'UNCHECKED', reason: 'empty_response', qualityScore: 0, scoreReason: '', tags: [], inScope: true, extracted: {} };
   }
 
   try {
@@ -164,9 +180,25 @@ export async function classifyEntry(entry: {
     const cleaned = content.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '').trim();
     const parsed = JSON.parse(cleaned);
 
-    const classification = VALID_CLASSIFICATIONS.has(parsed.classification)
+    // Domain-scope gate: default to in-scope unless the model explicitly says false.
+    const inScope = parsed.in_scope !== false;
+    const wireRaw = typeof parsed.wire === 'string' ? parsed.wire.toLowerCase() : '';
+    const detectedWire = (['crypto', 'ai', 'oss', 'off_domain'].includes(wireRaw)
+      ? wireRaw
+      : undefined) as ClassificationResult['detectedWire'];
+
+    let classification = VALID_CLASSIFICATIONS.has(parsed.classification)
       ? (parsed.classification as Classification)
       : 'UNCHECKED';
+    let operatorRoute = typeof parsed.operator_route === 'string' && VALID_OPERATOR_ROUTES.has(parsed.operator_route)
+      ? parsed.operator_route as OperatorRoute
+      : undefined;
+
+    // Off-scope content is NOISE → decline, regardless of how the model scored it.
+    if (!inScope || detectedWire === 'off_domain') {
+      classification = 'NOISE';
+      operatorRoute = 'decline';
+    }
 
     const qualityScore = typeof parsed.quality_score === 'number'
       ? Math.max(0, Math.min(100, Math.round(parsed.quality_score)))
@@ -174,9 +206,6 @@ export async function classifyEntry(entry: {
 
     const rawTags = Array.isArray(parsed.tags) ? parsed.tags : [];
     const tags = rawTags.filter((t: unknown): t is string => typeof t === 'string' && t.length > 0 && t.length <= 60).slice(0, 5);
-    const operatorRoute = typeof parsed.operator_route === 'string' && VALID_OPERATOR_ROUTES.has(parsed.operator_route)
-      ? parsed.operator_route as OperatorRoute
-      : undefined;
 
     return {
       classification,
@@ -185,6 +214,8 @@ export async function classifyEntry(entry: {
       scoreReason: String(parsed.score_reason || ''),
       operatorRoute,
       tags,
+      inScope,
+      detectedWire,
       extracted: {
         amount: parsed.extracted?.amount || undefined,
         deadline: parsed.extracted?.deadline || undefined,
@@ -193,7 +224,7 @@ export async function classifyEntry(entry: {
       },
     };
   } catch {
-    return { classification: 'UNCHECKED', reason: 'parse_error', qualityScore: 0, scoreReason: '', tags: [], extracted: {} };
+    return { classification: 'UNCHECKED', reason: 'parse_error', qualityScore: 0, scoreReason: '', tags: [], inScope: true, extracted: {} };
   }
 }
 

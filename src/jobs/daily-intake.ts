@@ -375,23 +375,28 @@ export async function runDailyIntake(
       });
       qualityScore = classResult.qualityScore;
       const classStatus = classResult.classification === 'NOISE' ? 'archived' : 'queued';
+      const correctedWire = (classResult.inScope && classResult.detectedWire
+        && ['crypto', 'ai', 'oss'].includes(classResult.detectedWire) && classResult.detectedWire !== entry.wire)
+        ? classResult.detectedWire : null;
 
       await pool.query(
         `UPDATE scan_entries
          SET quality_score = $1, quality_breakdown = $2, status = $8,
              classification = $3, classification_reason = $4,
              metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
-             tags = $6
+             tags = $6,
+             wire = COALESCE($9, wire)
          WHERE id = $7`,
         [
           qualityScore,
-          JSON.stringify({ scoreReason: classResult.scoreReason }),
+          JSON.stringify({ scoreReason: classResult.scoreReason, in_scope: classResult.inScope, detected_wire: classResult.detectedWire }),
           classResult.classification,
           classResult.reason,
           JSON.stringify(classResult.extracted),
           classResult.tags,
           entryId,
           classStatus,
+          correctedWire,
         ]
       );
     } catch (classError) {
