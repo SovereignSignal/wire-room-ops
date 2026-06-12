@@ -459,11 +459,11 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                   className="border-primary/50 data-[state=checked]:bg-primary data-[state=checked]:border-primary"
                 />
               </th>
-              <th className="w-[42%]">Name</th>
-              <th className="w-[100px] px-2">Wire</th>
-              <th className="w-[72px] px-2">Score</th>
-              <th className="w-[128px] px-2">Src</th>
-              <th className="w-[232px] px-2">Actions</th>
+              <th className="w-[38%]">Name</th>
+              <th className="w-[96px] px-2">Wire</th>
+              <th className="w-[70px] px-2">Score</th>
+              <th className="w-[104px] px-2">Src</th>
+              <th className="w-[300px] px-2">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -516,41 +516,39 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                         rel="noopener noreferrer"
                         onClick={(e) => e.stopPropagation()}
                         title={isX ? 'Open X post' : `Open source — ${href}`}
-                        className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md border-2 border-primary/50 bg-primary/15 text-primary hover:bg-primary/30 text-sm font-mono font-semibold transition-colors whitespace-nowrap"
+                        className="group inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border border-primary/30 bg-primary/[0.07] text-primary text-xs font-display font-semibold uppercase tracking-wide transition-all hover:bg-primary/15 hover:border-primary/60 hover:shadow-[0_0_12px_hsl(var(--primary)/0.25)] whitespace-nowrap"
                       >
-                        <ExternalLink className="w-5 h-5 shrink-0" />
                         {isX ? 'X' : getSourceLabel(href)}
+                        <ExternalLink className="w-3.5 h-3.5 shrink-0 opacity-60 group-hover:opacity-100 transition-opacity" />
                       </a>
                     );
                   })()}
                 </td>
                 <td className="px-2 py-2" onClick={(e) => e.stopPropagation()}>
                   <div className="flex items-center gap-2">
-                    <Button
-                      size="sm"
+                    <button
                       onClick={() => (onSingleAction ?? ((id, s) => onUpdateStatus([id], s)))(entry.id, 'approved')}
-                      title="Approve & distribute"
-                      className="bg-status-success/25 text-status-success border-2 border-status-success/50 hover:bg-status-success/40 h-12 w-12 p-0 shadow-sm"
+                      title="Approve & distribute to channels"
+                      className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg border border-status-success/45 bg-status-success/15 text-status-success text-[11px] font-display font-bold uppercase tracking-wider transition-all hover:bg-status-success/25 hover:border-status-success/70 hover:shadow-[0_0_14px_hsl(var(--status-success)/0.4)] active:scale-95"
                     >
-                      <CheckCircle className="w-7 h-7" />
-                    </Button>
-                    <Button
-                      size="sm"
+                      <CheckCircle className="w-4 h-4" />
+                      Approve
+                    </button>
+                    <button
                       onClick={() => onQuietApprove([entry.id])}
-                      title="Quiet approve (no distribution)"
-                      className="bg-primary/15 text-primary border-2 border-primary/40 hover:bg-primary/30 h-12 w-12 p-0 shadow-sm"
+                      title="Quiet approve — keep in DB, do not distribute"
+                      className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border border-primary/35 bg-primary/[0.07] text-primary text-[11px] font-display font-semibold uppercase tracking-wider transition-all hover:bg-primary/18 hover:border-primary/60 hover:shadow-[0_0_12px_hsl(var(--primary)/0.3)] active:scale-95"
                     >
-                      <EyeOff className="w-7 h-7" />
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="secondary"
+                      <EyeOff className="w-4 h-4" />
+                      Quiet
+                    </button>
+                    <button
                       onClick={() => (onSingleAction ?? ((id, s) => onUpdateStatus([id], s)))(entry.id, 'archived')}
                       title="Skip / Archive"
-                      className="h-12 w-12 p-0 border-2 border-border shadow-sm"
+                      className="inline-flex items-center justify-center h-9 w-9 rounded-lg border border-border/80 bg-transparent text-muted-foreground transition-all hover:bg-muted hover:text-foreground hover:border-border active:scale-95"
                     >
-                      <Archive className="w-7 h-7" />
-                    </Button>
+                      <Archive className="w-4 h-4" />
+                    </button>
                   </div>
                 </td>
               </tr>
