@@ -15,6 +15,7 @@ import { ensureIntegrationConfigTable } from './services/notion-sync';
 import { startSummarySync, stopSummarySync } from './jobs/summary-sync';
 import { registerIntakeWebhook, cleanupPendingEntries } from './services/telegram-adapter';
 import { processRawEntries } from './jobs/process-raw';
+import { runDecidedRecheck } from './jobs/decided-recheck';
 import { ensureApiProviderTables, refreshProviderCache, getCachedProvider } from './services/api-provider';
 import { ensureApiUsageTables } from './services/api-usage';
 
@@ -417,6 +418,17 @@ export async function startServer(): Promise<void> {
   // Cleanup expired pending intake entries every 15 minutes
   const intakeCleanupTimer = setInterval(cleanupPendingEntries, 15 * 60 * 1000);
   intakeCleanupTimer.unref();
+
+  // Decided-recheck every 15 minutes: semantic dedup of fresh queued entries
+  // against the decided corpus (same_listing → duplicate; update → note, stays queued)
+  const decidedRecheckTimer = setInterval(async () => {
+    try {
+      await runDecidedRecheck(getPool());
+    } catch (error) {
+      console.error('[DecidedRecheck] Scheduled run failed:', error);
+    }
+  }, 15 * 60 * 1000);
+  decidedRecheckTimer.unref();
 
   const server = app.listen(config.app.port, () => {
     console.log(`Server running on port ${config.app.port}`);
