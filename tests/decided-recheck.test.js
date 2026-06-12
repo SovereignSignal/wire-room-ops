@@ -104,6 +104,24 @@ test('classifySourceLink categorizes link quality', () => {
   assert.equal(classifySourceLink('https://twitter.com/org/status/9'), 'tweet-only');
 });
 
+test('isSafeHttpUrl blocks SSRF targets, allows public URLs', () => {
+  const { __ssrf } = require('../src/jobs/decided-recheck');
+  // public hosts pass
+  assert.equal(__ssrf.isSafeHttpUrl('https://deepmind.google/blog/x'), true, 'public https ok');
+  assert.equal(__ssrf.isSafeHttpUrl('http://example.org/'), true, 'public http ok');
+  // SSRF targets blocked
+  assert.equal(__ssrf.isSafeHttpUrl('http://169.254.169.254/latest/meta-data/'), false, 'cloud metadata blocked');
+  assert.equal(__ssrf.isSafeHttpUrl('http://127.0.0.1/'), false, 'loopback blocked');
+  assert.equal(__ssrf.isSafeHttpUrl('http://localhost/'), false, 'localhost blocked');
+  assert.equal(__ssrf.isSafeHttpUrl('http://10.0.0.5/'), false, 'RFC1918 10/8 blocked');
+  assert.equal(__ssrf.isSafeHttpUrl('http://192.168.1.1/'), false, 'RFC1918 192.168 blocked');
+  assert.equal(__ssrf.isSafeHttpUrl('http://172.16.5.5/'), false, 'RFC1918 172.16/12 blocked');
+  assert.equal(__ssrf.isSafeHttpUrl('http://[::1]/'), false, 'IPv6 loopback blocked');
+  assert.equal(__ssrf.isSafeHttpUrl('http://user:pass@example.org/'), false, 'userinfo blocked');
+  assert.equal(__ssrf.isSafeHttpUrl('ftp://example.org/'), false, 'non-http scheme blocked');
+  assert.equal(__ssrf.isSafeHttpUrl('http://wire-room-ops.railway.internal/'), false, '.internal blocked');
+});
+
 test.after(async () => {
 
   await closePool();

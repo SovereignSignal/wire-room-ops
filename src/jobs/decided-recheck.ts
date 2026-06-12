@@ -211,13 +211,67 @@ export function classifySourceLink(url: string | null | undefined): SourceLinkCl
   return 'ok';
 }
 
+// Block resolution to non-public addresses. Shortener targets come from
+// scraped tweets (untrusted), so an attacker could point one at cloud
+// metadata (169.254.169.254) or an internal Railway host. We validate the
+// host at every hop and never let fetch auto-follow redirects.
+function isBlockedHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, ''); // strip IPv6 brackets
+  if (!h || h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.internal') || h.endsWith('.local')) return true;
+  // IPv4 literal?
+  const v4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const o = v4.slice(1).map(Number);
+    if (o.some(n => n > 255)) return true;
+    const [a, b] = o;
+    if (a === 0 || a === 127 || a === 10 || a >= 224) return true;            // 0/8, loopback, 10/8, multicast/reserved
+    if (a === 169 && b === 254) return true;                                  // link-local + cloud metadata
+    if (a === 172 && b >= 16 && b <= 31) return true;                         // 172.16/12
+    if (a === 192 && b === 168) return true;                                  // 192.168/16
+    if (a === 100 && b >= 64 && b <= 127) return true;                        // CGNAT 100.64/10
+    return false;
+  }
+  // IPv6 literal — block loopback, link-local, ULA, unspecified
+  if (h.includes(':')) {
+    if (h === '::1' || h === '::') return true;
+    if (h.startsWith('fe80') || h.startsWith('fc') || h.startsWith('fd')) return true;
+    if (h.startsWith('::ffff:')) return true;                                 // IPv4-mapped — reject; can't cheaply re-validate here
+    return false;
+  }
+  return false; // a DNS name; the per-hop fetch below resolves it and we re-check the final URL
+}
+
+function isSafeHttpUrl(raw: string): URL | null {
+  let u: URL;
+  try { u = new URL(raw); } catch { return null; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+  if (u.username || u.password) return null;               // reject user:pass@ userinfo
+  if (isBlockedHost(u.hostname)) return null;
+  return u;
+}
+
 async function resolveShortener(url: string): Promise<string | null> {
+  let current = url;
   try {
-    const res = await fetch(url, { method: 'HEAD', redirect: 'follow', signal: AbortSignal.timeout(10_000) });
-    const final = res.url;
-    if (final && final !== url && classifySourceLink(final) === 'ok') return final;
+    for (let hop = 0; hop < 4; hop++) {
+      const safe = isSafeHttpUrl(current);
+      if (!safe) return null;
+      const res = await fetch(safe.toString(), { method: 'HEAD', redirect: 'manual', signal: AbortSignal.timeout(10_000) });
+      // Redirect? validate the next hop before following it.
+      if (res.status >= 300 && res.status < 400) {
+        const loc = res.headers.get('location');
+        if (!loc) return null;
+        const next = new URL(loc, safe).toString();      // resolve relative redirects
+        if (!isSafeHttpUrl(next)) return null;
+        current = next;
+        continue;
+      }
+      // Terminal response — the safe, fully-resolved URL
+      if (current !== url && classifySourceLink(current) === 'ok') return current;
+      return null;
+    }
   } catch { /* fall through */ }
-  return null;
+  return null; // too many hops or error
 }
 
 /**
@@ -346,3 +400,6 @@ export async function runDecidedRecheck(pool: Pool): Promise<{ checked: number; 
 
   return stats;
 }
+
+// Exposed for unit testing the SSRF guard
+export const __ssrf = { isSafeHttpUrl: (u: string): boolean => isSafeHttpUrl(u) !== null, isBlockedHost };
