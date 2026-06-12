@@ -200,6 +200,78 @@ export async function applyVerdict(pool: Pool, target: RecheckTarget, candidates
   return verdict.verdict;
 }
 
+export type SourceLinkClass = 'missing' | 'placeholder' | 'shortener' | 'tweet-only' | 'ok';
+
+export function classifySourceLink(url: string | null | undefined): SourceLinkClass {
+  const u = (url || '').trim();
+  if (!u) return 'missing';
+  if (u.startsWith('https://t.me/manual/') || u.startsWith('scan://')) return 'placeholder';
+  if (/^https?:\/\/(t\.co|bit\.ly|tinyurl\.com|buff\.ly|ow\.ly)\//i.test(u)) return 'shortener';
+  if (/^https?:\/\/(x|twitter)\.com\//i.test(u)) return 'tweet-only';
+  return 'ok';
+}
+
+async function resolveShortener(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, { method: 'HEAD', redirect: 'follow', signal: AbortSignal.timeout(10_000) });
+    const final = res.url;
+    if (final && final !== url && classifySourceLink(final) === 'ok') return final;
+  } catch { /* fall through */ }
+  return null;
+}
+
+/**
+ * Source-link quality sweep: classify every fresh queued entry's link,
+ * auto-resolve shorteners to their real destination, and annotate entries
+ * whose only source is a placeholder or tweet so the operator (and the
+ * approval guard) see it. Never archives or declines — flag, don't filter.
+ */
+async function sweepSourceLinks(pool: Pool): Promise<number> {
+  const batch = await pool.query(
+    `SELECT id, source_url FROM scan_entries
+     WHERE status = 'queued' AND (metadata -> 'source_link') IS NULL
+       AND created_at > NOW() - INTERVAL '7 days'
+     ORDER BY created_at ASC LIMIT 30`
+  );
+
+  let flagged = 0;
+  for (const row of batch.rows as Array<{ id: number; source_url: string | null }>) {
+    let cls = classifySourceLink(row.source_url);
+
+    if (cls === 'shortener' && row.source_url) {
+      const resolved = await resolveShortener(row.source_url);
+      if (resolved) {
+        await pool.query(`UPDATE scan_entries SET source_url = $2 WHERE id = $1`, [row.id, resolved]);
+        console.log(`[DecidedRecheck] #${row.id}: resolved shortener → ${resolved}`);
+        cls = 'ok';
+      }
+    }
+
+    const note =
+      cls === 'missing' || cls === 'placeholder' ? '⚠ No real source link — a primary URL is required before this can publish' :
+      cls === 'shortener' ? '⚠ Source is an unresolved shortener (resolution failed) — fix before publish' :
+      cls === 'tweet-only' ? '⚠ Source is a tweet link only — find the primary program page before publishing' : null;
+
+    if (note) {
+      await pool.query(
+        `UPDATE scan_entries SET
+           operator_notes = CONCAT_WS(E'\n', NULLIF(operator_notes, ''), $2::text),
+           metadata = metadata || jsonb_build_object('source_link', $3::text)
+         WHERE id = $1 AND NOT COALESCE(operator_notes, '') LIKE '%' || $2 || '%'`,
+        [row.id, note, cls]
+      );
+      flagged++;
+    } else {
+      await pool.query(
+        `UPDATE scan_entries SET metadata = metadata || jsonb_build_object('source_link', $2::text) WHERE id = $1`,
+        [row.id, cls]
+      );
+    }
+  }
+  if (flagged > 0) console.log(`[DecidedRecheck] Source-link sweep: ${batch.rows.length} checked, ${flagged} flagged`);
+  return flagged;
+}
+
 export async function runDecidedRecheck(pool: Pool): Promise<{ checked: number; duplicates: number; updates: number; distinct: number; errors: number }> {
   if (isRunning) {
     return { checked: 0, duplicates: 0, updates: 0, distinct: 0, errors: 0 };
@@ -208,6 +280,13 @@ export async function runDecidedRecheck(pool: Pool): Promise<{ checked: number; 
   const stats = { checked: 0, duplicates: 0, updates: 0, distinct: 0, errors: 0 };
 
   try {
+    // Phase 0: source-link quality sweep (cheap, independent gating)
+    try {
+      await sweepSourceLinks(pool);
+    } catch (err) {
+      console.error('[DecidedRecheck] Source-link sweep failed:', err);
+    }
+
     const batch = await pool.query(
       `SELECT id, wire, name, description, source_url, deadline
        FROM scan_entries

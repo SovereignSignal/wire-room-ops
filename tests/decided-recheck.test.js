@@ -92,6 +92,19 @@ test('applyVerdict: same_listing at high confidence marks duplicate of decided e
   }
 });
 
+test('classifySourceLink categorizes link quality', () => {
+  const { classifySourceLink } = require('../src/jobs/decided-recheck');
+  assert.equal(classifySourceLink('https://example.org/grants'), 'ok');
+  assert.equal(classifySourceLink(''), 'missing');
+  assert.equal(classifySourceLink(null), 'missing');
+  assert.equal(classifySourceLink('https://t.me/manual/1749700000'), 'placeholder');
+  assert.equal(classifySourceLink('scan://internal-ref'), 'placeholder');
+  assert.equal(classifySourceLink('https://t.co/AbC123'), 'shortener');
+  assert.equal(classifySourceLink('https://x.com/someorg/status/123'), 'tweet-only');
+  assert.equal(classifySourceLink('https://twitter.com/org/status/9'), 'tweet-only');
+});
+
 test.after(async () => {
+
   await closePool();
 });

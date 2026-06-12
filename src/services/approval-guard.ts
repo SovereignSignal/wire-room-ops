@@ -29,6 +29,16 @@ export function validateForApproval(entry: {
 
   if (!entry.source_url || entry.source_url.trim() === '') {
     errors.push('Missing source URL');
+  } else {
+    const url = entry.source_url.trim();
+    // Placeholder/internal refs are not publishable sources
+    if (url.startsWith('https://t.me/manual/') || url.startsWith('scan://')) {
+      errors.push('Source URL is an internal placeholder — no real source link was submitted');
+    } else if (/^https?:\/\/t\.co\//i.test(url)) {
+      errors.push('Source URL is an unresolved t.co shortener — resolve to the real page first');
+    } else if (/^https?:\/\/(x|twitter)\.com\//i.test(url)) {
+      warnings.push('Source is a tweet link only — consider finding the primary program page before publishing');
+    }
   }
 
   // --- Non-blocking warnings ---
