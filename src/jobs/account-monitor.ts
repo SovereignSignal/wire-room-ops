@@ -15,6 +15,7 @@ interface MonitoredAccount {
   id: string;
   handle: string;
   wire: string | null;
+  x_user_id: string | null;
 }
 
 interface Tweet {
@@ -40,7 +41,9 @@ async function getUserId(handle: string, token: string): Promise<string | null> 
 }
 
 async function getRecentTweets(userId: string, token: string): Promise<Tweet[]> {
-  const url = `${X_API_BASE}/users/${userId}/tweets?max_results=10&tweet.fields=created_at,entities&expansions=attachments.media_keys`;
+  // max_results=5 (was 10): funder accounts post infrequently; with a daily
+  // cadence and dedup, 5 recent tweets per account is plenty and halves reads.
+  const url = `${X_API_BASE}/users/${userId}/tweets?max_results=5&tweet.fields=created_at,entities&expansions=attachments.media_keys`;
   const resp = await fetchWithBearer(url, token);
   if (resp.status === 429) throw new Error('RATE_LIMITED');
   if (!resp.ok) return [];
@@ -65,9 +68,10 @@ export async function runAccountMonitor(pool: Pool): Promise<AccountMonitorResul
 
   const result: AccountMonitorResult = { processed: 0, submitted: 0, skipped: 0, errors: 0, disabled: 0 };
 
-  // Get enabled accounts
+  // Get enabled accounts (cap at 40 — efficiency guard; trim the watch list
+  // in monitored_accounts.enabled rather than letting it grow unbounded)
   const accountsResult = await pool.query<MonitoredAccount>(
-    `SELECT id, handle, wire FROM monitored_accounts WHERE enabled = true ORDER BY last_checked_at ASC NULLS FIRST`
+    `SELECT id, handle, wire, x_user_id FROM monitored_accounts WHERE enabled = true ORDER BY last_checked_at ASC NULLS FIRST LIMIT 40`
   );
   const accounts = accountsResult.rows;
   console.log(`[AccountMonitor] Checking ${accounts.length} accounts`);
@@ -76,10 +80,16 @@ export async function runAccountMonitor(pool: Pool): Promise<AccountMonitorResul
 
   for (const account of accounts) {
     try {
-      const userId = await getUserId(account.handle, token);
+      // Use the cached X user_id; only hit the lookup endpoint the first time.
+      // This was the biggest waste — re-resolving 100+ handles every run.
+      let userId = account.x_user_id;
       if (!userId) {
-        result.skipped++;
-        continue;
+        userId = await getUserId(account.handle, token);
+        if (!userId) {
+          result.skipped++;
+          continue;
+        }
+        await pool.query(`UPDATE monitored_accounts SET x_user_id = $1 WHERE id = $2`, [userId, account.id]);
       }
 
       const tweets = await getRecentTweets(userId, token);

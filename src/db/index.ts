@@ -2013,8 +2013,11 @@ export async function ensureMonitoredAccountsTable(): Promise<void> {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  // Cache the resolved X user_id so the monitor doesn't re-resolve every handle
+  // on every run (the dominant cost driver before this).
+  await pool.query(`ALTER TABLE monitored_accounts ADD COLUMN IF NOT EXISTS x_user_id TEXT`);
   await pool.query(`
-    CREATE INDEX IF NOT EXISTS idx_monitored_accounts_enabled 
+    CREATE INDEX IF NOT EXISTS idx_monitored_accounts_enabled
     ON monitored_accounts(enabled) WHERE enabled = true
   `);
   console.log('[DB] monitored_accounts table ready');
