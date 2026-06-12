@@ -148,6 +148,9 @@ export async function ensureApiUsageTables(): Promise<void> {
     ['ollama', 'gpt-oss:120b', 0.50, 1.50, null],
     ['firecrawl', 'scrape', 0, 0, 0.01],
     ['resend', 'email', 0, 0, 0.001],
+    ['parallel', 'search', 0, 0, 0.005],        // Parallel Search API: $5/1k requests
+    ['twitter', 'timeline', 0, 0, 0.025],       // X API: ≤5 post-reads × $0.005
+    ['twitter', 'user-lookup', 0, 0, 0.005],    // X API: 1 read (rare — cached after first)
   ];
 
   for (const [provider, model, inputCost, outputCost, perReq] of seeds) {

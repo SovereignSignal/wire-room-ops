@@ -256,7 +256,7 @@ router.post('/schedule', async (req: Request, res: Response) => {
 router.post('/digest/send-now', async (req: Request, res: Response) => {
   try {
     const pool = getPool();
-    const { runDailyDigest, getTopPendingFinds } = await import('../jobs/daily-digest');
+    const { runDailyDigest, getTopPendingFinds, getSourceBreakdown, getCostRecap } = await import('../jobs/daily-digest');
     const { sendDailyDigestEmail } = await import('../services/email');
 
     // Get configured recipients from the daily-digest schedule
@@ -268,8 +268,10 @@ router.post('/digest/send-now', async (req: Request, res: Response) => {
 
     const digest = await runDailyDigest(pool);
     const topFinds = digest.totalPendingReview > 0 ? await getTopPendingFinds(pool, 5) : [];
+    const sourceBreakdown = await getSourceBreakdown(pool).catch(() => undefined);
+    const costRecap = await getCostRecap(pool).catch(() => undefined);
 
-    await sendDailyDigestEmail(digest, config.app.url, recipients, topFinds);
+    await sendDailyDigestEmail(digest, config.app.url, recipients, topFinds, undefined, undefined, undefined, undefined, sourceBreakdown, costRecap);
     res.json({ success: true, message: `Digest sent to ${recipients?.join(', ') || 'default recipients'}`, stats: { wires: digest.wires.length, pendingReview: digest.totalPendingReview } });
   } catch (error) {
     console.error('[DigestNow] Failed:', error);

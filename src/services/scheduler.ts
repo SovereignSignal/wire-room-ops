@@ -6,7 +6,7 @@ import { sendTestAlertEmail, sendScheduledJobFailureEmail, sendDailyDigestEmail 
 import { ExperimentEngine } from './experiment-engine';
 import { runCsvExport } from '../jobs/csv-export';
 import { createMagicLink } from './auth';
-import { runDailyDigest, getTopPendingFinds, getSourceBreakdown, SourceBreakdownRow } from '../jobs/daily-digest';
+import { runDailyDigest, getTopPendingFinds, getSourceBreakdown, SourceBreakdownRow, getCostRecap, CostRow } from '../jobs/daily-digest';
 import { collectXEngagement } from '../scripts/collect-engagement';
 import { runExperimentLoop } from '../scripts/run-experiment-loop';
 import { runDripDistribution } from '../jobs/drip-distribution';
@@ -383,6 +383,14 @@ function createJobExecutor(schedule: ScheduleConfig) {
           console.error(`[Scheduler] Failed to compute source breakdown:`, sbErr);
         }
 
+        // Per-provider API cost recap for the last 24h
+        let costRecap: { rows: CostRow[]; total: number } | undefined;
+        try {
+          costRecap = await getCostRecap(pool);
+        } catch (costErr) {
+          console.error(`[Scheduler] Failed to compute cost recap:`, costErr);
+        }
+
         let digestEmailError: string | null = null;
 
         // Always send the daily digest email — quiet days still report queue state
@@ -432,7 +440,7 @@ function createJobExecutor(schedule: ScheduleConfig) {
 
           // Send single consolidated email
           try {
-            await sendDailyDigestEmail(digest, dashboardUrl, recipients, topFinds, csvResult, downloadUrls, experimentStatus, agentBrief, sourceBreakdown);
+            await sendDailyDigestEmail(digest, dashboardUrl, recipients, topFinds, csvResult, downloadUrls, experimentStatus, agentBrief, sourceBreakdown, costRecap);
             console.log(`[Scheduler] Daily digest email sent (${digest.totalNewUnique} new, ${csvResult?.entryCount ?? 0} approved)`);
           } catch (emailErr) {
             console.error(`[Scheduler] Failed to send daily digest email:`, emailErr);

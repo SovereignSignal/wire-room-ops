@@ -358,7 +358,8 @@ export async function sendDailyDigestEmail(
   downloadUrls?: { csv: string | null; md: string | null },
   experimentStatus?: { name: string; entriesScored: number; approvalRate: number; status: string } | null,
   agentBrief?: StoredAgentBrief | null,
-  sourceBreakdown?: import('../jobs/daily-digest').SourceBreakdownRow[]
+  sourceBreakdown?: import('../jobs/daily-digest').SourceBreakdownRow[],
+  costRecap?: { rows: import('../jobs/daily-digest').CostRow[]; total: number }
 ): Promise<void> {
   const brand = getBrand();
   const reviewUrl = `${dashboardUrl.replace(/\/$/, '')}/queue`;
@@ -455,6 +456,38 @@ export async function sendDailyDigestEmail(
     ).join('\n') + '\n';
   }
 
+  // API cost recap (per-cost tools, last 24h)
+  let costHtml = '';
+  let costText = '';
+  if (costRecap && costRecap.rows.length > 0) {
+    const costRows = costRecap.rows.map(c =>
+      `<tr>
+        <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#222;">${escapeHtml(c.provider)}</td>
+        <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#666;text-align:center;">${c.calls}</td>
+        <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#222;text-align:right;font-weight:600;">$${c.cost_usd.toFixed(4)}</td>
+      </tr>`
+    ).join('');
+    costHtml = `
+      ${sectionLabel('API Costs (24h)')}
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-bottom:8px;">
+        <tr>
+          <th style="padding:4px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:left;">Provider</th>
+          <th style="padding:4px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:center;">Calls</th>
+          <th style="padding:4px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:right;">Cost</th>
+        </tr>
+        ${costRows}
+        <tr>
+          <td style="padding:6px 8px;font-size:12px;color:#222;font-weight:700;">Total</td>
+          <td></td>
+          <td style="padding:6px 8px;font-size:13px;color:#0088cc;text-align:right;font-weight:700;">$${costRecap.total.toFixed(4)}</td>
+        </tr>
+      </table>
+      <p style="margin:0 0 16px;color:#999;font-size:10px;">X (twitter) & Parallel approximated from per-request rates; full token costs for LLM providers.</p>`;
+    costText = '\nAPI COSTS (24H)\n' + costRecap.rows.map(c =>
+      `  ${c.provider.padEnd(12)} ${String(c.calls).padStart(4)} calls   $${c.cost_usd.toFixed(4)}`
+    ).join('\n') + `\n  ${'TOTAL'.padEnd(12)}        $${costRecap.total.toFixed(4)}\n`;
+  }
+
   // Top pending
   let topFindsHtml = '';
   let topFindsText = '';
@@ -522,6 +555,7 @@ export async function sendDailyDigestEmail(
       ${wireRows}
     </table>
     ${sourceHtml}
+    ${costHtml}
     ${topFindsHtml}
     ${approvedEntriesHtml}
     ${digest.totalPendingReview > 0
@@ -536,7 +570,7 @@ ${digest.totalNewUnique} new finds. ${digest.totalPendingReview > 0 ? `${digest.
 ${agentBriefText}${experimentText}
 BY WIRE
 ${wireText}
-${sourceText}${topFindsText}
+${sourceText}${costText}${topFindsText}
 ${approvedEntriesText}
 ${digest.totalPendingReview > 0 ? `\nReview: ${reviewUrl}` : `\nDashboard: ${dashboardUrl}`}
 

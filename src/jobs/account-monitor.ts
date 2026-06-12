@@ -8,6 +8,7 @@
 
 import type { Pool } from 'pg';
 import { processIntakeMessage } from '../services/intake-core';
+import { logApiUsage } from '../services/api-usage';
 
 const X_API_BASE = 'https://api.twitter.com/2';
 
@@ -84,7 +85,9 @@ export async function runAccountMonitor(pool: Pool): Promise<AccountMonitorResul
       // This was the biggest waste — re-resolving 100+ handles every run.
       let userId = account.x_user_id;
       if (!userId) {
+        const lookupStart = Date.now();
         userId = await getUserId(account.handle, token);
+        logApiUsage({ provider: 'twitter', model: 'user-lookup', purpose: 'account-monitor', wire: account.wire || undefined, duration_ms: Date.now() - lookupStart, success: !!userId });
         if (!userId) {
           result.skipped++;
           continue;
@@ -92,7 +95,9 @@ export async function runAccountMonitor(pool: Pool): Promise<AccountMonitorResul
         await pool.query(`UPDATE monitored_accounts SET x_user_id = $1 WHERE id = $2`, [userId, account.id]);
       }
 
+      const fetchStart = Date.now();
       const tweets = await getRecentTweets(userId, token);
+      logApiUsage({ provider: 'twitter', model: 'timeline', purpose: 'account-monitor', wire: account.wire || undefined, duration_ms: Date.now() - fetchStart, success: true });
       const recentTweets = tweets.filter(t => new Date(t.created_at) > cutoff);
 
       // Update last_checked_at

@@ -130,6 +130,33 @@ export interface SourceBreakdownRow {
   parked: number;
 }
 
+export interface CostRow {
+  provider: string;
+  calls: number;
+  cost_usd: number;
+}
+
+/**
+ * Per-provider API cost for the last 24 hours, from api_usage_log. Covers all
+ * per-cost tools: grok/anthropic/perplexity/ollama (LLM tokens), parallel
+ * (search fee), twitter (X reads), firecrawl (scrapes), resend (email).
+ * Providers without pricing rows show $0 — see model_pricing.
+ */
+export async function getCostRecap(pool: Pool): Promise<{ rows: CostRow[]; total: number }> {
+  const { rows } = await pool.query<CostRow>(`
+    SELECT provider,
+           COUNT(*)::int AS calls,
+           ROUND(COALESCE(SUM(estimated_cost_usd), 0)::numeric, 4)::float AS cost_usd
+    FROM api_usage_log
+    WHERE created_at >= NOW() - INTERVAL '24 hours'
+    GROUP BY provider
+    HAVING COUNT(*) > 0
+    ORDER BY cost_usd DESC NULLS LAST
+  `);
+  const total = rows.reduce((sum, r) => sum + (r.cost_usd || 0), 0);
+  return { rows, total: Math.round(total * 10000) / 10000 };
+}
+
 /**
  * Per-wire, per-source intake breakdown for the last 24 hours, including how
  * many entries the operator routing parked (kept in DB, not published).
