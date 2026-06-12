@@ -20,6 +20,9 @@
  */
 
 import type { Pool } from 'pg';
+import http from 'node:http';
+import https from 'node:https';
+import { lookup as dnsLookup } from 'node:dns';
 import { getCachedProvider } from '../services/api-provider';
 import { logApiUsage } from '../services/api-usage';
 import { config } from '../config';
@@ -246,8 +249,54 @@ function isSafeHttpUrl(raw: string): URL | null {
   try { u = new URL(raw); } catch { return null; }
   if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
   if (u.username || u.password) return null;               // reject user:pass@ userinfo
-  if (isBlockedHost(u.hostname)) return null;
+  // Hostname must be a literal IP we can check, or a normal dotted DNS name.
+  // WHATWG URL already normalizes integer/hex/octal IPv4 to dotted-quad, so
+  // anything else weird (no dot, not an IP) is rejected up front.
+  const host = u.hostname.replace(/^\[|\]$/g, '');
+  const looksLikeDns = /^[a-z0-9_-]+(\.[a-z0-9_-]+)+$/i.test(host);
+  const looksLikeIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(':');
+  if (!looksLikeDns && !looksLikeIp) return null;
+  if (isBlockedHost(u.hostname)) return null;              // fast-path for IP literals
   return u;
+}
+
+// DNS lookup that validates EVERY resolved address against the blocklist and
+// pins the connection to a validated IP. Passed as http(s).request's `lookup`
+// option, so the IP we approve is the exact IP connected to — this closes the
+// DNS-rebinding / DNS-based-SSRF hole (a hostname resolving to 169.254.169.254
+// or an RFC1918 host) and the TOCTOU window between validation and connect.
+function validatingLookup(hostname: string, options: any, callback: any): void {
+  const all = options && typeof options === 'object' ? options.all : false;
+  dnsLookup(hostname, { all: true, verbatim: true }, (err, addresses: any) => {
+    if (err) return callback(err);
+    const list = Array.isArray(addresses) ? addresses : [addresses];
+    for (const a of list) {
+      if (isBlockedHost(a.address)) {
+        return callback(new Error(`SSRF blocked: ${hostname} resolves to non-public ${a.address}`));
+      }
+    }
+    if (all) return callback(null, list);
+    return callback(null, list[0].address, list[0].family);
+  });
+}
+
+interface HeadResult { status: number; location: string | null }
+
+function safeHeadRequest(u: URL): Promise<HeadResult> {
+  return new Promise((resolve, reject) => {
+    const mod = u.protocol === 'https:' ? https : http;
+    const req = mod.request(
+      u,
+      { method: 'HEAD', lookup: validatingLookup as any, timeout: 10_000 },
+      (res) => {
+        res.resume(); // drain, we never read the body
+        resolve({ status: res.statusCode || 0, location: (res.headers.location as string) || null });
+      }
+    );
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', reject);
+    req.end();
+  });
 }
 
 async function resolveShortener(url: string): Promise<string | null> {
@@ -256,12 +305,11 @@ async function resolveShortener(url: string): Promise<string | null> {
     for (let hop = 0; hop < 4; hop++) {
       const safe = isSafeHttpUrl(current);
       if (!safe) return null;
-      const res = await fetch(safe.toString(), { method: 'HEAD', redirect: 'manual', signal: AbortSignal.timeout(10_000) });
+      const res = await safeHeadRequest(safe);   // host validated + IP-pinned inside
       // Redirect? validate the next hop before following it.
       if (res.status >= 300 && res.status < 400) {
-        const loc = res.headers.get('location');
-        if (!loc) return null;
-        const next = new URL(loc, safe).toString();      // resolve relative redirects
+        if (!res.location) return null;
+        const next = new URL(res.location, safe).toString();   // resolve relative redirects
         if (!isSafeHttpUrl(next)) return null;
         current = next;
         continue;
@@ -402,4 +450,12 @@ export async function runDecidedRecheck(pool: Pool): Promise<{ checked: number; 
 }
 
 // Exposed for unit testing the SSRF guard
-export const __ssrf = { isSafeHttpUrl: (u: string): boolean => isSafeHttpUrl(u) !== null, isBlockedHost };
+export const __ssrf = {
+  isSafeHttpUrl: (u: string): boolean => isSafeHttpUrl(u) !== null,
+  isBlockedHost,
+  // Resolves a hostname through the same validating lookup used for real
+  // connections; returns true if it would be allowed, false if blocked.
+  validatesClean: (hostname: string): Promise<boolean> => new Promise((res) => {
+    validatingLookup(hostname, { all: true }, (err: any) => res(!err));
+  }),
+};

@@ -120,6 +120,20 @@ test('isSafeHttpUrl blocks SSRF targets, allows public URLs', () => {
   assert.equal(__ssrf.isSafeHttpUrl('http://user:pass@example.org/'), false, 'userinfo blocked');
   assert.equal(__ssrf.isSafeHttpUrl('ftp://example.org/'), false, 'non-http scheme blocked');
   assert.equal(__ssrf.isSafeHttpUrl('http://wire-room-ops.railway.internal/'), false, '.internal blocked');
+  // integer/hex/octal IPv4 forms — WHATWG normalizes to dotted-quad, so caught
+  assert.equal(__ssrf.isSafeHttpUrl('http://2130706433/'), false, 'integer IPv4 (127.0.0.1) blocked');
+  assert.equal(__ssrf.isSafeHttpUrl('http://0x7f000001/'), false, 'hex IPv4 (127.0.0.1) blocked');
+  // non-IP, non-dotted garbage hostname rejected
+  assert.equal(__ssrf.isSafeHttpUrl('http://notadomain/'), false, 'bare non-dotted host blocked');
+});
+
+test('validatingLookup blocks a hostname that resolves to a private/loopback IP', async () => {
+  const { __ssrf } = require('../src/jobs/decided-recheck');
+  // localhost resolves to 127.0.0.1/::1 — the DNS-rebinding vector. Must be blocked
+  // at resolution time, not just by the literal check.
+  assert.equal(await __ssrf.validatesClean('localhost'), false, 'localhost resolution blocked');
+  // a public DNS name resolves to public IPs — allowed
+  assert.equal(await __ssrf.validatesClean('example.com'), true, 'public DNS resolves clean');
 });
 
 test.after(async () => {
