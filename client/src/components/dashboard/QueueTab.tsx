@@ -464,8 +464,8 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
               <th className="w-[96px] px-2">Class</th>
               <th className="w-[56px] px-2">Score</th>
               <th className="w-[76px] px-2">Date</th>
-              <th className="w-[84px] px-2">Src</th>
-              <th className="w-[140px] px-2">Actions</th>
+              <th className="w-[90px] px-2">Src</th>
+              <th className="w-[164px] px-2">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -534,40 +534,40 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                         rel="noopener noreferrer"
                         onClick={(e) => e.stopPropagation()}
                         title={isX ? 'Open X post' : `Open source — ${href}`}
-                        className="inline-flex items-center gap-1 px-2 py-1 rounded border border-primary/40 bg-primary/10 text-primary hover:bg-primary/25 text-[11px] font-mono font-semibold transition-colors whitespace-nowrap"
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border-2 border-primary/40 bg-primary/10 text-primary hover:bg-primary/25 text-xs font-mono font-semibold transition-colors whitespace-nowrap"
                       >
-                        <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+                        <ExternalLink className="w-4 h-4 shrink-0" />
                         {isX ? 'X' : getSourceLabel(href)}
                       </a>
                     );
                   })()}
                 </td>
-                <td className="px-2" onClick={(e) => e.stopPropagation()}>
-                  <div className="flex items-center gap-1.5">
+                <td className="px-2 py-2" onClick={(e) => e.stopPropagation()}>
+                  <div className="flex items-center gap-2">
                     <Button
                       size="sm"
                       onClick={() => (onSingleAction ?? ((id, s) => onUpdateStatus([id], s)))(entry.id, 'approved')}
                       title="Approve & distribute"
-                      className="bg-status-success/20 text-status-success border border-status-success/40 hover:bg-status-success/35 h-9 w-9 p-0"
+                      className="bg-status-success/25 text-status-success border-2 border-status-success/50 hover:bg-status-success/40 h-11 w-11 p-0 shadow-sm"
                     >
-                      <CheckCircle className="w-[18px] h-[18px]" />
+                      <CheckCircle className="w-6 h-6" />
                     </Button>
                     <Button
                       size="sm"
                       onClick={() => onQuietApprove([entry.id])}
                       title="Quiet approve (no distribution)"
-                      className="bg-primary/10 text-primary border border-primary/30 hover:bg-primary/25 h-9 w-9 p-0"
+                      className="bg-primary/15 text-primary border-2 border-primary/40 hover:bg-primary/30 h-11 w-11 p-0 shadow-sm"
                     >
-                      <EyeOff className="w-[18px] h-[18px]" />
+                      <EyeOff className="w-6 h-6" />
                     </Button>
                     <Button
                       size="sm"
                       variant="secondary"
                       onClick={() => (onSingleAction ?? ((id, s) => onUpdateStatus([id], s)))(entry.id, 'archived')}
                       title="Skip / Archive"
-                      className="h-9 w-9 p-0"
+                      className="h-11 w-11 p-0 border-2 border-border shadow-sm"
                     >
-                      <Archive className="w-[18px] h-[18px]" />
+                      <Archive className="w-6 h-6" />
                     </Button>
                   </div>
                 </td>
