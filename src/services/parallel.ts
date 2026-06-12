@@ -61,6 +61,20 @@ async function grokChat(prompt: string, maxTokens: number, purpose: string, wire
   }
 }
 
+/**
+ * Extract operator-supplied queries from the prompt. Parallel's value is
+ * precise search, and Grok-planned queries are non-deterministic (one run
+ * surfaces primary sources, the next surfaces directories). A prompt line of
+ * the form `Search queries: a | b | c` pins the queries deterministically.
+ * Returns null when no explicit queries are present (→ fall back to Grok).
+ */
+function extractExplicitQueries(promptText: string): string[] | null {
+  const m = promptText.match(/search[_ ]?queries:\s*(.+?)(?:\n\n|$)/is);
+  if (!m) return null;
+  const queries = m[1].split(/\s*\|\s*|\s*;\s*|\n/).map(q => q.trim()).filter(q => q.length >= 3).slice(0, 5);
+  return queries.length > 0 ? queries : null;
+}
+
 /** Plan 2-3 short keyword queries (3-6 words each) for the Parallel search. */
 async function planQueries(objective: string, wire?: string): Promise<string[]> {
   const wireHint = wire ? `The vertical is "${wire}". ` : '';
@@ -95,8 +109,8 @@ export async function executeParallelScan(
   const baseUrl = provider?.base_url || PARALLEL_BASE_URL;
   const wire = options?.wire;
 
-  // 1. Plan queries (Grok)
-  const searchQueries = await planQueries(promptText, wire);
+  // 1. Queries — operator-supplied (deterministic) or Grok-planned (fallback)
+  const searchQueries = extractExplicitQueries(promptText) || await planQueries(promptText, wire);
 
   // 2. Retrieve (Parallel)
   const today = new Date().toISOString().split('T')[0];
