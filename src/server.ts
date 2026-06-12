@@ -396,39 +396,33 @@ export async function startServer(): Promise<void> {
     }
   }
 
-  // Process raw entries every 5 minutes (dedup + scoring pipeline)
-  const processRawTimer = setInterval(async () => {
+  // Process raw entries + decided-recheck every 5 minutes. Recheck runs right
+  // after process-raw so a scan's freshly queued entries are deduped against
+  // the decided corpus in the SAME cycle. Tying it to the 5-min loop (which
+  // also fires ~10s after every boot) means it survives frequent redeploys —
+  // a standalone 15-min timer kept getting reset before it could fire.
+  const runPipelineCycle = async () => {
     try {
       await processRawEntries(getPool());
     } catch (error) {
       console.error('[ProcessRaw] Scheduled run failed:', error);
     }
-  }, 5 * 60 * 1000);
-  processRawTimer.unref();
-
-  // Run once at startup (after a short delay to let DB settle)
-  setTimeout(async () => {
-    try {
-      await processRawEntries(getPool());
-    } catch (error) {
-      console.error('[ProcessRaw] Initial run failed:', error);
-    }
-  }, 10_000);
-
-  // Cleanup expired pending intake entries every 15 minutes
-  const intakeCleanupTimer = setInterval(cleanupPendingEntries, 15 * 60 * 1000);
-  intakeCleanupTimer.unref();
-
-  // Decided-recheck every 15 minutes: semantic dedup of fresh queued entries
-  // against the decided corpus (same_listing → duplicate; update → note, stays queued)
-  const decidedRecheckTimer = setInterval(async () => {
     try {
       await runDecidedRecheck(getPool());
     } catch (error) {
       console.error('[DecidedRecheck] Scheduled run failed:', error);
     }
-  }, 15 * 60 * 1000);
-  decidedRecheckTimer.unref();
+  };
+
+  const processRawTimer = setInterval(runPipelineCycle, 5 * 60 * 1000);
+  processRawTimer.unref();
+
+  // Run once at startup (after a short delay to let DB settle)
+  setTimeout(runPipelineCycle, 10_000);
+
+  // Cleanup expired pending intake entries every 15 minutes
+  const intakeCleanupTimer = setInterval(cleanupPendingEntries, 15 * 60 * 1000);
+  intakeCleanupTimer.unref();
 
   const server = app.listen(config.app.port, () => {
     console.log(`Server running on port ${config.app.port}`);
