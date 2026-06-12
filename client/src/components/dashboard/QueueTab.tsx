@@ -42,7 +42,7 @@ function RelatedSourceBadge({ entry }: { entry: ScanEntry }) {
   return (
     <span
       title={related.reason || `Related to ${related.matched_entry_name || `entry #${related.matched_entry_id}`}`}
-      className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-mono font-medium border border-cyan-400/50 text-cyan-300 bg-cyan-500/10"
+      className="inline-flex items-center whitespace-nowrap px-1.5 py-0.5 rounded text-[10px] font-mono font-medium border border-cyan-400/50 text-cyan-300 bg-cyan-500/10"
     >
       {label}{confidence}
     </span>
@@ -461,11 +461,11 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
               </th>
               <th>Name</th>
               <th className="w-[100px] px-2">Wire</th>
-              <th className="w-[72px] px-2">Class</th>
+              <th className="w-[96px] px-2">Class</th>
               <th className="w-[56px] px-2">Score</th>
               <th className="w-[76px] px-2">Date</th>
-              <th className="w-[68px] px-2">Src</th>
-              <th className="w-[110px] px-2">Actions</th>
+              <th className="w-[84px] px-2">Src</th>
+              <th className="w-[140px] px-2">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -504,8 +504,10 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                   <WireSelector wire={entry.wire} wires={entry.wires} entryId={entry.id} onWiresChange={handleWiresChange} availableWires={availableWires} />
                 </td>
                 <td className="px-2">
-                  <ClassificationBadge classification={entry.classification} />
-                  <RelatedSourceBadge entry={entry} />
+                  <div className="flex flex-col items-start gap-1">
+                    <ClassificationBadge classification={entry.classification} />
+                    <RelatedSourceBadge entry={entry} />
+                  </div>
                 </td>
                 <td className="px-2">
                   <ScoreBadge score={entry.quality_score} />
@@ -531,41 +533,41 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                         target="_blank"
                         rel="noopener noreferrer"
                         onClick={(e) => e.stopPropagation()}
-                        title={isX ? 'Open X post' : 'Open source'}
-                        className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 text-[9px] font-mono font-medium transition-colors whitespace-nowrap"
+                        title={isX ? 'Open X post' : `Open source — ${href}`}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded border border-primary/40 bg-primary/10 text-primary hover:bg-primary/25 text-[11px] font-mono font-semibold transition-colors whitespace-nowrap"
                       >
-                        <ExternalLink className="w-3 h-3 shrink-0" />
+                        <ExternalLink className="w-3.5 h-3.5 shrink-0" />
                         {isX ? 'X' : getSourceLabel(href)}
                       </a>
                     );
                   })()}
                 </td>
                 <td className="px-2" onClick={(e) => e.stopPropagation()}>
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1.5">
                     <Button
                       size="sm"
                       onClick={() => (onSingleAction ?? ((id, s) => onUpdateStatus([id], s)))(entry.id, 'approved')}
-                      title="Approve"
-                      className="bg-status-success/20 text-status-success border border-status-success/30 hover:bg-status-success/30 h-7 w-7 p-0"
+                      title="Approve & distribute"
+                      className="bg-status-success/20 text-status-success border border-status-success/40 hover:bg-status-success/35 h-9 w-9 p-0"
                     >
-                      <CheckCircle className="w-3.5 h-3.5" />
+                      <CheckCircle className="w-[18px] h-[18px]" />
                     </Button>
                     <Button
                       size="sm"
                       onClick={() => onQuietApprove([entry.id])}
                       title="Quiet approve (no distribution)"
-                      className="bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 h-7 w-7 p-0"
+                      className="bg-primary/10 text-primary border border-primary/30 hover:bg-primary/25 h-9 w-9 p-0"
                     >
-                      <EyeOff className="w-3.5 h-3.5" />
+                      <EyeOff className="w-[18px] h-[18px]" />
                     </Button>
                     <Button
                       size="sm"
                       variant="secondary"
                       onClick={() => (onSingleAction ?? ((id, s) => onUpdateStatus([id], s)))(entry.id, 'archived')}
                       title="Skip / Archive"
-                      className="h-7 w-7 p-0"
+                      className="h-9 w-9 p-0"
                     >
-                      <Archive className="w-3.5 h-3.5" />
+                      <Archive className="w-[18px] h-[18px]" />
                     </Button>
                   </div>
                 </td>
