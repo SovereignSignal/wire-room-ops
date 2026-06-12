@@ -449,23 +449,21 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
 
       {/* Desktop table view */}
       <div className="hidden md:block glow-card overflow-x-auto overflow-y-visible">
-        <table className="ops-table">
+        <table className="ops-table table-fixed w-full">
           <thead>
             <tr>
-              <th className="w-8 px-2">
+              <th className="w-[36px] px-2">
                 <Checkbox
                   checked={selectedIds.size === filteredEntries.length && filteredEntries.length > 0}
                   onCheckedChange={toggleSelectAll}
                   className="border-primary/50 data-[state=checked]:bg-primary data-[state=checked]:border-primary"
                 />
               </th>
-              <th>Name</th>
+              <th className="w-[42%]">Name</th>
               <th className="w-[100px] px-2">Wire</th>
-              <th className="w-[96px] px-2">Class</th>
-              <th className="w-[56px] px-2">Score</th>
-              <th className="w-[76px] px-2">Date</th>
-              <th className="w-[90px] px-2">Src</th>
-              <th className="w-[164px] px-2">Actions</th>
+              <th className="w-[72px] px-2">Score</th>
+              <th className="w-[128px] px-2">Src</th>
+              <th className="w-[232px] px-2">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -504,28 +502,12 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                   <WireSelector wire={entry.wire} wires={entry.wires} entryId={entry.id} onWiresChange={handleWiresChange} availableWires={availableWires} />
                 </td>
                 <td className="px-2">
-                  <div className="flex flex-col items-start gap-1">
-                    <ClassificationBadge classification={entry.classification} />
-                    <RelatedSourceBadge entry={entry} />
-                  </div>
-                </td>
-                <td className="px-2">
                   <ScoreBadge score={entry.quality_score} />
-                </td>
-                <td className="px-2">
-                  {entry.source_published_at ? (
-                    <span className="text-[10px] font-mono text-muted-foreground whitespace-nowrap"
-                      title={`Source: ${new Date(entry.source_published_at).toLocaleDateString()}`}>
-                      {new Date(entry.source_published_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' })}
-                    </span>
-                  ) : (
-                    <span className="text-muted-foreground/40 text-[10px]">—</span>
-                  )}
                 </td>
                 <td className="px-2" onClick={(e) => e.stopPropagation()}>
                   {(() => {
                     const href = resolveSourceUrl(entry);
-                    if (!href) return <span className="text-muted-foreground text-xs">—</span>;
+                    if (!href) return <span className="text-muted-foreground text-sm">—</span>;
                     const isX = isXUrl(href);
                     return (
                       <a
@@ -534,9 +516,9 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                         rel="noopener noreferrer"
                         onClick={(e) => e.stopPropagation()}
                         title={isX ? 'Open X post' : `Open source — ${href}`}
-                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border-2 border-primary/40 bg-primary/10 text-primary hover:bg-primary/25 text-xs font-mono font-semibold transition-colors whitespace-nowrap"
+                        className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md border-2 border-primary/50 bg-primary/15 text-primary hover:bg-primary/30 text-sm font-mono font-semibold transition-colors whitespace-nowrap"
                       >
-                        <ExternalLink className="w-4 h-4 shrink-0" />
+                        <ExternalLink className="w-5 h-5 shrink-0" />
                         {isX ? 'X' : getSourceLabel(href)}
                       </a>
                     );
@@ -548,26 +530,26 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                       size="sm"
                       onClick={() => (onSingleAction ?? ((id, s) => onUpdateStatus([id], s)))(entry.id, 'approved')}
                       title="Approve & distribute"
-                      className="bg-status-success/25 text-status-success border-2 border-status-success/50 hover:bg-status-success/40 h-11 w-11 p-0 shadow-sm"
+                      className="bg-status-success/25 text-status-success border-2 border-status-success/50 hover:bg-status-success/40 h-12 w-12 p-0 shadow-sm"
                     >
-                      <CheckCircle className="w-6 h-6" />
+                      <CheckCircle className="w-7 h-7" />
                     </Button>
                     <Button
                       size="sm"
                       onClick={() => onQuietApprove([entry.id])}
                       title="Quiet approve (no distribution)"
-                      className="bg-primary/15 text-primary border-2 border-primary/40 hover:bg-primary/30 h-11 w-11 p-0 shadow-sm"
+                      className="bg-primary/15 text-primary border-2 border-primary/40 hover:bg-primary/30 h-12 w-12 p-0 shadow-sm"
                     >
-                      <EyeOff className="w-6 h-6" />
+                      <EyeOff className="w-7 h-7" />
                     </Button>
                     <Button
                       size="sm"
                       variant="secondary"
                       onClick={() => (onSingleAction ?? ((id, s) => onUpdateStatus([id], s)))(entry.id, 'archived')}
                       title="Skip / Archive"
-                      className="h-11 w-11 p-0 border-2 border-border shadow-sm"
+                      className="h-12 w-12 p-0 border-2 border-border shadow-sm"
                     >
-                      <Archive className="w-6 h-6" />
+                      <Archive className="w-7 h-7" />
                     </Button>
                   </div>
                 </td>
@@ -575,7 +557,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
             ))}
             {filteredEntries.length === 0 && (
               <tr>
-                <td colSpan={8} className="text-center py-12 text-muted-foreground font-display text-sm tracking-wider">
+                <td colSpan={6} className="text-center py-12 text-muted-foreground font-display text-sm tracking-wider">
                   NO ITEMS MATCH FILTERS
                 </td>
               </tr>
