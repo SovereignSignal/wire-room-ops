@@ -121,7 +121,7 @@ src/
 │   ├── approval-guard.ts   # Pre-approval validation (blocks bad data from reaching website)
 │   ├── auto-summarize.ts   # Auto-generate newsletter summary on approve (fire-and-forget)
 │   ├── classifier.ts       # Gate 2 LLM classifier (GRANT/NEWS/EXPIRED/NOISE + quality score + tags)
-│   ├── dedup.ts            # URL exact-match and fuzzy name deduplication
+│   ├── dedup.ts            # URL exact-match + exact-name dedup (fuzzy layer disabled)
 │   ├── discord-channel.ts  # Discord channel posting via REST API (distribution)
 │   ├── distribution.ts     # Distribution orchestrator: send entries to channels, retry, newsletter
 │   ├── email.ts            # Resend email templates (5 types)
@@ -266,8 +266,11 @@ Pre-approval validation (`src/services/approval-guard.ts`) prevents bad data fro
 `summary-sync.ts` bridges `tele-sum`'s `summaries` table → `scan_entries` (as `status=approved`):
 - Runs every 15 minutes with a high-water mark stored in `app_state` (1-hour overlap; falls back to a 7-day lookback on first run or after errors)
 - Idempotent: skips entries where `source_url` already exists in `scan_entries`
+- Full dedup citizen: runs `checkDuplicate()` (normalized URL + exact name) before inserting, and calls `registerSeen()` after, so intake dedup can see telegram-synced entries
 - Infers wire from content keywords (AI/OSS detection, defaults to crypto)
 - Historical backfill available via `POST /api/admin/summary-sync-backfill`
+
+The bridge is one half of a loop with tele-sum; the other half is tele-sum's **round-trip guard**: when this app distributes an approved entry to a Telegram wire channel, tele-sum skips re-importing that post by checking `distribution_logs` (`channel='telegram' AND status='success'`, matched on `external_id` = Telegram message id + `wire`). **Contract:** keep logging successful telegram sends with `external_id` and `wire`, or tele-sum will re-ingest every distributed post and duplicate it into `summaries` (this happened 2026-05-14 → 2026-06-10; ~98% of approvals duplicated).
 
 ### Admin Endpoints
 All `POST /api/admin/*` — rate-limited maintenance operations: `run-migration`, `classify-backfill`, `tag-backfill`, `summary-sync-backfill`, `recover-self-dupes`, `clean-stale-seen`, `clean-orgs`, `dedup-orgs`, `enrich-orgs`, `purge-source`. See `src/routes/admin.ts` for details.
@@ -367,7 +370,7 @@ Automated discovery of grant opportunities via X.com scanning, web search, and f
 3. **Sanitize**: Post-parse `sanitizeResult()` cleans all parsed output — strips leading/trailing brackets from names, truncates names >120 chars, rejects junk deadlines (>50 chars, contains URLs/semicolons), discards suspicious small amounts (<$100 bare), moves excess name text into description
 4. **Insert**: Raw results written to `scan_entries` with `status: raw`
 5. **Gate 1 — Completeness**: Entries with empty/garbage `source_url` or missing critical fields are archived or marked incomplete before dedup, depending on intake path
-6. **Dedup**: `dedup.ts` blocks exact URL repeats via `seen_urls`. `seen_names` remains useful for related-opportunity/alternate-source signals, but fuzzy name blocking is disabled.
+6. **Dedup**: `dedup.ts` blocks exact URL repeats via `seen_urls` (Layer 1) and exact case-insensitive name repeats per wire via a direct `scan_entries` lookup (Layer 1.5, 180-day window — catches the same program arriving from a different source under a different URL). Callers that insert the raw row BEFORE dedup-checking must pass `excludeEntryId` or the entry matches itself. `seen_names` remains useful for related-opportunity/alternate-source signals, but fuzzy (token-overlap) name blocking is disabled.
 7. **Gate 2 — LLM Classify + Score**: `classifier.ts` calls Grok to classify (GRANT/NEWS/EXPIRED/NOISE) and score (0-100) in one call. Failed classifications retry once with 2-second delay.
 8. **Queue/archive**: Source-specific behavior: scan execution archives `NOISE`; raw background processing queues complete non-duplicates; Telegram/manual intake uses `operator_route`.
 9. **Approve Guard**: Pre-approval validation blocks entries with empty descriptions or empty URLs from being published; warns on EXPIRED classification
@@ -422,7 +425,7 @@ Per-feed multi-channel distribution of approved scan entries. Distribution is a 
 
 ### Database Tables
 - **`distribution_channels`**: Managed channels (UUID PK, per-channel credentials in JSONB). CRUD via Settings > Distribution tab.
-- **`distribution_logs`**: Per-entry, per-channel send status. Unique partial index on `(entry_id, channel) WHERE status IN ('pending','success')` prevents double-posts.
+- **`distribution_logs`**: Per-entry, per-channel send status. Unique partial index on `(entry_id, channel) WHERE status IN ('pending','success')` prevents double-posts. **Read by tele-sum**: its import guard matches `channel='telegram' AND status='success'` rows on `external_id` (Telegram message id) + `wire` to skip re-ingesting distributed posts — don't change those columns' semantics without updating tele-sum's `distribution_guard.py`.
 
 ### User Flow
 Approve entries → configure channels in Settings > Distribution → click "Distribute to Channels" for a wire → distribution status shown as colored pills (TG/X/NL) on the approved tab. Failed pills are clickable for retry.
