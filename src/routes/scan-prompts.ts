@@ -17,6 +17,7 @@ import { rateLimit } from '../middleware/rate-limit';
 import { isValidUuid } from '../utils/validation';
 import { executeScanPrompt } from '../services/grok';
 import { executePerplexityScan } from '../services/perplexity';
+import { executeParallelScan } from '../services/parallel';
 import { parseStructuredOutput } from '../services/intake';
 import { reviewScanPrompt } from '../services/anthropic';
 import { withRetry } from '../services/processor';
@@ -43,7 +44,7 @@ function normalizePromptLabPayload(body: Record<string, unknown>): {
     label: typeof body.label === 'string' ? body.label : undefined,
     promptText: typeof body.promptText === 'string' ? body.promptText.trim() : '',
     responseFormat: typeof body.responseFormat === 'string' ? body.responseFormat : undefined,
-    toolType: body.toolType === 'web_search' ? 'web_search' : body.toolType === 'perplexity' ? 'perplexity' : 'x_search',
+    toolType: body.toolType === 'web_search' ? 'web_search' : body.toolType === 'perplexity' ? 'perplexity' : body.toolType === 'parallel' ? 'parallel' : 'x_search',
     model: typeof body.model === 'string' && body.model ? body.model : undefined,
     outputFormat: body.outputFormat === 'json' ? 'json' : 'text',
     parsedResults: Array.isArray(body.parsedResults) ? body.parsedResults as RawScanResult[] : undefined,
@@ -65,6 +66,14 @@ async function executePromptLabTest(input: {
         model: input.model,
         responseFormat: input.responseFormat,
         outputFormat: input.outputFormat,
+      });
+    }
+    if (input.toolType === 'parallel') {
+      return executeParallelScan(input.promptText, {
+        model: input.model,
+        responseFormat: input.responseFormat,
+        outputFormat: input.outputFormat,
+        wire: input.wire,
       });
     }
     return executeScanPrompt(input.promptText, {
@@ -135,8 +144,8 @@ router.post('/', async (req: Request, res: Response) => {
     res.status(400).json({ error: 'promptText is required and must be non-empty' });
     return;
   }
-  if (toolType && !['x_search', 'web_search', 'perplexity'].includes(toolType)) {
-    res.status(400).json({ error: 'toolType must be "x_search", "web_search", or "perplexity"' });
+  if (toolType && !['x_search', 'web_search', 'perplexity', 'parallel'].includes(toolType)) {
+    res.status(400).json({ error: 'toolType must be "x_search", "web_search", "perplexity", or "parallel"' });
     return;
   }
   if (outputFormat && !['text', 'json'].includes(outputFormat)) {
@@ -206,8 +215,8 @@ router.put('/:id', async (req: Request, res: Response) => {
   if (sortOrder !== undefined) updates.sortOrder = sortOrder;
   if (variant !== undefined) updates.variant = variant;
   if (toolType !== undefined) {
-    if (!['x_search', 'web_search', 'perplexity'].includes(toolType)) {
-      res.status(400).json({ error: 'toolType must be "x_search", "web_search", or "perplexity"' });
+    if (!['x_search', 'web_search', 'perplexity', 'parallel'].includes(toolType)) {
+      res.status(400).json({ error: 'toolType must be "x_search", "web_search", "perplexity", or "parallel"' });
       return;
     }
     updates.toolType = toolType;
@@ -367,6 +376,14 @@ router.post('/:id/run', async (req: Request, res: Response) => {
             model: prompt.model || undefined,
             responseFormat: prompt.responseFormat,
             outputFormat: prompt.outputFormat,
+          });
+        }
+        if (prompt.toolType === 'parallel') {
+          return executeParallelScan(prompt.promptText, {
+            model: prompt.model || undefined,
+            responseFormat: prompt.responseFormat,
+            outputFormat: prompt.outputFormat,
+            wire: prompt.wire,
           });
         }
         return executeScanPrompt(prompt.promptText, {

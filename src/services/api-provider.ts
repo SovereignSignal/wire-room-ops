@@ -65,6 +65,12 @@ const PROVIDER_DEFAULTS: Record<string, { displayName: string; envKey: () => str
     baseUrl: () => 'https://api.perplexity.ai',
     defaultModel: 'sonar-pro',
   },
+  parallel: {
+    displayName: 'Parallel (Search)',
+    envKey: () => process.env.PARALLEL_API_KEY || '',
+    baseUrl: () => 'https://api.parallel.ai',
+    defaultModel: 'search',
+  },
   resend: {
     displayName: 'Resend',
     envKey: () => config.email.resendApiKey,

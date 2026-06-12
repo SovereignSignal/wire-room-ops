@@ -904,7 +904,7 @@ export async function ensureScanPromptsTable(): Promise<void> {
   await pool.query(`ALTER TABLE scan_prompts DROP CONSTRAINT IF EXISTS scan_prompts_tool_type_check`);
   await pool.query(`
     ALTER TABLE scan_prompts ADD CONSTRAINT scan_prompts_tool_type_check
-      CHECK (tool_type IN ('x_search', 'web_search', 'perplexity', 'community'))
+      CHECK (tool_type IN ('x_search', 'web_search', 'perplexity', 'community', 'parallel'))
   `);
 
   // Phase 4 migration: expand variant constraint to include 'S' (signal), 'W' (web), 'P' (perplexity), 'N' (neutral)
