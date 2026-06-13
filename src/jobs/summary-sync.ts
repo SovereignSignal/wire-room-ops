@@ -53,6 +53,17 @@ async function inferWire(title: string, summary: string, existingWire?: string |
   return wires[0] || 'crypto';
 }
 
+/**
+ * Only summaries on wires this deployment actually runs (feeds table) may
+ * bridge into scan_entries. Tele-sum can carry non-grant wires (digest
+ * channels like repos/models) — without this gate their items would be
+ * keyword-inferred into the grants queue. Null wire = legacy rows, allowed
+ * through to the existing inference path.
+ */
+export function shouldBridgeWire(wire: string | null | undefined, activeWires: string[]): boolean {
+  return !wire || activeWires.includes(wire);
+}
+
 export interface SyncResult {
   synced: number;
   skipped: number;
@@ -113,8 +124,15 @@ export async function syncSummariesToScanEntries(
     return result;
   }
 
+  const activeWires = await getActiveWires();
+
   for (const row of summaries) {
     try {
+      if (!shouldBridgeWire(row.wire, activeWires)) {
+        result.skipped++;
+        continue;
+      }
+
       // Extract source URL
       const urls = row.extracted_urls || [];
       const sourceUrl = Array.isArray(urls) && urls.length > 0 ? urls[0] : null;
