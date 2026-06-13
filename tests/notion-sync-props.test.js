@@ -29,3 +29,20 @@ test('Items Sourced falls back to entry_count when items_sourced absent', () => 
   const props = buildOrgProperties({ name: 'Acme', entry_count: 3 });
   assert.deepEqual(props['Items Sourced'], { number: 3 });
 });
+
+test('GitHub URL is mapped when org.github_url present', () => {
+  const props = buildOrgProperties({ name: 'Acme', github_url: 'https://github.com/acme' });
+  assert.deepEqual(props['GitHub URL'], { url: 'https://github.com/acme' });
+});
+test('no GitHub URL key when absent', () => {
+  assert.equal('GitHub URL' in buildOrgProperties({ name: 'Acme' }), false);
+});
+
+test('Action(s) carries description and last_signal when present', () => {
+  const props = buildOrgProperties({ name: 'Acme', description: 'AI lab.', last_signal: 'Shipped X.' });
+  const text = props['Action(s)'].rich_text.map(r => r.text.content).join('');
+  assert.ok(text.includes('AI lab.') && text.includes('Shipped X.'));
+});
+test('no Action(s) when neither description nor last_signal present', () => {
+  assert.equal('Action(s)' in buildOrgProperties({ name: 'Acme' }), false);
+});
