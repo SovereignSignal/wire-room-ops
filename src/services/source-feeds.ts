@@ -404,6 +404,12 @@ export async function fetchSource(source: FeedSource): Promise<FeedItem[]> {
 
 const BROWSER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
+// Grants.gov keyword "artificial intelligence" pulls federal grants where AI is merely a
+// TOOL applied to an unrelated field (medicine, agriculture, diplomacy) — off the AI beat.
+// Drop those at the source; genuine AI-research grants (NSF, DARPA, DOE) pass through.
+const GRANTS_GOV_OFFBEAT_TITLE = /\b(clinical|biomedical|medical|health|disease|patient|cancer|glucose|diabet|cardio|neuro(?!morphic)|rehabilitation|assistive|nursing|surg|therap|veterinar|agricultur|crop|farm|wildlife|fisher|nutrition|maternal|opioid|addiction|poverty|housing)\b/i;
+const GRANTS_GOV_OFFBEAT_AGENCY = /U\.S\. Mission|Department of State|USAID|U\.S\. Agency for International|National Institutes of Health|Health and Human Services|Centers for Disease/i;
+
 export const SOURCE_REGISTRY: FeedSource[] = [
   // =================== CRYPTO ===================
   {
@@ -508,6 +514,8 @@ export const SOURCE_REGISTRY: FeedSource[] = [
       const id = pick(it, 'id', 'number', 'opportunityNumber');
       if (!name || !id) return null;
       const agency = pick(it, 'agencyName', 'agency', 'agencyCode') || '';
+      // Off-beat: AI applied to medicine/agriculture/diplomacy etc. — not the AI-ecosystem beat.
+      if (GRANTS_GOV_OFFBEAT_TITLE.test(name) || GRANTS_GOV_OFFBEAT_AGENCY.test(agency)) return null;
       const num = pick(it, 'number', 'opportunityNumber') || '';
       const status = pick(it, 'oppStatus') || '';
       return {

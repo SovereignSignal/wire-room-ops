@@ -379,6 +379,24 @@ function createJobExecutor(schedule: ScheduleConfig) {
         const pool = getPool();
         console.log(`[Scheduler] Running daily digest...`);
 
+        // Discovery lanes run as part of this one daily cycle — no separate cron to manage.
+        // Each is isolated so a lane failure never blocks the digest.
+        try {
+          if (config.forum.enabled) {
+            const fr = await runForumScan(pool, {});
+            console.log(`[Scheduler] Daily forum scan: ${fr.opportunityCount} opps from ${fr.candidateCount} candidates, ${fr.intakeSummary.newUnique} unique`);
+          }
+        } catch (e) {
+          console.error('[Scheduler] Daily forum scan failed (non-fatal):', e instanceof Error ? e.message : e);
+        }
+        try {
+          const sf = await runSourceFeeds(pool, {});
+          const failed = sf.perSource.filter(s => s.error).length;
+          console.log(`[Scheduler] Daily source feeds: ${sf.totalFresh} fresh from ${sf.perSource.length} sources (${failed} errored), ${sf.intakeSummary.newUnique} unique`);
+        } catch (e) {
+          console.error('[Scheduler] Daily source feeds failed (non-fatal):', e instanceof Error ? e.message : e);
+        }
+
         const digest = await runDailyDigest(pool);
         const topFinds = digest.totalPendingReview > 0 ? await getTopPendingFinds(pool, 10) : [];
         console.log(`[Scheduler] Daily digest: hasActivity=${digest.hasActivity}, newUnique=${digest.totalNewUnique}, pending=${digest.totalPendingReview}`);
