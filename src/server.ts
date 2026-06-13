@@ -460,6 +460,17 @@ export async function startServer(): Promise<void> {
   const crmSyncTimer = setInterval(crmSync, 60 * 60 * 1000);
   crmSyncTimer.unref();
 
+  // Org enrichment every 6 hours: fetch web data + compute derived fields
+  const orgEnrichSync = async () => {
+    try {
+      const { enrichBatch, computeDerivedFields } = await import('./services/org-enricher');
+      await enrichBatch({ limit: 40 });
+      await computeDerivedFields();
+    } catch (e) { console.error('[OrgEnrich] scheduled run failed:', e); }
+  };
+  const enrichTimer = setInterval(orgEnrichSync, 6 * 60 * 60 * 1000);
+  enrichTimer.unref();
+
   const server = app.listen(config.app.port, () => {
     console.log(`Server running on port ${config.app.port}`);
   });
@@ -475,6 +486,7 @@ export async function startServer(): Promise<void> {
     clearInterval(intakeCleanupTimer);
     clearInterval(digestOrgsSyncTimer);
     clearInterval(crmSyncTimer);
+    clearInterval(enrichTimer);
     server.close(async () => {
       await closePool();
       console.log('[Server] Shutdown complete');
