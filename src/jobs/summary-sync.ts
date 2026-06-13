@@ -33,24 +33,27 @@ function getWireKeywords(wire: string): string[] {
   return [];
 }
 
-async function inferWire(title: string, summary: string, existingWire?: string | null): Promise<string> {
-  const wires = await getActiveWires();
-
+async function inferWire(
+  title: string,
+  summary: string,
+  activeWires: string[],
+  existingWire?: string | null,
+): Promise<string> {
   // If existing wire is valid, keep it
-  if (existingWire && wires.includes(existingWire)) {
+  if (existingWire && activeWires.includes(existingWire)) {
     return existingWire;
   }
 
   const text = `${title} ${summary}`.toLowerCase();
 
   // Score each wire by keyword matches
-  for (const wire of wires) {
+  for (const wire of activeWires) {
     const keywords = getWireKeywords(wire);
     if (keywords.some(kw => text.includes(kw))) return wire;
   }
 
   // Default to first wire alphabetically
-  return wires[0] || 'crypto';
+  return activeWires[0] || 'crypto';
 }
 
 /**
@@ -58,7 +61,8 @@ async function inferWire(title: string, summary: string, existingWire?: string |
  * bridge into scan_entries. Tele-sum can carry non-grant wires (digest
  * channels like repos/models) — without this gate their items would be
  * keyword-inferred into the grants queue. Null wire = legacy rows, allowed
- * through to the existing inference path.
+ * through to the existing inference path. Empty string is treated like null
+ * (legacy row → inference path).
  */
 export function shouldBridgeWire(wire: string | null | undefined, activeWires: string[]): boolean {
   return !wire || activeWires.includes(wire);
@@ -73,6 +77,7 @@ export interface SyncResult {
 /**
  * Syncs recent tele-sum summaries to scan_entries as approved.
  * Idempotent: checks source_url to avoid duplicates.
+ * Skips rows whose wire is set but not in the active feeds list (digest wires).
  *
  * @param pool - Postgres pool
  * @param lookbackHours - How far back to look for unsynced summaries (default: 168 = 7 days)
@@ -158,7 +163,7 @@ export async function syncSummariesToScanEntries(
         continue;
       }
 
-      const wire = await inferWire(row.title, row.description || '', row.wire);
+      const wire = await inferWire(row.title, row.description || '', activeWires, row.wire);
 
       // Cross-source dedup: the same program often already exists under a
       // DIFFERENT url (x.com status vs project page) from manual intake or a

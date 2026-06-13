@@ -17,4 +17,6 @@ test('does NOT bridge summaries on non-feed wires (digest channels)', () => {
 test('legacy null-wire summaries still bridge (keyword inference handles them)', () => {
   assert.equal(shouldBridgeWire(null, ['crypto', 'ai', 'oss']), true);
   assert.equal(shouldBridgeWire(undefined, ['crypto', 'ai', 'oss']), true);
+  // empty string is treated like null — legacy row sent to inference path
+  assert.equal(shouldBridgeWire('', ['crypto', 'ai', 'oss']), true);
 });
