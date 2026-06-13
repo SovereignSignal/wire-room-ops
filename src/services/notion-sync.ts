@@ -352,6 +352,13 @@ export function buildOrgProperties(org: any): Record<string, any> {
     props['Tier'] = { select: { name: org.tier } };
   }
 
+  const actionParts: string[] = [];
+  if (org.description) actionParts.push(String(org.description));
+  if (org.last_signal) actionParts.push(`Latest: ${org.last_signal}`);
+  if (actionParts.length > 0) {
+    props['Action(s)'] = { rich_text: [{ text: { content: actionParts.join('\n').slice(0, 1900) } }] };
+  }
+
   return props;
 }
 
