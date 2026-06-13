@@ -722,3 +722,31 @@ ${brand.name}`.trim();
 
   console.log(`[Email] Agent brief sent to: ${Array.isArray(to) ? to.join(', ') : to}`);
 }
+
+/**
+ * Weekly Grant Wire draft — emails the synthesized issue (markdown) for review.
+ * The markdown is sent verbatim in a copyable block so the operator can paste it
+ * straight into Substack after editing.
+ */
+export async function sendWeeklyDraftEmail(
+  markdown: string,
+  meta: { runDate: string; spineCount: number; alsoOpenCount: number },
+): Promise<void> {
+  const brand = getBrand();
+  const body = `
+    <p style="margin:0 0 12px;font-size:15px;color:#222;"><strong>Weekly draft ready for review</strong></p>
+    <p style="margin:0 0 16px;font-size:13px;color:#666;">${meta.spineCount} published this week &middot; ${meta.alsoOpenCount} also-open &middot; review, edit, then post to Substack.</p>
+    <pre style="white-space:pre-wrap;word-wrap:break-word;font-family:ui-monospace,Menlo,monospace;font-size:12px;line-height:1.5;color:#111;background:#f6f6f6;border:1px solid #e2e2e2;border-radius:6px;padding:14px;">${escapeHtml(markdown)}</pre>
+    <p style="margin:14px 0 0;color:#999;font-size:12px;">${escapeHtml(brand.name)} &middot; week of ${escapeHtml(meta.runDate)}</p>`;
+  const htmlContent = emailShell('Weekly Grant Wire Draft', body);
+  const textContent = `${brand.name} - Weekly Grant Wire Draft (${meta.runDate})\n${meta.spineCount} published this week, ${meta.alsoOpenCount} also-open. Review, edit, post to Substack.\n\n----------\n\n${markdown}`;
+
+  await sendWithTracking({
+    from: config.email.fromEmail,
+    to: config.email.notificationEmail,
+    subject: `${brand.name} Weekly — draft ready (${meta.runDate})`,
+    html: htmlContent,
+    text: textContent,
+  });
+  console.log(`[Email] Weekly draft sent to: ${config.email.notificationEmail}`);
+}

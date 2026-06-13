@@ -175,7 +175,7 @@ async function resolvePreferredAnthropicModel(explicitModel?: string): Promise<s
   }
 }
 
-async function createMessageWithFallback(
+export async function createMessageWithFallback(
   content: string,
   options?: { model?: string; maxTokens?: number; purpose?: string }
 ): Promise<{ model: string; text: string; usage?: { input_tokens: number; output_tokens: number } }> {

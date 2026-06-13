@@ -2,6 +2,7 @@ import cron, { ScheduledTask } from 'node-cron';
 import { runScanExecution } from '../jobs/scan-execution';
 import { runForumScan } from '../jobs/forum-scan';
 import { runSourceFeeds } from '../jobs/source-feeds';
+import { runWeeklyIssue } from '../jobs/weekly-issue';
 import { config } from '../config';
 import { sendTestAlertEmail, sendScheduledJobFailureEmail, sendDailyDigestEmail } from './email';
 import { ExperimentEngine } from './experiment-engine';
@@ -395,6 +396,17 @@ function createJobExecutor(schedule: ScheduleConfig) {
           console.log(`[Scheduler] Daily source feeds: ${sf.totalFresh} fresh from ${sf.perSource.length} sources (${failed} errored), ${sf.intakeSummary.newUnique} unique`);
         } catch (e) {
           console.error('[Scheduler] Daily source feeds failed (non-fatal):', e instanceof Error ? e.message : e);
+        }
+
+        // Weekly Grant Wire draft — Fridays only, as part of the same daily run (no separate
+        // cron, no Claude routine slot). Emails Sov the draft for review + Substack.
+        if (new Date().getDay() === 5) {
+          try {
+            const wk = await runWeeklyIssue(pool, {});
+            console.log(`[Scheduler] Weekly issue: spine=${wk.spineCount}, alsoOpen=${wk.alsoOpenCount}, emailed=${wk.emailed}`);
+          } catch (e) {
+            console.error('[Scheduler] Weekly issue failed (non-fatal):', e instanceof Error ? e.message : e);
+          }
         }
 
         const digest = await runDailyDigest(pool);
