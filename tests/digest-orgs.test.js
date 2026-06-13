@@ -29,3 +29,13 @@ test('normalizeDigestOrg trims and collapses whitespace', () => {
   assert.equal(normalizeDigestOrg('  Anthropic  '), 'Anthropic');
   assert.equal(normalizeDigestOrg('huggingface-org'), 'huggingface-org');
 });
+
+test('admits multi-mention lowercase-branded orgs', () => {
+  assert.equal(qualifiesAsDigestOrg('huggingface-org', { mentionCount: 7, hasLink: false }), true);
+  assert.equal(qualifiesAsDigestOrg('openai', { mentionCount: 3, hasLink: true }), true);
+});
+
+test('lowercase single-token handle needs >=2 mentions (a link alone is not enough)', () => {
+  assert.equal(qualifiesAsDigestOrg('orhun', { mentionCount: 1, hasLink: true }), false);
+  assert.equal(qualifiesAsDigestOrg('langchain', { mentionCount: 2, hasLink: false }), true);
+});

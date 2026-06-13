@@ -20,6 +20,12 @@ export function qualifiesAsDigestOrg(
   if (!name) return false;
   if (name.includes('/')) return false;       // owner/repo handle, not an org
   if (name.length < 2) return false;
-  if (!/[A-Z]/.test(name)) return false;     // bare lowercase handles (e.g. usernames) are not orgs
-  return signal.mentionCount >= 2 || signal.hasLink === true;
+  // Org-shaped names (have an uppercase letter or a space) qualify on >=2
+  // mentions OR a resolvable link. Bare lowercase single-token names look like
+  // personal handles (e.g. 'orhun'), so they need repeated mentions (>=2) to
+  // qualify — a single link isn't enough. This still admits multi-mention
+  // lowercase-branded orgs like 'openai' / 'huggingface-org'.
+  const orgShaped = /[A-Z]/.test(name) || name.includes(' ');
+  if (orgShaped) return signal.mentionCount >= 2 || signal.hasLink === true;
+  return signal.mentionCount >= 2;
 }
