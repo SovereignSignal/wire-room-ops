@@ -52,6 +52,11 @@ export interface FeedSource {
   // For rest_json/graphql sources whose shape needs URL construction, fallback chains,
   // unit conversion, or filtering that dot-path `fields` can't express. Return null to drop.
   extract?: (item: unknown) => FeedItem | null;
+  // Title gating for news-heavy feeds: keep only titles matching titleAllow, and/or drop
+  // titles matching titleBlock. Cuts org-news/blog posts at the source so only real
+  // funding calls reach intake (the classifier alone lets NEWS-tagged announcements queue).
+  titleAllow?: RegExp;
+  titleBlock?: RegExp;
 }
 
 export interface FeedItem {
@@ -394,7 +399,9 @@ export async function fetchSource(source: FeedSource): Promise<FeedItem[]> {
   }
   return items
     .map(it => { const url = ensureHttp(it.url); return url ? { ...it, url } : null; })
-    .filter((it): it is FeedItem => it !== null);
+    .filter((it): it is FeedItem => it !== null)
+    .filter(it => !source.titleBlock || !source.titleBlock.test(it.name))
+    .filter(it => !source.titleAllow || source.titleAllow.test(it.name));
 }
 
 // =====================================================================
@@ -585,6 +592,7 @@ export const SOURCE_REGISTRY: FeedSource[] = [
     method: 'rss',
     endpoint: 'https://futureoflife.org/grant-program/feed/',
     enabled: true,
+    titleBlock: /^\d{4}\s+grants$/i, // drop "2023 Grants" / "2024 Grants" retrospective recaps
   },
   // =================== OSS ===================
   {
@@ -595,6 +603,8 @@ export const SOURCE_REGISTRY: FeedSource[] = [
     endpoint: 'https://nlnet.nl/feed.atom',
     urlPrefix: 'https://nlnet.nl',
     enabled: true,
+    // NLnet's feed is mostly org news; calls are titled "Apply for funding…" / "open call".
+    titleAllow: /apply for funding|open call|call for proposal|request for proposal|grants? (are |is )?open|funding (round|is open|available)/i,
   },
   {
     key: 'otf-news',
@@ -603,6 +613,8 @@ export const SOURCE_REGISTRY: FeedSource[] = [
     method: 'rss',
     endpoint: 'https://www.opentech.fund/feed/',
     enabled: true,
+    // OTF RFPs are titled "Request for Proposals: …"; the rest is blog/news.
+    titleAllow: /request for proposal|\bRFP\b|open call|call for|fellowship|funding (round|opportunit)/i,
   },
 ];
 
