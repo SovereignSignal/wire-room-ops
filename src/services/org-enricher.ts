@@ -20,6 +20,7 @@
 import { config } from '../config';
 import { getPool } from '../db';
 import { getCachedProvider } from './api-provider';
+import { logApiUsage } from './api-usage';
 
 // ============================================================
 // Allowed enum values
@@ -77,18 +78,23 @@ export function parseEnrichmentResponse(text: string): EnrichedOrg[] {
     return [];
   }
 
-  return parsed.map((item) => {
+  return parsed.flatMap((item) => {
     const o = item as Record<string, unknown>;
 
     const isHttpUrl = (v: unknown): boolean =>
       typeof v === 'string' && v.startsWith('http');
 
-    return {
-      id: Number(o['id']),
+    const id = Number(o['id']);
+    if (Number.isNaN(id)) return [];
+
+    return [{
+      id,
       org_type: typeof o['org_type'] === 'string' && VALID_ORG_TYPES.includes(o['org_type'])
         ? o['org_type']
         : null,
-      source_type: typeof o['source_type'] === 'string' ? o['source_type'] : null,
+      source_type: typeof o['source_type'] === 'string' && VALID_SOURCE_TYPES.includes(o['source_type'])
+        ? o['source_type']
+        : null,
       website: isHttpUrl(o['website']) ? (o['website'] as string) : null,
       twitter: isHttpUrl(o['twitter']) ? (o['twitter'] as string) : null,
       github_url: isHttpUrl(o['github_url']) ? (o['github_url'] as string) : null,
@@ -98,7 +104,7 @@ export function parseEnrichmentResponse(text: string): EnrichedOrg[] {
         : [],
       last_signal: typeof o['last_signal'] === 'string' ? o['last_signal'] : null,
       source: isHttpUrl(o['source']) ? (o['source'] as string) : null,
-    };
+    }];
   });
 }
 
@@ -166,23 +172,33 @@ Rules:
 Organizations:
 ${orgList}`;
 
-  // Use the Responses API with web_search tool — mirrors executeScanPrompt in grok.ts
-  const response = await fetch(`${baseUrl}/v1/responses`, {
-    method: 'POST',
-    signal: AbortSignal.timeout(180_000),
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      input: [{ role: 'user', content: prompt }],
-      tools: [{ type: 'web_search' }],
-    }),
-  });
+  const start = Date.now();
+
+  let response: Response;
+  try {
+    // Use the Responses API with web_search tool — mirrors executeScanPrompt in grok.ts
+    response = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(180_000),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        input: [{ role: 'user', content: prompt }],
+        tools: [{ type: 'web_search' }],
+      }),
+    });
+  } catch (err) {
+    logApiUsage({ provider: 'grok', model, purpose: 'org-enrichment', duration_ms: Date.now() - start, success: false, error_message: String(err) });
+    throw err;
+  }
 
   if (!response.ok) {
-    throw new Error(`Grok returned ${response.status}: ${await response.text().catch(() => 'unknown')}`);
+    const errorText = await response.text().catch(() => 'unknown');
+    logApiUsage({ provider: 'grok', model, purpose: 'org-enrichment', duration_ms: Date.now() - start, success: false, error_message: `${response.status}` });
+    throw new Error(`Grok returned ${response.status}: ${errorText}`);
   }
 
   const data = await response.json() as ResponsesAPIResponse;
@@ -198,6 +214,11 @@ ${orgList}`;
       }
     }
   }
+
+  logApiUsage({
+    provider: 'grok', model, purpose: 'org-enrichment', duration_ms: Date.now() - start,
+    tokens_in: data.usage?.input_tokens, tokens_out: data.usage?.output_tokens,
+  });
 
   if (!content) {
     console.warn('[OrgEnricher] No text content in Grok Responses API reply');
@@ -262,7 +283,7 @@ export async function enrichBatch(opts?: {
               description = COALESCE($6, description),
               tags = CASE WHEN array_length($7::text[],1) IS NULL THEN tags
                           ELSE (SELECT ARRAY(SELECT DISTINCT unnest(COALESCE(tags,'{}') || $7::text[]))) END,
-              last_signal = COALESCE($8, last_signal),
+              last_signal = $8,
               relationship_context = CASE WHEN $9::text IS NULL THEN relationship_context
                    ELSE left(COALESCE(relationship_context,'') || E'\n[enriched ' || to_char(NOW(),'YYYY-MM-DD') || '] source: ' || $9, 4000) END,
               enriched_at = NOW(), updated_at = NOW()
@@ -297,7 +318,7 @@ export async function enrichBatch(opts?: {
 
     // Rate limit between batches
     if (i + CHUNK_SIZE < orgs.length) {
-      await new Promise(r => setTimeout(r, 2000));
+      await new Promise(r => setTimeout(r, 10000));
     }
   }
 
@@ -337,7 +358,7 @@ export async function enrichSingleOrg(orgId: number): Promise<void> {
           description = COALESCE($6, description),
           tags = CASE WHEN array_length($7::text[],1) IS NULL THEN tags
                       ELSE (SELECT ARRAY(SELECT DISTINCT unnest(COALESCE(tags,'{}') || $7::text[]))) END,
-          last_signal = COALESCE($8, last_signal),
+          last_signal = $8,
           relationship_context = CASE WHEN $9::text IS NULL THEN relationship_context
                ELSE left(COALESCE(relationship_context,'') || E'\n[enriched ' || to_char(NOW(),'YYYY-MM-DD') || '] source: ' || $9, 4000) END,
           enriched_at = NOW(), updated_at = NOW()

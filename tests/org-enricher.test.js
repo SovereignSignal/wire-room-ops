@@ -29,3 +29,9 @@ test('tags are capped at 5', () => {
   const raw = JSON.stringify([{ id: 1, tags: ['a','b','c','d','e','f','g'] }]);
   assert.equal(parseEnrichmentResponse(raw)[0].tags.length, 5);
 });
+
+test('drops items with missing/NaN id', () => {
+  const out = parseEnrichmentResponse(JSON.stringify([{ org_type:'Web2' }, { id: 9, website:'https://x.io' }]));
+  assert.equal(out.length, 1);
+  assert.equal(out[0].id, 9);
+});
