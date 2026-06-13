@@ -3,6 +3,7 @@
  * Pure helpers here; DB-touching runner is sourceDigestOrgs() below.
  */
 import type { Pool } from 'pg';
+import { findSimilarOrg, upsertOrgProfile } from './org-extractor';
 
 export function normalizeDigestOrg(raw: string | null | undefined): string {
   return (raw || '').replace(/\s+/g, ' ').trim();
@@ -55,8 +56,6 @@ export async function linkDigestItemToOrg(
   );
 }
 
-import { findSimilarOrg, upsertOrgProfile } from './org-extractor';
-
 export interface DigestOrgOccurrence { summaryId: number; itemIndex: number; wire: string; }
 export interface DigestOrgAgg { mentionCount: number; hasLink: boolean; occurrences: DigestOrgOccurrence[]; }
 
@@ -87,7 +86,8 @@ export async function loadDigestSummaries(pool: Pool, lookbackDays = 30): Promis
      WHERE s.processing_status = 'SUCCESS'
        AND s.entities->>'profile' = 'digest'
        AND m.wire IN ('repos','models','claw')
-       AND s.created_at >= NOW() - INTERVAL '1 day' * $1`,
+       AND s.created_at >= NOW() - INTERVAL '1 day' * $1
+     ORDER BY s.id`,
     [lookbackDays],
   );
   return rows.map((r: any) => ({ id: r.id, wire: r.wire, items: Array.isArray(r.items) ? r.items : [] }));
@@ -95,32 +95,40 @@ export async function loadDigestSummaries(pool: Pool, lookbackDays = 30): Promis
 
 export async function sourceDigestOrgs(
   pool: Pool, lookbackDays = 30,
-): Promise<{ orgsTouched: number; itemsLinked: number; skipped: number }> {
+): Promise<{ orgsTouched: number; itemsLinked: number; skipped: number; errors: number }> {
   await ensureDigestItemOrgsTable(pool);
   const summaries = await loadDigestSummaries(pool, lookbackDays);
   const agg = aggregateDigestOrgMentions(summaries);
-  let orgsTouched = 0, itemsLinked = 0, skipped = 0;
+  let orgsTouched = 0, itemsLinked = 0, skipped = 0, errors = 0;
   for (const [name, info] of agg.entries()) {
     if (!qualifiesAsDigestOrg(name, { mentionCount: info.mentionCount, hasLink: info.hasLink })) {
       skipped += 1; continue;
     }
-    const wire = info.occurrences[0]?.wire || 'models';
-    const match = await findSimilarOrg(name);
-    const orgId = match ? match.id : await upsertOrgProfile(name, wire);
-    // Record the wire on the org (dedupe) and bump last_seen, whether matched or freshly created.
-    await pool.query(
-      `UPDATE org_profiles
-         SET wires = (SELECT ARRAY(SELECT DISTINCT unnest(COALESCE(wires,'{}') || $2::text))),
-             last_seen = CURRENT_DATE
-       WHERE id = $1`,
-      [orgId, wire],
-    );
-    orgsTouched += 1;
-    for (const occ of info.occurrences) {
-      await linkDigestItemToOrg(pool, occ.summaryId, occ.itemIndex, orgId);
-      itemsLinked += 1;
+    try {
+      const wire = info.occurrences[0]?.wire || 'models';
+      const match = await findSimilarOrg(name);
+      const orgId = match ? match.id : await upsertOrgProfile(name, wire);
+      // 1. Link all occurrences first so the digest_item_orgs COUNT is current.
+      for (const occ of info.occurrences) {
+        await linkDigestItemToOrg(pool, occ.summaryId, occ.itemIndex, orgId);
+        itemsLinked += 1;
+      }
+      // 2. Recompute entry_count from BOTH link sources (idempotent; won't clobber grant counts).
+      await pool.query(
+        `UPDATE org_profiles
+           SET wires = (SELECT ARRAY(SELECT DISTINCT unnest(COALESCE(wires,'{}') || $2::text))),
+               last_seen = CURRENT_DATE,
+               entry_count = (SELECT COUNT(*) FROM scan_entries WHERE org_id = $1)
+                           + (SELECT COUNT(*) FROM digest_item_orgs WHERE org_id = $1)
+         WHERE id = $1`,
+        [orgId, wire],
+      );
+      orgsTouched += 1;
+    } catch (err) {
+      errors += 1;
+      console.error(`[DigestOrgs] error processing org "${name}":`, err);
     }
   }
-  console.log(`[DigestOrgs] orgs touched=${orgsTouched} itemsLinked=${itemsLinked} skipped=${skipped}`);
-  return { orgsTouched, itemsLinked, skipped };
+  console.log(`[DigestOrgs] orgs touched=${orgsTouched} itemsLinked=${itemsLinked} skipped=${skipped} errors=${errors}`);
+  return { orgsTouched, itemsLinked, skipped, errors };
 }
