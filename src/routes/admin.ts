@@ -329,4 +329,47 @@ router.post('/enrich-orgs', async (req: Request, res: Response) => {
   }
 });
 
+// POST /source-digest-orgs — extract + link digest orgs into org_profiles
+router.post('/source-digest-orgs', async (_req: Request, res: Response) => {
+  if (!rateLimit('source-digest-orgs', 3, 5 * 60 * 1000)) {
+    res.status(429).json({ error: 'Recently run. Please wait a few minutes.' });
+    return;
+  }
+
+  try {
+    const { sourceDigestOrgs } = await import('../services/digest-orgs');
+    const result = await sourceDigestOrgs(getPool());
+    res.json({ success: true, ...result });
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[Admin] source-digest-orgs failed:', error);
+    res.status(500).json({ success: false, error: errorMsg });
+  }
+});
+
+// POST /sync-crm — push org_profiles rows to the SimpleCRM Notion DB
+router.post('/sync-crm', async (_req: Request, res: Response) => {
+  if (!rateLimit('sync-crm', 3, 5 * 60 * 1000)) {
+    res.status(429).json({ error: 'Recently run. Please wait a few minutes.' });
+    return;
+  }
+
+  try {
+    const { getIntegrationConfigs, syncOrgsToNotion } = await import('../services/notion-sync');
+    const crm = (await getIntegrationConfigs('notion')).find(
+      (i) => i.name === 'SimpleCRM - Notion' && i.enabled
+    );
+    if (!crm) {
+      res.status(404).json({ success: false, error: 'SimpleCRM integration not found/enabled' });
+      return;
+    }
+    const result = await syncOrgsToNotion(crm.id);
+    res.json({ success: true, ...result });
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[Admin] sync-crm failed:', error);
+    res.status(500).json({ success: false, error: errorMsg });
+  }
+});
+
 export { router as adminRouter };

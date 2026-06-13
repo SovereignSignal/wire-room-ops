@@ -433,6 +433,33 @@ export async function startServer(): Promise<void> {
   contactsSyncTimer.unref();
   setTimeout(contactsSync, 25_000); // once shortly after startup
 
+  // Digest-org sourcing every 30 min: extract + link orgs from AI summaries → org_profiles
+  const digestOrgsSync = async () => {
+    try {
+      const { sourceDigestOrgs } = await import('./services/digest-orgs');
+      await sourceDigestOrgs(getPool());
+    } catch (error) {
+      console.error('[DigestOrgs] Scheduled run failed:', error);
+    }
+  };
+  const digestOrgsSyncTimer = setInterval(digestOrgsSync, 30 * 60 * 1000);
+  digestOrgsSyncTimer.unref();
+
+  // CRM sync every hour at :15 offset (so sourcing runs first): org_profiles → SimpleCRM Notion DB
+  const crmSync = async () => {
+    try {
+      const { getIntegrationConfigs, syncOrgsToNotion } = await import('./services/notion-sync');
+      const crm = (await getIntegrationConfigs('notion')).find(
+        (i) => i.name === 'SimpleCRM - Notion' && i.enabled
+      );
+      if (crm) await syncOrgsToNotion(crm.id);
+    } catch (error) {
+      console.error('[CRMSync] Scheduled run failed:', error);
+    }
+  };
+  const crmSyncTimer = setInterval(crmSync, 60 * 60 * 1000);
+  crmSyncTimer.unref();
+
   const server = app.listen(config.app.port, () => {
     console.log(`Server running on port ${config.app.port}`);
   });
@@ -446,6 +473,8 @@ export async function startServer(): Promise<void> {
     jobQueue.stopPeriodicCleanup();
     clearInterval(processRawTimer);
     clearInterval(intakeCleanupTimer);
+    clearInterval(digestOrgsSyncTimer);
+    clearInterval(crmSyncTimer);
     server.close(async () => {
       await closePool();
       console.log('[Server] Shutdown complete');
