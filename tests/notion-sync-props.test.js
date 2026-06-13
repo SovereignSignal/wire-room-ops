@@ -19,3 +19,13 @@ test('Wire and Tags remain multi_select; Name is title', () => {
   assert.ok(Array.isArray(props['Tags'].multi_select));
   assert.equal(props['Name'].title[0].text.content, 'Acme');
 });
+
+test('Items Sourced uses live items_sourced when present', () => {
+  const props = buildOrgProperties({ name: 'Acme', items_sourced: '7', entry_count: 2 });
+  assert.deepEqual(props['Items Sourced'], { number: 7 });
+});
+
+test('Items Sourced falls back to entry_count when items_sourced absent', () => {
+  const props = buildOrgProperties({ name: 'Acme', entry_count: 3 });
+  assert.deepEqual(props['Items Sourced'], { number: 3 });
+});

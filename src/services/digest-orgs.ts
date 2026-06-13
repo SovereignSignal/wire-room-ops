@@ -113,13 +113,12 @@ export async function sourceDigestOrgs(
         await linkDigestItemToOrg(pool, occ.summaryId, occ.itemIndex, orgId);
         itemsLinked += 1;
       }
-      // 2. Recompute entry_count from BOTH link sources (idempotent; won't clobber grant counts).
+      // 2. Update wires + last_seen only. entry_count is grant-pipeline-owned; the digest
+      //    path must not touch it — items_sourced is computed live at CRM sync time instead.
       await pool.query(
         `UPDATE org_profiles
            SET wires = (SELECT ARRAY(SELECT DISTINCT unnest(COALESCE(wires,'{}') || $2::text))),
-               last_seen = CURRENT_DATE,
-               entry_count = (SELECT COUNT(*) FROM scan_entries WHERE org_id = $1)
-                           + (SELECT COUNT(*) FROM digest_item_orgs WHERE org_id = $1)
+               last_seen = CURRENT_DATE
          WHERE id = $1`,
         [orgId, wire],
       );

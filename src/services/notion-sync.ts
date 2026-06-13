@@ -203,9 +203,15 @@ export async function syncOrgsToNotion(integrationId: number): Promise<{
   const databaseId = integration.config.database_id;
   if (!token || !databaseId) throw new Error('Missing Notion token or database ID');
 
-  // Get all org profiles
+  // Get all org profiles with live items_sourced (sum of grant + digest links).
+  // entry_count is grant-pipeline-owned and must not be relied on for sorting or display;
+  // compute the combined count here so it never lags behind digest activity.
   const { rows: orgs } = await pool.query(
-    `SELECT * FROM org_profiles ORDER BY entry_count DESC`
+    `SELECT op.*,
+            (SELECT COUNT(*) FROM scan_entries se WHERE se.org_id = op.id)
+          + (SELECT COUNT(*) FROM digest_item_orgs d WHERE d.org_id = op.id) AS items_sourced
+     FROM org_profiles op
+     ORDER BY items_sourced DESC`
   );
 
   if (orgs.length === 0) {
@@ -317,8 +323,9 @@ export function buildOrgProperties(org: any): Record<string, any> {
     props['Tags'] = { multi_select: org.tags.map((t: string) => ({ name: t })) };
   }
 
-  if (org.entry_count !== undefined) {
-    props['Items Sourced'] = { number: org.entry_count };
+  const itemsSourced = org.items_sourced ?? org.entry_count;
+  if (itemsSourced !== undefined && itemsSourced !== null) {
+    props['Items Sourced'] = { number: Number(itemsSourced) };
   }
 
   if (org.avg_quality_score !== null && org.avg_quality_score !== undefined) {
