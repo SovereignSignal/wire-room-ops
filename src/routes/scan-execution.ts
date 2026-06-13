@@ -12,6 +12,7 @@ import { jobQueue } from '../services/job-queue';
 import { getPool } from '../db';
 import { runScanExecution } from '../jobs/scan-execution';
 import { runForumScan } from '../jobs/forum-scan';
+import { runSourceFeeds } from '../jobs/source-feeds';
 import { sendScanDigestEmail } from '../services/email';
 
 const router = Router();
@@ -19,6 +20,7 @@ const router = Router();
 // Running job trackers to prevent concurrent execution
 let runningScanJobId: string | null = null;
 let runningForumJobId: string | null = null;
+let runningFeedsJobId: string | null = null;
 
 // API: Trigger automated scan execution (async with SSE progress)
 router.post('/scan/run', async (req: Request, res: Response) => {
@@ -138,6 +140,50 @@ router.post('/forum/run', async (req: Request, res: Response) => {
   })().catch(error => {
     console.error('Unexpected error in forum scan runner:', error);
     runningForumJobId = null;
+  });
+});
+
+// API: Trigger source-feeds ingest (aggregators + foundation portals + funder feeds)
+router.post('/feeds/run', async (req: Request, res: Response) => {
+  if (runningFeedsJobId) {
+    const existingJob = jobQueue.getJob(runningFeedsJobId);
+    if (existingJob && existingJob.status === 'running') {
+      res.status(409).json({ error: 'A source-feeds job is already running', jobId: runningFeedsJobId });
+      return;
+    }
+    runningFeedsJobId = null;
+  }
+
+  if (!rateLimit('feeds-run', 1, 10 * 60 * 1000)) {
+    res.status(429).json({ error: 'Source feeds recently ran. Please wait 10 minutes.' });
+    return;
+  }
+
+  const { wire, sourceKeys } = req.body;
+  const pool = getPool();
+
+  const jobId = jobQueue.createJob();
+  runningFeedsJobId = jobId;
+  res.json({ jobId });
+
+  (async () => {
+    jobQueue.updateJob(jobId, { status: 'running' });
+    try {
+      const result = await runSourceFeeds(pool, {
+        wire: wire || undefined,
+        sourceKeys: Array.isArray(sourceKeys) && sourceKeys.length ? sourceKeys : undefined,
+        onProgress: (message, pct) => jobQueue.updateProgress(jobId, { current: pct, total: 100, step: message }),
+      });
+      jobQueue.completeJob(jobId, result);
+    } catch (error) {
+      jobQueue.failJob(jobId, error instanceof Error ? error.message : 'Unknown error');
+    } finally {
+      runningFeedsJobId = null;
+      jobQueue.cleanup();
+    }
+  })().catch(error => {
+    console.error('Unexpected error in source-feeds runner:', error);
+    runningFeedsJobId = null;
   });
 });
 

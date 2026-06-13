@@ -1,6 +1,7 @@
 import cron, { ScheduledTask } from 'node-cron';
 import { runScanExecution } from '../jobs/scan-execution';
 import { runForumScan } from '../jobs/forum-scan';
+import { runSourceFeeds } from '../jobs/source-feeds';
 import { config } from '../config';
 import { sendTestAlertEmail, sendScheduledJobFailureEmail, sendDailyDigestEmail } from './email';
 import { ExperimentEngine } from './experiment-engine';
@@ -27,7 +28,7 @@ export interface ScheduleConfig {
   anthropicModel?: string;
   timezone: string;
   wire?: string; // Optional wire/feed filter
-  scheduleType?: 'scan-execution' | 'forum-scan' | 'daily-digest' | 'collect-engagement' | 'experiment-loop' | 'drip-distribution' | 'deadline-digest' | 'account-monitor';
+  scheduleType?: 'scan-execution' | 'forum-scan' | 'daily-digest' | 'collect-engagement' | 'experiment-loop' | 'drip-distribution' | 'deadline-digest' | 'account-monitor' | 'source-feeds';
   frequencyHours?: number; // Sub-daily interval (1-23) for scan-execution
   notifyEmails?: string; // Comma-separated email recipients
 }
@@ -260,6 +261,7 @@ export function formatScheduleDescription(schedule: ScheduleConfig): string {
     schedule.scheduleType === 'drip-distribution' ? 'Drip Distribution' :
     schedule.scheduleType === 'deadline-digest' ? 'Deadline Digest' :
     schedule.scheduleType === 'account-monitor' ? 'Account Monitor' :
+    schedule.scheduleType === 'source-feeds' ? 'Source Feeds' :
     'Scan Execution';
 
   if (schedule.frequencyHours && schedule.frequencyHours < 24) {
@@ -357,6 +359,20 @@ function createJobExecutor(schedule: ScheduleConfig) {
         status.status = 'success';
         status.error = null;
         console.log(`[Scheduler] Forum scan "${currentScheduleData.name}" completed: ${forumResult.opportunityCount} opportunities from ${forumResult.candidateCount} candidates, ${forumResult.intakeSummary.newUnique} unique`);
+
+      } else if (currentScheduleData.scheduleType === 'source-feeds') {
+        // ---- Source Feeds Job ----
+        const pool = getPool();
+        console.log(`[Scheduler] Running source feeds for: ${currentScheduleData.wire || 'all wires'}`);
+
+        const feedsResult = await runSourceFeeds(pool, {
+          wire: currentScheduleData.wire || undefined,
+        });
+
+        status.status = 'success';
+        status.error = null;
+        const failed = feedsResult.perSource.filter(s => s.error).length;
+        console.log(`[Scheduler] Source feeds "${currentScheduleData.name}" completed: ${feedsResult.totalFresh} fresh from ${feedsResult.perSource.length} sources (${failed} errored), ${feedsResult.intakeSummary.newUnique} unique`);
 
       } else if (currentScheduleData.scheduleType === 'daily-digest') {
         // ---- Daily Digest Job ----
