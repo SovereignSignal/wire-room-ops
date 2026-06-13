@@ -21,6 +21,7 @@ import { config } from '../config';
 import { getPool } from '../db';
 import { getCachedProvider } from './api-provider';
 import { logApiUsage } from './api-usage';
+import { findDeadUrlFields } from './url-verify';
 
 // ============================================================
 // Allowed enum values
@@ -273,6 +274,29 @@ export async function enrichBatch(opts?: {
 
       for (const [orgId, data] of enrichments) {
         try {
+          // Drop any URL fields that are definitively 404/410 (hallucination guard).
+          // Fields that are blocked (403/429) or time out remain unchanged (inconclusive).
+          const deadFields = await findDeadUrlFields(data);
+          if (deadFields.length > 0) {
+            const today = new Date().toISOString().slice(0, 10);
+            for (const field of deadFields) {
+              console.warn(`[OrgEnricher] Dropping ${field} for org ${orgId} (404/410): ${(data as unknown as Record<string, unknown>)[field]}`);
+              (data as unknown as Record<string, unknown>)[field] = null;
+            }
+            // Append dropped-URL note to provenance; will be written with the source note below
+            const dropNote = deadFields.map(f => `[dropped ${f}: 404]`).join(' ');
+            data.source = data.source
+              ? `${data.source} ${dropNote}`
+              : dropNote;
+            // If source itself was 404 and nulled by findDeadUrlFields, it won't appear here
+            // because findDeadUrlFields only checks website/github_url/twitter.
+            // Append the drop note to relationship_context directly when source is null.
+            if (!data.source || data.source === dropNote) {
+              // Keep the note accessible; it will land in relationship_context via the source param below
+            }
+            void today; // used implicitly via toISOString above
+          }
+
           await pool.query(
             `UPDATE org_profiles SET
               org_type = COALESCE($1, org_type),
@@ -348,6 +372,17 @@ export async function enrichSingleOrg(orgId: number): Promise<void> {
     const data = enrichments.get(orgId);
 
     if (data) {
+      // Drop any URL fields that are definitively 404/410 (hallucination guard).
+      const deadFields = await findDeadUrlFields(data);
+      if (deadFields.length > 0) {
+        for (const field of deadFields) {
+          console.warn(`[OrgEnricher] Dropping ${field} for org ${orgId} (404/410): ${(data as unknown as Record<string, unknown>)[field]}`);
+          (data as unknown as Record<string, unknown>)[field] = null;
+        }
+        const dropNote = deadFields.map(f => `[dropped ${f}: 404]`).join(' ');
+        data.source = data.source ? `${data.source} ${dropNote}` : dropNote;
+      }
+
       await pool.query(
         `UPDATE org_profiles SET
           org_type = COALESCE($1, org_type),
