@@ -231,7 +231,7 @@ export async function enrichBatch(opts?: {
 
   const { rows: orgs } = await pool.query(
     `SELECT id, name, wires, entry_count FROM org_profiles
-     WHERE ($1::boolean OR enriched_at IS NULL)
+     WHERE ($1::boolean OR enriched_at IS NULL OR enriched_at < NOW() - INTERVAL '30 days')
      ORDER BY entry_count DESC LIMIT $2`,
     [!!opts?.force, limit]
   );
@@ -260,16 +260,17 @@ export async function enrichBatch(opts?: {
               twitter = COALESCE($4, twitter),
               github_url = COALESCE($5, github_url),
               description = COALESCE($6, description),
-              tags = COALESCE($7, tags),
+              tags = CASE WHEN array_length($7::text[],1) IS NULL THEN tags
+                          ELSE (SELECT ARRAY(SELECT DISTINCT unnest(COALESCE(tags,'{}') || $7::text[]))) END,
               last_signal = COALESCE($8, last_signal),
-              enrichment_source = COALESCE($9, enrichment_source),
-              enriched_at = NOW(),
-              updated_at = NOW()
+              relationship_context = CASE WHEN $9::text IS NULL THEN relationship_context
+                   ELSE left(COALESCE(relationship_context,'') || E'\n[enriched ' || to_char(NOW(),'YYYY-MM-DD') || '] source: ' || $9, 4000) END,
+              enriched_at = NOW(), updated_at = NOW()
             WHERE id = $10`,
             [
               data.org_type, data.source_type, data.website, data.twitter,
               data.github_url, data.description,
-              data.tags.length > 0 ? JSON.stringify(data.tags) : null,
+              data.tags.length > 0 ? data.tags : null,
               data.last_signal, data.source, orgId,
             ]
           );
@@ -334,16 +335,17 @@ export async function enrichSingleOrg(orgId: number): Promise<void> {
           twitter = COALESCE($4, twitter),
           github_url = COALESCE($5, github_url),
           description = COALESCE($6, description),
-          tags = COALESCE($7, tags),
+          tags = CASE WHEN array_length($7::text[],1) IS NULL THEN tags
+                      ELSE (SELECT ARRAY(SELECT DISTINCT unnest(COALESCE(tags,'{}') || $7::text[]))) END,
           last_signal = COALESCE($8, last_signal),
-          enrichment_source = COALESCE($9, enrichment_source),
-          enriched_at = NOW(),
-          updated_at = NOW()
+          relationship_context = CASE WHEN $9::text IS NULL THEN relationship_context
+               ELSE left(COALESCE(relationship_context,'') || E'\n[enriched ' || to_char(NOW(),'YYYY-MM-DD') || '] source: ' || $9, 4000) END,
+          enriched_at = NOW(), updated_at = NOW()
         WHERE id = $10 AND enriched_at IS NULL`,
         [
           data.org_type, data.source_type, data.website, data.twitter,
           data.github_url, data.description,
-          data.tags.length > 0 ? JSON.stringify(data.tags) : null,
+          data.tags.length > 0 ? data.tags : null,
           data.last_signal, data.source, orgId,
         ]
       );
