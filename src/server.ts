@@ -27,7 +27,6 @@ import { accountsRouter } from './routes/accounts';
 import { modelRouter } from './routes/models';
 import { dashboardRouter } from './routes/dashboard';
 import { databaseRouter } from './routes/database';
-import { experimentsRouter } from './routes/experiments';
 import { exportRouter } from './routes/export';
 import { providerRouter } from './routes/providers';
 import { orgRouter } from './routes/orgs';
@@ -171,9 +170,6 @@ app.use('/api/database', requireAuth, databaseRouter);
 
 // Grants intelligence intake / four-pillar review view
 app.use('/api/grants-intel', requireAuthOrInternalKey, grantsIntelRouter);
-
-// Scoring experiments API
-app.use('/api/experiments', requireAuth, experimentsRouter);
 
 // Org profiles API
 app.use('/api/orgs', requireAuth, orgRouter);
