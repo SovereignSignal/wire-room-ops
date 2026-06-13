@@ -290,7 +290,7 @@ export async function queryAllNotionPages(token: string, databaseId: string): Pr
  * Build Notion properties object for an org profile.
  * Mapped to match the actual "Sov's Orgs" Notion database properties.
  */
-function buildOrgProperties(org: any): Record<string, any> {
+export function buildOrgProperties(org: any): Record<string, any> {
   // Capitalize wire names for Notion multi_select: crypto→Crypto, ai→AI, oss→OSS
   const capitalizeWire = (w: string): string => {
     const map: Record<string, string> = { crypto: 'Crypto', ai: 'AI', oss: 'OSS' };
@@ -334,7 +334,7 @@ function buildOrgProperties(org: any): Record<string, any> {
   }
 
   if (org.source_type) {
-    props['Source Type'] = { select: { name: org.source_type } };
+    props['Source Type'] = { multi_select: [{ name: org.source_type }] };
   }
 
   if (org.tier) {
