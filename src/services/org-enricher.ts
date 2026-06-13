@@ -1,11 +1,16 @@
 /**
  * Organization Enricher
  *
- * Uses Grok LLM to classify and enrich org_profiles with:
+ * Uses Grok LLM (with web_search tool) to classify and enrich org_profiles with:
  * - org_type (Web2, Non-Profit/NGO, etc.)
  * - source_type (X Account, Forum, Blog, etc.)
  * - website URL
  * - twitter URL
+ * - github_url
+ * - description (1-2 sentences)
+ * - tags (3-5 lowercase keywords)
+ * - last_signal (most recent notable thing they shipped/announced)
+ * - source (a URL backing the claims)
  *
  * Also computes derived fields:
  * - avg_quality_score from linked scan_entries
@@ -14,6 +19,7 @@
 
 import { config } from '../config';
 import { getPool } from '../db';
+import { getCachedProvider } from './api-provider';
 
 // ============================================================
 // Allowed enum values
@@ -30,65 +36,148 @@ const VALID_SOURCE_TYPES = [
 ];
 
 // ============================================================
-// LLM Enrichment
+// Exported types
 // ============================================================
 
-interface EnrichmentResult {
+export interface EnrichedOrg {
+  id: number;
   org_type: string | null;
   source_type: string | null;
   website: string | null;
   twitter: string | null;
+  github_url: string | null;
+  description: string | null;
+  tags: string[];
+  last_signal: string | null;
+  source: string | null;
+}
+
+// ============================================================
+// Pure parse/validate function (exported for testing)
+// ============================================================
+
+/**
+ * Parse and validate a raw JSON string returned by Grok enrichment.
+ * Strips markdown fences, validates per-field, returns [] on any parse error.
+ */
+export function parseEnrichmentResponse(text: string): EnrichedOrg[] {
+  // Strip markdown code fences
+  const stripped = text.replace(/^```[\w]*\n?/m, '').replace(/\n?```$/m, '').trim();
+
+  // Extract JSON array
+  const arrayMatch = stripped.match(/\[[\s\S]*\]/);
+  if (!arrayMatch) return [];
+
+  let parsed: unknown[];
+  try {
+    const result = JSON.parse(arrayMatch[0]);
+    if (!Array.isArray(result)) return [];
+    parsed = result;
+  } catch {
+    return [];
+  }
+
+  return parsed.map((item) => {
+    const o = item as Record<string, unknown>;
+
+    const isHttpUrl = (v: unknown): boolean =>
+      typeof v === 'string' && v.startsWith('http');
+
+    return {
+      id: Number(o['id']),
+      org_type: typeof o['org_type'] === 'string' && VALID_ORG_TYPES.includes(o['org_type'])
+        ? o['org_type']
+        : null,
+      source_type: typeof o['source_type'] === 'string' ? o['source_type'] : null,
+      website: isHttpUrl(o['website']) ? (o['website'] as string) : null,
+      twitter: isHttpUrl(o['twitter']) ? (o['twitter'] as string) : null,
+      github_url: isHttpUrl(o['github_url']) ? (o['github_url'] as string) : null,
+      description: typeof o['description'] === 'string' ? o['description'] : null,
+      tags: Array.isArray(o['tags'])
+        ? (o['tags'] as unknown[]).slice(0, 5).map(String)
+        : [],
+      last_signal: typeof o['last_signal'] === 'string' ? o['last_signal'] : null,
+      source: isHttpUrl(o['source']) ? (o['source'] as string) : null,
+    };
+  });
+}
+
+// ============================================================
+// LLM Enrichment (web-augmented via Grok Responses API)
+// ============================================================
+
+// Model that supports the web_search tool via the Responses API
+const ENRICH_MODEL = 'grok-4.20-beta-0309-non-reasoning';
+
+// Response format for the /v1/responses endpoint (mirrors grok.ts)
+interface ResponsesAPIOutput {
+  type: string;
+  content?: Array<{ type: string; text?: string }>;
+}
+interface ResponsesAPIResponse {
+  output: ResponsesAPIOutput[];
+  usage?: { input_tokens?: number; output_tokens?: number };
 }
 
 /**
- * Enrich a batch of orgs via Grok LLM.
- * Returns a map of org name → enrichment data.
+ * Enrich a batch of orgs via Grok LLM with web search enabled.
+ * Returns a map of org id → enrichment data.
  */
 export async function enrichOrgs(
   orgs: Array<{ id: number; name: string; wires: string[]; entry_count: number }>
-): Promise<Map<number, EnrichmentResult>> {
-  const results = new Map<number, EnrichmentResult>();
+): Promise<Map<number, EnrichedOrg>> {
+  const results = new Map<number, EnrichedOrg>();
 
-  if (!config.apis.grok.apiKey) {
+  const provider = getCachedProvider('grok');
+  const apiKey = provider?.api_key || config.apis.grok.apiKey;
+
+  if (!apiKey) {
     console.warn('[OrgEnricher] No Grok API key — skipping enrichment');
     return results;
   }
+
+  // Strip trailing /v1 to build the Responses API URL (mirrors grok.ts line 176)
+  const baseUrl = (provider?.base_url || config.apis.grok.baseUrl).replace(/\/v1$/, '');
+  const model = provider?.default_model || ENRICH_MODEL;
 
   const orgList = orgs.map((o, i) =>
     `${i + 1}. [ID:${o.id}] "${o.name}" (wires: ${o.wires.join(', ')}, entries: ${o.entry_count})`
   ).join('\n');
 
-  const prompt = `You are classifying organizations that appear in a grant/funding discovery pipeline. For each org below, determine:
+  const prompt = `You are enriching organizations that appear in a grant/funding discovery pipeline. For each org below, research it on the web and return a JSON array with these fields:
 
-1. **org_type** — exactly one of: ${VALID_ORG_TYPES.join(', ')}
-2. **source_type** — exactly one of: ${VALID_SOURCE_TYPES.join(', ')}
-3. **website** — the org's primary website URL (https://...), or null if unknown
-4. **twitter** — the org's Twitter/X URL (https://x.com/...), or null if unknown
+- id: the numeric ID shown in brackets
+- org_type: exactly one of: ${VALID_ORG_TYPES.join(', ')}
+- source_type: exactly one of: ${VALID_SOURCE_TYPES.join(', ')}
+- website: the org's primary website URL (https://...), or null if unknown
+- twitter: the org's Twitter/X URL (https://x.com/...), or null if unknown
+- github_url: the org's GitHub URL (https://github.com/...), or null if unknown
+- description: 1-2 sentences describing what the org does
+- tags: 3-5 lowercase keywords describing the org (e.g. ["defi","grants","ethereum"])
+- last_signal: the most recent notable thing they shipped, announced, or funded (1 sentence)
+- source: a URL (https://...) that backs the claims you are making
 
 Rules:
-- For crypto/web3 orgs, "Foundation/Lab" covers foundations like Ethereum Foundation, "Protocol DAO" covers on-chain DAOs, "Ecosystem DAO" covers ecosystem funds
-- "Official" source_type means the org publishes grants directly on their own channels
-- "Advocate" means a third party shares info about this org's grants
-- Only return URLs you are confident are correct — do not guess
+- Use web search to find current, accurate information
+- Only return URLs you can verify — do not guess
 - Twitter URLs should use x.com format
-
-Return ONLY a JSON array of objects with fields: id, org_type, source_type, website, twitter. No explanation.
+- Return ONLY the JSON array. No explanation, no markdown fences.
 
 Organizations:
 ${orgList}`;
 
-  const response = await fetch(`${config.apis.grok.baseUrl}/chat/completions`, {
+  // Use the Responses API with web_search tool — mirrors executeScanPrompt in grok.ts
+  const response = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
-    signal: AbortSignal.timeout(120_000),
+    signal: AbortSignal.timeout(180_000),
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${config.apis.grok.apiKey}`,
+      'Authorization': `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: 'grok-4.20-beta-0309-non-reasoning',
-      messages: [{ role: 'user', content: prompt }],
-      max_tokens: 2000,
-      temperature: 0.1,
+      model,
+      input: [{ role: 'user', content: prompt }],
+      tools: [{ type: 'web_search' }],
     }),
   });
 
@@ -96,34 +185,33 @@ ${orgList}`;
     throw new Error(`Grok returned ${response.status}: ${await response.text().catch(() => 'unknown')}`);
   }
 
-  const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-  const content = data.choices?.[0]?.message?.content?.trim() || '';
+  const data = await response.json() as ResponsesAPIResponse;
 
-  const jsonMatch = content.match(/\[[\s\S]*\]/);
-  if (!jsonMatch) {
+  // Extract text from the Responses API output (mirrors grok.ts lines 203-211)
+  let content = '';
+  for (const item of data.output || []) {
+    if (item.type === 'message' && item.content) {
+      for (const block of item.content) {
+        if (block.type === 'output_text' && block.text) {
+          content += block.text;
+        }
+      }
+    }
+  }
+
+  if (!content) {
+    console.warn('[OrgEnricher] No text content in Grok Responses API reply');
+    return results;
+  }
+
+  const enriched = parseEnrichmentResponse(content.trim());
+  if (enriched.length === 0) {
     console.warn('[OrgEnricher] No JSON array in Grok response');
     return results;
   }
 
-  try {
-    const parsed = JSON.parse(jsonMatch[0]) as Array<{
-      id: number;
-      org_type?: string;
-      source_type?: string;
-      website?: string;
-      twitter?: string;
-    }>;
-
-    for (const item of parsed) {
-      results.set(item.id, {
-        org_type: item.org_type && VALID_ORG_TYPES.includes(item.org_type) ? item.org_type : null,
-        source_type: item.source_type && VALID_SOURCE_TYPES.includes(item.source_type) ? item.source_type : null,
-        website: item.website && item.website.startsWith('http') ? item.website : null,
-        twitter: item.twitter && item.twitter.startsWith('http') ? item.twitter : null,
-      });
-    }
-  } catch {
-    console.warn('[OrgEnricher] Failed to parse Grok enrichment response');
+  for (const item of enriched) {
+    results.set(item.id, item);
   }
 
   return results;
@@ -170,10 +258,20 @@ export async function enrichBatch(opts?: {
               source_type = COALESCE($2, source_type),
               website = COALESCE($3, website),
               twitter = COALESCE($4, twitter),
+              github_url = COALESCE($5, github_url),
+              description = COALESCE($6, description),
+              tags = COALESCE($7, tags),
+              last_signal = COALESCE($8, last_signal),
+              enrichment_source = COALESCE($9, enrichment_source),
               enriched_at = NOW(),
               updated_at = NOW()
-            WHERE id = $5`,
-            [data.org_type, data.source_type, data.website, data.twitter, orgId]
+            WHERE id = $10`,
+            [
+              data.org_type, data.source_type, data.website, data.twitter,
+              data.github_url, data.description,
+              data.tags.length > 0 ? JSON.stringify(data.tags) : null,
+              data.last_signal, data.source, orgId,
+            ]
           );
           stats.enriched++;
         } catch (err) {
@@ -234,10 +332,20 @@ export async function enrichSingleOrg(orgId: number): Promise<void> {
           source_type = COALESCE($2, source_type),
           website = COALESCE($3, website),
           twitter = COALESCE($4, twitter),
+          github_url = COALESCE($5, github_url),
+          description = COALESCE($6, description),
+          tags = COALESCE($7, tags),
+          last_signal = COALESCE($8, last_signal),
+          enrichment_source = COALESCE($9, enrichment_source),
           enriched_at = NOW(),
           updated_at = NOW()
-        WHERE id = $5 AND enriched_at IS NULL`,
-        [data.org_type, data.source_type, data.website, data.twitter, orgId]
+        WHERE id = $10 AND enriched_at IS NULL`,
+        [
+          data.org_type, data.source_type, data.website, data.twitter,
+          data.github_url, data.description,
+          data.tags.length > 0 ? JSON.stringify(data.tags) : null,
+          data.last_signal, data.source, orgId,
+        ]
       );
     } else {
       // Mark as enriched even if no data returned
