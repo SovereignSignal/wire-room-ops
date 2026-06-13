@@ -163,20 +163,25 @@ function isRelevantDiscussion(title: string): boolean {
 // filter does a lowercased-name match; multi-word names work). Grounded in the live
 // /forums list (verified 2026-06-13).
 const GOVERNANCE_ALLOWLIST: Record<string, string[]> = {
+  // v2 (2026-06-13) — trimmed from 42 to 22 after a live 90-day activity probe + a
+  // per-forum web-verification audit. The old list assumed grant-keyword traffic meant
+  // harvestable on-forum opportunities; in 2026 it mostly means governance/treasury
+  // noise. ~20 forums were dropped because their grant INTAKE migrated to portals
+  // (Questbook/Charmverse/Gitcoin/Karma) or foundation sites (ENS, Solana, Avalanche,
+  // Aptos, Mantle, Linea, Taiko, NEAR, dYdX, Starknet…) or wound down entirely
+  // (Aave grants DAO closed Aug-2024, Compound CGP defunct since 2024). Standards/
+  // research venues (ethereum magicians/research) post no opportunities. What remains:
+  // forums where the grant PROCESS or clean early-signal actually appears ON Discourse.
   crypto: [
-    // L1/L2 ecosystems running active grants / treasury / ecosystem-fund programs
-    'arbitrum', 'optimism', 'zksync era', 'polygon', 'starknet', 'mantle',
-    'linea', 'scroll', 'taiko', 'mode network', 'celo', 'gnosis', 'celestia',
-    'cosmos hub', 'near protocol', 'polkadot', 'cardano', 'solana', 'avalanche',
-    'aptos', 'stacks', 'berachain', 'monad', 'story protocol',
-    // Public-goods / grants-native venues
-    'gitcoin', 'ens', 'octant', 'the graph',
-    // DeFi DAOs that run grants / ecosystem funds
-    'aave', 'compound', 'sky (makerdao)', 'curve finance', 'balancer',
-    'lido finance', 'eigenlayer', 'cow protocol', 'morpho', 'yearn finance',
-    'dydx', 'gmx',
-    // Standards / research venues where funded programs surface
-    'ethereum magicians', 'ethereum research',
+    // Active grants councils / RFP venues with genuine on-forum intake (probe-confirmed)
+    'optimism', 'gitcoin', 'cow protocol', 'eigenlayer', 'scroll', 'balancer',
+    'morpho', 'celo', 'lido finance', 'stacks',
+    // On-forum grant PROCESS — proposals submitted + voted directly on Discourse
+    // (the lane's sweet spot; added v2)
+    'zcash', 'aztec', 'neutron', 'safedao', 'iotex', 'moonbeam',
+    // Big-DAO early-signal — program creation/renewal surfaces on-forum as governance
+    // even when the apply step is off-forum
+    'arbitrum', 'zksync era', 'polygon', 'polkadot', 'cosmos hub', 'sui',
     // NOTE: 'uniswap governance' is deliberately EXCLUDED — operator works for the
     // Uniswap Foundation, so UF opportunities are never surfaced (see skip below).
   ],
