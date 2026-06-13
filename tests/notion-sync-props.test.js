@@ -29,3 +29,11 @@ test('Items Sourced falls back to entry_count when items_sourced absent', () => 
   const props = buildOrgProperties({ name: 'Acme', entry_count: 3 });
   assert.deepEqual(props['Items Sourced'], { number: 3 });
 });
+
+test('GitHub URL is mapped when org.github_url present', () => {
+  const props = buildOrgProperties({ name: 'Acme', github_url: 'https://github.com/acme' });
+  assert.deepEqual(props['GitHub URL'], { url: 'https://github.com/acme' });
+});
+test('no GitHub URL key when absent', () => {
+  assert.equal('GitHub URL' in buildOrgProperties({ name: 'Acme' }), false);
+});

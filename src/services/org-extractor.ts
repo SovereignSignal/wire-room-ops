@@ -444,6 +444,8 @@ export async function ensureOrgProfilesTable(): Promise<void> {
   await pool.query(`ALTER TABLE org_profiles ADD COLUMN IF NOT EXISTS avg_quality_score NUMERIC(5,1)`);
   await pool.query(`ALTER TABLE org_profiles ADD COLUMN IF NOT EXISTS enriched_at TIMESTAMPTZ`);
 
+  await pool.query(`ALTER TABLE org_profiles ADD COLUMN IF NOT EXISTS github_url TEXT`);
+
   // Dedup & intelligence columns
   await pool.query(`ALTER TABLE org_profiles ADD COLUMN IF NOT EXISTS parent_org_id INTEGER REFERENCES org_profiles(id)`);
   await pool.query(`ALTER TABLE org_profiles ADD COLUMN IF NOT EXISTS aliases TEXT[] DEFAULT '{}'`);

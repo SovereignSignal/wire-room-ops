@@ -315,6 +315,10 @@ export function buildOrgProperties(org: any): Record<string, any> {
     props['Twitter'] = { url: org.twitter };
   }
 
+  if (org.github_url) {
+    props['GitHub URL'] = { url: org.github_url };
+  }
+
   if (org.wires && org.wires.length > 0) {
     props['Wire'] = { multi_select: org.wires.map((w: string) => ({ name: capitalizeWire(w) })) };
   }
