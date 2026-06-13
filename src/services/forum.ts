@@ -1,17 +1,21 @@
 /**
  * Forum Service — discuss.watch API client
  *
- * Dual-strategy scanning of 160+ Discourse forums via discuss.watch:
- *   1. /discussions — date-filtered recent activity (high volume, fresh)
- *   2. /search — keyword-targeted matches (precision, deeper reach)
+ * Governance-forum discovery lane. Per wire:
+ *   1. Pull candidate threads from a curated governance/grants forum allowlist
+ *      (plus a `hot` catch-all), age-gated on original post date.
+ *   2. LLM-judge each thread (opportunity / not) and extract structured fields.
  *
- * Results are mapped to RawScanResult[] for the intake pipeline.
- * Rate limit: ~14 req/min (4.2s delay between requests)
+ * Opportunities are mapped to RawScanResult[] for the intake pipeline.
+ * Replaces the retired broad-keyword dual scan (2% approve / 67% dupe).
+ * Rate limit: ~14 req/min (4.2s delay between requests).
  */
 
 import { config } from '../config';
 import type { RawScanResult } from '../types/intake';
 import { sleep } from '../utils/async';
+import { getCachedProvider } from './api-provider';
+import { logApiUsage } from './api-usage';
 
 // --- Wire-to-category mapping (discuss.watch categories match wire keys) ---
 // Wire keys map 1:1 to discuss.watch categories today; keeping the map
@@ -22,102 +26,23 @@ const WIRE_CATEGORY_MAP: Record<string, string> = {
   oss: 'oss',
 };
 
-// Default search keywords by wire (used when FORUM_SEARCH_TERMS env var is not set)
-const DEFAULT_SEARCH_TERMS: Record<string, string[]> = {
-  crypto: [
-    'grant program', 'ecosystem fund', 'grants council', 'bounty program',
-    'retroactive funding', 'public goods', 'RFP', 'hackathon', 'treasury proposal',
-    'developer grants', 'protocol grants', 'DAO funding', 'governance fund',
-  ],
-  ai: [
-    'research grant', 'fellowship', 'compute credits', 'GPU credits', 'AI grant',
-    'research funding', 'PhD fellowship', 'NSF', 'DARPA', 'AI safety grant',
-    'machine learning grant', 'research program', 'funding opportunity',
-    'call for proposals', 'open call', 'hackathon',
-  ],
-  oss: [
-    'grant program', 'FOSS fund', 'open source grant', 'maintainer grant',
-    'security audit', 'bug bounty', 'fellowship', 'contributor program',
-    'sponsorship program', 'developer program', 'funding', 'GSoC', 'Outreachy',
-    'LFX mentorship', 'hackathon', 'call for proposals',
-  ],
-};
-
-const DEFAULT_ALL_TERMS = [
-  'grant program', 'funding round', 'ecosystem fund', 'bounty program',
-  'hackathon', 'fellowship', 'RFP', 'grants council', 'developer grants',
-];
-
-function getSearchTerms(wire?: string): string[] {
-  const envVal = process.env.FORUM_SEARCH_TERMS;
-  if (envVal) {
-    return envVal.split(',').map(t => t.trim()).filter(Boolean);
-  }
-  if (wire && DEFAULT_SEARCH_TERMS[wire]) {
-    return DEFAULT_SEARCH_TERMS[wire];
-  }
-  return DEFAULT_ALL_TERMS;
-}
-
 // Rate limit: ~14 req/min = 4.2s between requests
 const REQUEST_DELAY_MS = 4300;
-const MAX_RESULTS_PER_RUN = 300;
-const RESULTS_PER_SEARCH = 25;
-const MAX_DISCUSSIONS_PER_CATEGORY = 50;
 
 // --- Interfaces ---
 
-export interface ForumSearchOptions {
+export interface ForumScanOptions {
   wire?: string;
-  keywords?: string[];
-  maxResults?: number;
-  excludeUrls?: Set<string>;
+  since?: string;
   onProgress?: (message: string, pct: number) => void;
 }
 
-export interface ForumDiscussionsOptions {
-  wire?: string;
-  since?: string;
-  maxResults?: number;
-  onProgress?: (message: string, pct: number) => void;
-}
-
-export interface DualForumScanOptions {
-  wire?: string;
-  since?: string;
-  keywords?: string[];
-  maxResults?: number;
-  onProgress?: (message: string, pct: number) => void;
-}
+// Retained name for the orchestrator's options (was the dual-scan option shape).
+export type DualForumScanOptions = ForumScanOptions;
 
 export interface WireResults {
   wire: string;
   results: RawScanResult[];
-}
-
-export interface DualForumScanResult {
-  byWire: WireResults[];
-  discussionsCount: number;
-  searchCount: number;
-}
-
-interface DiscussWatchResult {
-  id?: string | number;
-  title?: string;
-  blurb?: string;
-  url?: string;
-  forum?: { name?: string; url?: string; token?: string };
-  category?: string;
-  createdAt?: string;
-  replies?: number;
-  views?: number;
-  likes?: number;
-}
-
-interface DiscussWatchSearchResponse {
-  data?: DiscussWatchResult[];
-  meta?: { total?: number; query?: string; forums?: number };
-  error?: string;
 }
 
 interface DiscussWatchDiscussion {
@@ -171,10 +96,9 @@ function normalizeUrl(url: string): string {
 const MAX_DISCUSSION_AGE_DAYS = 30;
 
 /**
- * Pre-filter discussion titles for grants-ecosystem relevance.
- * Phase 1 (discussions) returns ALL recent activity from a category,
- * so we filter client-side to avoid ingesting random code PRs,
- * version releases, and unrelated forum chatter.
+ * Keyword pre-filter for grants-ecosystem relevance. Used as the FALLBACK gate
+ * when the LLM judge is unavailable (no key) or a batch errors — degrades to the
+ * old keyword behavior rather than dropping or flooding candidates.
  */
 // Tightened relevance filter — must indicate ACTIVE funding opportunity.
 // Removed: proposal (catches GSoC proposals), governance/milestone/deliverable (catches discussions),
@@ -211,359 +135,402 @@ const EXCLUSION_PATTERNS = [
 
 function isRelevantDiscussion(title: string): boolean {
   const lower = title.toLowerCase();
-  
+
   // Exclude project proposals, releases, and discussions
   if (EXCLUSION_PATTERNS.some(p => p.test(title))) {
     return false;
   }
-  
+
   return RELEVANCE_KEYWORDS.some(kw => lower.includes(kw));
 }
 
-// --- Phase 1: Recent Discussions ---
+// =====================================================================
+// Governance-forum lane (the primary, current forum strategy)
+// =====================================================================
+//
+// The forum layer is overwhelmingly a CRYPTO-GOVERNANCE signal. DAO treasuries,
+// grants councils, and ecosystem funds announce — and renew — programs as
+// governance proposals, which is the EARLIEST possible signal (often before any
+// external announcement). The retired dual-scan (broad /search keywords across all
+// 335 forums) drowned in noise; this lane instead pulls from a curated allowlist of
+// forums that actually fund, then lets an LLM make the opportunity/not call.
+//
+// AI/OSS category forums are dev-tooling and project-support boards, NOT funders, so
+// their allowlists are intentionally thin and lean on the `hot` catch-all + the LLM
+// judge. (Real AI/OSS funding signal arrives via EA Forum and funder feeds — other lanes.)
+//
+// Names are matched LOWERCASED against discuss.watch forum names (the `forums=`
+// filter does a lowercased-name match; multi-word names work). Grounded in the live
+// /forums list (verified 2026-06-13).
+const GOVERNANCE_ALLOWLIST: Record<string, string[]> = {
+  crypto: [
+    // L1/L2 ecosystems running active grants / treasury / ecosystem-fund programs
+    'arbitrum', 'optimism', 'zksync era', 'polygon', 'starknet', 'mantle',
+    'linea', 'scroll', 'taiko', 'mode network', 'celo', 'gnosis', 'celestia',
+    'cosmos hub', 'near protocol', 'polkadot', 'cardano', 'solana', 'avalanche',
+    'aptos', 'stacks', 'berachain', 'monad', 'story protocol',
+    // Public-goods / grants-native venues
+    'gitcoin', 'ens', 'octant', 'the graph',
+    // DeFi DAOs that run grants / ecosystem funds
+    'aave', 'compound', 'sky (makerdao)', 'curve finance', 'balancer',
+    'lido finance', 'eigenlayer', 'cow protocol', 'morpho', 'yearn finance',
+    'dydx', 'gmx',
+    // Standards / research venues where funded programs surface
+    'ethereum magicians', 'ethereum research',
+    // NOTE: 'uniswap governance' is deliberately EXCLUDED — operator works for the
+    // Uniswap Foundation, so UF opportunities are never surfaced (see skip below).
+  ],
+  ai: [
+    // The one funding-signal forum in the AI category; the rest is dev tooling.
+    'ea forum',
+  ],
+  oss: [
+    // OSS funding rarely originates on project-support forums; rely on `hot` + LLM.
+  ],
+};
+
+// Forum names we never surface, regardless of allowlist or hot catch-all.
+const FORUM_SKIP_PATTERNS: RegExp[] = [
+  /uniswap/i, // operator works for the Uniswap Foundation
+];
+
+const JUDGE_BATCH_SIZE = 12;
+
+export interface ForumCandidate {
+  title: string;
+  url: string;
+  forumName: string;
+  createdAt: string | null;
+  replies: number;
+  views: number;
+  source: 'allowlist' | 'hot';
+}
+
+export interface GovernanceForumScanResult {
+  byWire: WireResults[];
+  candidateCount: number;
+  opportunityCount: number;
+}
 
 /**
- * Fetch recent discussions from discuss.watch /discussions endpoint.
- * Date-filtered, category-aware, high-volume source.
+ * Thin GET wrapper for discuss.watch /discussions with one 429 retry.
+ * Returns the parsed response or null on any failure (the lane fails soft).
  */
-export async function fetchRecentDiscussions(
-  options: ForumDiscussionsOptions = {}
-): Promise<{ byWire: WireResults[]; totalCount: number }> {
-  const baseUrl = config.forum.discussWatchBaseUrl;
-  const maxPerCategory = options.maxResults || MAX_DISCUSSIONS_PER_CATEGORY;
-  const progress = options.onProgress || (() => {});
-
-  // Determine which categories to scan
-  const categories: { category: string; wire: string }[] = [];
-  if (options.wire && WIRE_CATEGORY_MAP[options.wire]) {
-    categories.push({ category: WIRE_CATEGORY_MAP[options.wire], wire: options.wire });
-  } else {
-    for (const [wire, cat] of Object.entries(WIRE_CATEGORY_MAP)) {
-      categories.push({ category: cat, wire });
-    }
-  }
-
-  // Default since: 2 days ago
-  const since = options.since || new Date(Date.now() - config.forum.defaultLookbackDays * 86400000).toISOString().split('T')[0];
-
-  const byWire: WireResults[] = [];
-  let totalCount = 0;
-
-  for (let i = 0; i < categories.length; i++) {
-    const { category, wire } = categories[i];
-    const pct = Math.round((i / categories.length) * 100);
-    progress(`Fetching recent ${category} discussions (since ${since})`, pct);
-
-    let retried = false;
-    const attemptFetch = async (): Promise<DiscussWatchDiscussionsResponse | null> => {
-      const params = new URLSearchParams({
-        category,
-        since,
-        sort: 'activity',
-        limit: String(maxPerCategory),
-      });
-
+async function fetchDiscussions(
+  baseUrl: string,
+  paramObj: Record<string, string>,
+): Promise<DiscussWatchDiscussionsResponse | null> {
+  const params = new URLSearchParams(paramObj);
+  let retried = false;
+  const attempt = async (): Promise<DiscussWatchDiscussionsResponse | null> => {
+    try {
       const response = await fetch(`${baseUrl}/discussions?${params}`, {
         headers: { 'Accept': 'application/json' },
         signal: AbortSignal.timeout(15000),
       });
-
       if (!response.ok) {
         if (response.status === 429 && !retried) {
           retried = true;
-          console.warn(`[Forum] Rate limited on discussions/${category}, waiting 10s and retrying...`);
+          console.warn('[Forum] Rate limited on /discussions, waiting 10s and retrying...');
           await sleep(10000);
-          return attemptFetch();
+          return attempt();
         }
-        console.warn(`[Forum] Discussions ${category} returned ${response.status}`);
+        console.warn(`[Forum] /discussions returned ${response.status} (${params.toString()})`);
         return null;
       }
-      return await response.json() as DiscussWatchDiscussionsResponse;
-    };
-
-    try {
-      const data = await attemptFetch();
-      if (!data) continue;
-
+      const data = await response.json() as DiscussWatchDiscussionsResponse;
       if (data.error) {
-        console.warn(`[Forum] Discussions API error for ${category}: ${data.error}`);
-        continue;
+        console.warn(`[Forum] /discussions API error: ${data.error}`);
+        return null;
       }
-
-      const items = data.data || [];
-      const results: RawScanResult[] = [];
-      const seenUrls = new Set<string>();
-
-      let skippedIrrelevant = 0;
-      let skippedStale = 0;
-      const ageCutoff = Date.now() - MAX_DISCUSSION_AGE_DAYS * 86400000;
-
-      for (const item of items) {
-        if (!item.url || !item.title) continue;
-
-        // Filter by original post date — reject old posts that were merely bumped
-        if (item.createdAt) {
-          const created = new Date(item.createdAt).getTime();
-          if (created < ageCutoff) {
-            skippedStale++;
-            continue;
-          }
-        }
-
-        // Pre-filter: only ingest discussions with grants-ecosystem relevance
-        if (!isRelevantDiscussion(item.title)) {
-          skippedIrrelevant++;
-          continue;
-        }
-
-        const normalized = normalizeUrl(item.url);
-        if (seenUrls.has(normalized)) continue;
-        seenUrls.add(normalized);
-
-        // Build classifier-friendly description from available context.
-        // /discussions endpoint has no blurb — synthesize from forum name + title.
-        const forumName = item.forum?.name || item.forum?.token || '';
-        const engParts: string[] = [];
-        if ((item.replies ?? 0) > 0) engParts.push(`${item.replies} replies`);
-        const engStr = engParts.length ? ` (${engParts.join(', ')})` : '';
-        const builtDescription = forumName
-          ? `${forumName} forum: ${item.title}${engStr}`
-          : `Grants forum discussion: ${item.title}${engStr}`;
-
-        results.push({
-          name: item.title,
-          description: builtDescription,
-          sourceUrl: item.url,
-          amount: extractAmount(item.title),
-          deadline: null,
-          sourcePublishedAt: item.createdAt || item.lastActivityAt || null,
-        });
-      }
-
-      if (results.length > 0) {
-        byWire.push({ wire, results });
-        totalCount += results.length;
-      }
-
-      console.log(`[Forum] Discussions ${category}: ${items.length} items, ${results.length} relevant, ${skippedStale} stale, ${skippedIrrelevant} off-topic`);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      console.warn(`[Forum] Discussions ${category} failed: ${msg}`);
+      return data;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[Forum] /discussions fetch failed: ${msg}`);
+      return null;
     }
-
-    // Rate limit delay between categories (skip after last)
-    if (i < categories.length - 1) {
-      await sleep(REQUEST_DELAY_MS);
-    }
-  }
-
-  return { byWire, totalCount };
+  };
+  return attempt();
 }
 
-// --- Phase 2: Keyword Search ---
-
 /**
- * Search discuss.watch for grant-related forum discussions.
- * Keyword-targeted, precision-oriented source.
+ * Pull governance-forum candidates for one wire: the curated allowlist (freshest
+ * threads, sort=new) plus a `hot=true` catch-all for high-engagement threads from
+ * non-allowlist forums. Age-gated on original post date (createdAt) because the
+ * `since=` param filters lastActivityAt, not createdAt. No keyword pre-filter here —
+ * the LLM judge decides relevance, so the lane stays recall-leaning.
  */
-export async function searchForumDiscussions(
-  options: ForumSearchOptions = {}
-): Promise<RawScanResult[]> {
+export async function fetchGovernanceForumCandidates(
+  wire: string,
+  since: string,
+  onProgress?: (msg: string, pct: number) => void,
+): Promise<ForumCandidate[]> {
   const baseUrl = config.forum.discussWatchBaseUrl;
-  const keywords = options.keywords || getSearchTerms(options.wire);
-  const maxResults = options.maxResults || MAX_RESULTS_PER_RUN;
-  const progress = options.onProgress || (() => {});
-  const excludeUrls = options.excludeUrls || new Set<string>();
+  const category = WIRE_CATEGORY_MAP[wire] || wire;
+  const allowlist = GOVERNANCE_ALLOWLIST[wire] || [];
+  const progress = onProgress || (() => {});
+  const ageCutoff = Date.now() - MAX_DISCUSSION_AGE_DAYS * 86400000;
 
-  const allResults: RawScanResult[] = [];
-  const seenUrls = new Set<string>(excludeUrls);
+  const candidates = new Map<string, ForumCandidate>(); // keyed by normalized url
 
-  for (let i = 0; i < keywords.length; i++) {
-    if (allResults.length >= maxResults) break;
-
-    const keyword = keywords[i];
-    const pct = Math.round((i / keywords.length) * 80);
-    progress(`Searching: "${keyword}" (${i + 1}/${keywords.length})`, pct);
-
-    try {
-      const params = new URLSearchParams({
-        q: keyword,
-        limit: String(RESULTS_PER_SEARCH),
+  const ingest = (items: DiscussWatchDiscussion[] | undefined, src: 'allowlist' | 'hot') => {
+    for (const item of items || []) {
+      if (!item.url || !item.title) continue;
+      // Age gate on original post date (since= filters lastActivityAt, not createdAt)
+      if (item.createdAt && new Date(item.createdAt).getTime() < ageCutoff) continue;
+      const forumName = item.forum?.name || item.forum?.token || '';
+      if (FORUM_SKIP_PATTERNS.some(p => p.test(forumName))) continue;
+      const key = normalizeUrl(item.url);
+      if (candidates.has(key)) continue;
+      candidates.set(key, {
+        title: item.title,
+        url: item.url,
+        forumName,
+        createdAt: item.createdAt || item.lastActivityAt || null,
+        replies: item.replies ?? 0,
+        views: item.views ?? 0,
+        source: src,
       });
-      if (options.wire) {
-        params.set('category', WIRE_CATEGORY_MAP[options.wire] || options.wire);
-      }
-
-      const response = await fetch(`${baseUrl}/search?${params}`, {
-        headers: { 'Accept': 'application/json' },
-        signal: AbortSignal.timeout(15000),
-      });
-
-      if (!response.ok) {
-        if (response.status === 429) {
-          console.warn(`[Forum] Rate limited on "${keyword}", waiting 10s...`);
-          await sleep(10000);
-          continue;
-        }
-        console.warn(`[Forum] Search "${keyword}" returned ${response.status}`);
-        continue;
-      }
-
-      const data = await response.json() as DiscussWatchSearchResponse;
-
-      if (data.error) {
-        console.warn(`[Forum] API error for "${keyword}": ${data.error}`);
-        continue;
-      }
-
-      const results = data.data || [];
-      const searchAgeCutoff = Date.now() - MAX_DISCUSSION_AGE_DAYS * 86400000;
-      for (const item of results) {
-        if (allResults.length >= maxResults) break;
-        if (!item.url || !item.title) continue;
-
-        // Reject old posts that match keywords but were created long ago
-        if (item.createdAt) {
-          const created = new Date(item.createdAt).getTime();
-          if (created < searchAgeCutoff) continue;
-        }
-
-        const normalizedUrl = normalizeUrl(item.url);
-        if (seenUrls.has(normalizedUrl)) continue;
-        seenUrls.add(normalizedUrl);
-
-        const description = item.blurb || '';
-        const combinedText = `${item.title} ${description}`;
-
-        allResults.push({
-          name: item.title,
-          description: description,
-          sourceUrl: item.url,
-          amount: extractAmount(combinedText),
-          deadline: null,
-          sourcePublishedAt: item.createdAt || null,
-        });
-      }
-
-      console.log(`[Forum] "${keyword}": ${results.length} results, ${allResults.length} total unique`);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      console.warn(`[Forum] Search "${keyword}" failed: ${msg}`);
     }
+  };
 
-    // Rate limit delay between searches (skip after last)
-    if (i < keywords.length - 1 && allResults.length < maxResults) {
-      await sleep(REQUEST_DELAY_MS);
-    }
-  }
-
-  progress(`Found ${allResults.length} unique search results`, 85);
-  return allResults;
-}
-
-// --- Dual Strategy Orchestrator ---
-
-/**
- * Run dual-strategy forum scan: discussions (fresh) + search (precision).
- * Returns results grouped by wire for per-wire intake submissions.
- */
-export async function runDualForumScan(
-  options: DualForumScanOptions = {}
-): Promise<DualForumScanResult> {
-  const progress = options.onProgress || (() => {});
-  const maxResults = options.maxResults || MAX_RESULTS_PER_RUN;
-
-  // Phase 1: Recent discussions (0-40%)
-  let discussionsResult: { byWire: WireResults[]; totalCount: number } = { byWire: [], totalCount: 0 };
-  try {
-    discussionsResult = await fetchRecentDiscussions({
-      wire: options.wire,
-      since: options.since,
-      onProgress: (msg, pct) => progress(msg, Math.round(pct * 0.4)),
+  // Pull 1: allowlist forums (the forums that actually fund), freshest first.
+  if (allowlist.length > 0) {
+    progress(`Pulling ${allowlist.length} ${category} governance forums`, 20);
+    const data = await fetchDiscussions(baseUrl, {
+      category,
+      since,
+      sort: 'new',
+      limit: '60',
+      forums: allowlist.join(','),
     });
-    progress(`Discussions: ${discussionsResult.totalCount} results across ${discussionsResult.byWire.length} wires`, 40);
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    console.warn(`[Forum] Discussions phase failed, falling back to search-only: ${msg}`);
-    progress('Discussions unavailable, using search only', 40);
-  }
-
-  // Seed wire map with discussions results and collect URLs for cross-dedup
-  const wireMap = new Map<string, RawScanResult[]>();
-  const discussionUrls = new Set<string>();
-  for (const wr of discussionsResult.byWire) {
-    wireMap.set(wr.wire, [...wr.results]);
-    for (const r of wr.results) {
-      discussionUrls.add(normalizeUrl(r.sourceUrl));
-    }
-  }
-
-  // Rate limit pause between phases
-  if (discussionsResult.totalCount > 0) {
+    ingest(data?.data, 'allowlist');
     await sleep(REQUEST_DELAY_MS);
   }
 
-  // Phase 2: Keyword search (40-85%)
-  // When wire is specified, search only that category. Otherwise, search per-category
-  // so results are correctly assigned to the right wire.
-  const searchWires = options.wire
-    ? [options.wire]
-    : Object.keys(WIRE_CATEGORY_MAP);
+  // Pull 2: hot catch-all — high-engagement threads from forums outside the allowlist.
+  progress(`Pulling hot ${category} threads`, 60);
+  const hotData = await fetchDiscussions(baseUrl, {
+    category,
+    since,
+    sort: 'new',
+    limit: '40',
+    hot: 'true',
+  });
+  ingest(hotData?.data, 'hot');
 
-  let totalSearchCount = 0;
-  const searchBudget = Math.max(maxResults - discussionsResult.totalCount, 50);
-  const perWireBudget = Math.ceil(searchBudget / searchWires.length);
+  const out = [...candidates.values()];
+  console.log(`[Forum] ${category} candidates: ${out.length} (allowlist=${allowlist.length} forums + hot, age<=${MAX_DISCUSSION_AGE_DAYS}d)`);
+  return out;
+}
 
-  for (let wi = 0; wi < searchWires.length; wi++) {
-    const wire = searchWires[wi];
-    const searchPct = (pct: number) => {
-      const wireOffset = wi / searchWires.length;
-      const wireSpan = 1 / searchWires.length;
-      progress(`Search (${wire})`, 40 + Math.round((wireOffset + wireSpan * pct / 100) * 45));
-    };
+/** Convert a forum candidate (optionally enriched by the LLM judge) into a RawScanResult. */
+function candidateToRaw(c: ForumCandidate, judged: ForumJudgment | null): RawScanResult {
+  const forumPrefix = c.forumName ? `${c.forumName} forum` : 'Governance forum';
+  const eng = c.replies > 0 ? ` (${c.replies} replies)` : '';
+  let name = c.title;
+  let amount: string | null = extractAmount(c.title);
+  let deadline: string | null = null;
+  let description = `${forumPrefix}: ${c.title}${eng}`;
 
-    const wireSearchResults = await searchForumDiscussions({
-      wire,
-      keywords: options.keywords,
-      maxResults: perWireBudget,
-      excludeUrls: discussionUrls,
-      onProgress: (msg, pct) => searchPct(pct),
-    });
-
-    if (wireSearchResults.length > 0) {
-      // Add search results to the wire's existing discussions (or create new entry)
-      const existing = wireMap.get(wire) || [];
-      existing.push(...wireSearchResults);
-      wireMap.set(wire, existing);
-      totalSearchCount += wireSearchResults.length;
-
-      // Add these URLs to excludeUrls to avoid cross-wire duplication in search
-      for (const r of wireSearchResults) {
-        discussionUrls.add(normalizeUrl(r.sourceUrl));
-      }
+  if (judged) {
+    if (judged.name && judged.name.trim()) name = judged.name.trim().slice(0, 200);
+    const parts: string[] = [judged.summary?.trim() || c.title];
+    if (judged.funder?.trim()) parts.push(`Funder: ${judged.funder.trim()}`);
+    if (judged.signal_stage?.trim()) parts.push(`Signal: ${judged.signal_stage.trim()}`);
+    parts.push(`Source: ${forumPrefix}${eng}`);
+    description = parts.join(' — ');
+    if (typeof judged.amount === 'string' && /\d/.test(judged.amount)) amount = judged.amount.trim().slice(0, 60);
+    if (typeof judged.deadline === 'string' && judged.deadline.trim() && judged.deadline.trim().toLowerCase() !== 'null') {
+      deadline = judged.deadline.trim().slice(0, 50);
     }
   }
-
-  progress(`Search: ${totalSearchCount} additional results`, 88);
-
-  // Build final grouped results
-  const byWire: WireResults[] = [];
-  for (const [wire, results] of wireMap) {
-    if (results.length > 0) {
-      byWire.push({ wire, results });
-    }
-  }
-
-  const totalDiscussions = discussionsResult.totalCount;
-  const totalSearch = totalSearchCount;
-  const totalAll = totalDiscussions + totalSearch;
-
-  progress(`Forum scan complete: ${totalAll} total (${totalDiscussions} discussions + ${totalSearch} search)`, 100);
-  console.log(`[Forum] Dual scan complete: ${totalDiscussions} from discussions, ${totalSearch} from search, ${byWire.length} wires`);
 
   return {
-    byWire,
-    discussionsCount: totalDiscussions,
-    searchCount: totalSearch,
+    name,
+    description,
+    sourceUrl: c.url,
+    amount,
+    deadline,
+    sourcePublishedAt: c.createdAt,
   };
+}
+
+interface ForumJudgment {
+  n?: number;
+  is_opportunity?: boolean;
+  name?: string;
+  funder?: string;
+  amount?: string;
+  deadline?: string;
+  signal_stage?: string;
+  summary?: string;
+}
+
+function buildForumJudgePrompt(batch: ForumCandidate[], wire: string): string {
+  const wireLabel = wire === 'crypto' ? 'crypto / web3' : wire === 'ai' ? 'AI / ML' : 'open-source software';
+  const lines = batch.map((c, i) => `${i + 1}. [${c.forumName || 'forum'}] ${c.title}`).join('\n');
+  return `You are screening ${wireLabel} forum threads to find FUNDING OPPORTUNITIES for builders.
+
+An OPPORTUNITY is a thread that reveals a PROGRAM others can apply to for money: a grant program, ecosystem/treasury fund, RFP, bounty, retroactive public-goods round, fellowship, accelerator/incubator, or hackathon with prizes — OR a governance proposal to CREATE, RENEW, or EXTEND any such program. Governance proposals COUNT: they are the earliest signal a program exists. An individual project's application or request TO a clearly-named, currently-open program also counts (it evidences that the program is live).
+
+NOT an opportunity (set is_opportunity=false):
+- A single project's pitch, launch, or progress post that merely HOPES FOR or is "open to" funding without naming a specific program that is currently accepting applications.
+- Delegate communications, voting-power / quorum / parameter changes, council or committee ELECTIONS, security-council rotations, treasury diversification or token swaps with no builder funding, protocol upgrades, partnership or listing announcements, market/price updates, meeting notes, milestone/transparency reports, and software releases.
+
+When unsure BUT a concrete fundable program is named, lean is_opportunity=true — an operator reviews everything downstream. When the thread is just one project hoping to get funded, lean false.
+
+For EACH numbered thread, return one JSON object. Respond with ONLY a JSON array (no prose, no markdown fences):
+[{"n":1,"is_opportunity":true,"name":"<concise program name, not the raw thread title>","funder":"<org running it, or null>","amount":"<dollar figure or null>","deadline":"<date / Rolling / null>","signal_stage":"proposed|open|recurring|closing","summary":"<one sentence: what it funds and who can apply>"}]
+
+signal_stage: "proposed" = governance proposal to create/renew; "open" = currently accepting; "recurring" = established rolling program; "closing" = deadline near.
+
+Threads:
+${lines}`;
+}
+
+function parseForumJudgeResponse(content: string, batch: ForumCandidate[]): RawScanResult[] {
+  let arr: unknown;
+  try {
+    const cleaned = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+    const start = cleaned.indexOf('[');
+    const end = cleaned.lastIndexOf(']');
+    const jsonStr = start >= 0 && end > start ? cleaned.slice(start, end + 1) : cleaned;
+    arr = JSON.parse(jsonStr);
+  } catch {
+    // Parse failure → degrade to the keyword pre-filter for this batch (old behavior),
+    // never a raw flood.
+    return batch.filter(c => isRelevantDiscussion(c.title)).map(c => candidateToRaw(c, null));
+  }
+  if (!Array.isArray(arr)) {
+    return batch.filter(c => isRelevantDiscussion(c.title)).map(c => candidateToRaw(c, null));
+  }
+
+  const byIndex = new Map<number, ForumJudgment>();
+  for (const j of arr as ForumJudgment[]) {
+    if (j && typeof j.n === 'number') byIndex.set(j.n, j);
+  }
+
+  const out: RawScanResult[] = [];
+  for (let i = 0; i < batch.length; i++) {
+    const j = byIndex.get(i + 1);
+    if (!j) continue;                    // model omitted it → treat as not an opportunity
+    if (j.is_opportunity === false) continue;
+    out.push(candidateToRaw(batch[i], j));
+  }
+  return out;
+}
+
+/**
+ * LLM judge: classify each forum candidate as opportunity / not, and extract structured
+ * fields. Batched (12/call) through Grok via the shared provider + usage logging. Fails
+ * soft per batch: on any error, that batch degrades to the keyword pre-filter rather than
+ * being dropped or flooded.
+ */
+export async function judgeForumCandidates(
+  candidates: ForumCandidate[],
+  wire: string,
+  onProgress?: (msg: string, pct: number) => void,
+): Promise<RawScanResult[]> {
+  if (candidates.length === 0) return [];
+  const progress = onProgress || (() => {});
+
+  const provider = getCachedProvider('grok');
+  const model = provider?.default_model || 'grok-4.20-beta-0309-non-reasoning';
+  const apiKey = provider?.api_key || config.apis.grok.apiKey;
+  const baseUrl = provider?.base_url || config.apis.grok.baseUrl;
+
+  if (!apiKey) {
+    console.warn('[Forum] No Grok API key — falling back to keyword filter (no LLM judge)');
+    return candidates.filter(c => isRelevantDiscussion(c.title)).map(c => candidateToRaw(c, null));
+  }
+
+  const batches: ForumCandidate[][] = [];
+  for (let i = 0; i < candidates.length; i += JUDGE_BATCH_SIZE) {
+    batches.push(candidates.slice(i, i + JUDGE_BATCH_SIZE));
+  }
+
+  const out: RawScanResult[] = [];
+  for (let b = 0; b < batches.length; b++) {
+    const batch = batches[b];
+    progress(`Judging forum batch ${b + 1}/${batches.length} (${wire})`, Math.round((b / batches.length) * 100));
+    const start = Date.now();
+    try {
+      const response = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        signal: AbortSignal.timeout(120_000),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: buildForumJudgePrompt(batch, wire) }],
+          max_tokens: 1600,
+          temperature: 0.1,
+        }),
+      });
+
+      if (!response.ok) {
+        logApiUsage({ provider: 'grok', model, purpose: 'forum-judge', wire, duration_ms: Date.now() - start, success: false, error_message: String(response.status) });
+        console.warn(`[Forum] Judge batch ${b + 1} HTTP ${response.status} — degrading batch to keyword filter`);
+        out.push(...batch.filter(c => isRelevantDiscussion(c.title)).map(c => candidateToRaw(c, null)));
+        continue;
+      }
+
+      const data = await response.json() as { choices?: Array<{ message?: { content?: string } }>; usage?: { prompt_tokens?: number; completion_tokens?: number } };
+      logApiUsage({ provider: 'grok', model, purpose: 'forum-judge', wire, duration_ms: Date.now() - start, tokens_in: data.usage?.prompt_tokens, tokens_out: data.usage?.completion_tokens });
+      const content = data.choices?.[0]?.message?.content || '';
+      out.push(...parseForumJudgeResponse(content, batch));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[Forum] Judge batch ${b + 1} failed (${msg}) — degrading batch to keyword filter`);
+      out.push(...batch.filter(c => isRelevantDiscussion(c.title)).map(c => candidateToRaw(c, null)));
+    }
+    if (b < batches.length - 1) await sleep(500);
+  }
+
+  console.log(`[Forum] Judge ${wire}: ${candidates.length} candidates -> ${out.length} opportunities`);
+  return out;
+}
+
+/**
+ * Governance-forum scan orchestrator (the current forum lane).
+ * Per wire: pull allowlist + hot candidates → LLM judge → grouped opportunities.
+ */
+export async function runGovernanceForumScan(
+  options: DualForumScanOptions = {},
+): Promise<GovernanceForumScanResult> {
+  const progress = options.onProgress || (() => {});
+  const since = options.since
+    || new Date(Date.now() - config.forum.defaultLookbackDays * 86400000).toISOString().split('T')[0];
+  const wires = options.wire ? [options.wire] : Object.keys(WIRE_CATEGORY_MAP);
+
+  const byWire: WireResults[] = [];
+  let candidateCount = 0;
+  let opportunityCount = 0;
+
+  for (let wi = 0; wi < wires.length; wi++) {
+    const wire = wires[wi];
+    const base = (wi / wires.length) * 100;
+    const span = 100 / wires.length;
+    const wp = (p: number, label?: string) => progress(label || `Forum ${wire}`, Math.round(base + span * p / 100));
+
+    wp(0);
+    const candidates = await fetchGovernanceForumCandidates(wire, since, (_m, p) => wp(p * 0.35));
+    candidateCount += candidates.length;
+    if (candidates.length === 0) continue;
+
+    const opportunities = await judgeForumCandidates(candidates, wire, (_m, p) => wp(35 + p * 0.6));
+    if (opportunities.length > 0) {
+      byWire.push({ wire, results: opportunities });
+      opportunityCount += opportunities.length;
+    }
+
+    if (wi < wires.length - 1) await sleep(REQUEST_DELAY_MS);
+  }
+
+  progress(`Forum scan complete: ${opportunityCount} opportunities from ${candidateCount} candidates`, 100);
+  console.log(`[Forum] Governance scan complete: ${candidateCount} candidates -> ${opportunityCount} opportunities across ${byWire.length} wires`);
+  return { byWire, candidateCount, opportunityCount };
 }

@@ -1,12 +1,14 @@
 /**
  * Forum Scan Job
  *
- * Orchestrates dual-strategy forum scanning via discuss.watch:
- * 1. Fetch recent discussions (date-filtered, category-aware, high volume)
- * 2. Keyword search for precision matches
- * 3. Cross-deduplicate and feed into intake pipeline (dedup -> classify -> queue)
+ * Governance-forum discovery via discuss.watch:
+ * 1. Pull candidates from a curated per-wire governance/grants forum allowlist
+ *    (plus a `hot` catch-all), age-gated on original post date.
+ * 2. LLM judge each thread: opportunity / not + structured extraction.
+ * 3. Feed opportunities into the intake pipeline (dedup -> classify -> queue).
  *
- * Same pattern as scan-execution.ts but for forum data.
+ * Replaces the retired broad-keyword dual scan, which drowned in noise
+ * (2% approve / 67% dupe). scan_source = 'forum'.
  */
 
 import type { Pool } from 'pg';
@@ -16,7 +18,7 @@ import type {
   IntakeJobConfig,
 } from '../types/intake';
 import { config } from '../config';
-import { runDualForumScan } from '../services/forum';
+import { runGovernanceForumScan } from '../services/forum';
 import { runDailyIntake } from './daily-intake';
 import { getActiveWires } from '../services/intake-core';
 
@@ -28,9 +30,9 @@ export interface ForumScanOptions {
 }
 
 export interface ForumScanResult {
-  totalResults: number;
-  discussionsResults: number;
-  searchResults: number;
+  totalResults: number;      // opportunities sent to intake (post-LLM-judge)
+  candidateCount: number;    // governance-forum threads pulled before judging
+  opportunityCount: number;  // alias of totalResults, explicit
   intakeSummary: IntakeRunSummary;
   durationMs: number;
 }
@@ -43,14 +45,14 @@ export async function runForumScan(
   const startTime = Date.now();
   const today = new Date().toISOString().split('T')[0];
 
-  progress('Starting dual-strategy forum scan via discuss.watch...', 0);
+  progress('Starting governance-forum scan via discuss.watch...', 0);
 
   // Compute since date from lookbackDays
   const lookbackDays = options.lookbackDays || config.forum.defaultLookbackDays;
   const since = new Date(Date.now() - lookbackDays * 86400000).toISOString().split('T')[0];
 
-  // 1. Run dual-strategy scan (discussions + search)
-  const scanResult = await runDualForumScan({
+  // 1. Pull governance-forum candidates and LLM-judge them into opportunities
+  const scanResult = await runGovernanceForumScan({
     wire: options.wire,
     since,
     onProgress: (msg, pct) => {
@@ -59,15 +61,15 @@ export async function runForumScan(
     },
   });
 
-  const totalResults = scanResult.discussionsCount + scanResult.searchCount;
+  const totalResults = scanResult.opportunityCount;
 
   if (totalResults === 0) {
     const durationMs = Date.now() - startTime;
-    progress('No forum results found', 100);
+    progress(`No forum opportunities found (${scanResult.candidateCount} candidates screened)`, 100);
     return {
       totalResults: 0,
-      discussionsResults: 0,
-      searchResults: 0,
+      candidateCount: scanResult.candidateCount,
+      opportunityCount: 0,
       intakeSummary: {
         runDate: today,
         wire: options.wire || 'all',
@@ -83,7 +85,7 @@ export async function runForumScan(
     };
   }
 
-  progress(`Found ${totalResults} forum discussions (${scanResult.discussionsCount} recent + ${scanResult.searchCount} search), running intake...`, 62);
+  progress(`Found ${totalResults} forum opportunities (from ${scanResult.candidateCount} candidates), running intake...`, 62);
 
   // 2. Build one submission per wire
   const defaultWire = (await getActiveWires())[0] || 'crypto';
@@ -108,14 +110,14 @@ export async function runForumScan(
   const durationMs = Date.now() - startTime;
 
   progress(
-    `Forum scan complete: ${totalResults} results, ${intakeSummary.newUnique} unique, ${intakeSummary.highQualityCount} high quality`,
+    `Forum scan complete: ${totalResults} opportunities, ${intakeSummary.newUnique} unique, ${intakeSummary.highQualityCount} high quality`,
     100
   );
 
   return {
     totalResults,
-    discussionsResults: scanResult.discussionsCount,
-    searchResults: scanResult.searchCount,
+    candidateCount: scanResult.candidateCount,
+    opportunityCount: scanResult.opportunityCount,
     intakeSummary,
     durationMs,
   };

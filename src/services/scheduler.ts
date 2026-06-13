@@ -356,7 +356,7 @@ function createJobExecutor(schedule: ScheduleConfig) {
 
         status.status = 'success';
         status.error = null;
-        console.log(`[Scheduler] Forum scan "${currentScheduleData.name}" completed: ${forumResult.totalResults} results (${forumResult.discussionsResults} discussions + ${forumResult.searchResults} search), ${forumResult.intakeSummary.newUnique} unique`);
+        console.log(`[Scheduler] Forum scan "${currentScheduleData.name}" completed: ${forumResult.opportunityCount} opportunities from ${forumResult.candidateCount} candidates, ${forumResult.intakeSummary.newUnique} unique`);
 
       } else if (currentScheduleData.scheduleType === 'daily-digest') {
         // ---- Daily Digest Job ----
