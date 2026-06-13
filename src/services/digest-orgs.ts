@@ -2,6 +2,7 @@
  * Sourcing orgs from tele-sum digest content (repos/models/claw) into org_profiles.
  * Pure helpers here; DB-touching runner is sourceDigestOrgs() below.
  */
+import type { Pool } from 'pg';
 
 export function normalizeDigestOrg(raw: string | null | undefined): string {
   return (raw || '').replace(/\s+/g, ' ').trim();
@@ -28,4 +29,28 @@ export function qualifiesAsDigestOrg(
   const orgShaped = /[A-Z]/.test(name) || name.includes(' ');
   if (orgShaped) return signal.mentionCount >= 2 || signal.hasLink === true;
   return signal.mentionCount >= 2;
+}
+
+export async function ensureDigestItemOrgsTable(pool: Pool): Promise<void> {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS digest_item_orgs (
+      id SERIAL PRIMARY KEY,
+      summary_id INTEGER NOT NULL,
+      item_index INTEGER NOT NULL,
+      org_id INTEGER NOT NULL REFERENCES org_profiles(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE (summary_id, item_index, org_id)
+    )
+  `);
+}
+
+export async function linkDigestItemToOrg(
+  pool: Pool, summaryId: number, itemIndex: number, orgId: number,
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO digest_item_orgs (summary_id, item_index, org_id)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (summary_id, item_index, org_id) DO NOTHING`,
+    [summaryId, itemIndex, orgId],
+  );
 }
