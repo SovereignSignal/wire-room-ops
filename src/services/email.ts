@@ -723,23 +723,82 @@ ${brand.name}`.trim();
   console.log(`[Email] Agent brief sent to: ${Array.isArray(to) ? to.join(', ') : to}`);
 }
 
+// --- Newsletter rendering: markdown issue -> professional HTML email ---
+
+const NL_LINK = 'color:#1a56db;text-decoration:none;border-bottom:1px solid #bcd0f7;';
+
+/** Render inline markdown (links, bold, escaped dollars) to safe HTML. */
+function nlInline(s: string): string {
+  let h = escapeHtml(s).replace(/\\\$/g, '$');
+  h = h.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  h = h.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, t, u) => `<a href="${u}" style="${NL_LINK}">${t}</a>`);
+  return h;
+}
+
+/** Convert the issue markdown to a styled newsletter body + extract the title. */
+export function renderIssueToNewsletter(markdown: string): { title: string; bodyHtml: string } {
+  const lines = markdown.split('\n');
+  let title = "Sov's Grant Wire Weekly";
+  const out: string[] = [];
+  let list: string[] = [];
+  const flushList = () => { if (list.length) { out.push(`<ul style="margin:0 0 20px;padding-left:18px;">${list.join('')}</ul>`); list = []; } };
+  let firstPara = true;
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, '');
+    if (/^#\s+/.test(line)) { flushList(); title = line.replace(/^#\s+/, '').replace(/\\\$/g, '$'); continue; }
+    if (/^##\s+/.test(line)) {
+      flushList();
+      out.push(`<h2 style="margin:30px 0 12px;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:12px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#0b1f3a;border-bottom:2px solid #0b1f3a;padding-bottom:6px;">${nlInline(line.replace(/^##\s+/, ''))}</h2>`);
+      continue;
+    }
+    if (/^[-*]\s+/.test(line)) { out.push(''); list.push(`<li style="margin:0 0 9px;font-size:14px;line-height:1.6;color:#374151;">${nlInline(line.replace(/^[-*]\s+/, ''))}</li>`); continue; }
+    if (line.trim() === '') { flushList(); continue; }
+    flushList();
+    const style = firstPara
+      ? 'margin:0 0 20px;font-size:16px;line-height:1.7;color:#111827;'
+      : 'margin:0 0 16px;font-size:15px;line-height:1.7;color:#374151;';
+    out.push(`<p style="${style}">${nlInline(line)}</p>`);
+    firstPara = false;
+  }
+  flushList();
+  return { title, bodyHtml: out.join('\n') };
+}
+
+function newsletterShell(title: string, subtitle: string, bodyHtml: string): string {
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#eef1f5;-webkit-font-smoothing:antialiased;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eef1f5;padding:28px 12px;"><tr><td align="center">
+<table role="presentation" cellpadding="0" cellspacing="0" style="max-width:660px;width:100%;background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 1px 4px rgba(16,24,40,.1);">
+  <tr><td style="background:#0b1f3a;padding:26px 36px;">
+    <div style="font-family:Georgia,'Times New Roman',serif;font-size:23px;font-weight:700;color:#ffffff;line-height:1.25;">${escapeHtml(title)}</div>
+    <div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:11px;color:#9db4d4;margin-top:6px;text-transform:uppercase;letter-spacing:.12em;">${escapeHtml(subtitle)}</div>
+  </td></tr>
+  <tr><td style="padding:30px 36px 8px;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
+${bodyHtml}
+  </td></tr>
+  <tr><td style="padding:16px 36px 28px;border-top:1px solid #eef0f3;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:11px;color:#9aa0a6;line-height:1.5;">
+    Draft auto-generated and source-verified. Review and edit, then publish to Substack.
+  </td></tr>
+</table></td></tr></table></body></html>`;
+}
+
 /**
- * Weekly Grant Wire draft — emails the synthesized issue (markdown) for review.
- * The markdown is sent verbatim in a copyable block so the operator can paste it
- * straight into Substack after editing.
+ * Weekly Grant Wire draft — renders the synthesized issue as a professional HTML
+ * newsletter for review (the plain-text part carries the markdown for Substack).
  */
+/** Build the full newsletter email HTML for an issue (exported for previews). */
+export function buildWeeklyEmailHtml(markdown: string): { title: string; html: string } {
+  const { title, bodyHtml } = renderIssueToNewsletter(markdown);
+  return { title, html: newsletterShell(title, 'Source-verified weekly briefing · crypto · AI · OSS', bodyHtml) };
+}
+
 export async function sendWeeklyDraftEmail(
   markdown: string,
   meta: { runDate: string; spineCount: number; alsoOpenCount: number },
 ): Promise<void> {
   const brand = getBrand();
-  const body = `
-    <p style="margin:0 0 12px;font-size:15px;color:#222;"><strong>Weekly draft ready for review</strong></p>
-    <p style="margin:0 0 16px;font-size:13px;color:#666;">${meta.spineCount} published this week &middot; ${meta.alsoOpenCount} also-open &middot; review, edit, then post to Substack.</p>
-    <pre style="white-space:pre-wrap;word-wrap:break-word;font-family:ui-monospace,Menlo,monospace;font-size:12px;line-height:1.5;color:#111;background:#f6f6f6;border:1px solid #e2e2e2;border-radius:6px;padding:14px;">${escapeHtml(markdown)}</pre>
-    <p style="margin:14px 0 0;color:#999;font-size:12px;">${escapeHtml(brand.name)} &middot; week of ${escapeHtml(meta.runDate)}</p>`;
-  const htmlContent = emailShell('Weekly Grant Wire Draft', body);
-  const textContent = `${brand.name} - Weekly Grant Wire Draft (${meta.runDate})\n${meta.spineCount} published this week, ${meta.alsoOpenCount} also-open. Review, edit, post to Substack.\n\n----------\n\n${markdown}`;
+  const { title, html: htmlContent } = buildWeeklyEmailHtml(markdown);
+  const textContent = `${title}\n(Draft for review — edit, then publish to Substack. Markdown below.)\n\n${markdown}`;
 
   await sendWithTracking({
     from: config.email.fromEmail,
@@ -748,5 +807,5 @@ export async function sendWeeklyDraftEmail(
     html: htmlContent,
     text: textContent,
   });
-  console.log(`[Email] Weekly draft sent to: ${config.email.notificationEmail}`);
+  console.log(`[Email] Weekly newsletter draft sent to: ${config.email.notificationEmail}`);
 }

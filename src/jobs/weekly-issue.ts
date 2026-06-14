@@ -129,7 +129,7 @@ WRITE the issue as markdown with this structure:
 - Title: \`# Sov's Grant Wire Weekly: ${runDate}\`
 - A 1-2 line factual lede naming the week's biggest programs and numbers (and a genuine continuity nod to last week if one fits).
 - \`## Quick read\` — 3-5 bullets, each with a source link.
-- One \`## AI\` / \`## Crypto\` / \`## OSS\` section as relevant, one tight paragraph per featured item (curate to the ~12-16 strongest): what it is, amount, deadline, who it fits, where to apply; caveats stated straight.
+- One \`## AI\` / \`## Crypto\` / \`## OSS\` section as relevant. Feature AT MOST 15 items total as full paragraphs across these sections (the strongest, most relevant ones), one tight paragraph each: what it is, amount, deadline, who it fits, where to apply; caveats stated straight. Put EVERY other verified item in the "Also open right now" list as a one-liner. Do not write more than 15 full paragraphs.
 - \`## Also open right now\` — one line each for the additional open programs: \`- [Name](url): amount, deadline, one-clause who-it-fits.\`
 - \`## Dates worth catching\` — the near deadlines, chronological.
 - End with this exact channels block:
@@ -255,8 +255,9 @@ export async function runWeeklyIssue(
   progress(`Synthesizing from ${spine.length} verified + ${alsoOpen.length} open...`, 60);
   const prompt = buildPrompt(spine, alsoOpen, prior?.markdown || null, runDate);
   // Pin a current, available model — the resolver otherwise can land on a tier this org
-  // can't access. Opus for the writing quality this needs.
-  const { text } = await createMessageWithFallback(prompt, { model: 'claude-opus-4-8', maxTokens: 4000, purpose: 'weekly-issue' });
+  // can't access. Opus for the writing quality this needs. High token ceiling so a
+  // full issue (featured items + also-open + dates + channels) never truncates.
+  const { text } = await createMessageWithFallback(prompt, { model: 'claude-opus-4-8', maxTokens: 8000, purpose: 'weekly-issue' });
   const markdown = text.trim();
 
   progress('Emailing draft + storing for next week...', 85);
