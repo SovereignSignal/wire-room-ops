@@ -133,11 +133,18 @@ export async function runScanExecution(
             });
           }
           if (prompt.toolType === 'parallel') {
+            // Discovery prompts want fresh announcements → server-side freshness floor.
+            // Canonical/signal prompts must NOT use after_date (it would drop the pages
+            // of long-standing rolling programs that are still open).
+            const afterDate = prompt.intent === 'discovery'
+              ? new Date(Date.now() - 90 * 86400000).toISOString().split('T')[0]
+              : undefined;
             return executeParallelScan(prompt.promptText, {
               model: prompt.model || undefined,
               responseFormat: prompt.responseFormat,
               outputFormat: prompt.outputFormat,
               wire: prompt.wire,
+              afterDate,
             });
           }
           return executeScanPrompt(prompt.promptText, {

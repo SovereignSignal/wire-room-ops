@@ -42,6 +42,11 @@ function extraBlocked(): string[] {
   return cachedExtra;
 }
 
+/** The full blocklist of aggregator domains (defaults + env extras). */
+export function blockedDomains(): string[] {
+  return [...DEFAULT_BLOCKED_DOMAINS, ...extraBlocked()];
+}
+
 /** Normalize a URL to its registrable host (lowercased, no www). */
 export function hostOf(url: string): string | null {
   try {

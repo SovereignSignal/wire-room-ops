@@ -15,6 +15,7 @@ import { config } from '../config';
 import { getBrand } from '../config/brand';
 import { logApiUsage } from './api-usage';
 import { getCachedProvider } from './api-provider';
+import { blockedDomains } from './source-filter';
 
 const PARALLEL_BASE_URL = 'https://api.parallel.ai';
 
@@ -99,7 +100,7 @@ async function planQueries(objective: string, wire?: string): Promise<string[]> 
 
 export async function executeParallelScan(
   promptText: string,
-  options?: { model?: string; responseFormat?: string | null; outputFormat?: 'text' | 'json'; wire?: string }
+  options?: { model?: string; responseFormat?: string | null; outputFormat?: 'text' | 'json'; wire?: string; afterDate?: string }
 ): Promise<{ content: string; model: string; tokensUsed?: number }> {
   const provider = getCachedProvider('parallel');
   const apiKey = provider?.api_key || process.env.PARALLEL_API_KEY;
@@ -123,7 +124,19 @@ export async function executeParallelScan(
       objective: `Today is ${today}. ${promptText.slice(0, 1200)}`,
       search_queries: searchQueries,
       mode: 'advanced',
-      advanced_settings: { max_results: 15, excerpt_settings: { max_chars_per_result: 1500 } },
+      // Tune excerpts for the Grok extractor + cap total tokens for cost.
+      client_model: 'grok-4',
+      max_chars_total: 30000,
+      advanced_settings: {
+        max_results: 15,
+        excerpt_settings: { max_chars_per_result: 1500 },
+        // Block known aggregators at the API; on discovery prompts, the caller passes
+        // afterDate so stale/expired pages are filtered server-side before Grok sees them.
+        source_policy: {
+          exclude_domains: blockedDomains(),
+          ...(options?.afterDate ? { after_date: options.afterDate } : {}),
+        },
+      },
     }),
   });
 
