@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development for code tasks (1–5). Task 6 (the discovery backfill) is run by the CONTROLLER via the Workflow tool. Steps use checkbox (`- [ ]`) syntax.
 
-**Goal:** Discover the key *people* behind enriched orgs from the web, evidence-gated, and propose them into the Notion **Contacts** database (linked to their org, flagged for review) — without auto-monitoring anyone until the owner approves.
+**Goal:** Discover relevant *people* — both the key people behind enriched orgs AND notable individuals named in the content (including org-less independent researchers, pseudonymous builders, and OSS/repo authors) — evidence-gated, and propose them into the Notion **Contacts** database (linked to an org when there is one, flagged for review) — without auto-monitoring anyone until the owner approves.
 
 **Architecture:** Adds the missing INBOUND direction to the people layer. Today `src/jobs/contacts-sync.ts` is outbound only (Notion Contacts = source of truth → `monitored_accounts` = who the X-monitor watches). Phase 3 adds discovery: for each qualifying `org_profiles` row, web-research its key contacts, evidence-gate them, dedup, and create Notion Contacts pages (Status="Needs Review", `Org` relation set, `Source`="Discovered"). A small `contacts-sync` tweak keeps "Needs Review" contacts OUT of monitoring until the owner promotes them. A `discovered_contacts` table gives idempotency. The deep backfill across orgs runs as an adversarially-verified Workflow (like Phase 2).
 
@@ -93,40 +93,59 @@ export async function recordDiscoveredContact(
 
 **Files:** Modify `src/services/contact-discovery.ts`; Test `tests/contact-discovery.test.js`.
 
+Per owner feedback (2026-06-13 Notion comments): pseudonyms/handles ARE acceptable identities; independent (org-less) individuals ARE valid contacts; "role" means a role at an org OR an independent capacity. The only hard reject is empty/unattributable or pure engagement-farm/bot accounts.
+
 - [ ] **Step 1: failing test** — append:
 ```js
 const { passesContactBar } = require('../src/services/contact-discovery');
-test('accepts a person with name + role + handle + source', () => {
+test('accepts a named person with role + handle + source', () => {
   assert.equal(passesContactBar({ name:'Jane Doe', role:'Head of Grants', x_handle:'janedoe', profile_url:null, source:'https://org.com/team' }), true);
 });
-test('accepts name + role + profile_url (no handle)', () => {
+test('accepts a pseudonym/handle as the identity', () => {
+  assert.equal(passesContactBar({ name:'orhun', role:'OSS maintainer (ratatui)', x_handle:'orhundev', profile_url:'https://github.com/orhun', source:'https://github.com/orhun' }), true);
+});
+test('accepts an independent individual with no org affiliation', () => {
+  assert.equal(passesContactBar({ name:'Sov', role:'independent researcher / builder', x_handle:'sovsignal', profile_url:null, source:'https://x.com/sovsignal' }), true);
+});
+test('accepts profile_url with no X handle', () => {
   assert.equal(passesContactBar({ name:'Jane Doe', role:'Founder', x_handle:null, profile_url:'https://linkedin.com/in/janedoe', source:'https://org.com' }), true);
 });
-test('rejects when no handle and no profile url', () => {
-  assert.equal(passesContactBar({ name:'Jane Doe', role:'Founder', x_handle:null, profile_url:null, source:'https://org.com' }), false);
-});
-test('rejects when no role, no source, or one-word/empty name', () => {
+test('rejects missing identity / role / source', () => {
+  assert.equal(passesContactBar({ name:'Jane Doe', role:'Founder', x_handle:null, profile_url:null, source:'https://o.com' }), false);
   assert.equal(passesContactBar({ name:'Jane Doe', role:'', x_handle:'j', profile_url:null, source:'https://o.com' }), false);
   assert.equal(passesContactBar({ name:'Jane Doe', role:'Founder', x_handle:'j', profile_url:null, source:'' }), false);
-  assert.equal(passesContactBar({ name:'cryptoguy', role:'Founder', x_handle:'cg', profile_url:null, source:'https://o.com' }), false);
+  assert.equal(passesContactBar({ name:'', role:'Founder', x_handle:'j', profile_url:null, source:'https://o.com' }), false);
+});
+test('rejects pure bot / engagement-farm accounts (is_bot flag)', () => {
+  assert.equal(passesContactBar({ name:'SashaVolkoff1', role:'crypto', x_handle:'sasha', profile_url:'https://x.com/sasha', source:'https://x.com/sasha', is_bot:true }), false);
 });
 ```
-- [ ] **Step 2:** run → 4 new FAIL.
+- [ ] **Step 2:** run → new tests FAIL.
 - [ ] **Step 3: implement** — append to contact-discovery.ts:
 ```typescript
 export interface ContactCandidate {
-  name: string; role: string | null; x_handle: string | null; profile_url: string | null; source: string | null;
+  name: string;               // a real name OR a stable pseudonym/handle (both acceptable)
+  role: string | null;        // role at an org OR an independent capacity ("independent researcher", "OSS maintainer", …)
+  x_handle: string | null;
+  profile_url: string | null; // X, GitHub, LinkedIn, personal site/blog, ORCID, Scholar, HuggingFace, Farcaster, Substack/Mirror, or an org/forum bio
+  source: string | null;      // a URL backing the descriptor
+  is_bot?: boolean;           // set by the researcher/verifier for pure engagement-farm/bot accounts
 }
-/** People are higher-stakes than orgs: require a real (multi-token) name, a role,
- *  a reachable identity (X handle OR profile url), and a backing source. */
+/** People are higher-stakes than orgs, BUT pseudonyms/handles and independent
+ *  (org-less) individuals are valid (owner decision). Require: a stable identifier
+ *  (real name OR handle), a descriptor (org role OR independent capacity), a
+ *  reachable profile (X handle OR a profile URL), and a backing source. Reject only
+ *  empty/unidentifiable candidates and pure engagement-farm/bot accounts. */
 export function passesContactBar(c: ContactCandidate): boolean {
   const name = (c.name || '').trim();
-  if (name.split(/\s+/).length < 2) return false;       // need a real full name, not a handle
-  if (!c.role || !c.role.trim()) return false;
+  if (!name) return false;                                   // some stable identifier (real name or handle)
+  if (!c.role || !c.role.trim()) return false;               // what they do (org role OR independent capacity)
   if (!c.source || !/^https?:\/\//.test(c.source)) return false;
   const hasHandle = !!(c.x_handle && c.x_handle.trim());
   const hasProfile = !!(c.profile_url && /^https?:\/\//.test(c.profile_url));
-  return hasHandle || hasProfile;
+  if (!(hasHandle || hasProfile)) return false;              // a reachable identity/profile
+  if (c.is_bot === true) return false;                       // pure engagement-farm/bot account
+  return true;
 }
 ```
 - [ ] **Step 4:** run → all pass. `npm run typecheck` clean.
@@ -233,7 +252,10 @@ Then replace the inline `Status != 'Skip'` enabled-decision in `runContactsSync`
 
 **Files:** Modify `src/services/contact-discovery.ts` (add `discoverContactsForOrg`/`runContactDiscovery` driver using Grok web_search — mirror Phase 2's `enrichOrgs` Responses-API+web_search idiom), `src/routes/admin.ts` (POST /discover-contacts), `src/server.ts` (timer).
 
-- [ ] **Step 1:** Add `discoverContactsForOrg(org, grokCall)` that prompts Grok (web_search) to return up to 3 key people for the org (founder/CEO, head of grants/ecosystem, notable lead) as JSON `[{name, role, x_handle, profile_url, source}]`; parse + `passesContactBar` filter. Mirror the exact Grok Responses-API request shape from `org-enricher.ts`. Add `runContactDiscovery(pool, {limit})` that: `ensureDiscoveredContactsTable`; selects qualifying orgs (has website, not already in discovered_contacts, ordered by activity = scan_entries+digest_item_orgs count) up to limit; for each, discover → for each candidate `createNotionContact`. Returns `{orgsProcessed, contactsCreated, skipped}`.
+- [ ] **Step 1:** TWO discovery sources, both feeding `passesContactBar` + `createNotionContact`:
+  - (a) **Org-anchored:** `discoverContactsForOrg(org, grokCall)` prompts Grok (web_search) for up to 3 key people at the org (founder/CEO, head of grants/ecosystem, notable lead) as JSON `[{name, role, x_handle, profile_url, source, is_bot}]`.
+  - (b) **Content-anchored:** `discoverContactsFromContent(grokCall)` surfaces notable INDIVIDUALS named in recent content regardless of org affiliation — digest item authors/handles, repo authors, paper authors, and people mentioned in grant content (this is the path that catches org-less independent researchers and pseudonymous builders; it also re-homes individuals that were wrongly filed as orgs). Same JSON shape; `role` may be an independent capacity; org may be null.
+  Both mirror the exact Grok Responses-API + web_search request shape from `org-enricher.ts`, parse, and `passesContactBar`-filter (which now accepts handles/pseudonyms and is_bot-rejects). Add `runContactDiscovery(pool, {limit})` that: `ensureDiscoveredContactsTable`; runs (a) over qualifying orgs (has website, not already in discovered_contacts, ordered by activity) up to limit, and (b) over recent content; for each surviving candidate `createNotionContact` (org relation set when an org match exists, omitted for independents). Returns `{orgsProcessed, contactsCreated, skipped}`.
 - [ ] **Step 2:** Admin endpoint in `src/routes/admin.ts` mirroring the `/enrich-orgs` handler (rate-limited): `POST /discover-contacts` → `runContactDiscovery(getPool(), {limit})`.
 - [ ] **Step 3:** Schedule in `src/server.ts` (mirror the enrich/digest timers; every 12h, `limit: 20`): a timer calling `runContactDiscovery(getPool(), {limit:20})`, `.unref()`, cleared on shutdown.
 - [ ] **Step 4:** `npm run typecheck && npm test 2>&1 | grep -E "ℹ (pass|fail)"` → fail 0.
@@ -245,7 +267,7 @@ Then replace the inline `Status != 'Skip'` enabled-decision in `runContactsSync`
 
 The adversarially-verified fan-out, run by the controller after Task 5 deploys.
 - [ ] **Step 1:** work-list = qualifying orgs (`SELECT id,name,website FROM org_profiles WHERE website IS NOT NULL AND id NOT IN (SELECT org_id FROM discovered_contacts) ORDER BY activity DESC`), written to per-batch files.
-- [ ] **Step 2:** Workflow: per org-batch, a researcher agent finds key people (web), an independent verifier confirms each person genuinely holds that role at that org (drop unconfirmed), evidence-gate via `passesContactBar`. Return verified candidates per org.
+- [ ] **Step 2:** Workflow over two work-lists — (a) qualifying orgs, (b) individuals named in recent content (independents/pseudonymous builders/authors). Per batch, a researcher agent finds candidate people (web); an independent verifier confirms the identity is real and the descriptor holds — for org-affiliated people that they actually hold that role at that org; for independents that the person/handle genuinely exists with that capacity (drop unconfirmed, flag is_bot on engagement-farm accounts); evidence-gate via `passesContactBar`. Return verified candidates (org id when applicable, else null).
 - [ ] **Step 3:** Controller creates the verified contacts in Notion (Status="Needs Review", Org relation, Source="Discovered"), deduped via `discovered_contacts`; back up created page ids to `~/Documents/Claude/`.
 - [ ] **Step 4:** Report: orgs processed, contacts proposed, and confirm none are auto-watched (all "Needs Review"). The owner reviews in Notion; promoting a contact (Status→Monitored) lets the existing `contacts-sync` start watching it.
 
