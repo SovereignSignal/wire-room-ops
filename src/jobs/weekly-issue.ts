@@ -17,6 +17,7 @@ import { createMessageWithFallback } from '../services/anthropic';
 import { scrapeUrl, isScrapableUrl } from '../services/scraper';
 import { sendWeeklyDraftEmail } from '../services/email';
 import { parallelAvailable, verifyOpportunities } from '../services/parallel-task';
+import { landWeeklyInPasteLog } from '../services/weekly-notion';
 import { getAppState, setAppState } from '../db';
 
 interface SpineItem {
@@ -315,7 +316,7 @@ export async function runWeeklyIssue(
   const { text } = await createMessageWithFallback(prompt, { model: 'claude-opus-4-8', maxTokens: 8000, purpose: 'weekly-issue' });
   const markdown = text.trim();
 
-  progress('Emailing draft + storing for next week...', 85);
+  progress('Emailing + landing in Notion Paste Log...', 85);
   let emailed = false;
   if (!options.skipEmail) {
     try {
@@ -324,6 +325,12 @@ export async function runWeeklyIssue(
     } catch (err) {
       console.error('[Weekly] Failed to email draft:', err instanceof Error ? err.message : err);
     }
+
+    // Land the draft in the Notion Paste Log (rendered rich text → copy into Substack).
+    // Fails soft if the integration isn't shared on the Paste Log page yet.
+    const land = await landWeeklyInPasteLog(`${runDate} — Grant Wire Weekly — Substack paste copy`, markdown);
+    if (land.ok) console.log(`[Weekly] Landed in Notion Paste Log: ${land.url}`);
+    else console.warn(`[Weekly] Notion Paste Log landing skipped: ${land.error} (share the Paste Log page with the Wire Room Ops integration)`);
   }
 
   // Store as the prior issue for next week's lookback + voice exemplar.
