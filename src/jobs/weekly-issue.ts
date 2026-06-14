@@ -16,6 +16,7 @@ import type { Pool } from 'pg';
 import { createMessageWithFallback } from '../services/anthropic';
 import { scrapeUrl, isScrapableUrl } from '../services/scraper';
 import { sendWeeklyDraftEmail } from '../services/email';
+import { parallelAvailable, verifyOpportunities } from '../services/parallel-task';
 import { getAppState, setAppState } from '../db';
 
 interface SpineItem {
@@ -25,6 +26,8 @@ interface SpineItem {
   amount: string | null;
   deadline: string | null;
   summary: string | null;
+  citationUrl?: string | null;   // verified canonical source (Parallel basis)
+  confidence?: string | null;    // low/medium/high (Parallel) or undefined (unverified)
 }
 
 export interface WeeklyIssueResult {
@@ -110,7 +113,11 @@ async function gatherAlsoOpen(pool: Pool, spineUrls: Set<string>): Promise<Spine
 
 function compact(items: SpineItem[]): string {
   return items
-    .map(i => `- [${i.wire}] ${i.name}${i.amount ? ` | amount: ${i.amount}` : ''}${i.deadline ? ` | deadline: ${i.deadline}` : ''} | ${i.url}${i.summary ? `\n    ${i.summary.slice(0, 200)}` : ''}`)
+    .map(i => {
+      const link = i.citationUrl || i.url; // prefer the verified canonical source
+      const conf = i.confidence ? ` | verified:${i.confidence}` : '';
+      return `- [${i.wire}] ${i.name}${i.amount ? ` | amount: ${i.amount}` : ''}${i.deadline ? ` | deadline: ${i.deadline}` : ''}${conf} | ${link}${i.summary ? `\n    ${i.summary.slice(0, 200)}` : ''}`;
+    })
     .join('\n');
 }
 
@@ -233,6 +240,39 @@ async function verifyItems(items: SpineItem[], label: string, cap: number): Prom
   return verified;
 }
 
+/**
+ * Verify via Parallel Task API — one deep, source-cited Task per item. Returns each
+ * confirmed-open item with corrected amount/deadline + a citation URL + confidence.
+ * Drops items Parallel marks closed; keeps items whose Task errored as unverified
+ * (so a transient API blip never silently loses a real grant).
+ */
+async function verifyViaParallel(items: SpineItem[], label: string, cap: number): Promise<SpineItem[]> {
+  const toCheck = items.slice(0, cap);
+  if (!toCheck.length) return [];
+  const results = await verifyOpportunities(
+    toCheck.map(it => ({ name: it.name, amount: it.amount, deadline: it.deadline, url: it.url })),
+    { wire: label },
+  );
+  const out: SpineItem[] = [];
+  let verified = 0, dropped = 0, unverified = 0;
+  toCheck.forEach((it, i) => {
+    const r = results[i];
+    if (!r) { out.push(it); unverified++; return; }   // Task errored → keep, unverified
+    if (!r.is_open) { dropped++; return; }              // confirmed closed → drop
+    verified++;
+    out.push({
+      ...it,
+      amount: r.amount || it.amount,
+      deadline: r.deadline || it.deadline,
+      url: r.apply_url || it.url,
+      citationUrl: r.citationUrl,
+      confidence: r.confidence,
+    });
+  });
+  console.log(`[Weekly] parallel-verify ${label}: ${toCheck.length} checked -> ${verified} verified-open, ${unverified} unverified-kept, ${dropped} dropped`);
+  return out;
+}
+
 export async function runWeeklyIssue(
   pool: Pool,
   options: { onProgress?: (msg: string, pct: number) => void; skipEmail?: boolean; skipStore?: boolean } = {},
@@ -245,9 +285,24 @@ export async function runWeeklyIssue(
   const spineUrls = new Set(spineRaw.map(s => s.url.toLowerCase().replace(/\/+$/, '')));
   const alsoOpenRaw = await gatherAlsoOpen(pool, spineUrls);
 
-  progress(`Verifying ${spineRaw.length} published + ${alsoOpenRaw.length} open against live sources...`, 22);
-  const spine = await verifyItems(spineRaw, 'spine', 40);
-  const alsoOpen = await verifyItems(alsoOpenRaw, 'also-open', 14);
+  // Verify against live sources. Parallel Task API (cited + confidence) is the primary
+  // path; the Firecrawl scrape+judge loop is the fallback when Parallel is unavailable.
+  const useParallel = parallelAvailable();
+  progress(`Verifying ${spineRaw.length} published + ${alsoOpenRaw.length} open via ${useParallel ? 'Parallel (cited)' : 'scrape'}...`, 22);
+  let spine: SpineItem[], alsoOpen: SpineItem[];
+  if (useParallel) {
+    try {
+      spine = await verifyViaParallel(spineRaw, 'spine', 40);
+      alsoOpen = await verifyViaParallel(alsoOpenRaw, 'also-open', 14);
+    } catch (e) {
+      console.error('[Weekly] Parallel verify failed, falling back to scrape:', e instanceof Error ? e.message : e);
+      spine = await verifyItems(spineRaw, 'spine', 40);
+      alsoOpen = await verifyItems(alsoOpenRaw, 'also-open', 14);
+    }
+  } else {
+    spine = await verifyItems(spineRaw, 'spine', 40);
+    alsoOpen = await verifyItems(alsoOpenRaw, 'also-open', 14);
+  }
   console.log(`[Weekly] verified: spine ${spineRaw.length}->${spine.length}, also-open ${alsoOpenRaw.length}->${alsoOpen.length}`);
 
   const prior = await getAppState<{ date: string; markdown: string }>(PRIOR_ISSUE_KEY).catch(() => null);
