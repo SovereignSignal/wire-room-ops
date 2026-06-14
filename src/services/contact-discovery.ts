@@ -224,6 +224,11 @@ export async function createNotionContact(
     if (orgId !== null) {
       await recordDiscoveredContact(pool, { orgId, name: candidate.name, xHandle: candidate.x_handle ?? null, notionPageId: created.id });
     }
+    if (deps.existingContacts) {
+      const synthetic: any = { id: created.id, properties: { Name: { title: [{ plain_text: candidate.name }] } } };
+      if (candidate.x_handle) synthetic.properties['X'] = { url: `https://x.com/${candidate.x_handle.replace(/^@/, '')}` };
+      deps.existingContacts.push(synthetic);
+    }
     return { created: true, pageId: created.id };
   } catch (err: any) {
     console.error(`[ContactDiscovery] create failed for "${candidate.name}": ${err?.message || err}`);
