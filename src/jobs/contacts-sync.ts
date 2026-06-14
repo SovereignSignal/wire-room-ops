@@ -30,6 +30,12 @@ export interface ContactsSyncResult {
   disabledMissing?: number;
 }
 
+/** A Notion contact is watched unless explicitly Skipped or still pending review. */
+export function shouldWatchContact(status: string | null | undefined): boolean {
+  const s = (status || '').trim().toLowerCase();
+  return s !== 'skip' && s !== 'needs review';
+}
+
 export function handleFromXUrl(url: string | null | undefined): string | null {
   if (!url) return null;
   const m = url.match(/(?:twitter|x)\.com\/@?([A-Za-z0-9_]{1,15})/i);
@@ -72,7 +78,7 @@ export async function runContactsSync(pool: Pool): Promise<ContactsSyncResult> {
       wire: ['crypto', 'ai', 'oss'].includes(wireSel) ? wireSel : null,
       role: readRichText(props['Role']),
       program: readRichText(props['Program']),
-      watched: status !== 'Skip',
+      watched: shouldWatchContact(status),
     });
   }
 
