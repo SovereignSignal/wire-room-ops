@@ -471,6 +471,15 @@ export async function startServer(): Promise<void> {
   const enrichTimer = setInterval(orgEnrichSync, 6 * 60 * 60 * 1000);
   enrichTimer.unref();
 
+  // Contact discovery every 12 hours: org-anchored + content-anchored via Grok web_search
+  const contactDiscoveryTimer = setInterval(async () => {
+    try {
+      const { runContactDiscovery } = await import('./services/contact-discovery');
+      await runContactDiscovery(getPool(), { limit: 20 });
+    } catch (e) { console.error('[ContactDiscovery] scheduled run failed:', e); }
+  }, 12 * 60 * 60 * 1000);
+  contactDiscoveryTimer.unref();
+
   const server = app.listen(config.app.port, () => {
     console.log(`Server running on port ${config.app.port}`);
   });
@@ -487,6 +496,7 @@ export async function startServer(): Promise<void> {
     clearInterval(digestOrgsSyncTimer);
     clearInterval(crmSyncTimer);
     clearInterval(enrichTimer);
+    clearInterval(contactDiscoveryTimer);
     server.close(async () => {
       await closePool();
       console.log('[Server] Shutdown complete');

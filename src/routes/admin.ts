@@ -11,6 +11,7 @@
  * POST /clean-orgs          — cleanup org profiles (remove junk)
  * POST /dedup-orgs          — merge duplicate org profiles
  * POST /enrich-orgs         — LLM-based org profile enrichment
+ * POST /discover-contacts   — LLM-based contact discovery (org + content sources)
  */
 
 import { Router, Request, Response } from 'express';
@@ -369,6 +370,25 @@ router.post('/sync-crm', async (_req: Request, res: Response) => {
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';
     console.error('[Admin] sync-crm failed:', error);
     res.status(500).json({ success: false, error: errorMsg });
+  }
+});
+
+// POST /discover-contacts — discover contacts via Grok web_search (org + content sources)
+router.post('/discover-contacts', async (req: Request, res: Response) => {
+  if (!rateLimit('discover-contacts', 1, 10 * 60 * 1000)) {
+    res.status(429).json({ error: 'Discovery recently run. Please wait 10 minutes.' });
+    return;
+  }
+
+  try {
+    const limit = Math.min(Math.max(Number(req.body?.limit || req.query['limit']) || 20, 1), 50);
+    const { runContactDiscovery } = await import('../services/contact-discovery');
+    const result = await runContactDiscovery(getPool(), { limit });
+    res.json({ success: true, ...result });
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[Admin] Contact discovery failed:', error);
+    res.status(500).json({ error: errorMsg });
   }
 });
 
