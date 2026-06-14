@@ -14,6 +14,7 @@
 
 import type { Pool } from 'pg';
 import { createMessageWithFallback } from '../services/anthropic';
+import { scrapeUrl, isScrapableUrl } from '../services/scraper';
 import { sendWeeklyDraftEmail } from '../services/email';
 import { getAppState, setAppState } from '../db';
 
@@ -116,10 +117,10 @@ function compact(items: SpineItem[]): string {
 function buildPrompt(spine: SpineItem[], alsoOpen: SpineItem[], priorIssue: string | null, runDate: string): string {
   return `You are writing Sov's weekly "Grant Wire" issue for ${runDate} — a curated operator briefing on the week's grant and funding opportunities across three beats: crypto, AI, and open-source software. Direct, plain, useful. You are writing for builders deciding what to apply to.
 
-THIS WEEK'S PUBLISHED ITEMS (the spine — what already went out on the channels this week; these are the core of the issue):
+THIS WEEK'S PUBLISHED ITEMS (the spine, the core of the issue). Each was already source-verified this run as currently open, with amount/deadline corrected to the live page, so you can trust these figures:
 ${compact(spine) || '(none)'}
 
-ALSO OPEN RIGHT NOW (currently-open opportunities in the system that did not get featured — use these for a short "Also open right now" list):
+ALSO OPEN RIGHT NOW (additional source-verified open opportunities for a short "Also open right now" list):
 ${compact(alsoOpen) || '(none)'}
 
 ${priorIssue ? `LAST WEEK'S ISSUE (match this exact voice, register, and format; and make 1-3 GENUINE cross-week callbacks where a tie is actually true — a program now closing, a recurring funder, a continuing theme — never invent a tie):\n"""\n${priorIssue.slice(0, 6000)}\n"""\n` : 'There is no prior issue to reference; open with a brief standalone lede.'}
@@ -137,6 +138,101 @@ ${CHANNELS_BLOCK}
 STYLE RULES (strict): every factual claim needs a visible source link in markdown [text](url) form. No em dashes or en dashes anywhere (restructure the sentence instead). No "not X but Y" constructions. Never use the words foster, crucial, significantly, or comprehensive. Escape dollar amounts as \\$50,000. Prefer the program's own page as the source link. If an item looks stale or its deadline has passed, drop it. Output ONLY the markdown issue, no preamble.`;
 }
 
+/** Run an async fn over items with bounded concurrency. */
+async function mapLimit<T, R>(items: T[], limit: number, fn: (t: T, i: number) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) { const i = next++; out[i] = await fn(items[i], i); }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
+interface Scraped { it: SpineItem; content: string | null; scrapable: boolean }
+
+function buildVerifyPrompt(batch: Scraped[]): string {
+  const lines = batch.map((s, i) => {
+    const claim = `claimed amount: ${s.it.amount || 'n/a'}, claimed deadline: ${s.it.deadline || 'n/a'}`;
+    const src = s.content
+      ? `SOURCE PAGE CONTENT:\n${s.content}`
+      : (s.scrapable ? 'SOURCE PAGE: could not be fetched.' : 'SOURCE: a social/X post or non-scrapable page — no canonical program page available.');
+    return `### Item ${i + 1}: ${s.it.name} [${s.it.wire}]\nURL: ${s.it.url}\n${claim}\n${src}`;
+  }).join('\n\n');
+  return `You are fact-checking grant/funding items for a public newsletter. For EACH numbered item, judge ONLY from its source page content whether it is a CURRENTLY-OPEN funding opportunity a builder can apply to right now (a grant program, RFP, fellowship, accelerator, ecosystem fund, or live bounty round). Mark open=false if: the page shows it is closed/expired/past its deadline, it is a past-grantee announcement or recap rather than an open call, it is just news, or the source is a social post with no verifiable open program page (when you cannot verify it is open, set open=false). When open=true, correct the amount and deadline to what the page actually says (or null if not stated).
+
+Return ONLY a JSON array, one object per item:
+[{"n":1,"open":true,"amount":"<corrected or null>","deadline":"<corrected or null>"}]
+
+ITEMS:
+${lines}`;
+}
+
+function parseVerify(text: string): Map<number, { open: boolean; amount: string | null; deadline: string | null }> {
+  const m = new Map<number, { open: boolean; amount: string | null; deadline: string | null }>();
+  try {
+    const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+    const s = cleaned.indexOf('['), e = cleaned.lastIndexOf(']');
+    const arr = JSON.parse(s >= 0 && e > s ? cleaned.slice(s, e + 1) : cleaned);
+    if (Array.isArray(arr)) {
+      for (const o of arr) {
+        if (o && typeof o.n === 'number') {
+          m.set(o.n, {
+            open: o.open !== false,
+            amount: typeof o.amount === 'string' && o.amount.toLowerCase() !== 'null' ? o.amount : null,
+            deadline: typeof o.deadline === 'string' && o.deadline.toLowerCase() !== 'null' ? o.deadline : null,
+          });
+        }
+      }
+    }
+  } catch { /* caller handles empty map */ }
+  return m;
+}
+
+/**
+ * Verify loop: scrape each item's source page and have the model confirm it is a
+ * currently-open opportunity, correcting amount/deadline. Drops closed/unverifiable
+ * items (including X-only sources with no canonical page). Bounded for cost.
+ */
+async function verifyItems(items: SpineItem[], label: string, cap: number): Promise<SpineItem[]> {
+  const toCheck = items.slice(0, cap);
+  if (!toCheck.length) return [];
+
+  const scraped: Scraped[] = await mapLimit(toCheck, 5, async (it) => {
+    if (!isScrapableUrl(it.url)) return { it, content: null, scrapable: false };
+    try {
+      const r = await scrapeUrl(it.url);
+      return { it, content: r.success && r.content ? r.content.slice(0, 2500) : null, scrapable: true };
+    } catch {
+      return { it, content: null, scrapable: true };
+    }
+  });
+
+  const verified: SpineItem[] = [];
+  const BATCH = 8;
+  for (let b = 0; b < scraped.length; b += BATCH) {
+    const batch = scraped.slice(b, b + BATCH);
+    let parsed: ReturnType<typeof parseVerify> | null = null;
+    try {
+      const { text } = await createMessageWithFallback(buildVerifyPrompt(batch), { model: 'claude-sonnet-4-6', maxTokens: 1500, purpose: 'weekly-verify' });
+      parsed = parseVerify(text);
+    } catch { parsed = null; }
+
+    batch.forEach((s, i) => {
+      if (!parsed || parsed.size === 0) {
+        // Judge unavailable: keep only items we actually scraped content for (conservative).
+        if (s.content) verified.push(s.it);
+        return;
+      }
+      const v = parsed.get(i + 1);
+      if (!v || !v.open) return; // closed / unverifiable → drop
+      verified.push({ ...s.it, amount: v.amount || s.it.amount, deadline: v.deadline || s.it.deadline });
+    });
+  }
+  console.log(`[Weekly] verify ${label}: ${toCheck.length} checked -> ${verified.length} open`);
+  return verified;
+}
+
 export async function runWeeklyIssue(
   pool: Pool,
   options: { onProgress?: (msg: string, pct: number) => void; skipEmail?: boolean; skipStore?: boolean } = {},
@@ -144,14 +240,19 @@ export async function runWeeklyIssue(
   const progress = options.onProgress || (() => {});
   const runDate = new Date().toISOString().split('T')[0];
 
-  progress('Gathering published feed...', 10);
-  const spine = await gatherSpine(pool);
-  const spineUrls = new Set(spine.map(s => s.url.toLowerCase().replace(/\/+$/, '')));
-  const alsoOpen = await gatherAlsoOpen(pool, spineUrls);
+  progress('Gathering published feed...', 8);
+  const spineRaw = await gatherSpine(pool);
+  const spineUrls = new Set(spineRaw.map(s => s.url.toLowerCase().replace(/\/+$/, '')));
+  const alsoOpenRaw = await gatherAlsoOpen(pool, spineUrls);
+
+  progress(`Verifying ${spineRaw.length} published + ${alsoOpenRaw.length} open against live sources...`, 22);
+  const spine = await verifyItems(spineRaw, 'spine', 40);
+  const alsoOpen = await verifyItems(alsoOpenRaw, 'also-open', 14);
+  console.log(`[Weekly] verified: spine ${spineRaw.length}->${spine.length}, also-open ${alsoOpenRaw.length}->${alsoOpen.length}`);
 
   const prior = await getAppState<{ date: string; markdown: string }>(PRIOR_ISSUE_KEY).catch(() => null);
 
-  progress(`Synthesizing from ${spine.length} published + ${alsoOpen.length} open...`, 40);
+  progress(`Synthesizing from ${spine.length} verified + ${alsoOpen.length} open...`, 60);
   const prompt = buildPrompt(spine, alsoOpen, prior?.markdown || null, runDate);
   // Pin a current, available model — the resolver otherwise can land on a tier this org
   // can't access. Opus for the writing quality this needs.
