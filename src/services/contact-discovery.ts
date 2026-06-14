@@ -127,7 +127,7 @@ export async function createNotionContact(
     // Check title match
     const nameProp = page.properties['Name'] || page.properties['name'] || page.properties['Title'];
     if (nameProp?.title) {
-      const pageNameLower = (nameProp.title as any[]).map((t: any) => t.plain_text).join('').toLowerCase().trim();
+      const pageNameLower = normName((nameProp.title as any[]).map((t: any) => t.plain_text).join(''));
       if (pageNameLower === nameLower) return { created: false, reason: 'exists' };
     }
     // Check X url match
@@ -158,12 +158,12 @@ export async function createNotionContact(
   let orgPageId: string | null = null;
   if (orgName) {
     const orgPages = await queryAllNotionPages(token, orgsDbId);
-    const orgNameLower = orgName.toLowerCase().trim();
+    const orgNameNorm = normName(orgName);
     for (const page of orgPages) {
       const nameProp = page.properties['Name'] || page.properties['name'] || page.properties['Title'];
       if (nameProp?.title) {
-        const pageNameLower = (nameProp.title as any[]).map((t: any) => t.plain_text).join('').toLowerCase().trim();
-        if (pageNameLower === orgNameLower) {
+        const pageNameNorm = normName((nameProp.title as any[]).map((t: any) => t.plain_text).join(''));
+        if (pageNameNorm === orgNameNorm) {
           orgPageId = page.id;
           break;
         }
@@ -184,22 +184,14 @@ export async function createNotionContact(
     orgPageId,
   );
 
-  const created = await notionRequest('POST', '/pages', token, {
-    parent: { database_id: contactsDbId },
-    properties,
-  });
-
-  const newPageId: string = created.id;
-
-  // --- Record in discovered_contacts if we have an orgId ---
-  if (orgId !== null) {
-    await recordDiscoveredContact(pool, {
-      orgId,
-      name: candidate.name,
-      xHandle: candidate.x_handle ?? null,
-      notionPageId: newPageId,
-    });
+  try {
+    const created = await notionRequest('POST', '/pages', token, { parent: { database_id: contactsDbId }, properties });
+    if (orgId !== null) {
+      await recordDiscoveredContact(pool, { orgId, name: candidate.name, xHandle: candidate.x_handle ?? null, notionPageId: created.id });
+    }
+    return { created: true, pageId: created.id };
+  } catch (err: any) {
+    console.error(`[ContactDiscovery] create failed for "${candidate.name}": ${err?.message || err}`);
+    return { created: false, reason: 'error' };
   }
-
-  return { created: true, pageId: newPageId };
 }
