@@ -433,7 +433,10 @@ export async function startServer(): Promise<void> {
   contactsSyncTimer.unref();
   setTimeout(contactsSync, 25_000); // once shortly after startup
 
-  // Digest-org sourcing every 30 min: extract + link orgs from AI summaries → org_profiles
+  // Digest-org sourcing every 30 min: extract + link orgs from AI summaries → org_profiles.
+  // DISABLED by default — the digest wires (repos/models/claw) are Sov's content channels,
+  // not grant funders, so this was polluting the grants CRM with GitHub handles/projects.
+  // Set DIGEST_ORGS_SYNC_ENABLED=true to re-enable.
   const digestOrgsSync = async () => {
     try {
       const { sourceDigestOrgs } = await import('./services/digest-orgs');
@@ -442,8 +445,12 @@ export async function startServer(): Promise<void> {
       console.error('[DigestOrgs] Scheduled run failed:', error);
     }
   };
-  const digestOrgsSyncTimer = setInterval(digestOrgsSync, 30 * 60 * 1000);
-  digestOrgsSyncTimer.unref();
+  if (process.env.DIGEST_ORGS_SYNC_ENABLED === 'true') {
+    const digestOrgsSyncTimer = setInterval(digestOrgsSync, 30 * 60 * 1000);
+    digestOrgsSyncTimer.unref();
+  } else {
+    console.log('[DigestOrgs] Sourcing DISABLED (digest wires excluded from grants CRM). Set DIGEST_ORGS_SYNC_ENABLED=true to re-enable.');
+  }
 
   // CRM sync every hour at :15 offset (so sourcing runs first): org_profiles → SimpleCRM Notion DB
   const crmSync = async () => {
