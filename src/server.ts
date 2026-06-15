@@ -445,8 +445,9 @@ export async function startServer(): Promise<void> {
       console.error('[DigestOrgs] Scheduled run failed:', error);
     }
   };
+  let digestOrgsSyncTimer: ReturnType<typeof setInterval> | undefined;
   if (process.env.DIGEST_ORGS_SYNC_ENABLED === 'true') {
-    const digestOrgsSyncTimer = setInterval(digestOrgsSync, 30 * 60 * 1000);
+    digestOrgsSyncTimer = setInterval(digestOrgsSync, 30 * 60 * 1000);
     digestOrgsSyncTimer.unref();
   } else {
     console.log('[DigestOrgs] Sourcing DISABLED (digest wires excluded from grants CRM). Set DIGEST_ORGS_SYNC_ENABLED=true to re-enable.');
