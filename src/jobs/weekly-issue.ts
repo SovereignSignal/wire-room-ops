@@ -1,15 +1,18 @@
 /**
- * Weekly Issue Job — generate Sov's weekly Grant Wire draft from the published feed.
+ * Weekly Issue Job — generate Sov's weekly Grant Wire draft in the locked Substack shape.
  *
- * Rides the daily cycle on Fridays (no separate cron, no Claude routine slot). Pulls
- * the week's DISTRIBUTED items (the public feed) as the spine, plus currently-open
- * queued/approved opportunities for an "also open" list, reads the prior issue from
- * app_state for cross-week callbacks + voice, synthesizes the draft via Claude, then
- * emails it to the operator and stores it for next week. Publishing to Substack stays
- * a human step — this produces the draft for review.
+ * Rides the daily cycle on Fridays (no separate cron, no Claude routine slot). Pulls the
+ * week's DISTRIBUTED-and-approved items (the public feed) since the last issue, verifies
+ * each against its live source, then for each beat splits the verified set by quality into
+ * 5-6 FEATURED paragraphs + an "Also open" list (both drawn only from what actually
+ * published — fidelity to the channels). The structure is assembled deterministically
+ * (assembleIssue); Claude writes only the one-line item descriptions (hybrid). Repeats from
+ * last week's issue are dropped. Emails the draft, lands it in the Notion Paste Log, stores
+ * it as next week's prior, and bumps the week number. Publishing to Substack stays human.
  *
- * The deep agentic engine (repos/grant-wire-engine) remains for on-demand full runs;
- * this is the reliable, automatic baseline.
+ * Shape is locked to Sov's edited final (see memory weekly-newsletter-template):
+ * opening + channel block, `# **AI/Crypto/OSS**`, featured (bold+linked) + "Also open:"
+ * (linked, not bold), `# **Conclusion**`. No em dashes.
  */
 
 import type { Pool } from 'pg';
@@ -27,12 +30,35 @@ interface SpineItem {
   amount: string | null;
   deadline: string | null;
   summary: string | null;
+  quality?: number | null;
   citationUrl?: string | null;   // verified canonical source (Parallel basis)
   confidence?: string | null;    // low/medium/high (Parallel) or undefined (unverified)
 }
 
+/** Minimal shape the pure selection helpers operate on. */
+interface RankedItem {
+  name: string;
+  url: string;
+  quality?: number | null;
+}
+
+/** A described item ready to render. */
+export interface IssueItem {
+  name: string;
+  url: string;
+  description: string;
+}
+
+/** One beat's rendered selection. */
+export interface WireBlock {
+  label: 'AI' | 'Crypto' | 'OSS';
+  featured: IssueItem[];
+  alsoOpen: IssueItem[];
+}
+
 export interface WeeklyIssueResult {
   runDate: string;
+  weekNumber: number;
   spineCount: number;
   alsoOpenCount: number;
   hadPriorIssue: boolean;
@@ -41,11 +67,19 @@ export interface WeeklyIssueResult {
 }
 
 const PRIOR_ISSUE_KEY = 'weekly:last-issue';   // { date, markdown }
-const CHANNELS_BLOCK = `## Follow Sov's Grant Wires
-For real-time updates as these land, join the Telegram channels:
-- Crypto: [@cryptograntwire](https://t.me/cryptograntwire)
-- AI: [@aigrantwire](https://t.me/aigrantwire)
-- OSS: [@ossgrantwire](https://t.me/ossgrantwire)`;
+const WEEK_NUMBER_KEY = 'weekly:week-number';  // number (last issue's week number)
+const WEEK_NUMBER_SEED = 24;                   // Week 24 = week ending 2026-06-12 (first auto run -> 25)
+const FEATURED_PER_WIRE = 6;                   // 5-6 featured paragraphs per beat
+
+const CHANNEL_BULLETS = `- Crypto: [**@cryptograntwire**](https://t.me/cryptograntwire)
+- AI: [**@aigrantwire**](https://t.me/aigrantwire)
+- OSS: [**@ossgrantwire**](https://t.me/ossgrantwire)`;
+
+const WIRES: Array<{ key: string; label: 'AI' | 'Crypto' | 'OSS' }> = [
+  { key: 'ai', label: 'AI' },
+  { key: 'crypto', label: 'Crypto' },
+  { key: 'oss', label: 'OSS' },
+];
 
 function metaField(metadata: unknown, key: string): string | null {
   if (metadata && typeof metadata === 'object') {
@@ -55,9 +89,106 @@ function metaField(metadata: unknown, key: string): string | null {
   return null;
 }
 
-/** The week's distributed-and-approved items — the spine of the recap. */
-async function gatherSpine(pool: Pool): Promise<SpineItem[]> {
-  const { rows } = await pool.query(`
+const normUrl = (u: string): string => (u || '').trim().toLowerCase().replace(/\/+$/, '');
+const normName = (n: string): string => (n || '').trim().toLowerCase().replace(/\s+/g, ' ');
+
+// ---------------------------------------------------------------------------
+// Pure selection + assembly (unit-tested in tests/weekly-issue.test.js)
+// ---------------------------------------------------------------------------
+
+/** Drop same-URL and same-name repeats, keeping the highest-scoring instance. */
+export function dedupeItems<T extends RankedItem>(items: T[]): T[] {
+  const sorted = [...items].sort((a, b) => (b.quality ?? 0) - (a.quality ?? 0));
+  const seenUrl = new Set<string>();
+  const seenName = new Set<string>();
+  const out: T[] = [];
+  for (const it of sorted) {
+    const u = normUrl(it.url);
+    const n = normName(it.name);
+    if ((u && seenUrl.has(u)) || (n && seenName.has(n))) continue;
+    if (u) seenUrl.add(u);
+    if (n) seenName.add(n);
+    out.push(it);
+  }
+  return out;
+}
+
+/** Sort by score, take the top N as featured, the rest as also-open. */
+export function splitByScore<T extends RankedItem>(
+  items: T[],
+  featuredMax: number,
+): { featured: T[]; alsoOpen: T[] } {
+  const sorted = [...items].sort((a, b) => (b.quality ?? 0) - (a.quality ?? 0));
+  return { featured: sorted.slice(0, featuredMax), alsoOpen: sorted.slice(featuredMax) };
+}
+
+/** Remove items whose URL or name already appeared in last week's issue (no repeats). */
+export function stripPriorIssueItems<T extends RankedItem>(items: T[], priorMarkdown: string | null): T[] {
+  if (!priorMarkdown) return items;
+  const hay = priorMarkdown.toLowerCase();
+  return items.filter((it) => {
+    const u = normUrl(it.url);
+    const n = normName(it.name);
+    if (u && hay.includes(u)) return false;
+    if (n && n.length >= 4 && hay.includes(n)) return false;
+    return true;
+  });
+}
+
+/** Assemble the locked Substack shape from described blocks. Deterministic, no LLM. */
+export function assembleIssue(opts: { weekEnding: string; blocks: WireBlock[] }): string {
+  const { weekEnding, blocks } = opts;
+  const parts: string[] = [];
+  parts.push(
+    `Welcome back to my weekly update on AI, Crypto, and OSS grants. This issue covers the week ending **${weekEnding}**. Remember that the Telegram channels receive updates first, so please subscribe!`,
+  );
+  parts.push(CHANNEL_BULLETS);
+  parts.push("Alright, let's hop in.");
+
+  for (const b of blocks) {
+    if (!b.featured.length && !b.alsoOpen.length) continue;
+    parts.push(`# **${b.label}**`);
+    for (const f of b.featured) {
+      parts.push(`[**${f.name}**](${f.url}) ${f.description}`.trim());
+    }
+    if (b.alsoOpen.length) {
+      parts.push('Also open:');
+      parts.push(b.alsoOpen.map((a) => `- [${a.name}](${a.url}): ${a.description}`).join('\n'));
+    }
+  }
+
+  parts.push('# **Conclusion**');
+  parts.push("That's it for this week! For real-time updates, join the Telegram channels:");
+  parts.push(CHANNEL_BULLETS);
+  parts.push('Hope to see you next time!');
+  parts.push('Peace,\nSov');
+  return parts.join('\n\n');
+}
+
+/** "June 12, 2026" */
+function formatWeekEnding(d: Date): string {
+  return d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+}
+
+/** Fallback one-liner when the description model is unavailable. */
+function fallbackDesc(it: SpineItem, kind: 'featured' | 'alsoopen'): string {
+  if (kind === 'featured') {
+    const base = (it.summary || '').trim();
+    const dl = it.deadline ? ` Deadline **${it.deadline}**.` : '';
+    return base ? `${base}${dl}` : `is an open funding opportunity.${dl}`;
+  }
+  const amt = it.amount ? `${it.amount}. ` : '';
+  return `${amt}${it.deadline || 'Open now'}.`;
+}
+
+// ---------------------------------------------------------------------------
+// Data gathering
+// ---------------------------------------------------------------------------
+
+/** The week's distributed-and-approved items since the last issue — the spine of the recap. */
+async function gatherSpine(pool: Pool, windowStart: string): Promise<SpineItem[]> {
+  const { rows } = await pool.query(
+    `
     with deduped as (
       select distinct on (se.id)
         coalesce(dl.wire, se.wire) as wire, se.name, se.source_url,
@@ -65,86 +196,83 @@ async function gatherSpine(pool: Pool): Promise<SpineItem[]> {
       from distribution_logs dl
       join scan_entries se on se.id = dl.entry_id
       where dl.status = 'success'
-        and dl.created_at >= now() - interval '7 days'
+        and dl.created_at >= $1
         and coalesce(se.status,'') = 'approved'
+        and coalesce(se.classification,'') <> 'NOISE'
       order by se.id, dl.created_at asc
     )
     select * from deduped
-    order by wire, quality_score desc nulls last`);
+    order by wire, quality_score desc nulls last`,
+    [windowStart],
+  );
   return rows
-    .filter(r => r.name && r.source_url)
-    .map(r => ({
-      wire: r.wire || 'crypto',
+    .filter((r) => r.name && r.source_url)
+    .map((r) => ({
+      wire: (r.wire || 'crypto').toLowerCase(),
       name: r.name,
       url: r.source_url,
       amount: r.amount || metaField(r.metadata, 'amount'),
       deadline: r.deadline || metaField(r.metadata, 'deadline'),
       summary: metaField(r.metadata, 'summary'),
+      quality: typeof r.quality_score === 'number' ? r.quality_score : null,
     }));
 }
 
-/** Currently-open opportunities in the queue/approved set, not already in the spine. */
-async function gatherAlsoOpen(pool: Pool, spineUrls: Set<string>): Promise<SpineItem[]> {
-  const { rows } = await pool.query(`
-    select wire, name, source_url, amount, deadline, quality_score, metadata, classification
-    from scan_entries
-    where status in ('queued','approved')
-      and classification = 'GRANT'
-      and coalesce(quality_score,0) >= 55
-      and created_at >= now() - interval '21 days'
-      and (deadline_parsed is null or deadline_parsed >= current_date)
-    order by quality_score desc nulls last
-    limit 40`);
-  const out: SpineItem[] = [];
-  for (const r of rows) {
-    if (!r.name || !r.source_url) continue;
-    if (spineUrls.has(String(r.source_url).toLowerCase().replace(/\/+$/, ''))) continue;
-    out.push({
-      wire: r.wire || 'crypto',
-      name: r.name,
-      url: r.source_url,
-      amount: r.amount || metaField(r.metadata, 'amount'),
-      deadline: r.deadline || metaField(r.metadata, 'deadline'),
-      summary: metaField(r.metadata, 'summary'),
-    });
-    if (out.length >= 14) break;
-  }
-  return out;
-}
+// ---------------------------------------------------------------------------
+// Hybrid prose: Claude writes only the per-item descriptions
+// ---------------------------------------------------------------------------
 
-function compact(items: SpineItem[]): string {
-  return items
-    .map(i => {
-      const link = i.citationUrl || i.url; // prefer the verified canonical source
-      const conf = i.confidence ? ` | verified:${i.confidence}` : '';
-      return `- [${i.wire}] ${i.name}${i.amount ? ` | amount: ${i.amount}` : ''}${i.deadline ? ` | deadline: ${i.deadline}` : ''}${conf} | ${link}${i.summary ? `\n    ${i.summary.slice(0, 200)}` : ''}`;
+function buildDescribePrompt(items: Array<{ it: SpineItem; kind: 'featured' | 'alsoopen' }>): string {
+  const lines = items
+    .map((x, i) => {
+      return `### ${i + 1} [${x.kind}] ${x.it.name}\nwire: ${x.it.wire}; amount: ${x.it.amount || 'n/a'}; deadline: ${x.it.deadline || 'n/a'}\nsource: ${x.it.url}\nnotes: ${(x.it.summary || 'n/a').slice(0, 240)}`;
     })
-    .join('\n');
+    .join('\n\n');
+  return `You are writing terse descriptions for Sov's weekly Grant Wire newsletter. For EACH numbered item, write copy that appears immediately AFTER a bolded, linked program name. Plain, factual, useful to a builder deciding what to apply to.
+
+kind=featured: ONE sentence (a short second sentence is allowed only to state the deadline). Begin with a verb so it reads after the name ("is", "offers", "provides", "runs"). Weave in the funding amount and who it is for. Bold the dollar amount like **\\$150M**, and bold the deadline like Deadline **July 17** (or end with "Rolling." when there is no deadline).
+
+kind=alsoopen: ONE short clause, no leading verb: amount, who it fits, then the deadline. Example: "\\$10K+ for enterprise multi-agent builders. June 19."
+
+STRICT: no em dashes or en dashes (restructure instead). Do not repeat the program name. Do not invent facts beyond what is given. Never use the words foster, crucial, significantly, or comprehensive.
+
+Return ONLY a JSON array: [{"n":1,"text":"..."}].
+
+ITEMS:
+${lines}`;
 }
 
-function buildPrompt(spine: SpineItem[], alsoOpen: SpineItem[], priorIssue: string | null, runDate: string): string {
-  return `You are writing Sov's weekly "Grant Wire" issue for ${runDate} — a curated operator briefing on the week's grant and funding opportunities across three beats: crypto, AI, and open-source software. Direct, plain, useful. You are writing for builders deciding what to apply to.
-
-THIS WEEK'S PUBLISHED ITEMS (the spine, the core of the issue). Each was already source-verified this run as currently open, with amount/deadline corrected to the live page, so you can trust these figures:
-${compact(spine) || '(none)'}
-
-ALSO OPEN RIGHT NOW (additional source-verified open opportunities for a short "Also open right now" list):
-${compact(alsoOpen) || '(none)'}
-
-${priorIssue ? `LAST WEEK'S ISSUE (match this exact voice, register, and format; and make 1-3 GENUINE cross-week callbacks where a tie is actually true — a program now closing, a recurring funder, a continuing theme — never invent a tie):\n"""\n${priorIssue.slice(0, 6000)}\n"""\n` : 'There is no prior issue to reference; open with a brief standalone lede.'}
-
-WRITE the issue as markdown with this structure:
-- Title: \`# Sov's Grant Wire Weekly: ${runDate}\`
-- A 1-2 line factual lede naming the week's biggest programs and numbers (and a genuine continuity nod to last week if one fits).
-- \`## Quick read\` — 3-5 bullets, each with a source link.
-- One \`## AI\` / \`## Crypto\` / \`## OSS\` section as relevant. Feature AT MOST 15 items total as full paragraphs across these sections (the strongest, most relevant ones), one tight paragraph each: what it is, amount, deadline, who it fits, where to apply; caveats stated straight. Put EVERY other verified item in the "Also open right now" list as a one-liner. Do not write more than 15 full paragraphs.
-- \`## Also open right now\` — one line each for the additional open programs: \`- [Name](url): amount, deadline, one-clause who-it-fits.\`
-- \`## Dates worth catching\` — the near deadlines, chronological.
-- End with this exact channels block:
-${CHANNELS_BLOCK}
-
-STYLE RULES (strict): every factual claim needs a visible source link in markdown [text](url) form. No em dashes or en dashes anywhere (restructure the sentence instead). No "not X but Y" constructions. Never use the words foster, crucial, significantly, or comprehensive. Escape dollar amounts as \\$50,000. Prefer the program's own page as the source link. If an item looks stale or its deadline has passed, drop it. Output ONLY the markdown issue, no preamble.`;
+async function writeDescriptions(
+  items: Array<{ it: SpineItem; kind: 'featured' | 'alsoopen' }>,
+): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  if (!items.length) return map;
+  try {
+    const { text } = await createMessageWithFallback(buildDescribePrompt(items), {
+      model: 'claude-opus-4-8',
+      maxTokens: 4000,
+      purpose: 'weekly-describe',
+    });
+    const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+    const s = cleaned.indexOf('['), e = cleaned.lastIndexOf(']');
+    const arr = JSON.parse(s >= 0 && e > s ? cleaned.slice(s, e + 1) : cleaned);
+    if (Array.isArray(arr)) {
+      for (const o of arr) {
+        if (o && typeof o.n === 'number' && typeof o.text === 'string') {
+          const item = items[o.n - 1];
+          if (item) map.set(item.it.url, o.text.trim());
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[Weekly] describe failed, using fallbacks:', err instanceof Error ? err.message : err);
+  }
+  return map;
 }
+
+// ---------------------------------------------------------------------------
+// Verification (unchanged) — confirm each item is currently open, fix amount/deadline
+// ---------------------------------------------------------------------------
 
 /** Run an async fn over items with bounded concurrency. */
 async function mapLimit<T, R>(items: T[], limit: number, fn: (t: T, i: number) => Promise<R>): Promise<R[]> {
@@ -274,6 +402,10 @@ async function verifyViaParallel(items: SpineItem[], label: string, cap: number)
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Orchestrator
+// ---------------------------------------------------------------------------
+
 export async function runWeeklyIssue(
   pool: Pool,
   options: { onProgress?: (msg: string, pct: number) => void; skipEmail?: boolean; skipStore?: boolean } = {},
@@ -281,46 +413,70 @@ export async function runWeeklyIssue(
   const progress = options.onProgress || (() => {});
   const runDate = new Date().toISOString().split('T')[0];
 
-  progress('Gathering published feed...', 8);
-  const spineRaw = await gatherSpine(pool);
-  const spineUrls = new Set(spineRaw.map(s => s.url.toLowerCase().replace(/\/+$/, '')));
-  const alsoOpenRaw = await gatherAlsoOpen(pool, spineUrls);
+  const prior = await getAppState<{ date: string; markdown: string }>(PRIOR_ISSUE_KEY).catch(() => null);
+  const windowStart = prior?.date
+    ? `${prior.date}T00:00:00Z`
+    : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+  progress('Gathering published feed since last issue...', 8);
+  const spineRaw = await gatherSpine(pool, windowStart);
 
   // Verify against live sources. Parallel Task API (cited + confidence) is the primary
   // path; the Firecrawl scrape+judge loop is the fallback when Parallel is unavailable.
   const useParallel = parallelAvailable();
-  progress(`Verifying ${spineRaw.length} published + ${alsoOpenRaw.length} open via ${useParallel ? 'Parallel (cited)' : 'scrape'}...`, 22);
-  let spine: SpineItem[], alsoOpen: SpineItem[];
+  progress(`Verifying ${spineRaw.length} published via ${useParallel ? 'Parallel (cited)' : 'scrape'}...`, 22);
+  let spine: SpineItem[];
   if (useParallel) {
     try {
       spine = await verifyViaParallel(spineRaw, 'spine', 40);
-      alsoOpen = await verifyViaParallel(alsoOpenRaw, 'also-open', 14);
     } catch (e) {
       console.error('[Weekly] Parallel verify failed, falling back to scrape:', e instanceof Error ? e.message : e);
       spine = await verifyItems(spineRaw, 'spine', 40);
-      alsoOpen = await verifyItems(alsoOpenRaw, 'also-open', 14);
     }
   } else {
     spine = await verifyItems(spineRaw, 'spine', 40);
-    alsoOpen = await verifyItems(alsoOpenRaw, 'also-open', 14);
   }
-  console.log(`[Weekly] verified: spine ${spineRaw.length}->${spine.length}, also-open ${alsoOpenRaw.length}->${alsoOpen.length}`);
+  console.log(`[Weekly] verified: spine ${spineRaw.length}->${spine.length}`);
 
-  const prior = await getAppState<{ date: string; markdown: string }>(PRIOR_ISSUE_KEY).catch(() => null);
+  // Per-beat selection: dedupe, drop last week's repeats, split top 5-6 featured / rest also-open.
+  // Featured AND also-open both come only from what actually published (fidelity to the channels).
+  const selections = WIRES.map((w) => {
+    let items = spine.filter((s) => (s.wire || '').toLowerCase() === w.key);
+    items = dedupeItems(items);
+    items = stripPriorIssueItems(items, prior?.markdown || null);
+    const { featured, alsoOpen } = splitByScore(items, FEATURED_PER_WIRE);
+    return { ...w, featured, alsoOpen };
+  });
 
-  progress(`Synthesizing from ${spine.length} verified + ${alsoOpen.length} open...`, 60);
-  const prompt = buildPrompt(spine, alsoOpen, prior?.markdown || null, runDate);
-  // Pin a current, available model — the resolver otherwise can land on a tier this org
-  // can't access. Opus for the writing quality this needs. High token ceiling so a
-  // full issue (featured items + also-open + dates + channels) never truncates.
-  const { text } = await createMessageWithFallback(prompt, { model: 'claude-opus-4-8', maxTokens: 8000, purpose: 'weekly-issue' });
-  const markdown = text.trim();
+  // Hybrid: one batched call writes every description; structure stays deterministic.
+  progress('Writing item descriptions...', 60);
+  const toDescribe: Array<{ it: SpineItem; kind: 'featured' | 'alsoopen' }> = [];
+  for (const s of selections) {
+    s.featured.forEach((it) => toDescribe.push({ it, kind: 'featured' }));
+    s.alsoOpen.forEach((it) => toDescribe.push({ it, kind: 'alsoopen' }));
+  }
+  const descMap = await writeDescriptions(toDescribe);
+
+  const blocks: WireBlock[] = selections.map((s) => ({
+    label: s.label,
+    featured: s.featured.map((it) => ({ name: it.name, url: it.url, description: descMap.get(it.url) || fallbackDesc(it, 'featured') })),
+    alsoOpen: s.alsoOpen.map((it) => ({ name: it.name, url: it.url, description: descMap.get(it.url) || fallbackDesc(it, 'alsoopen') })),
+  }));
+
+  const weekEnding = formatWeekEnding(new Date());
+  const markdown = assembleIssue({ weekEnding, blocks });
+
+  const prevWeek = await getAppState<number>(WEEK_NUMBER_KEY).catch(() => null);
+  const weekNumber = (typeof prevWeek === 'number' ? prevWeek : WEEK_NUMBER_SEED) + 1;
+
+  const spineCount = selections.reduce((n, s) => n + s.featured.length, 0);
+  const alsoOpenCount = selections.reduce((n, s) => n + s.alsoOpen.length, 0);
 
   progress('Emailing + landing in Notion Paste Log...', 85);
   let emailed = false;
   if (!options.skipEmail) {
     try {
-      await sendWeeklyDraftEmail(markdown, { runDate, spineCount: spine.length, alsoOpenCount: alsoOpen.length });
+      await sendWeeklyDraftEmail(markdown, { runDate, spineCount, alsoOpenCount });
       emailed = true;
     } catch (err) {
       console.error('[Weekly] Failed to email draft:', err instanceof Error ? err.message : err);
@@ -328,17 +484,18 @@ export async function runWeeklyIssue(
 
     // Land the draft in the Notion Paste Log (rendered rich text → copy into Substack).
     // Fails soft if the integration isn't shared on the Paste Log page yet.
-    const land = await landWeeklyInPasteLog(`${runDate} — Grant Wire Weekly — Substack paste copy`, markdown);
+    const land = await landWeeklyInPasteLog(`${runDate} — Grant Wire Weekly — Week ${weekNumber} — Substack paste copy`, markdown);
     if (land.ok) console.log(`[Weekly] Landed in Notion Paste Log: ${land.url}`);
     else console.warn(`[Weekly] Notion Paste Log landing skipped: ${land.error} (share the Paste Log page with the Wire Room Ops integration)`);
   }
 
-  // Store as the prior issue for next week's lookback + voice exemplar.
+  // Store as the prior issue for next week's lookback + repeat-dedup, and bump the week number.
   if (!options.skipStore) {
     try { await setAppState(PRIOR_ISSUE_KEY, { date: runDate, markdown }); } catch { /* non-fatal */ }
+    try { await setAppState(WEEK_NUMBER_KEY, weekNumber); } catch { /* non-fatal */ }
   }
 
   progress('Weekly issue complete', 100);
-  console.log(`[Weekly] ${runDate}: spine=${spine.length}, alsoOpen=${alsoOpen.length}, prior=${prior ? 'yes' : 'no'}, emailed=${emailed}`);
-  return { runDate, spineCount: spine.length, alsoOpenCount: alsoOpen.length, hadPriorIssue: !!prior, markdown, emailed };
+  console.log(`[Weekly] ${runDate}: week=${weekNumber}, featured=${spineCount}, alsoOpen=${alsoOpenCount}, prior=${prior ? 'yes' : 'no'}, emailed=${emailed}`);
+  return { runDate, weekNumber, spineCount, alsoOpenCount, hadPriorIssue: !!prior, markdown, emailed };
 }
