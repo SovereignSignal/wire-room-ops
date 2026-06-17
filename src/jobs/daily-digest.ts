@@ -128,6 +128,7 @@ export interface SourceBreakdownRow {
   archived: number;
   duplicates: number;
   parked: number;
+  signals: number;
 }
 
 export interface CostRow {
@@ -171,7 +172,8 @@ export async function getSourceBreakdown(pool: Pool): Promise<SourceBreakdownRow
       COUNT(*) FILTER (WHERE status = 'approved')::int AS approved,
       COUNT(*) FILTER (WHERE status = 'archived')::int AS archived,
       COUNT(*) FILTER (WHERE status = 'duplicate')::int AS duplicates,
-      COUNT(*) FILTER (WHERE metadata->>'operator_route' = 'park')::int AS parked
+      COUNT(*) FILTER (WHERE metadata->>'operator_route' = 'park')::int AS parked,
+      COUNT(*) FILTER (WHERE metadata->>'operator_route' = 'relationship_signal')::int AS signals
     FROM scan_entries
     WHERE created_at >= NOW() - INTERVAL '24 hours'
     GROUP BY wire, COALESCE(scan_source, 'unknown')

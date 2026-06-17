@@ -435,6 +435,7 @@ export async function sendDailyDigestEmail(
         <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#666;text-align:center;">${s.approved}</td>
         <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#999;text-align:center;">${s.duplicates}</td>
         <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#999;text-align:center;">${s.parked}</td>
+        <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#1a8a5a;text-align:center;font-weight:${s.signals > 0 ? '700' : '400'};">${s.signals}</td>
       </tr>`
     ).join('');
     sourceHtml = `
@@ -448,11 +449,12 @@ export async function sendDailyDigestEmail(
           <th style="padding:4px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:center;">Approved</th>
           <th style="padding:4px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:center;">Dupes</th>
           <th style="padding:4px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:center;">Parked</th>
+          <th style="padding:4px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:center;">Signals</th>
         </tr>
         ${srcRows}
       </table>`;
     sourceText = '\nINTAKE BY SOURCE (24H)\n' + sourceBreakdown.map(s =>
-      `  ${s.wire.padEnd(8)} ${s.source.padEnd(14)} in:${s.total} queued:${s.queued} approved:${s.approved} dupes:${s.duplicates} parked:${s.parked}`
+      `  ${s.wire.padEnd(8)} ${s.source.padEnd(14)} in:${s.total} queued:${s.queued} approved:${s.approved} dupes:${s.duplicates} parked:${s.parked} signals:${s.signals}`
     ).join('\n') + '\n';
   }
 
