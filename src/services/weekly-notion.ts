@@ -30,7 +30,10 @@ function parseRich(line: string): RichText[] {
   let last = 0; let m: RegExpExecArray | null;
   while ((m = linkRe.exec(line)) !== null) {
     if (m.index > last) pushPlain(line.slice(last, m.index));
-    out.push({ type: 'text', text: { content: unescapeDollars(m[1]), link: { url: m[2] } } });
+    let label = m[1]; let bold = false;
+    const bm = /^\*\*([\s\S]+)\*\*$/.exec(label);   // [**Name**](url) -> bold linked text
+    if (bm) { label = bm[1]; bold = true; }
+    out.push({ type: 'text', text: { content: unescapeDollars(label), link: { url: m[2] } }, ...(bold ? { annotations: { bold: true } } : {}) });
     last = m.index + m[0].length;
   }
   if (last < line.length) pushPlain(line.slice(last));
@@ -41,14 +44,14 @@ function blockOf(type: string, rich: RichText[]): Record<string, unknown> {
   return { object: 'block', type, [type]: { rich_text: rich } };
 }
 
-/** Convert the issue markdown into Notion blocks (skips the H1 title + blank lines). */
+/** Convert the issue markdown into Notion blocks (headings, bullets, paragraphs). */
 export function mdToBlocks(markdown: string): Record<string, unknown>[] {
   const blocks: Record<string, unknown>[] = [];
   for (const raw of markdown.split('\n')) {
     const line = raw.replace(/\s+$/, '');
-    if (/^#\s+/.test(line)) continue;                     // H1 = page title, skip
     if (/^###\s+/.test(line)) { blocks.push(blockOf('heading_3', parseRich(line.replace(/^###\s+/, '')))); continue; }
     if (/^##\s+/.test(line)) { blocks.push(blockOf('heading_2', parseRich(line.replace(/^##\s+/, '')))); continue; }
+    if (/^#\s+/.test(line)) { blocks.push(blockOf('heading_1', parseRich(line.replace(/^#\s+/, '')))); continue; }
     if (/^[-*]\s+/.test(line)) { blocks.push(blockOf('bulleted_list_item', parseRich(line.replace(/^[-*]\s+/, '')))); continue; }
     if (line.trim() === '') continue;
     blocks.push(blockOf('paragraph', parseRich(line)));
