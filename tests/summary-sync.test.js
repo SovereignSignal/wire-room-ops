@@ -10,7 +10,7 @@ db.getAppState = async () => null;
 db.setAppState = async () => {};
 
 const intakeCore = require('../src/services/intake-core');
-intakeCore.getActiveWires = async () => ['crypto', 'ai', 'oss'];
+intakeCore.getActiveWires = async () => ['crypto', 'ai', 'oss', 'repos', 'models', 'claw'];
 
 const dedup = require('../src/services/dedup');
 dedup.checkDuplicate = async () => ({
@@ -29,9 +29,11 @@ test('bridges summaries whose wire is an active feed wire', () => {
   assert.equal(shouldBridgeWire('crypto', ['crypto', 'ai', 'oss']), true);
 });
 
-test('does NOT bridge summaries on non-feed wires (digest channels)', () => {
-  assert.equal(shouldBridgeWire('repos', ['crypto', 'ai', 'oss']), false);
-  assert.equal(shouldBridgeWire('models', ['crypto', 'ai', 'oss']), false);
+test('does NOT bridge non-grant digest wires even when feeds table marks them active', () => {
+  const activeFeeds = ['crypto', 'ai', 'oss', 'repos', 'models', 'claw'];
+  assert.equal(shouldBridgeWire('repos', activeFeeds), false);
+  assert.equal(shouldBridgeWire('models', activeFeeds), false);
+  assert.equal(shouldBridgeWire('claw', activeFeeds), false);
 });
 
 test('legacy null-wire summaries still bridge (keyword inference handles them)', () => {
