@@ -2,11 +2,11 @@
  * Summary Sync Job
  *
  * Bridge between tele-sum's summaries table and the scan_entries table.
- * Converts successfully processed summaries into approved scan_entries
- * so they appear on The Wire Room website.
+ * Converts successfully processed summaries into queued scan_entries
+ * so they appear in The Wire Room review queue.
  *
- * This is a temporary bridge until the editorial pipeline migrates
- * fully to wire-room-ops' approval queue.
+ * This bridge keeps tele-sum items reviewable while the editorial pipeline
+ * migrates fully to wire-room-ops.
  */
 
 import type { Pool } from 'pg';
@@ -75,9 +75,29 @@ export interface SyncResult {
 }
 
 /**
- * Syncs recent tele-sum summaries to scan_entries as approved.
- * Idempotent: checks source_url to avoid duplicates.
- * Skips rows whose wire is set but not in the active feeds list (digest wires).
+ * Build a stable placeholder source_url for summaries that arrived without an
+ * extracted URL. Keeps the row queryable and idempotent without pretending we
+ * have a real canonical link. Mirrors the convention used by direct Telegram
+ * intake when Grok supplies only a via-post placeholder.
+ */
+function placeholderSourceUrl(summaryId: number, title: string): string {
+  const slug = (title || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40) || 'summary';
+  return `https://manual/needs-source/summary-${summaryId}-${slug}`;
+}
+
+/**
+ * Syncs recent tele-sum summaries into scan_entries as queued review candidates
+ * (status = 'queued', operator_route = 'source_check'). Summaries without an
+ * extracted URL get a placeholder source so they still surface in the queue
+ * instead of being silently dropped.
+ *
+ * Idempotent by both source_url and metadata.summary_id. Skips rows whose wire
+ * is set but not in the active feeds list, so digest wires do not leak into the
+ * grants queue.
  *
  * @param pool - Postgres pool
  * @param lookbackHours - How far back to look for unsynced summaries (default: 168 = 7 days)
@@ -138,24 +158,23 @@ export async function syncSummariesToScanEntries(
         continue;
       }
 
-      // Extract source URL
-      const urls = row.extracted_urls || [];
-      const sourceUrl = Array.isArray(urls) && urls.length > 0 ? urls[0] : null;
-
-      if (!sourceUrl) {
-        result.skipped++;
-        continue;
-      }
-
       if (!row.title) {
         result.skipped++;
         continue;
       }
 
-      // Check if this URL already exists in scan_entries
+      // Pick the first extracted URL, else fall back to a stable placeholder.
+      const urls = row.extracted_urls || [];
+      const realUrl = Array.isArray(urls) && urls.length > 0 ? urls[0] : null;
+      const sourceUrl = realUrl || placeholderSourceUrl(row.summary_id, row.title);
+
+      // Idempotency: skip if either the URL or the summary_id bridge key is already present.
       const existing = await pool.query(
-        `SELECT id FROM scan_entries WHERE source_url = $1 LIMIT 1`,
-        [sourceUrl]
+        `SELECT id FROM scan_entries
+         WHERE source_url = $1
+            OR metadata->>'summary_id' = $2
+         LIMIT 1`,
+        [sourceUrl, String(row.summary_id)]
       );
 
       if (existing.rows.length > 0) {
@@ -191,14 +210,23 @@ export async function syncSummariesToScanEntries(
 
       const scanDate = new Date(row.created_at).toISOString().split('T')[0];
 
-      // Insert as approved scan_entry
+      // Insert as a queued review candidate. quality_breakdown carries the
+      // operator_route so the queue UI shows it as source_check; metadata
+      // preserves the summary_id bridge key for future idempotency.
       const inserted = await pool.query(`
         INSERT INTO scan_entries (
           name, description, source_url, amount, deadline,
           wire, prompt_variant, scan_source, scan_date,
-          status, quality_score, tags, created_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, 'N', 'telegram', $7, 'approved', 85, $8, $9)
-        RETURNING id
+          status, quality_score, quality_breakdown, classification,
+          metadata, tags, created_at
+        ) VALUES (
+          $1, $2, $3, $4, $5,
+          $6, 'N', 'telegram', $7,
+          'queued', 70,
+          $8, 'UNCHECKED',
+          jsonb_build_object('summary_id', $9::text, 'summary_sync', true, 'operator_route', 'source_check', 'source_needs_verification', $10::boolean),
+          $11, $12
+        ) RETURNING id
       `, [
         row.title,
         row.description || '',
@@ -207,6 +235,9 @@ export async function syncSummariesToScanEntries(
         deadline,
         wire,
         scanDate,
+        JSON.stringify({ scoreReason: 'Summary sync bridge (tele-sum → scan_entries)', operatorRoute: 'source_check' }),
+        String(row.summary_id),
+        !realUrl, // source_needs_verification = true when we used a placeholder
         tags,
         row.created_at, // preserve original timestamp
       ]);

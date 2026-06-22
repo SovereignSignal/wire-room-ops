@@ -160,12 +160,15 @@ router.get('/stats', async (req: Request, res: Response) => {
   }
 });
 
-// GET /status-counts — count by status
+// GET /status-counts — count by status (optionally grouped by scan_source)
 router.get('/status-counts', async (req: Request, res: Response) => {
   try {
     const wire = req.query.wire as string | undefined;
     const date = req.query.date as string | undefined;
     const promptId = req.query.promptId as string | undefined;
+    const includeBySource =
+      req.query.bySource === '1' || req.query.bySource === 'true' ||
+      req.query.includeBySource === '1' || req.query.includeBySource === 'true';
     if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD.' });
       return;
@@ -175,12 +178,17 @@ router.get('/status-counts', async (req: Request, res: Response) => {
       return;
     }
 
-    const [counts, urlStats] = await Promise.all([
-      getStatusCounts(wire, date, promptId),
+    const [statusResult, urlStats] = await Promise.all([
+      getStatusCounts(wire, date, promptId, includeBySource),
       getSeenUrlStats(wire),
     ]);
 
-    res.json({ counts, seededUrls: urlStats.seededCount, totalUrls: urlStats.totalCount });
+    res.json({
+      counts: statusResult.byStatus,
+      bySource: statusResult.bySourceStatus,
+      seededUrls: urlStats.seededCount,
+      totalUrls: urlStats.totalCount,
+    });
   } catch (error) {
     console.error('Failed to fetch status counts:', error);
     res.status(500).json({ error: 'Failed to fetch status counts' });

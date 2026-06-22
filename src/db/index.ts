@@ -1246,7 +1246,24 @@ export async function deleteScanPrompt(id: string): Promise<boolean> {
 
 // --- Scan pipeline query helpers ---
 
-export async function getStatusCounts(wire?: string, date?: string, promptId?: string): Promise<Record<string, number>> {
+export interface StatusCountResult {
+  byStatus: Record<string, number>;
+  bySourceStatus?: Record<string, Record<string, number>>;
+}
+
+/**
+ * Status counts for scan_entries.
+ *
+ * Always returns byStatus. When includeBySource=true, also returns a nested
+ * map of { scan_source: { status: count } } so callers (e.g. dashboard) can
+ * show source-specific visibility (notably telegram intake vs summarizer sync).
+ */
+export async function getStatusCounts(
+  wire?: string,
+  date?: string,
+  promptId?: string,
+  includeBySource = false
+): Promise<StatusCountResult> {
   const pool = getPool();
   const conditions: string[] = [];
   const values: any[] = [];
@@ -1266,16 +1283,44 @@ export async function getStatusCounts(wire?: string, date?: string, promptId?: s
   }
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-  const result = await pool.query(
-    `SELECT status, COUNT(*)::int AS count FROM scan_entries ${whereClause} GROUP BY status`,
-    values
-  );
 
-  const counts: Record<string, number> = {};
-  for (const row of result.rows) {
-    counts[row.status] = row.count;
+  const queries: Promise<any>[] = [
+    pool.query(
+      `SELECT status, COUNT(*)::int AS count FROM scan_entries ${whereClause} GROUP BY status`,
+      values
+    ),
+  ];
+  if (includeBySource) {
+    queries.push(
+      pool.query(
+        `SELECT COALESCE(scan_source, '') AS source, status, COUNT(*)::int AS count
+         FROM scan_entries ${whereClause}
+         GROUP BY COALESCE(scan_source, ''), status`,
+        values
+      )
+    );
   }
-  return counts;
+
+  const [result, sourceResult] = await Promise.all(queries);
+
+  const byStatus: Record<string, number> = {};
+  for (const row of result.rows) {
+    byStatus[row.status] = row.count;
+  }
+
+  const out: StatusCountResult = { byStatus };
+
+  if (includeBySource) {
+    const bySourceStatus: Record<string, Record<string, number>> = {};
+    for (const row of (sourceResult?.rows || [])) {
+      const sourceKey = row.source || 'unknown';
+      if (!bySourceStatus[sourceKey]) bySourceStatus[sourceKey] = {};
+      bySourceStatus[sourceKey][row.status] = row.count;
+    }
+    out.bySourceStatus = bySourceStatus;
+  }
+
+  return out;
 }
 
 export async function getEntriesByStatus(
