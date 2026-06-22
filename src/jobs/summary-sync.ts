@@ -56,16 +56,30 @@ async function inferWire(
   return activeWires[0] || 'crypto';
 }
 
+const DEFAULT_SUMMARY_SYNC_WIRES = ['crypto', 'ai', 'oss'];
+
+function getSummarySyncWires(): string[] {
+  const configured = process.env.SUMMARY_SYNC_WIRES;
+  if (configured) {
+    return configured.split(',').map(w => w.trim()).filter(Boolean);
+  }
+  return DEFAULT_SUMMARY_SYNC_WIRES;
+}
+
 /**
- * Only summaries on wires this deployment actually runs (feeds table) may
- * bridge into scan_entries. Tele-sum can carry non-grant wires (digest
- * channels like repos/models) — without this gate their items would be
- * keyword-inferred into the grants queue. Null wire = legacy rows, allowed
- * through to the existing inference path. Empty string is treated like null
- * (legacy row → inference path).
+ * Only grant editorial wires should bridge into scan_entries. The feeds table
+ * can contain active non-grant digest channels such as repos, models, and claw;
+ * those are valid feeds, but they should not pollute the grants review queue.
+ * Null wire = legacy rows, allowed through to the existing inference path.
+ * Empty string is treated like null (legacy row → inference path).
  */
-export function shouldBridgeWire(wire: string | null | undefined, activeWires: string[]): boolean {
-  return !wire || activeWires.includes(wire);
+export function shouldBridgeWire(
+  wire: string | null | undefined,
+  activeWires: string[],
+  summarySyncWires: string[] = getSummarySyncWires()
+): boolean {
+  if (!wire) return true;
+  return activeWires.includes(wire) && summarySyncWires.includes(wire);
 }
 
 export interface SyncResult {
@@ -150,10 +164,11 @@ export async function syncSummariesToScanEntries(
   }
 
   const activeWires = await getActiveWires();
+  const summarySyncWires = getSummarySyncWires();
 
   for (const row of summaries) {
     try {
-      if (!shouldBridgeWire(row.wire, activeWires)) {
+      if (!shouldBridgeWire(row.wire, activeWires, summarySyncWires)) {
         result.skipped++;
         continue;
       }
