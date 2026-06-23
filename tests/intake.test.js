@@ -234,21 +234,26 @@ test('classification prompt asks for operator route separate from content type',
   assert.match(prompt, /publish \| source_check \| park \| decline \| relationship_signal/i);
 });
 
-test('post-classification status keeps only publish and source-check Telegram items visible for review', () => {
+test('post-classification queues every operator_route for Telegram intake (wide net, label by route)', () => {
+  // New contract: nothing is auto-archived at intake. Every classified item
+  // reaches the queue tagged with its route; the operator filters by route in
+  // the dashboard rather than the system hiding park/relationship_signal items.
   assert.equal(determinePostClassificationStatus({ classification: 'GRANT', qualityScore: 88, operatorRoute: 'publish' }, 'telegram'), 'queued');
   assert.equal(determinePostClassificationStatus({ classification: 'GRANT', qualityScore: 70, operatorRoute: 'source_check' }, 'telegram'), 'queued');
-  assert.equal(determinePostClassificationStatus({ classification: 'GRANT', qualityScore: 52, operatorRoute: 'park' }, 'telegram'), 'archived');
-  assert.equal(determinePostClassificationStatus({ classification: 'NEWS', qualityScore: 55, operatorRoute: 'park' }, 'telegram'), 'archived');
-  assert.equal(determinePostClassificationStatus({ classification: 'NEWS', qualityScore: 62, operatorRoute: 'relationship_signal' }, 'telegram'), 'archived');
-  assert.equal(determinePostClassificationStatus({ classification: 'NOISE', qualityScore: 18, operatorRoute: 'decline' }, 'telegram'), 'archived');
+  assert.equal(determinePostClassificationStatus({ classification: 'GRANT', qualityScore: 52, operatorRoute: 'park' }, 'telegram'), 'queued');
+  assert.equal(determinePostClassificationStatus({ classification: 'NEWS', qualityScore: 55, operatorRoute: 'park' }, 'telegram'), 'queued');
+  assert.equal(determinePostClassificationStatus({ classification: 'NEWS', qualityScore: 62, operatorRoute: 'relationship_signal' }, 'telegram'), 'queued');
+  assert.equal(determinePostClassificationStatus({ classification: 'NOISE', qualityScore: 18, operatorRoute: 'decline' }, 'telegram'), 'queued');
+  // Missing route (classifier omitted it) must still be visible, not silently archived.
+  assert.equal(determinePostClassificationStatus({ classification: 'UNCHECKED', qualityScore: 0 }, 'telegram'), 'queued');
 });
 
-test('post-classification status keeps non-Telegram park items out of the queue', () => {
+test('post-classification queues every operator_route for manual paste intake too', () => {
   assert.equal(determinePostClassificationStatus({ classification: 'GRANT', qualityScore: 88, operatorRoute: 'publish' }, 'manual-intake'), 'queued');
   assert.equal(determinePostClassificationStatus({ classification: 'GRANT', qualityScore: 70, operatorRoute: 'source_check' }, 'manual-intake'), 'queued');
-  assert.equal(determinePostClassificationStatus({ classification: 'NEWS', qualityScore: 68, operatorRoute: 'relationship_signal' }, 'manual-intake'), 'archived');
-  assert.equal(determinePostClassificationStatus({ classification: 'GRANT', qualityScore: 52, operatorRoute: 'park' }, 'manual-intake'), 'archived');
-  assert.equal(determinePostClassificationStatus({ classification: 'NOISE', qualityScore: 18, operatorRoute: 'decline' }, 'manual-intake'), 'archived');
+  assert.equal(determinePostClassificationStatus({ classification: 'NEWS', qualityScore: 68, operatorRoute: 'relationship_signal' }, 'manual-intake'), 'queued');
+  assert.equal(determinePostClassificationStatus({ classification: 'GRANT', qualityScore: 52, operatorRoute: 'park' }, 'manual-intake'), 'queued');
+  assert.equal(determinePostClassificationStatus({ classification: 'NOISE', qualityScore: 18, operatorRoute: 'decline' }, 'manual-intake'), 'queued');
 });
 
 test('normalizeDeadlineForDb extracts parseable dates and ignores rolling placeholders', () => {

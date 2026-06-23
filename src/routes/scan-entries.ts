@@ -17,7 +17,7 @@
  */
 
 import { Router, Request, Response } from 'express';
-import { getPool, getAllFeeds, getAvailableWires, getEntriesByStatus, getStatusCounts, getSeenUrlStats, getSeenUrlsList, getDistributionLogs, getDistributionStatusForEntries } from '../db';
+import { getPool, getAvailableWires, getEntriesByStatus, getStatusCounts, getSeenUrlStats, getSeenUrlsList, getDistributionLogs, getDistributionStatusForEntries } from '../db';
 import { rateLimit } from '../middleware/rate-limit';
 import { isValidUuid, isValidFeedKey } from '../utils/validation';
 import { buildSubmission, buildBatchSubmission } from '../services/intake';
@@ -33,9 +33,8 @@ router.post('/submit', async (req: Request, res: Response) => {
   const { wire, promptVariant, scanDate, rawText, source } = req.body;
 
   try {
-    // Validate wire against feeds table
-    const feeds = await getAllFeeds();
-    const validKeys = feeds.map(f => f.key);
+    // Validate wire against the canonical core wires
+    const validKeys = (await getAvailableWires()).map(w => w.key);
     if (!wire || !validKeys.includes(wire)) {
       res.status(400).json({ error: `Invalid wire "${wire}". Valid: ${validKeys.join(', ')}` });
       return;
@@ -86,8 +85,7 @@ router.post('/submit-batch', async (req: Request, res: Response) => {
   const { wire, scanDate, rawText, source } = req.body;
 
   try {
-    const feeds = await getAllFeeds();
-    const validKeys = feeds.map(f => f.key);
+    const validKeys = (await getAvailableWires()).map(w => w.key);
     if (!wire || !validKeys.includes(wire)) {
       res.status(400).json({ error: `Invalid wire "${wire}". Valid: ${validKeys.join(', ')}` });
       return;

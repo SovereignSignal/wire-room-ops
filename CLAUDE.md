@@ -247,7 +247,7 @@ INGESTION (raw data)                    THE REFINERY (processing)               
                                          approved ──→ distribution channels (TG, X, newsletter, email)
 ```
 
-`*` Queue/archive rules are not identical for every intake path. Scan execution archives `NOISE`; raw background processing queues complete non-duplicates even when classification is weak; Telegram/manual intake uses `operator_route`, keeping Telegram `park` and `relationship_signal` items visible for review. `quality_score` ranks and explains items but is no longer a universal queue threshold.
+`*` Queue/archive rules are not identical for every intake path. Scan execution archives `NOISE`; raw background processing queues complete non-duplicates even when classification is weak. **Operator intake (Telegram bot + manual paste) no longer auto-archives at all** — `determinePostClassificationStatus` queues every classified item (wide net) and the classifier's `operator_route` (`publish`/`source_check`/`park`/`relationship_signal`/`decline`) is stored in `metadata.operator_route` for dashboard filtering (the queue's `ROUTE:` filter) instead of being used to hide items. (Before 2026-06-23 this gate silently archived everything except `publish`/`source_check`, which hid real `park`/`relationship_signal` grants from review.) `quality_score` ranks and explains items but is no longer a universal queue threshold.
 
 ### Dedup Tables
 

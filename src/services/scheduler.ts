@@ -3,6 +3,7 @@ import { runScanExecution } from '../jobs/scan-execution';
 import { runForumScan } from '../jobs/forum-scan';
 import { runSourceFeeds } from '../jobs/source-feeds';
 import { runWeeklyIssue } from '../jobs/weekly-issue';
+import { runBdLeads } from '../jobs/bd-leads';
 import { config } from '../config';
 import { sendTestAlertEmail, sendScheduledJobFailureEmail, sendDailyDigestEmail } from './email';
 import { ExperimentEngine } from './experiment-engine';
@@ -406,6 +407,19 @@ function createJobExecutor(schedule: ScheduleConfig) {
             console.log(`[Scheduler] Weekly issue: spine=${wk.spineCount}, alsoOpen=${wk.alsoOpenCount}, emailed=${wk.emailed}`);
           } catch (e) {
             console.error('[Scheduler] Weekly issue failed (non-fatal):', e instanceof Error ? e.message : e);
+          }
+        }
+
+        // Weekly BD leads — Wednesdays only, as part of the same daily run (no
+        // separate cron). Finds + verifies BD opportunities from the past week
+        // and writes them to the Notion Leads list as Status=Lead. Never creates
+        // Opps, never contacts anyone.
+        if (new Date().getDay() === 3) {
+          try {
+            const bd = await runBdLeads(pool, {});
+            console.log(`[Scheduler] BD leads: ${bd.message}`);
+          } catch (e) {
+            console.error('[Scheduler] BD leads failed (non-fatal):', e instanceof Error ? e.message : e);
           }
         }
 

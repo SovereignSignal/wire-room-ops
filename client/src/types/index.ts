@@ -25,6 +25,9 @@ export interface ScanEntry {
     deadline?: string;
     eligibility?: string;
     summary?: string;
+    operator_route?: 'publish' | 'source_check' | 'park' | 'decline' | 'relationship_signal' | string;
+    in_scope?: boolean;
+    detected_wire?: string;
     related_source?: {
       relation_type?: 'alternate_source' | 'sibling_track' | string;
       matched_entry_id?: number;

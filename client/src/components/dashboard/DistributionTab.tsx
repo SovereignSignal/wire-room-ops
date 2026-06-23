@@ -37,7 +37,16 @@ const CREDENTIAL_FIELDS: Record<string, { key: string; label: string; type: stri
 
 const BASE = '/api';
 
-export function DistributionTab({ verticals }: DistributionTabProps) {
+// Wires are a fixed canonical set (crypto / ai / oss). Hardcoded here so the
+// channel picker can never drift, even if the feeds endpoint returns something
+// unexpected. Order is the display order in the dropdown.
+const WIRE_OPTIONS = [
+  { key: 'crypto', label: 'Crypto' },
+  { key: 'ai', label: 'AI' },
+  { key: 'oss', label: 'OSS' },
+];
+
+export function DistributionTab(_: DistributionTabProps) {
   const [channels, setChannels] = useState<DistributionChannel[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -69,7 +78,7 @@ export function DistributionTab({ verticals }: DistributionTabProps) {
   useEffect(() => { loadChannels(); }, [loadChannels]);
 
   const resetForm = () => {
-    setFormWire(verticals[0] || '');
+    setFormWire(WIRE_OPTIONS[0].key);
     setFormChannel('telegram');
     setFormName('');
     setFormTargetId('');
@@ -303,14 +312,18 @@ export function DistributionTab({ verticals }: DistributionTabProps) {
             <div>
               <label className="block text-[10px] font-display tracking-widest text-muted-foreground mb-1.5">WIRE</label>
               <select
-                value={formWire}
+                value={WIRE_OPTIONS.some(o => o.key === formWire) ? formWire : ''}
                 onChange={e => setFormWire(e.target.value)}
                 className="w-full px-3 py-2 text-sm bg-background border border-border rounded focus:border-primary/50 focus:outline-none"
               >
-                <option value="">All Wires</option>
-                {verticals.map(v => (
-                  <option key={v} value={v}>{v}</option>
+                {WIRE_OPTIONS.map(o => (
+                  <option key={o.key} value={o.key}>{o.label}</option>
                 ))}
+                {/* Preserve a legacy/non-core wire when editing so it stays visible */}
+                {/* until the user picks a valid one; never offered for new channels. */}
+                {formWire && !WIRE_OPTIONS.some(o => o.key === formWire) && (
+                  <option value={formWire}>{formWire} (legacy)</option>
+                )}
               </select>
             </div>
 
