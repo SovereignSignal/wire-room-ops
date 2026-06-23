@@ -110,3 +110,24 @@ test('checkDuplicate URL match still short-circuits before the name layer', asyn
   assert.equal(result.matchType, 'url_exact');
   assert.equal(pool.calls.length, 1);
 });
+
+test('checkDuplicate with urlOnly skips the exact-name layer (link-only intake dedup)', async () => {
+  const pool = stubPool([
+    { rows: [] }, // seen_urls: this exact link has not been seen
+    { rows: [{ id: 55, name: 'Celo Prezenti Season 2 Grants' }] }, // name layer — must NOT run
+  ]);
+
+  const result = await checkDuplicate(
+    pool,
+    {
+      sourceUrl: 'https://x.com/prezenti_grants/status/2069145678228447522',
+      name: 'Celo Prezenti Season 2 Grants',
+      wire: 'crypto',
+    },
+    180,
+    { urlOnly: true },
+  );
+
+  assert.equal(result.isDuplicate, false, 'identical name from a different link must NOT dedup under urlOnly');
+  assert.equal(pool.calls.length, 1, 'only the URL layer should run when urlOnly is set');
+});

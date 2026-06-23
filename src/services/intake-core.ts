@@ -527,7 +527,7 @@ export async function processIntakeMessage(
   if (wire) {
     // Dedup check — fail open if dedup service errors
     try {
-      const dedupResult = await checkDuplicate(getPool(), { sourceUrl: primaryUrl, name, wire }, 180);
+      const dedupResult = await checkDuplicate(getPool(), { sourceUrl: primaryUrl, name, wire }, 180, { urlOnly: true });
       if (dedupResult.isDuplicate) {
         return { status: 'rejected', errorMessage: `Duplicate: already seen as "${dedupResult.matchedEntryName}"` };
       }
@@ -544,12 +544,12 @@ export async function processIntakeMessage(
         scanDate,
         submittedBy: msg.senderId,
         scanSource,
+        status: 'queued',
         experimentId,
       });
       await registerSeen(getPool(), { id, sourceUrl: primaryUrl, name, wire, scanDate });
-      // Classify with full scraped content if available, otherwise use effective description
-      const classifyDesc = scrapedContent || effectiveDescription;
-      setImmediate(() => classifyAndQueue(id, name, classifyDesc, primaryUrl, wire, scanSource));
+      // Dumb pipe: no classification at intake — the row lands in the queue as-is.
+      // Scoring/classification/routing is the downstream filter's job, not the pipe's.
       return {
         status: 'inserted',
         entryId: id,
@@ -567,7 +567,7 @@ export async function processIntakeMessage(
   console.log(`[IntakeCore] Wire undetected for "${name}", defaulting to "${fallbackWire}"`);
 
   try {
-    const dedupResult = await checkDuplicate(getPool(), { sourceUrl: primaryUrl, name, wire: fallbackWire }, 180);
+    const dedupResult = await checkDuplicate(getPool(), { sourceUrl: primaryUrl, name, wire: fallbackWire }, 180, { urlOnly: true });
     if (dedupResult.isDuplicate) {
       return { status: 'rejected', errorMessage: `Duplicate: already seen as "${dedupResult.matchedEntryName}"` };
     }
@@ -584,11 +584,11 @@ export async function processIntakeMessage(
       scanDate,
       submittedBy: msg.senderId,
       scanSource,
+      status: 'queued',
       experimentId,
     });
     await registerSeen(getPool(), { id, sourceUrl: primaryUrl, name, wire: fallbackWire, scanDate });
-    const classifyDesc = scrapedContent || effectiveDescription;
-    setImmediate(() => classifyAndQueue(id, name, classifyDesc, primaryUrl, fallbackWire, scanSource));
+    // Dumb pipe: no classification at intake — lands in the queue as-is (filter runs downstream).
     return {
       status: 'inserted',
       entryId: id,
@@ -906,7 +906,6 @@ export async function processBatchMessage(
     failed: 0,
     entries: [],
   };
-  const toClassify: Array<{ id: number; name: string; description: string; sourceUrl: string; wire: string; scanSource: string }> = [];
   const seenInBatch = new Set<string>(); // Within-batch URL dedup
 
   for (const entry of entries) {
@@ -952,7 +951,7 @@ export async function processBatchMessage(
 
     // DB dedup check — fail open if dedup service errors
     try {
-      const dedupResult = await checkDuplicate(getPool(), { sourceUrl: entry.sourceUrl, name: entry.name, wire: resolvedWire }, 180);
+      const dedupResult = await checkDuplicate(getPool(), { sourceUrl: entry.sourceUrl, name: entry.name, wire: resolvedWire }, 180, { urlOnly: true });
       if (dedupResult.isDuplicate) {
         result.duplicates++;
         result.failed++;
@@ -972,12 +971,12 @@ export async function processBatchMessage(
         scanDate,
         submittedBy: msg.senderId,
         scanSource,
+        status: 'queued',
         deadline: normalizeDeadlineForDb(entry.deadline, scanDate),
         experimentId,
       });
       await registerSeen(getPool(), { id, sourceUrl: entry.sourceUrl, name: entry.name, wire: resolvedWire, scanDate });
       seenInBatch.add(normalizedBatchUrl);
-      toClassify.push({ id, name: entry.name, description: entry.description, sourceUrl: entry.sourceUrl, wire: resolvedWire, scanSource });
       result.inserted++;
       result.entries.push({ name: entry.name, wire: resolvedWire, id });
     } catch (err) {
@@ -987,15 +986,8 @@ export async function processBatchMessage(
     }
   }
 
-  // Classify all inserted entries sequentially in a single setImmediate
-  // to avoid N concurrent LLM calls that can hit API rate limits.
-  if (toClassify.length > 0) {
-    setImmediate(async () => {
-      for (const e of toClassify) {
-        await classifyAndQueue(e.id, e.name, e.description, e.sourceUrl, e.wire, e.scanSource);
-      }
-    });
-  }
+  // Dumb pipe: batch items land in the queue as-is. No classification at intake —
+  // scoring/classification/routing is the downstream filter's job.
 
   // Refresh experiment counts after batch insert
   if (experimentId && result.inserted > 0) {
