@@ -66,7 +66,8 @@ export async function checkDuplicate(
      *  and marks it a duplicate of itself. */
     excludeEntryId?: number;
   },
-  lookbackDays: number = 180
+  lookbackDays: number = 180,
+  options?: { urlOnly?: boolean }
 ): Promise<DedupResult> {
   // Layer 1: URL exact match (fastest)
   // Pass entry name so we can distinguish aggregate URLs (one tweet listing multiple grants)
@@ -81,9 +82,17 @@ export async function checkDuplicate(
   // URLs (x.com status vs project page), so the URL layer can't see it.
   // Matching scan_entries directly (not seen_names) also covers entries that
   // never went through registerSeen, e.g. historical summary-sync rows.
-  const nameResult = await checkExactNameMatch(pool, entry.name, entry.wire, lookbackDays, entry.excludeEntryId);
-  if (nameResult.isDuplicate) {
-    return nameResult;
+  //
+  // Skipped when urlOnly is set: the dumb-pipe Telegram/manual intake dedups on
+  // link identity ONLY, because names can be AI-generated and two distinct
+  // programs may collide on an identical name (a false positive that would
+  // silently drop a real grant). "Same program, different link" is the
+  // downstream filter's job, not the pipe's.
+  if (!options?.urlOnly) {
+    const nameResult = await checkExactNameMatch(pool, entry.name, entry.wire, lookbackDays, entry.excludeEntryId);
+    if (nameResult.isDuplicate) {
+      return nameResult;
+    }
   }
 
   // Layer 2: Fuzzy name match — DISABLED.
