@@ -24,6 +24,7 @@ import { buildSubmission, buildBatchSubmission } from '../services/intake';
 import { runDailyIntake, getDailyQueue, getIntakeStats } from '../jobs/daily-intake';
 import { getPromptEffectivenessStats } from '../services/scan-stats';
 import { singleEntryAction, bulkEntryAction, ApprovalBlockedError, BulkApprovalBlockedError, scheduleForDistribution } from '../services/entry-actions';
+import { buildCuratorStamp } from '../services/curator';
 import { retryDistribution } from '../services/distribution';
 
 const router = Router();
@@ -376,6 +377,50 @@ router.post('/entries/:id/action', async (req: Request, res: Response) => {
     }
     console.error('Failed to update entry status:', error);
     res.status(500).json({ error: 'Failed to update entry' });
+  }
+});
+
+// POST /entries/:id/curate — write the curator's route + confidence recommendation.
+// Non-destructive: merges into metadata.curator, never changes status. This is
+// the queue's judgment signal that replaced the old inline quality_score.
+router.post('/entries/:id/curate', async (req: Request, res: Response) => {
+  const entryId = parseInt(req.params.id, 10);
+  if (isNaN(entryId)) {
+    res.status(400).json({ error: 'Invalid entry ID' });
+    return;
+  }
+
+  const agentSession = (req as any).agentSession;
+  let stamp;
+  try {
+    stamp = buildCuratorStamp({
+      route: req.body?.route,
+      confidence: req.body?.confidence,
+      rationale: req.body?.rationale,
+      by: req.body?.by || agentSession?.userId,
+    });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Invalid curator input' });
+    return;
+  }
+
+  try {
+    const result = await getPool().query(
+      `UPDATE scan_entries
+       SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb,
+           updated_at = now()
+       WHERE id = $2
+       RETURNING id`,
+      [JSON.stringify({ curator: stamp }), entryId]
+    );
+    if (result.rowCount === 0) {
+      res.status(404).json({ error: 'Entry not found' });
+      return;
+    }
+    res.json({ id: entryId, curator: stamp });
+  } catch (error) {
+    console.error('Failed to write curator stamp:', error);
+    res.status(500).json({ error: 'Failed to curate entry' });
   }
 });
 

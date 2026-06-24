@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { ScanEntry, FilterState, Classification } from '@/types';
-import { ScoreBadge } from './ScoreBadge';
+import { CuratorBadge } from './CuratorBadge';
 import { VerticalTag } from './VerticalTag';
 import { ActionBar } from './ActionBar';
 import { FilterBar } from './FilterBar';
@@ -398,7 +398,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
               </div>
               <ClassificationBadge classification={entry.classification} />
               <RelatedSourceBadge entry={entry} />
-              <ScoreBadge score={entry.quality_score} />
+              <CuratorBadge curator={entry.metadata?.curator} />
               {entry.source_published_at && (
                 <span className="text-[10px] font-mono text-muted-foreground">
                   {new Date(entry.source_published_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
@@ -461,7 +461,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
               </th>
               <th className="px-2">Name</th>
               <th className="w-[112px] px-2">Wire</th>
-              <th className="w-[88px] px-2">Score</th>
+              <th className="w-[132px] px-2">Curator</th>
               <th className="w-[128px] px-2">Src</th>
               <th className="w-[268px] px-2">Actions</th>
             </tr>
@@ -502,7 +502,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                   <WireSelector wire={entry.wire} wires={entry.wires} entryId={entry.id} onWiresChange={handleWiresChange} availableWires={availableWires} />
                 </td>
                 <td className="px-2">
-                  <ScoreBadge score={entry.quality_score} />
+                  <CuratorBadge curator={entry.metadata?.curator} />
                 </td>
                 <td className="px-2" onClick={(e) => e.stopPropagation()}>
                   {(() => {
