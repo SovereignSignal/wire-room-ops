@@ -34,6 +34,13 @@ export interface ScanEntry {
       confidence?: number;
       reason?: string;
     };
+    curator?: {
+      route?: 'publish' | 'source_check' | 'park' | 'relationship_signal' | 'decline' | string;
+      confidence?: 'high' | 'med' | 'low' | string;
+      rationale?: string;
+      by?: string;
+      at?: string;
+    };
   };
   source_published_at?: string | null;
   distributable?: boolean;
