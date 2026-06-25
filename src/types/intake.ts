@@ -15,7 +15,7 @@ export type PromptStrategy = 'Action' | 'Landscape' | 'Open Sweep';
 export type ToolType = 'x_search' | 'web_search' | 'perplexity' | 'parallel';
 
 // Where the result came from
-export type ScanSource = 'x-scan' | 'web-search' | 'perplexity' | 'community' | 'telegram' | 'telegram-intake' | 'manual-intake' | 'email' | 'forum' | 'x-monitor' | 'feed';
+export type ScanSource = 'x-scan' | 'web-search' | 'perplexity' | 'community' | 'telegram' | 'telegram-intake' | 'manual-intake' | 'email' | 'forum' | 'x-monitor' | 'feed' | 'claude-code';
 
 // Processing state for scan results as they move through the pipeline
 export type ScanStatus =
