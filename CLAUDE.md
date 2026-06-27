@@ -108,7 +108,7 @@ src/
 │   ├── forum-scan.ts       # Forum scan orchestrator (discuss.watch -> intake, DB-driven wire list)
 │   ├── process-raw.ts      # Background job to process raw entries through Gate 1 -> dedup -> classify
 │   ├── scan-execution.ts   # Automated scan execution (prompt fetch -> Grok/Perplexity -> intake)
-│   └── summary-sync.ts     # Sync tele-sum summaries into scan_entries as approved (watermark-based)
+│   └── summary-sync.ts     # Sync tele-sum summaries into scan_entries as queued review candidates (watermark-based)
 ├── migrations/
 │   ├── cleanup-approved-data.ts  # One-time data cleanup for existing bad entries
 │   ├── cleanup-org-profiles.ts   # Org profile data cleanup
@@ -263,7 +263,7 @@ Pre-approval validation (`src/services/approval-guard.ts`) prevents bad data fro
 
 ### The Telegram Bridge
 
-`summary-sync.ts` bridges `tele-sum`'s `summaries` table → `scan_entries` (as `status=approved`):
+`summary-sync.ts` bridges `tele-sum`'s `summaries` table → `scan_entries` as **review-queue candidates** (`status=queued`, `operator_route='source_check'`, `classification=UNCHECKED`, `quality_score=70` — NOT auto-approved; they land in the operator queue for source verification):
 - Runs every 15 minutes with a high-water mark stored in `app_state` (1-hour overlap; falls back to a 7-day lookback on first run or after errors)
 - Idempotent: skips entries where `source_url` already exists in `scan_entries`
 - Full dedup citizen: runs `checkDuplicate()` (normalized URL + exact name) before inserting, and calls `registerSeen()` after, so intake dedup can see telegram-synced entries
