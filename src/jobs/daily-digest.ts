@@ -1,7 +1,7 @@
 /**
  * Daily Digest Job
  *
- * Runs once per day (default: 6 PM PT). Aggregates all scan activity across
+ * Runs once per day (default: 6 AM PT). Aggregates all scan activity across
  * every wire from the past 24 hours and sends a single summary email.
  *
  * This replaces per-scan email notifications in the scheduler.
