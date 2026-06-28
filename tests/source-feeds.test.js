@@ -82,3 +82,14 @@ test('registry: feed sources are wired and Manifund is disabled (Vercel bot-chec
   assert.equal(reg('manifund').enabled, false);
   assert.ok(reg('karma-gap').enabled);
 });
+
+test('Grants.gov factory: builds per-keyword source, raises rows to 100, shared extract filters off-beat', () => {
+  const ai = reg('grants-gov-ai');
+  assert.equal(JSON.parse(ai.body).rows, 100);
+  assert.equal(JSON.parse(ai.body).keyword, 'artificial intelligence');
+  assert.ok(reg('grants-gov-ml'), 'machine-learning keyword source exists');
+  // shared extract: keeps an AI research opp, drops a medical one
+  const keep = ai.extract({ title: 'NSF Trailblazer Engineering Impact Award', id: '358001', agencyName: 'National Science Foundation', number: 'NSF 26-502', oppStatus: 'posted' });
+  assert.equal(keep.url, 'https://www.grants.gov/search-results-detail/358001');
+  assert.equal(ai.extract({ title: 'Maternal Cardiovascular Health Study', id: '9', agencyName: 'NIH' }), null);
+});

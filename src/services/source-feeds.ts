@@ -417,6 +417,39 @@ const BROWSER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/
 const GRANTS_GOV_OFFBEAT_TITLE = /\b(clinical|biomedical|medical|health|disease|patient|cancer|glucose|diabet|cardio|neuro(?!morphic)|rehabilitation|assistive|nursing|surg|therap|veterinar|agricultur|crop|farm|wildlife|fisher|nutrition|maternal|opioid|addiction|poverty|housing)\b/i;
 const GRANTS_GOV_OFFBEAT_AGENCY = /U\.S\. Mission|Department of State|USAID|U\.S\. Agency for International|National Institutes of Health|Health and Human Services|Centers for Disease/i;
 
+// Grants.gov search2 takes ONE keyword per call; we run several and let intake-level
+// URL dedup (same oppId → same detail URL) collapse cross-keyword repeats.
+function grantsGovSource(key: string, keyword: string): FeedSource {
+  return {
+    key,
+    name: `Grants.gov — ${keyword}`,
+    wire: 'ai',
+    method: 'rest_json',
+    endpoint: 'https://api.grants.gov/v1/api/search2',
+    httpMethod: 'POST',
+    body: JSON.stringify({ rows: 100, keyword, oppStatuses: 'forecasted|posted' }),
+    itemsPath: 'data.oppHits',
+    enabled: true,
+    extract: (it) => {
+      const name = pick(it, 'title', 'opportunityTitle');
+      const id = pick(it, 'id', 'number', 'opportunityNumber');
+      if (!name || !id) return null;
+      const agency = pick(it, 'agencyName', 'agency', 'agencyCode') || '';
+      if (GRANTS_GOV_OFFBEAT_TITLE.test(name) || GRANTS_GOV_OFFBEAT_AGENCY.test(agency)) return null;
+      const num = pick(it, 'number', 'opportunityNumber') || '';
+      const status = pick(it, 'oppStatus') || '';
+      return {
+        name: name.slice(0, 200),
+        description: clip([agency, num && `#${num}`, status && `(${status})`].filter(Boolean).join(' ') || name),
+        url: `https://www.grants.gov/search-results-detail/${id}`,
+        amount: null,
+        deadline: pick(it, 'closeDate', 'responseDate'),
+        publishedAt: toIso(pick(it, 'openDate', 'postingDate')),
+      };
+    },
+  };
+}
+
 export const SOURCE_REGISTRY: FeedSource[] = [
   // =================== CRYPTO ===================
   {
@@ -505,36 +538,11 @@ export const SOURCE_REGISTRY: FeedSource[] = [
     },
   },
   // =================== AI ===================
-  {
-    // US federal grants, AI-scoped. search2 discovery; rich enough to queue from oppHits.
-    key: 'grants-gov-ai',
-    name: 'Grants.gov — AI',
-    wire: 'ai',
-    method: 'rest_json',
-    endpoint: 'https://api.grants.gov/v1/api/search2',
-    httpMethod: 'POST',
-    body: JSON.stringify({ rows: 30, keyword: 'artificial intelligence', oppStatuses: 'forecasted|posted' }),
-    itemsPath: 'data.oppHits',
-    enabled: true,
-    extract: (it) => {
-      const name = pick(it, 'title', 'opportunityTitle');
-      const id = pick(it, 'id', 'number', 'opportunityNumber');
-      if (!name || !id) return null;
-      const agency = pick(it, 'agencyName', 'agency', 'agencyCode') || '';
-      // Off-beat: AI applied to medicine/agriculture/diplomacy etc. — not the AI-ecosystem beat.
-      if (GRANTS_GOV_OFFBEAT_TITLE.test(name) || GRANTS_GOV_OFFBEAT_AGENCY.test(agency)) return null;
-      const num = pick(it, 'number', 'opportunityNumber') || '';
-      const status = pick(it, 'oppStatus') || '';
-      return {
-        name: name.slice(0, 200),
-        description: clip([agency, num && `#${num}`, status && `(${status})`].filter(Boolean).join(' ') || name),
-        url: `https://www.grants.gov/search-results-detail/${id}`,
-        amount: null,
-        deadline: pick(it, 'closeDate', 'responseDate'),
-        publishedAt: toIso(pick(it, 'openDate', 'postingDate')),
-      };
-    },
-  },
+  // US federal grants, AI-scoped. Three keyword variants share the same extract logic via
+  // the grantsGovSource factory; intake-level URL dedup collapses cross-keyword repeats.
+  grantsGovSource('grants-gov-ai', 'artificial intelligence'),
+  grantsGovSource('grants-gov-ml', 'machine learning'),
+  grantsGovSource('grants-gov-fm', 'foundation models'),
   {
     // Manifund grant projects (AI-safety regranting). Behind Vercel bot-check → browser UA.
     key: 'manifund',
