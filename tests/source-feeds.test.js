@@ -101,6 +101,14 @@ test('OTF funds scrape source is wired (scrape method, funds endpoint)', () => {
   assert.ok(s.endpoint.includes('opentech.fund/funds'));
 });
 
+test('own-site funder scrape sources are registered', () => {
+  for (const k of ['coefficient-giving','longview','sff','sovereign-tech','futo-grants']) {
+    const s = reg(k);
+    assert.ok(s, `${k} exists`);
+    assert.equal(s.method, 'scrape');
+  }
+});
+
 test('Grants.gov factory: builds per-keyword source, raises rows to 100, shared extract filters off-beat', () => {
   const ai = reg('grants-gov-ai');
   assert.equal(JSON.parse(ai.body).rows, 100);

@@ -633,6 +633,73 @@ export const SOURCE_REGISTRY: FeedSource[] = [
     scrapePrompt: "Include each named OTF fund/program currently accepting applications (e.g. Internet Freedom Fund, Rapid Response Fund, FOSS Sustainability Fund). Use each fund's own page URL.",
     enabled: true,
   },
+  // =================== OWN-SITE FUNDERS ===================
+  {
+    key: 'coefficient-giving', name: 'Coefficient Giving — Grants', wire: 'ai',
+    method: 'scrape', endpoint: 'https://coefficientgiving.org/apply-for-funding/', urlPrefix: 'https://coefficientgiving.org',
+    scrapePrompt: 'Extract each currently-open grant/fund/fellowship/RFP a builder can apply to; use the program\'s own application/details URL.',
+    enabled: true,
+  },
+  {
+    key: 'longview', name: 'Longview — Grants', wire: 'ai',
+    method: 'scrape', endpoint: 'https://www.longview.org/funds/', urlPrefix: 'https://www.longview.org',
+    scrapePrompt: 'Extract each currently-open grant/fund/fellowship/RFP a builder can apply to; use the program\'s own application/details URL.',
+    enabled: true,
+  },
+  {
+    key: 'sff', name: 'Survival and Flourishing Fund — Grants', wire: 'ai',
+    method: 'scrape', endpoint: 'https://survivalandflourishing.fund/', urlPrefix: 'https://survivalandflourishing.fund',
+    scrapePrompt: 'Extract each currently-open grant/fund/fellowship/RFP a builder can apply to; use the program\'s own application/details URL.',
+    enabled: true,
+  },
+  {
+    key: 'ai2050', name: 'AI2050 — Grants', wire: 'ai',
+    method: 'scrape', endpoint: 'https://ai2050.schmidtsciences.org/', urlPrefix: 'https://ai2050.schmidtsciences.org',
+    scrapePrompt: 'Extract each currently-open grant/fund/fellowship/RFP a builder can apply to; use the program\'s own application/details URL.',
+    enabled: true,
+  },
+  {
+    key: 'cohere-labs', name: 'Cohere Labs — Research Grants', wire: 'ai',
+    method: 'scrape', endpoint: 'https://cohere.com/research/grants', urlPrefix: 'https://cohere.com',
+    scrapePrompt: 'Extract each currently-open grant/fund/fellowship/RFP a builder can apply to; use the program\'s own application/details URL.',
+    enabled: true,
+  },
+  {
+    key: 'openai-forms', name: 'OpenAI — Grant Forms', wire: 'ai',
+    method: 'scrape', endpoint: 'https://openai.com/form/', urlPrefix: 'https://openai.com',
+    scrapePrompt: 'Extract each currently-open grant/fund/fellowship/RFP a builder can apply to; use the program\'s own application/details URL.',
+    enabled: false, // skip: Firecrawl returned no discrete items (page is a form index, not a grants listing)
+  },
+  {
+    key: 'sovereign-tech', name: 'Sovereign Tech Agency — Programs', wire: 'oss',
+    method: 'scrape', endpoint: 'https://www.sovereign.tech/programs', urlPrefix: 'https://www.sovereign.tech',
+    scrapePrompt: 'Extract each currently-open grant/fund/fellowship/RFP a builder can apply to; use the program\'s own application/details URL.',
+    enabled: true,
+  },
+  {
+    key: 'futo-grants', name: 'FUTO — Grants', wire: 'oss',
+    method: 'scrape', endpoint: 'https://futo.org/grants/', urlPrefix: 'https://futo.org',
+    scrapePrompt: 'Extract each currently-open grant/fund/fellowship/RFP a builder can apply to; use the program\'s own application/details URL.',
+    enabled: false, // skip: Firecrawl returned no discrete items (page may be JS-heavy or grants currently closed)
+  },
+  {
+    key: 'freebsd-foundation', name: 'FreeBSD Foundation — Grants', wire: 'oss',
+    method: 'scrape', endpoint: 'https://freebsdfoundation.org/our-work/grants/', urlPrefix: 'https://freebsdfoundation.org',
+    scrapePrompt: 'Extract each currently-open grant/fund/fellowship/RFP a builder can apply to; use the program\'s own application/details URL.',
+    enabled: true,
+  },
+  {
+    key: 'open-source-collective', name: 'Open Source Collective — Funding', wire: 'oss',
+    method: 'scrape', endpoint: 'https://oscollective.org/', urlPrefix: 'https://oscollective.org',
+    scrapePrompt: 'Extract each currently-open grant/fund/fellowship/RFP a builder can apply to; use the program\'s own application/details URL.',
+    enabled: false, // skip: only returns a single fiscal-hosting application form (opencollective.com/opensource/apply), not discrete grant opportunities
+  },
+  {
+    key: 'github-sponsors', name: 'GitHub Sponsors — Explore', wire: 'oss',
+    method: 'scrape', endpoint: 'https://github.com/sponsors/explore', urlPrefix: 'https://github.com',
+    scrapePrompt: 'Extract each currently-open grant/fund/fellowship/RFP a builder can apply to; use the program\'s own application/details URL.',
+    enabled: false, // skip: Firecrawl returned no discrete items (page is JS-rendered browse UI, not a grants listing)
+  },
 ];
 
 export function getEnabledSources(wire?: string): FeedSource[] {
