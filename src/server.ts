@@ -126,9 +126,6 @@ app.get('/ready', async (_req: Request, res: Response) => {
 // Auth, login, logout, file download (mounted at / — keeps full paths)
 app.use('/', authRouter);
 
-// Feed CRUD API
-app.use('/api/feeds', requireAuth, feedRouter);
-
 // Background job triggers + SSE progress + Telegram webhook
 // NOTE: Must be FIRST among /api routes — jobRouter contains the Telegram intake webhook
 // which has NO auth (validated by secret header). If mounted after generic /api+requireAuth
@@ -142,14 +139,20 @@ app.use('/api/scan/prompts', requireAuthOrInternalKey, scanPromptRouter);
 // NOTE: must be before generic /api routes to prevent requireAuth intercepting /api/scan/*
 app.use('/api/scan', requireAuthOrInternalKey, scanEntryRouter);
 
+// Scan execution + forum + feeds triggers (dashboard auth OR internal agent key).
+// MUST come before the session-only /api/feeds and scheduleRouter mounts below: those
+// prefix-shadow POST /api/feeds/run and /api/forum/run and would 401 the internal key.
+app.use('/api', requireAuthOrInternalKey, scanExecutionRouter);
+
+// Feed CRUD API (session only) — mounted AFTER scanExecutionRouter so /api/feeds/run
+// resolves to the trigger above, not this CRUD router.
+app.use('/api/feeds', requireAuth, feedRouter);
+
 // Schedule, digest & scheduler status API
 app.use('/api', requireAuth, scheduleRouter);
 
 // Dashboard overview stats
 app.use('/api/dashboard', requireAuth, dashboardRouter);
-
-// Scan execution + forum scan triggers (dashboard auth or internal agent key)
-app.use('/api', requireAuthOrInternalKey, scanExecutionRouter);
 
 // Background job triggers + SSE progress + Telegram webhook
 // NOTE: jobRouter contains the Telegram webhook which does NOT use requireAuth.
