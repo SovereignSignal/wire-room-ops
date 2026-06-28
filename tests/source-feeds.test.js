@@ -92,6 +92,13 @@ test('EA Forum/LessWrong sources: multiple Forum-Magnum graphql feeds wired with
   assert.ok(lw && lw.endpoint.includes('lesswrong.com'), 'LessWrong source exists');
 });
 
+test('OTF funds scrape source is wired (scrape method, funds endpoint)', () => {
+  const s = reg('otf-funds');
+  assert.ok(s, 'otf-funds exists');
+  assert.equal(s.method, 'scrape');
+  assert.ok(s.endpoint.includes('opentech.fund/funds'));
+});
+
 test('Grants.gov factory: builds per-keyword source, raises rows to 100, shared extract filters off-beat', () => {
   const ai = reg('grants-gov-ai');
   assert.equal(JSON.parse(ai.body).rows, 100);

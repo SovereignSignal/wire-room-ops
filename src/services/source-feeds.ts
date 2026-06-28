@@ -634,6 +634,16 @@ export const SOURCE_REGISTRY: FeedSource[] = [
     // OTF RFPs are titled "Request for Proposals: …"; the rest is blog/news.
     titleAllow: /request for proposal|\bRFP\b|open call|call for|fellowship|funding (round|opportunit)/i,
   },
+  {
+    key: 'otf-funds',
+    name: 'Open Technology Fund — Funds & Open Calls',
+    wire: 'oss',
+    method: 'scrape',
+    endpoint: 'https://www.opentech.fund/funds/',
+    urlPrefix: 'https://www.opentech.fund',
+    scrapePrompt: "Include each named OTF fund/program currently accepting applications (e.g. Internet Freedom Fund, Rapid Response Fund, FOSS Sustainability Fund). Use each fund's own page URL.",
+    enabled: true,
+  },
 ];
 
 export function getEnabledSources(wire?: string): FeedSource[] {
