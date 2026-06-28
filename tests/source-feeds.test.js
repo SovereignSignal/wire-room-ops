@@ -83,6 +83,15 @@ test('registry: feed sources are wired and Manifund is disabled (Vercel bot-chec
   assert.ok(reg('karma-gap').enabled);
 });
 
+test('EA Forum/LessWrong sources: multiple Forum-Magnum graphql feeds wired with itemsPath', () => {
+  const ea = reg('ea-forum-funding');
+  assert.equal(ea.method, 'graphql');
+  assert.equal(ea.itemsPath, 'data.posts.results');
+  assert.ok(reg('ea-forum-opportunities'), 'second EA Forum tag source exists');
+  const lw = reg('lesswrong-funding');
+  assert.ok(lw && lw.endpoint.includes('lesswrong.com'), 'LessWrong source exists');
+});
+
 test('Grants.gov factory: builds per-keyword source, raises rows to 100, shared extract filters off-beat', () => {
   const ai = reg('grants-gov-ai');
   assert.equal(JSON.parse(ai.body).rows, 100);

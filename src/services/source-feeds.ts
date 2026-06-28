@@ -450,6 +450,36 @@ function grantsGovSource(key: string, keyword: string): FeedSource {
   };
 }
 
+// EA Forum and LessWrong share the same Forum-Magnum GraphQL API (same query shape, different host).
+// Resolved tag IDs (2026-06-28):
+//   ea-forum funding-opportunities           be4pBryMKxLhkmgvE
+//   ea-forum opportunities-to-take-action    z8qFsGt5iXyZiLbjN
+//   lesswrong grants-and-fundraising-opportunities  Z6DgiCrMtpSNxwuYW
+function forumMagnumSource(key: string, name: string, host: string, tagId: string): FeedSource {
+  return {
+    key,
+    name,
+    wire: 'ai',
+    method: 'graphql',
+    endpoint: `${host}/graphql`,
+    headers: { 'User-Agent': BROWSER_UA },
+    body: `query { posts(input:{terms:{view:"tagById",tagId:"${tagId}",sortedBy:"new",limit:30}}){ results{ _id title pageUrl postedAt baseScore contents{ plaintextDescription } } } }`,
+    itemsPath: 'data.posts.results',
+    enabled: true,
+    extract: (it) => {
+      const name = pick(it, 'title');
+      const url = pick(it, 'pageUrl');
+      if (!name || !url) return null;
+      return {
+        name: name.slice(0, 200),
+        description: clip(pick(it, 'contents.plaintextDescription') || name),
+        url, amount: null, deadline: null,
+        publishedAt: toIso(pick(it, 'postedAt')),
+      };
+    },
+  };
+}
+
 export const SOURCE_REGISTRY: FeedSource[] = [
   // =================== CRYPTO ===================
   {
@@ -568,31 +598,11 @@ export const SOURCE_REGISTRY: FeedSource[] = [
       };
     },
   },
-  {
-    // EA Forum posts under the funding-opportunities tag (mixed cause → classifier gates wire).
-    key: 'ea-forum-funding',
-    name: 'EA Forum — Funding Opportunities',
-    wire: 'ai',
-    method: 'graphql',
-    endpoint: 'https://forum.effectivealtruism.org/graphql',
-    headers: { 'User-Agent': BROWSER_UA },
-    body: 'query { posts(input:{terms:{view:"tagById",tagId:"be4pBryMKxLhkmgvE",sortedBy:"new",limit:30}}){ results{ _id title pageUrl postedAt baseScore contents{ plaintextDescription } } } }',
-    itemsPath: 'data.posts.results',
-    enabled: true,
-    extract: (it) => {
-      const name = pick(it, 'title');
-      const url = pick(it, 'pageUrl');
-      if (!name || !url) return null;
-      return {
-        name: name.slice(0, 200),
-        description: clip(pick(it, 'contents.plaintextDescription') || name),
-        url,
-        amount: null,
-        deadline: null,
-        publishedAt: toIso(pick(it, 'postedAt')),
-      };
-    },
-  },
+  // EA Forum and LessWrong: three Forum-Magnum GraphQL sources via the forumMagnumSource factory.
+  // Two EA Forum tags + one LessWrong tag broaden coverage beyond the single funding tag.
+  forumMagnumSource('ea-forum-funding', 'EA Forum — Funding Opportunities', 'https://forum.effectivealtruism.org', 'be4pBryMKxLhkmgvE'),
+  forumMagnumSource('ea-forum-opportunities', 'EA Forum — Opportunities/RFPs', 'https://forum.effectivealtruism.org', 'z8qFsGt5iXyZiLbjN'),
+  { ...forumMagnumSource('lesswrong-funding', 'LessWrong — Funding/Opportunities', 'https://www.lesswrong.com', 'Z6DgiCrMtpSNxwuYW'), enabled: false }, // skip: no clean LW funding tag — tag returns general research posts, not active calls
   {
     key: 'fli-grants',
     name: 'Future of Life Institute — Grant Programs',
