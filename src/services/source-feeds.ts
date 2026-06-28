@@ -682,6 +682,7 @@ export const SOURCE_REGISTRY: FeedSource[] = [
     itemsPath: 'opportunitiesData',
     extract: (_it: unknown) => null,
   },
+  // =================== OWN-SITE FUNDERS (continued) ===================
   {
     key: 'longview', name: 'Longview — Grants', wire: 'ai',
     method: 'scrape', endpoint: 'https://www.longview.org/funds/', urlPrefix: 'https://www.longview.org',
