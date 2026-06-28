@@ -77,8 +77,65 @@ test('Avalanche extractor: unique round URL + reward string', () => {
   assert.ok(r.deadline.startsWith('2026-06-18'));
 });
 
-test('registry: feed sources are wired and Manifund is disabled (Vercel bot-check)', () => {
-  assert.ok(SOURCE_REGISTRY.length >= 8);
-  assert.equal(reg('manifund').enabled, false);
+test('registry: feed sources wired; Manifund re-enabled via scrape', () => {
+  assert.ok(SOURCE_REGISTRY.length >= 10);
+  const mf = reg('manifund');
+  assert.equal(mf.enabled, true);
+  assert.equal(mf.method, 'scrape');
   assert.ok(reg('karma-gap').enabled);
+});
+
+test('EA Forum/LessWrong sources: multiple Forum-Magnum graphql feeds wired with itemsPath', () => {
+  const ea = reg('ea-forum-funding');
+  assert.equal(ea.method, 'graphql');
+  assert.equal(ea.itemsPath, 'data.posts.results');
+  assert.ok(reg('ea-forum-opportunities'), 'second EA Forum tag source exists');
+  const lw = reg('lesswrong-funding');
+  assert.ok(lw && lw.endpoint.includes('lesswrong.com'), 'LessWrong source exists');
+});
+
+test('OTF funds scrape source is wired (scrape method, funds endpoint)', () => {
+  const s = reg('otf-funds');
+  assert.ok(s, 'otf-funds exists');
+  assert.equal(s.method, 'scrape');
+  assert.ok(s.endpoint.includes('opentech.fund/funds'));
+});
+
+test('own-site funder scrape sources are registered', () => {
+  for (const k of ['coefficient-giving','longview','sff','sovereign-tech','futo-grants']) {
+    const s = reg(k);
+    assert.ok(s, `${k} exists`);
+    assert.equal(s.method, 'scrape');
+  }
+});
+
+test('Phase 2b staged AI sources: aisafety-funding, ea-opportunities, eu-funding-tenders, sam-gov registered', () => {
+  // scrape sources
+  for (const [k, host] of [['aisafety-funding', 'aisafety.com'], ['ea-opportunities', 'eaopportunities.org']]) {
+    const s = reg(k);
+    assert.ok(s, `${k} exists`);
+    assert.equal(s.method, 'scrape', `${k} is scrape`);
+    assert.ok(s.endpoint.includes(host), `${k} endpoint includes ${host}`);
+    assert.equal(s.wire, 'ai', `${k} wire is ai`);
+  }
+  assert.equal(reg('aisafety-funding').enabled, true, 'aisafety-funding is enabled (dry-run verified)');
+  // rest_json stubs (gated; no keys or unresolved shape)
+  for (const k of ['eu-funding-tenders', 'sam-gov']) {
+    const s = reg(k);
+    assert.ok(s, `${k} exists`);
+    assert.equal(s.method, 'rest_json', `${k} is rest_json`);
+    assert.equal(s.wire, 'ai', `${k} wire is ai`);
+    assert.equal(s.enabled, false, `${k} is disabled (gated)`);
+  }
+});
+
+test('Grants.gov factory: builds per-keyword source, raises rows to 100, shared extract filters off-beat', () => {
+  const ai = reg('grants-gov-ai');
+  assert.equal(JSON.parse(ai.body).rows, 100);
+  assert.equal(JSON.parse(ai.body).keyword, 'artificial intelligence');
+  assert.ok(reg('grants-gov-ml'), 'machine-learning keyword source exists');
+  // shared extract: keeps an AI research opp, drops a medical one
+  const keep = ai.extract({ title: 'NSF Trailblazer Engineering Impact Award', id: '358001', agencyName: 'National Science Foundation', number: 'NSF 26-502', oppStatus: 'posted' });
+  assert.equal(keep.url, 'https://www.grants.gov/search-results-detail/358001');
+  assert.equal(ai.extract({ title: 'Maternal Cardiovascular Health Study', id: '9', agencyName: 'NIH' }), null);
 });

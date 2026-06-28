@@ -417,6 +417,69 @@ const BROWSER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/
 const GRANTS_GOV_OFFBEAT_TITLE = /\b(clinical|biomedical|medical|health|disease|patient|cancer|glucose|diabet|cardio|neuro(?!morphic)|rehabilitation|assistive|nursing|surg|therap|veterinar|agricultur|crop|farm|wildlife|fisher|nutrition|maternal|opioid|addiction|poverty|housing)\b/i;
 const GRANTS_GOV_OFFBEAT_AGENCY = /U\.S\. Mission|Department of State|USAID|U\.S\. Agency for International|National Institutes of Health|Health and Human Services|Centers for Disease/i;
 
+// Grants.gov search2 takes ONE keyword per call; we run several and let intake-level
+// URL dedup (same oppId → same detail URL) collapse cross-keyword repeats.
+function grantsGovSource(key: string, keyword: string): FeedSource {
+  return {
+    key,
+    name: `Grants.gov — ${keyword}`,
+    wire: 'ai',
+    method: 'rest_json',
+    endpoint: 'https://api.grants.gov/v1/api/search2',
+    httpMethod: 'POST',
+    body: JSON.stringify({ rows: 100, keyword, oppStatuses: 'forecasted|posted' }),
+    itemsPath: 'data.oppHits',
+    enabled: true,
+    extract: (it) => {
+      const name = pick(it, 'title', 'opportunityTitle');
+      const id = pick(it, 'id', 'number', 'opportunityNumber');
+      if (!name || !id) return null;
+      const agency = pick(it, 'agencyName', 'agency', 'agencyCode') || '';
+      if (GRANTS_GOV_OFFBEAT_TITLE.test(name) || GRANTS_GOV_OFFBEAT_AGENCY.test(agency)) return null;
+      const num = pick(it, 'number', 'opportunityNumber') || '';
+      const status = pick(it, 'oppStatus') || '';
+      return {
+        name: name.slice(0, 200),
+        description: clip([agency, num && `#${num}`, status && `(${status})`].filter(Boolean).join(' ') || name),
+        url: `https://www.grants.gov/search-results-detail/${id}`,
+        amount: null,
+        deadline: pick(it, 'closeDate', 'responseDate'),
+        publishedAt: toIso(pick(it, 'openDate', 'postingDate')),
+      };
+    },
+  };
+}
+
+// EA Forum and LessWrong share the same Forum-Magnum GraphQL API (same query shape, different host).
+// Resolved tag IDs (2026-06-28):
+//   ea-forum funding-opportunities           be4pBryMKxLhkmgvE
+//   ea-forum opportunities-to-take-action    z8qFsGt5iXyZiLbjN
+//   lesswrong grants-and-fundraising-opportunities  Z6DgiCrMtpSNxwuYW
+function forumMagnumSource(key: string, name: string, host: string, tagId: string): FeedSource {
+  return {
+    key,
+    name,
+    wire: 'ai',
+    method: 'graphql',
+    endpoint: `${host}/graphql`,
+    headers: { 'User-Agent': BROWSER_UA },
+    body: `query { posts(input:{terms:{view:"tagById",tagId:"${tagId}",sortedBy:"new",limit:30}}){ results{ _id title pageUrl postedAt baseScore contents{ plaintextDescription } } } }`,
+    itemsPath: 'data.posts.results',
+    enabled: true,
+    extract: (it) => {
+      const name = pick(it, 'title');
+      const url = pick(it, 'pageUrl');
+      if (!name || !url) return null;
+      return {
+        name: name.slice(0, 200),
+        description: clip(pick(it, 'contents.plaintextDescription') || name),
+        url, amount: null, deadline: null,
+        publishedAt: toIso(pick(it, 'postedAt')),
+      };
+    },
+  };
+}
+
 export const SOURCE_REGISTRY: FeedSource[] = [
   // =================== CRYPTO ===================
   {
@@ -505,86 +568,30 @@ export const SOURCE_REGISTRY: FeedSource[] = [
     },
   },
   // =================== AI ===================
+  // US federal grants, AI-scoped. Three keyword variants share the same extract logic via
+  // the grantsGovSource factory; intake-level URL dedup collapses cross-keyword repeats.
+  grantsGovSource('grants-gov-ai', 'artificial intelligence'),
+  grantsGovSource('grants-gov-ml', 'machine learning'),
+  grantsGovSource('grants-gov-fm', 'foundation models'),
   {
-    // US federal grants, AI-scoped. search2 discovery; rich enough to queue from oppHits.
-    key: 'grants-gov-ai',
-    name: 'Grants.gov — AI',
-    wire: 'ai',
-    method: 'rest_json',
-    endpoint: 'https://api.grants.gov/v1/api/search2',
-    httpMethod: 'POST',
-    body: JSON.stringify({ rows: 30, keyword: 'artificial intelligence', oppStatuses: 'forecasted|posted' }),
-    itemsPath: 'data.oppHits',
-    enabled: true,
-    extract: (it) => {
-      const name = pick(it, 'title', 'opportunityTitle');
-      const id = pick(it, 'id', 'number', 'opportunityNumber');
-      if (!name || !id) return null;
-      const agency = pick(it, 'agencyName', 'agency', 'agencyCode') || '';
-      // Off-beat: AI applied to medicine/agriculture/diplomacy etc. — not the AI-ecosystem beat.
-      if (GRANTS_GOV_OFFBEAT_TITLE.test(name) || GRANTS_GOV_OFFBEAT_AGENCY.test(agency)) return null;
-      const num = pick(it, 'number', 'opportunityNumber') || '';
-      const status = pick(it, 'oppStatus') || '';
-      return {
-        name: name.slice(0, 200),
-        description: clip([agency, num && `#${num}`, status && `(${status})`].filter(Boolean).join(' ') || name),
-        url: `https://www.grants.gov/search-results-detail/${id}`,
-        amount: null,
-        deadline: pick(it, 'closeDate', 'responseDate'),
-        publishedAt: toIso(pick(it, 'openDate', 'postingDate')),
-      };
-    },
-  },
-  {
-    // Manifund grant projects (AI-safety regranting). Behind Vercel bot-check → browser UA.
+    // Direct API is Vercel-bot-blocked; Firecrawl renders the page and bypasses it.
+    // Using /causes/ai-safety (primary); /about/regranting also tried — both yield ~1 aggregate
+    // regranting item per run rather than a rich discrete-opportunity list. Flagged for
+    // verification review; enabled so the regranting signal is captured even if thin.
     key: 'manifund',
-    name: 'Manifund — Grants',
+    name: 'Manifund — AI Safety Grants',
     wire: 'ai',
-    method: 'rest_json',
-    endpoint: 'https://manifund.org/api/v0/projects',
-    headers: { 'User-Agent': BROWSER_UA, Accept: 'application/json' },
-    // Disabled: Vercel bot-check returns 429 to datacenter IPs even with a browser UA.
-    // Manifund projects cross-post to EA Forum (ea-forum-funding), which covers the signal.
-    enabled: false,
-    extract: (it) => {
-      const name = pick(it, 'title');
-      const slug = pick(it, 'slug');
-      if (!name || !slug) return null;
-      return {
-        name: name.slice(0, 200),
-        description: clip(pick(it, 'blurb', 'description') || name),
-        url: `https://manifund.org/projects/${slug}`,
-        amount: pick(it, 'funding_goal'),
-        deadline: null,
-        publishedAt: toIso(pick(it, 'created_at')),
-      };
-    },
-  },
-  {
-    // EA Forum posts under the funding-opportunities tag (mixed cause → classifier gates wire).
-    key: 'ea-forum-funding',
-    name: 'EA Forum — Funding Opportunities',
-    wire: 'ai',
-    method: 'graphql',
-    endpoint: 'https://forum.effectivealtruism.org/graphql',
-    headers: { 'User-Agent': BROWSER_UA },
-    body: 'query { posts(input:{terms:{view:"tagById",tagId:"be4pBryMKxLhkmgvE",sortedBy:"new",limit:30}}){ results{ _id title pageUrl postedAt baseScore contents{ plaintextDescription } } } }',
-    itemsPath: 'data.posts.results',
+    method: 'scrape',
+    endpoint: 'https://manifund.org/causes/ai-safety',
+    urlPrefix: 'https://manifund.org',
+    scrapePrompt: 'Extract active grant/regranting opportunities and open projects seeking funding on this AI-safety page. Use each project/program URL (manifund.org/projects/<slug> or /about/regranting).',
     enabled: true,
-    extract: (it) => {
-      const name = pick(it, 'title');
-      const url = pick(it, 'pageUrl');
-      if (!name || !url) return null;
-      return {
-        name: name.slice(0, 200),
-        description: clip(pick(it, 'contents.plaintextDescription') || name),
-        url,
-        amount: null,
-        deadline: null,
-        publishedAt: toIso(pick(it, 'postedAt')),
-      };
-    },
   },
+  // EA Forum and LessWrong: three Forum-Magnum GraphQL sources via the forumMagnumSource factory.
+  // Two EA Forum tags + one LessWrong tag broaden coverage beyond the single funding tag.
+  forumMagnumSource('ea-forum-funding', 'EA Forum — Funding Opportunities', 'https://forum.effectivealtruism.org', 'be4pBryMKxLhkmgvE'),
+  forumMagnumSource('ea-forum-opportunities', 'EA Forum — Opportunities/RFPs', 'https://forum.effectivealtruism.org', 'z8qFsGt5iXyZiLbjN'),
+  { ...forumMagnumSource('lesswrong-funding', 'LessWrong — Funding/Opportunities', 'https://www.lesswrong.com', 'Z6DgiCrMtpSNxwuYW'), enabled: false }, // skip: no clean LW funding tag — tag returns general research posts, not active calls
   {
     key: 'fli-grants',
     name: 'Future of Life Institute — Grant Programs',
@@ -615,6 +622,126 @@ export const SOURCE_REGISTRY: FeedSource[] = [
     enabled: true,
     // OTF RFPs are titled "Request for Proposals: …"; the rest is blog/news.
     titleAllow: /request for proposal|\bRFP\b|open call|call for|fellowship|funding (round|opportunit)/i,
+  },
+  {
+    key: 'otf-funds',
+    name: 'Open Technology Fund — Funds & Open Calls',
+    wire: 'oss',
+    method: 'scrape',
+    endpoint: 'https://www.opentech.fund/funds/',
+    urlPrefix: 'https://www.opentech.fund',
+    scrapePrompt: "Include each named OTF fund/program currently accepting applications (e.g. Internet Freedom Fund, Rapid Response Fund, FOSS Sustainability Fund). Use each fund's own page URL.",
+    enabled: true,
+  },
+  // =================== OWN-SITE FUNDERS ===================
+  {
+    key: 'coefficient-giving', name: 'Coefficient Giving — Grants', wire: 'ai',
+    method: 'scrape', endpoint: 'https://coefficientgiving.org/apply-for-funding/', urlPrefix: 'https://coefficientgiving.org',
+    scrapePrompt: 'Extract each currently-open grant/fund/fellowship/RFP a builder can apply to; use the program\'s own application/details URL.',
+    enabled: true,
+  },
+  // =================== PHASE 2b — STAGED AI SOURCES (verification gate) ===================
+  {
+    key: 'aisafety-funding',
+    name: 'AISafety.com — Funding Opportunities',
+    wire: 'ai',
+    method: 'scrape',
+    endpoint: 'https://www.aisafety.com/funding',
+    urlPrefix: 'https://www.aisafety.com',
+    scrapePrompt: 'Extract each currently-open AI safety grant, fellowship, or funding opportunity a researcher or org can apply to; use each opportunity\'s own application/details URL.',
+    enabled: true, // verified 2026-06-28: 16 discrete items (Schmidt Sciences, SFF, Longview, Leo Gao, …)
+  },
+  {
+    key: 'ea-opportunities',
+    name: 'EA Opportunities — Grants & RFPs',
+    wire: 'ai',
+    method: 'scrape',
+    endpoint: 'https://www.eaopportunities.org/',
+    urlPrefix: 'https://www.eaopportunities.org',
+    scrapePrompt: 'Extract each currently-open grant, fellowship, or funding opportunity a builder or researcher can apply to; use each opportunity\'s own application/details URL.',
+    enabled: false, // skip: eaopportunities.org domain does not resolve (DNS failure 2026-06-28)
+  },
+  {
+    key: 'eu-funding-tenders',
+    name: 'EU Funding & Tenders — AI Open Calls',
+    wire: 'ai',
+    method: 'rest_json',
+    endpoint: 'https://api.tech.ec.europa.eu/search-api/prod/rest/search',
+    enabled: false, // skip: F&T SEDIA search API shape not resolved in bounded effort (multipart/form body, non-standard response envelope)
+    // itemsPath/extract UNVERIFIED — SEDIA API needs a multipart/form request + response-shape work before enabling; do not flip enabled:true until resolved
+    extract: (_it: unknown) => null,
+  },
+  {
+    key: 'sam-gov',
+    name: 'SAM.gov — AI Opportunities',
+    wire: 'ai',
+    method: 'rest_json',
+    endpoint: 'https://api.sam.gov/opportunities/v2/search',
+    enabled: false, // skip: needs SAM_GOV_API_KEY (not configured)
+    // headers: { 'X-Api-Key': process.env.SAM_GOV_API_KEY || '' },
+    itemsPath: 'opportunitiesData',
+    extract: (_it: unknown) => null,
+  },
+  // =================== OWN-SITE FUNDERS (continued) ===================
+  {
+    key: 'longview', name: 'Longview — Grants', wire: 'ai',
+    method: 'scrape', endpoint: 'https://www.longview.org/funds/', urlPrefix: 'https://www.longview.org',
+    scrapePrompt: 'Extract each currently-open grant/fund/fellowship/RFP a builder can apply to; use the program\'s own application/details URL.',
+    enabled: true,
+  },
+  {
+    key: 'sff', name: 'Survival and Flourishing Fund — Grants', wire: 'ai',
+    method: 'scrape', endpoint: 'https://survivalandflourishing.fund/', urlPrefix: 'https://survivalandflourishing.fund',
+    scrapePrompt: 'Extract each currently-open grant/fund/fellowship/RFP a builder can apply to; use the program\'s own application/details URL.',
+    enabled: true,
+  },
+  {
+    key: 'ai2050', name: 'AI2050 — Grants', wire: 'ai',
+    method: 'scrape', endpoint: 'https://ai2050.schmidtsciences.org/', urlPrefix: 'https://ai2050.schmidtsciences.org',
+    scrapePrompt: 'Extract each currently-open grant/fund/fellowship/RFP a builder can apply to; use the program\'s own application/details URL.',
+    enabled: true,
+  },
+  {
+    key: 'cohere-labs', name: 'Cohere Labs — Research Grants', wire: 'ai',
+    method: 'scrape', endpoint: 'https://cohere.com/research/grants', urlPrefix: 'https://cohere.com',
+    scrapePrompt: 'Extract each currently-open grant/fund/fellowship/RFP a builder can apply to; use the program\'s own application/details URL.',
+    enabled: true,
+  },
+  {
+    key: 'openai-forms', name: 'OpenAI — Grant Forms', wire: 'ai',
+    method: 'scrape', endpoint: 'https://openai.com/form/', urlPrefix: 'https://openai.com',
+    scrapePrompt: 'Extract each currently-open grant/fund/fellowship/RFP a builder can apply to; use the program\'s own application/details URL.',
+    enabled: false, // skip: Firecrawl returned no discrete items (page is a form index, not a grants listing)
+  },
+  {
+    key: 'sovereign-tech', name: 'Sovereign Tech Agency — Programs', wire: 'oss',
+    method: 'scrape', endpoint: 'https://www.sovereign.tech/programs', urlPrefix: 'https://www.sovereign.tech',
+    scrapePrompt: 'Extract each currently-open grant/fund/fellowship/RFP a builder can apply to; use the program\'s own application/details URL.',
+    enabled: true,
+  },
+  {
+    key: 'futo-grants', name: 'FUTO — Grants', wire: 'oss',
+    method: 'scrape', endpoint: 'https://futo.org/grants/', urlPrefix: 'https://futo.org',
+    scrapePrompt: 'Extract each currently-open grant/fund/fellowship/RFP a builder can apply to; use the program\'s own application/details URL.',
+    enabled: false, // skip: Firecrawl returned no discrete items (page may be JS-heavy or grants currently closed)
+  },
+  {
+    key: 'freebsd-foundation', name: 'FreeBSD Foundation — Grants', wire: 'oss',
+    method: 'scrape', endpoint: 'https://freebsdfoundation.org/our-work/grants/', urlPrefix: 'https://freebsdfoundation.org',
+    scrapePrompt: 'Extract each currently-open grant/fund/fellowship/RFP a builder can apply to; use the program\'s own application/details URL.',
+    enabled: true,
+  },
+  {
+    key: 'open-source-collective', name: 'Open Source Collective — Funding', wire: 'oss',
+    method: 'scrape', endpoint: 'https://oscollective.org/', urlPrefix: 'https://oscollective.org',
+    scrapePrompt: 'Extract each currently-open grant/fund/fellowship/RFP a builder can apply to; use the program\'s own application/details URL.',
+    enabled: false, // skip: only returns a single fiscal-hosting application form (opencollective.com/opensource/apply), not discrete grant opportunities
+  },
+  {
+    key: 'github-sponsors', name: 'GitHub Sponsors — Explore', wire: 'oss',
+    method: 'scrape', endpoint: 'https://github.com/sponsors/explore', urlPrefix: 'https://github.com',
+    scrapePrompt: 'Extract each currently-open grant/fund/fellowship/RFP a builder can apply to; use the program\'s own application/details URL.',
+    enabled: false, // skip: Firecrawl returned no discrete items (page is JS-rendered browse UI, not a grants listing)
   },
 ];
 
