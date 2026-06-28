@@ -574,29 +574,18 @@ export const SOURCE_REGISTRY: FeedSource[] = [
   grantsGovSource('grants-gov-ml', 'machine learning'),
   grantsGovSource('grants-gov-fm', 'foundation models'),
   {
-    // Manifund grant projects (AI-safety regranting). Behind Vercel bot-check → browser UA.
+    // Direct API is Vercel-bot-blocked; Firecrawl renders the page and bypasses it.
+    // Using /causes/ai-safety (primary); /about/regranting also tried — both yield ~1 aggregate
+    // regranting item per run rather than a rich discrete-opportunity list. Flagged for
+    // verification review; enabled so the regranting signal is captured even if thin.
     key: 'manifund',
-    name: 'Manifund — Grants',
+    name: 'Manifund — AI Safety Grants',
     wire: 'ai',
-    method: 'rest_json',
-    endpoint: 'https://manifund.org/api/v0/projects',
-    headers: { 'User-Agent': BROWSER_UA, Accept: 'application/json' },
-    // Disabled: Vercel bot-check returns 429 to datacenter IPs even with a browser UA.
-    // Manifund projects cross-post to EA Forum (ea-forum-funding), which covers the signal.
-    enabled: false,
-    extract: (it) => {
-      const name = pick(it, 'title');
-      const slug = pick(it, 'slug');
-      if (!name || !slug) return null;
-      return {
-        name: name.slice(0, 200),
-        description: clip(pick(it, 'blurb', 'description') || name),
-        url: `https://manifund.org/projects/${slug}`,
-        amount: pick(it, 'funding_goal'),
-        deadline: null,
-        publishedAt: toIso(pick(it, 'created_at')),
-      };
-    },
+    method: 'scrape',
+    endpoint: 'https://manifund.org/causes/ai-safety',
+    urlPrefix: 'https://manifund.org',
+    scrapePrompt: 'Extract active grant/regranting opportunities and open projects seeking funding on this AI-safety page. Use each project/program URL (manifund.org/projects/<slug> or /about/regranting).',
+    enabled: true,
   },
   // EA Forum and LessWrong: three Forum-Magnum GraphQL sources via the forumMagnumSource factory.
   // Two EA Forum tags + one LessWrong tag broaden coverage beyond the single funding tag.

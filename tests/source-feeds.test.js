@@ -77,9 +77,11 @@ test('Avalanche extractor: unique round URL + reward string', () => {
   assert.ok(r.deadline.startsWith('2026-06-18'));
 });
 
-test('registry: feed sources are wired and Manifund is disabled (Vercel bot-check)', () => {
-  assert.ok(SOURCE_REGISTRY.length >= 8);
-  assert.equal(reg('manifund').enabled, false);
+test('registry: feed sources wired; Manifund re-enabled via scrape', () => {
+  assert.ok(SOURCE_REGISTRY.length >= 10);
+  const mf = reg('manifund');
+  assert.equal(mf.enabled, true);
+  assert.equal(mf.method, 'scrape');
   assert.ok(reg('karma-gap').enabled);
 });
 
