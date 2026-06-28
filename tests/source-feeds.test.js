@@ -109,6 +109,25 @@ test('own-site funder scrape sources are registered', () => {
   }
 });
 
+test('Phase 2b staged AI sources: aisafety-funding, ea-opportunities, eu-funding-tenders, sam-gov registered', () => {
+  // scrape sources
+  for (const [k, host] of [['aisafety-funding', 'aisafety.com'], ['ea-opportunities', 'eaopportunities.org']]) {
+    const s = reg(k);
+    assert.ok(s, `${k} exists`);
+    assert.equal(s.method, 'scrape', `${k} is scrape`);
+    assert.ok(s.endpoint.includes(host), `${k} endpoint includes ${host}`);
+    assert.equal(s.wire, 'ai', `${k} wire is ai`);
+  }
+  // rest_json stubs (gated; no keys or unresolved shape)
+  for (const k of ['eu-funding-tenders', 'sam-gov']) {
+    const s = reg(k);
+    assert.ok(s, `${k} exists`);
+    assert.equal(s.method, 'rest_json', `${k} is rest_json`);
+    assert.equal(s.wire, 'ai', `${k} wire is ai`);
+    assert.equal(s.enabled, false, `${k} is disabled (gated)`);
+  }
+});
+
 test('Grants.gov factory: builds per-keyword source, raises rows to 100, shared extract filters off-beat', () => {
   const ai = reg('grants-gov-ai');
   assert.equal(JSON.parse(ai.body).rows, 100);

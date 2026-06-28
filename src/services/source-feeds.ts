@@ -640,6 +640,47 @@ export const SOURCE_REGISTRY: FeedSource[] = [
     scrapePrompt: 'Extract each currently-open grant/fund/fellowship/RFP a builder can apply to; use the program\'s own application/details URL.',
     enabled: true,
   },
+  // =================== PHASE 2b — STAGED AI SOURCES (verification gate) ===================
+  {
+    key: 'aisafety-funding',
+    name: 'AISafety.com — Funding Opportunities',
+    wire: 'ai',
+    method: 'scrape',
+    endpoint: 'https://www.aisafety.com/funding',
+    urlPrefix: 'https://www.aisafety.com',
+    scrapePrompt: 'Extract each currently-open AI safety grant, fellowship, or funding opportunity a researcher or org can apply to; use each opportunity\'s own application/details URL.',
+    enabled: true, // verified 2026-06-28: 16 discrete items (Schmidt Sciences, SFF, Longview, Leo Gao, …)
+  },
+  {
+    key: 'ea-opportunities',
+    name: 'EA Opportunities — Grants & RFPs',
+    wire: 'ai',
+    method: 'scrape',
+    endpoint: 'https://www.eaopportunities.org/',
+    urlPrefix: 'https://www.eaopportunities.org',
+    scrapePrompt: 'Extract each currently-open grant, fellowship, or funding opportunity a builder or researcher can apply to; use each opportunity\'s own application/details URL.',
+    enabled: false, // skip: eaopportunities.org domain does not resolve (DNS failure 2026-06-28)
+  },
+  {
+    key: 'eu-funding-tenders',
+    name: 'EU Funding & Tenders — AI Open Calls',
+    wire: 'ai',
+    method: 'rest_json',
+    endpoint: 'https://api.tech.ec.europa.eu/search-api/prod/rest/search',
+    enabled: false, // skip: F&T SEDIA search API shape not resolved in bounded effort (multipart/form body, non-standard response envelope)
+    itemsPath: 'results',
+    extract: (_it: unknown) => null,
+  },
+  {
+    key: 'sam-gov',
+    name: 'SAM.gov — AI Opportunities',
+    wire: 'ai',
+    method: 'rest_json',
+    endpoint: 'https://api.sam.gov/opportunities/v2/search',
+    enabled: false, // skip: needs SAM_GOV_API_KEY (not configured)
+    itemsPath: 'opportunitiesData',
+    extract: (_it: unknown) => null,
+  },
   {
     key: 'longview', name: 'Longview — Grants', wire: 'ai',
     method: 'scrape', endpoint: 'https://www.longview.org/funds/', urlPrefix: 'https://www.longview.org',
