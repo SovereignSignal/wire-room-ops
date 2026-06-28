@@ -118,6 +118,7 @@ test('Phase 2b staged AI sources: aisafety-funding, ea-opportunities, eu-funding
     assert.ok(s.endpoint.includes(host), `${k} endpoint includes ${host}`);
     assert.equal(s.wire, 'ai', `${k} wire is ai`);
   }
+  assert.equal(reg('aisafety-funding').enabled, true, 'aisafety-funding is enabled (dry-run verified)');
   // rest_json stubs (gated; no keys or unresolved shape)
   for (const k of ['eu-funding-tenders', 'sam-gov']) {
     const s = reg(k);

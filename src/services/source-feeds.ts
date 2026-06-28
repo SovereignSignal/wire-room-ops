@@ -668,7 +668,7 @@ export const SOURCE_REGISTRY: FeedSource[] = [
     method: 'rest_json',
     endpoint: 'https://api.tech.ec.europa.eu/search-api/prod/rest/search',
     enabled: false, // skip: F&T SEDIA search API shape not resolved in bounded effort (multipart/form body, non-standard response envelope)
-    itemsPath: 'results',
+    // itemsPath/extract UNVERIFIED — SEDIA API needs a multipart/form request + response-shape work before enabling; do not flip enabled:true until resolved
     extract: (_it: unknown) => null,
   },
   {
@@ -678,6 +678,7 @@ export const SOURCE_REGISTRY: FeedSource[] = [
     method: 'rest_json',
     endpoint: 'https://api.sam.gov/opportunities/v2/search',
     enabled: false, // skip: needs SAM_GOV_API_KEY (not configured)
+    // headers: { 'X-Api-Key': process.env.SAM_GOV_API_KEY || '' },
     itemsPath: 'opportunitiesData',
     extract: (_it: unknown) => null,
   },
