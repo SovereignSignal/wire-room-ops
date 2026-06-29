@@ -4,7 +4,7 @@ import { runForumScan } from '../jobs/forum-scan';
 import { runSourceFeeds } from '../jobs/source-feeds';
 import { runWeeklyIssue } from '../jobs/weekly-issue';
 import { config } from '../config';
-import { sendTestAlertEmail, sendScheduledJobFailureEmail, sendDailyDigestEmail } from './email';
+import { sendTestAlertEmail, sendScheduledJobFailureEmail, sendDailyDigestEmail, sendDeadlineDigestEmail } from './email';
 import { ExperimentEngine } from './experiment-engine';
 import { runCsvExport } from '../jobs/csv-export';
 import { createMagicLink } from './auth';
@@ -553,9 +553,26 @@ function createJobExecutor(schedule: ScheduleConfig) {
         console.log(`[Scheduler] Running deadline digest for ${wire || 'all wires'}...`);
         const results = await runDeadlineDigest(pool, wire);
         const total = results.reduce((sum, r) => sum + r.entries.length, 0);
-        status.status = 'success';
-        status.error = null;
         console.log(`[Scheduler] Deadline digest: ${total} entries closing soon across ${results.length} wires`);
+        if (total > 0) {
+          const recipients = currentScheduleData.notifyEmails
+            ? currentScheduleData.notifyEmails.split(',').map(e => e.trim()).filter(Boolean)
+            : undefined;
+          try {
+            await sendDeadlineDigestEmail(results, config.app.url, recipients);
+            status.status = 'success';
+            status.error = null;
+            console.log(`[Scheduler] Deadline digest email sent (${total} closing)`);
+          } catch (emailErr) {
+            status.status = 'failed';
+            status.error = `Deadline digest email failed: ${emailErr instanceof Error ? emailErr.message : String(emailErr)}`;
+            console.error(`[Scheduler] Deadline digest email failed:`, emailErr);
+          }
+        } else {
+          status.status = 'success';
+          status.error = null;
+          console.log(`[Scheduler] Deadline digest: nothing closing — no email sent`);
+        }
 
       } else {
         console.warn(`[Scheduler] Unsupported schedule type "${currentScheduleData.scheduleType}" — skipping`);

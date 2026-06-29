@@ -725,6 +725,68 @@ ${brand.name}`.trim();
   console.log(`[Email] Agent brief sent to: ${Array.isArray(to) ? to.join(', ') : to}`);
 }
 
+export async function sendDeadlineDigestEmail(
+  results: { wire: string; entries: { name: string; deadline: string; daysUntil: number; amount: string | null; sourceUrl: string }[] }[],
+  dashboardUrl: string,
+  recipients?: string[]
+): Promise<void> {
+  const brand = getBrand();
+  const total = results.reduce((n, r) => n + r.entries.length, 0);
+
+  type DE = { name: string; deadline: string; daysUntil: number; amount: string | null; sourceUrl: string };
+  function row(e: DE): string {
+    const name = e.sourceUrl
+      ? `<a href="${escapeHtml(e.sourceUrl)}" style="color:#0088cc;text-decoration:none;">${escapeHtml(e.name)}</a>`
+      : escapeHtml(e.name);
+    const days = e.daysUntil <= 0 ? 'today' : e.daysUntil === 1 ? '1 day' : `${e.daysUntil} days`;
+    return `<tr>
+      <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#222;">${name}</td>
+      <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#444;${MONO}">${escapeHtml(e.deadline || '')}</td>
+      <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#cc6600;text-align:center;">${days}</td>
+      <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#666;">${escapeHtml(e.amount || '')}</td>
+    </tr>`;
+  }
+
+  const sections = results.filter(r => r.entries.length > 0).map(r => `${sectionLabel(`${r.wire} — ${r.entries.length} closing`)}
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #eee;">
+      <tr>
+        <th style="padding:6px 8px;text-align:left;font-size:11px;color:#666;border-bottom:2px solid #ddd;">Name</th>
+        <th style="padding:6px 8px;text-align:left;font-size:11px;color:#666;border-bottom:2px solid #ddd;">Deadline</th>
+        <th style="padding:6px 8px;text-align:center;font-size:11px;color:#666;border-bottom:2px solid #ddd;">Closes in</th>
+        <th style="padding:6px 8px;text-align:left;font-size:11px;color:#666;border-bottom:2px solid #ddd;">Amount</th>
+      </tr>
+      ${r.entries.map(row).join('')}
+    </table>`).join('');
+
+  const body = `
+    <p style="margin:0 0 16px;font-size:14px;color:#222;"><strong>${total}</strong> approved ${total === 1 ? 'entry is' : 'entries are'} closing in the next 7 days.</p>
+    ${sections}
+    ${emailBtn(dashboardUrl, 'View in Dashboard')}`;
+
+  const htmlContent = emailShell('Closing Soon', body);
+  const textContent = `${brand.name.toUpperCase()} — CLOSING SOON (next 7 days)
+
+${total} approved ${total === 1 ? 'entry' : 'entries'} closing:
+${results.flatMap(r => r.entries.map(e => `  - [${r.wire}] ${e.name} — ${e.deadline} (in ${e.daysUntil}d)`)).join('\n')}
+
+Dashboard: ${dashboardUrl}
+
+---
+${brand.name}`.trim();
+
+  const to = recipients && recipients.length > 0 ? recipients : config.email.notificationEmail;
+
+  await sendWithTracking({
+    from: `${brand.fromName} <${config.email.fromEmail}>`,
+    to,
+    subject: `${brand.name} — ${total} closing in 7 days`,
+    html: htmlContent,
+    text: textContent,
+  });
+
+  console.log(`[Email] Deadline digest sent to: ${Array.isArray(to) ? to.join(', ') : to}`);
+}
+
 // --- Newsletter rendering: markdown issue -> professional HTML email ---
 
 const NL_LINK = 'color:#1a56db;text-decoration:none;border-bottom:1px solid #bcd0f7;';
