@@ -1399,10 +1399,17 @@ export async function getSeenUrlStats(wire?: string): Promise<{ seededCount: num
 }
 
 export async function getSeenUrlsList(
-  opts?: { wire?: string; limit?: number; offset?: number }
+  opts?: { wire?: string; limit?: number; offset?: number; scope?: 'seed' | 'all' }
 ): Promise<{ urls: any[]; total: number }> {
   const pool = getPool();
-  const conditions: string[] = [`first_seen_entry_id IS NULL`];
+  const conditions: string[] = [];
+  // Default ('seed') keeps the historical stats view: only the one-time bootstrap rows
+  // (first_seen_entry_id IS NULL). scope='all' returns the COMPLETE seen set — every URL
+  // registered through normal intake too — which is what an external deduper (the grant
+  // scout) needs; the seed-only view silently starved it (dedup saw ~1% of the catalog).
+  if (opts?.scope !== 'all') {
+    conditions.push(`first_seen_entry_id IS NULL`);
+  }
   const values: any[] = [];
   let paramIndex = 1;
 
@@ -1411,13 +1418,15 @@ export async function getSeenUrlsList(
     values.push(opts.wire);
   }
 
-  const whereClause = `WHERE ${conditions.join(' AND ')}`;
+  const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const limit = opts?.limit || 50;
   const offset = opts?.offset || 0;
 
   const [dataRes, countRes] = await Promise.all([
     pool.query(
-      `SELECT url, wire, first_seen_date FROM seen_urls ${whereClause} ORDER BY first_seen_date DESC LIMIT $${paramIndex++} OFFSET $${paramIndex++}`,
+      // normalized_url is included so an external deduper can match on Wire Room's own
+      // canonical form rather than re-deriving it and risking a normalization mismatch.
+      `SELECT url, normalized_url, wire, first_seen_date FROM seen_urls ${whereClause} ORDER BY first_seen_date DESC LIMIT $${paramIndex++} OFFSET $${paramIndex++}`,
       [...values, limit, offset]
     ),
     pool.query(
