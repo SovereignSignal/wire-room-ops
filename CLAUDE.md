@@ -146,7 +146,7 @@ src/
 │   ├── scheduler.ts        # node-cron scheduling with health tracking (DB-driven wire list)
 │   ├── scraper.ts          # Firecrawl integration, URL resolution
 │   ├── storage.ts          # Postgres-backed file storage with in-memory cache (keeps last 10)
-│   ├── telegram-adapter.ts # Telegram intake bot adapter (webhook handler, inline keyboard)
+│   ├── telegram-adapter.ts # Telegram intake bot adapter (webhook handler -> intake-core)
 │   ├── telegram-channel.ts # Telegram Bot API posting to channels (distribution)
 │   └── x-client.ts         # Twitter/X posting via twitter-api-v2
 ├── views/                    # Server-rendered pages (login + error only; dashboard is React SPA)
@@ -382,7 +382,7 @@ Automated discovery of grant opportunities via X.com scanning, web search, and f
 - **`collect-engagement`**: Runs `collectXEngagement()` — fetches X/Twitter public_metrics for recent distributed posts
 - **`experiment-loop`**: Runs `runExperimentLoop()` — evaluates and creates scoring parameter experiments
 - **`drip-distribution`**: Runs `runDripDistribution()` — distributes one approved entry per wire per run
-- **`deadline-digest`**: Runs `runDeadlineDigest()` — finds entries closing soon
+- **`deadline-digest`**: Runs `runDeadlineDigest()` — finds approved entries with deadlines within 7 days and emails a "Closing Soon" digest (grouped by wire; sends only when there are entries, quiet otherwise)
 - **`account-monitor`**: Runs `runAccountMonitor()` — polls monitored X accounts for new URLs
 
 ### Prompt Management
