@@ -7,7 +7,7 @@
 
 import { config } from '../config';
 import { getCachedProvider } from './api-provider';
-import { processIntakeMessage, completeWireSelection, cleanupPendingEntries, isBatchMessage, processBatchMessage } from './intake-core';
+import { processIntakeMessage, isBatchMessage, processBatchMessage } from './intake-core';
 
 function getIntakeBotToken(): string {
   return getCachedProvider('telegram-intake')?.api_key || config.telegramIntake.botToken;
@@ -31,17 +31,9 @@ interface TelegramMessage {
   forward_from_chat?: { id: number; title?: string };
 }
 
-interface TelegramCallbackQuery {
-  id: string;
-  from: { id: number };
-  message?: { chat: { id: number }; message_id: number };
-  data?: string;
-}
-
 interface TelegramUpdate {
   update_id: number;
   message?: TelegramMessage;
-  callback_query?: TelegramCallbackQuery;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -79,36 +71,6 @@ async function sendMessage(chatId: number, text: string, replyMarkup?: object): 
   }
 }
 
-async function answerCallbackQuery(callbackQueryId: string): Promise<void> {
-  const botToken = getIntakeBotToken();
-  try {
-    await fetch(`${TELEGRAM_API}/bot${botToken}/answerCallbackQuery`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ callback_query_id: callbackQueryId }),
-    });
-  } catch (error) {
-    console.error('[TelegramAdapter] answerCallbackQuery error:', error);
-  }
-}
-
-/**
- * Build dynamic inline keyboard buttons from available wires.
- */
-function buildWireKeyboard(pendingKey: string, wires: string[]): object {
-  // Layout: up to 3 buttons per row
-  const buttons = wires.map(wire => ({
-    text: wire.charAt(0).toUpperCase() + wire.slice(1),
-    callback_data: `wire:${pendingKey}:${wire}`,
-  }));
-
-  const rows: Array<typeof buttons> = [];
-  for (let i = 0; i < buttons.length; i += 3) {
-    rows.push(buttons.slice(i, i + 3));
-  }
-  return { inline_keyboard: rows };
-}
-
 /**
  * Format an IntakeResult as a Telegram reply message.
  */
@@ -135,11 +97,6 @@ function formatReply(result: IntakeResult): string {
  * Handle an incoming Telegram webhook update (message or callback).
  */
 export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void> {
-  if (update.callback_query) {
-    await handleCallback(update.callback_query);
-    return;
-  }
-
   const message = update.message;
   if (!message?.from) return;
 
@@ -195,16 +152,6 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
 
   const result = await processIntakeMessage(intakeMsg, 'telegram');
 
-  if (result.status === 'needs_wire' && result.pendingKey && result.availableWires) {
-    console.log(`[TelegramAdapter] Pending wire selection for key ${result.pendingKey}`);
-    await sendMessage(
-      message.chat.id,
-      'Which beat does this belong to?',
-      buildWireKeyboard(result.pendingKey, result.availableWires),
-    );
-    return;
-  }
-
   // Inserted, rejected, or error — send reply
   const reply = formatReply(result);
   if (reply) {
@@ -213,40 +160,6 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
 
   if (result.status === 'inserted') {
     console.log(`[TelegramAdapter] Inserted entry #${result.entryId} (${result.detectedWire}) from user ${userId}`);
-  }
-}
-
-/**
- * Handle a callback query from inline keyboard wire selection.
- */
-async function handleCallback(query: TelegramCallbackQuery): Promise<void> {
-  await answerCallbackQuery(query.id);
-
-  const data = query.data;
-  if (!data?.startsWith('wire:')) return;
-
-  const parts = data.split(':');
-  if (parts.length !== 3) return;
-
-  const pendingKey = parts[1];
-  const wire = parts[2];
-
-  const result = await completeWireSelection(pendingKey, wire);
-  const chatId = query.message?.chat.id;
-  if (!chatId) return;
-
-  if (result.status === 'error' && result.errorMessage?.includes('expired')) {
-    await sendMessage(chatId, 'This selection has expired. Please resend the message.');
-    return;
-  }
-
-  const reply = formatReply(result);
-  if (reply) {
-    await sendMessage(chatId, reply);
-  }
-
-  if (result.status === 'inserted') {
-    console.log(`[TelegramAdapter] Inserted entry #${result.entryId} (${result.detectedWire}) via callback`);
   }
 }
 
@@ -284,5 +197,3 @@ export async function registerIntakeWebhook(): Promise<void> {
   }
 }
 
-// Re-export cleanup for scheduling in server.ts
-export { cleanupPendingEntries };

@@ -13,7 +13,7 @@ import { ensureEntryActionColumns } from './services/entry-actions';
 import { computeDerivedFields } from './services/org-enricher';
 import { ensureIntegrationConfigTable } from './services/notion-sync';
 import { startSummarySync, stopSummarySync } from './jobs/summary-sync';
-import { registerIntakeWebhook, cleanupPendingEntries } from './services/telegram-adapter';
+import { registerIntakeWebhook } from './services/telegram-adapter';
 import { processRawEntries } from './jobs/process-raw';
 import { runDecidedRecheck } from './jobs/decided-recheck';
 import { ensureApiProviderTables, refreshProviderCache, getCachedProvider } from './services/api-provider';
@@ -419,10 +419,6 @@ export async function startServer(): Promise<void> {
   // Run once at startup (after a short delay to let DB settle)
   setTimeout(runPipelineCycle, 10_000);
 
-  // Cleanup expired pending intake entries every 15 minutes
-  const intakeCleanupTimer = setInterval(cleanupPendingEntries, 15 * 60 * 1000);
-  intakeCleanupTimer.unref();
-
   // Contacts sync every 30 min: Notion Contacts DB → people-monitor control surface
   const contactsSync = async () => {
     try {
@@ -503,7 +499,6 @@ export async function startServer(): Promise<void> {
     stopAuthCleanup();
     jobQueue.stopPeriodicCleanup();
     clearInterval(processRawTimer);
-    clearInterval(intakeCleanupTimer);
     clearInterval(digestOrgsSyncTimer);
     clearInterval(crmSyncTimer);
     clearInterval(enrichTimer);
