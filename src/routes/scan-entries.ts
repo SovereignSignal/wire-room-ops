@@ -196,14 +196,21 @@ router.get('/status-counts', async (req: Request, res: Response) => {
   }
 });
 
-// GET /seen-urls — URL dedup stats
+// GET /seen-urls — URL dedup view.
+//   default (scope=seed): the original stats view — only the one-time bootstrap rows, cap 500.
+//   scope=all:            the COMPLETE seen set for the wire (every registered URL), higher cap.
+//                         This is what the grant scout's dedup must use; the seed-only view
+//                         starved it to ~1% of the catalog so it never dropped anything.
 router.get('/seen-urls', async (req: Request, res: Response) => {
   try {
     const wire = req.query.wire as string | undefined;
-    const limit = Math.min(Math.max(parseInt(req.query.limit as string, 10) || 50, 1), 500);
+    const scope = req.query.scope === 'all' ? 'all' : 'seed';
+    // scope=all needs the whole set (a few thousand rows); the seed view stays capped at 500.
+    const maxLimit = scope === 'all' ? 100000 : 500;
+    const limit = Math.min(Math.max(parseInt(req.query.limit as string, 10) || (scope === 'all' ? maxLimit : 50), 1), maxLimit);
     const offset = Math.max(parseInt(req.query.offset as string, 10) || 0, 0);
 
-    const { urls, total } = await getSeenUrlsList({ wire, limit, offset });
+    const { urls, total } = await getSeenUrlsList({ wire, limit, offset, scope });
     res.json({ urls, total, seededTotal: total });
   } catch (error) {
     console.error('Failed to fetch seen URLs:', error);
