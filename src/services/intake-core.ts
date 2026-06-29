@@ -11,7 +11,7 @@
 
 import { getPool, getAllFeeds } from '../db';
 import { checkDuplicate, registerSeen } from '../services/dedup';
-import { classifyEntry, type Classification, type OperatorRoute } from '../services/classifier';
+import { type Classification, type OperatorRoute } from '../services/classifier';
 import { getActiveParams } from './quality-scorer';
 import { scrapeUrl, isScrapableUrl, truncateContent } from './scraper';
 import { normalizeUrl } from '../utils/url';
@@ -123,30 +123,12 @@ export interface IntakeMessage {
 }
 
 export interface IntakeResult {
-  status: 'inserted' | 'needs_wire' | 'rejected' | 'error';
+  status: 'inserted' | 'rejected' | 'error';
   entryId?: number;
-  pendingKey?: string;       // key for completing wire selection later
   detectedWire?: string;
-  availableWires?: string[]; // from DB
   confirmText?: string;      // human-readable summary of what was captured
   errorMessage?: string;
 }
-
-// ────────────────────────────────────────────────────────────────────────────
-// Pending entries (waiting for wire selection)
-// ────────────────────────────────────────────────────────────────────────────
-
-interface PendingEntry {
-  name: string;
-  description: string;
-  sourceUrl: string;
-  scanDate: string;
-  submittedBy: string;
-  scanSource: string;
-  createdAt: number;
-}
-
-const pendingEntries = new Map<string, PendingEntry>();
 
 // ────────────────────────────────────────────────────────────────────────────
 // Built-in keyword defaults (only used when env var is absent)
@@ -399,53 +381,6 @@ export function normalizeDeadlineForDb(value?: string | null, referenceDate = ne
   return parsed.toISOString().slice(0, 10);
 }
 
-/**
- * Classify a newly-inserted raw entry and promote only publish/source-check
- * routes to the review queue. Everything else is archived to avoid queue spam.
- * Runs async — caller does not wait for completion.
- */
-async function classifyAndQueue(entryId: number, name: string, description: string, sourceUrl: string, wire: string, scanSource = 'manual-intake'): Promise<void> {
-  try {
-    const result = await classifyEntry({ name, description, source_url: sourceUrl, wire });
-    const newStatus = determinePostClassificationStatus(result, scanSource);
-    const dbDeadline = normalizeDeadlineForDb(result.extracted.deadline);
-    // Correct the wire when the classifier confidently identifies a different
-    // in-scope domain (fixes the intake default-to-crypto guess).
-    const correctedWire = (result.inScope && result.detectedWire
-      && ['crypto', 'ai', 'oss'].includes(result.detectedWire) && result.detectedWire !== wire)
-      ? result.detectedWire : null;
-    const pool = getPool();
-    await pool.query(
-      `UPDATE scan_entries
-       SET quality_score = $1, quality_breakdown = $2, status = $8,
-           classification = $3, classification_reason = $4,
-           metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
-           tags = $6,
-           deadline = COALESCE(deadline, $9),
-           wire = COALESCE($10, wire)
-       WHERE id = $7 AND status = 'raw'`,
-      [
-        result.qualityScore,
-        JSON.stringify({ scoreReason: result.scoreReason, operatorRoute: result.operatorRoute }),
-        result.classification,
-        result.reason,
-        JSON.stringify({ ...result.extracted, operator_route: result.operatorRoute, in_scope: result.inScope, detected_wire: result.detectedWire }),
-        result.tags,
-        entryId,
-        newStatus,
-        dbDeadline,
-        correctedWire,
-      ]
-    );
-    console.log(`[IntakeCore] Classified entry #${entryId}: ${result.classification}/${result.operatorRoute || 'unrouted'}${result.inScope ? '' : ' [OFF-SCOPE]'}${correctedWire ? ` wire→${correctedWire}` : ''} → ${newStatus} (score: ${result.qualityScore})`);
-  } catch (err) {
-    // Fallback: promote to queued with score 0 so it's still visible
-    console.error(`[IntakeCore] Classification failed for entry #${entryId}, queuing with score 0:`, err);
-    const pool = getPool();
-    await pool.query(`UPDATE scan_entries SET status = 'queued' WHERE id = $1 AND status = 'raw'`, [entryId]);
-  }
-}
-
 // ────────────────────────────────────────────────────────────────────────────
 // Core intake functions
 // ────────────────────────────────────────────────────────────────────────────
@@ -594,49 +529,6 @@ export async function processIntakeMessage(
       entryId: id,
       detectedWire: fallbackWire,
       confirmText: `Captured ${fallbackWire} entry #${id}: ${name} (wire auto-assigned)`,
-    };
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Insert failed';
-    return { status: 'error', errorMessage };
-  }
-}
-
-/**
- * Complete a pending intake after the user selects a wire.
- */
-export async function completeWireSelection(
-  pendingKey: string,
-  wire: string,
-): Promise<IntakeResult> {
-  const { experimentId } = await getActiveParams();
-
-  const entry = pendingEntries.get(pendingKey);
-  if (!entry) {
-    return { status: 'error', errorMessage: 'Pending entry expired or not found' };
-  }
-
-  pendingEntries.delete(pendingKey);
-
-  // Dedup check — fail open if dedup service errors
-  try {
-    const dedupResult = await checkDuplicate(getPool(), { sourceUrl: entry.sourceUrl, name: entry.name, wire }, 180);
-    if (dedupResult.isDuplicate) {
-      return { status: 'rejected', errorMessage: `Duplicate: already seen as "${dedupResult.matchedEntryName}"` };
-    }
-  } catch (dedupErr) {
-    console.error('[IntakeCore] Dedup check failed, proceeding with insert:', dedupErr);
-  }
-
-  try {
-    const id = await insertEntry({ ...entry, wire, experimentId });
-    await registerSeen(getPool(), { id, sourceUrl: entry.sourceUrl, name: entry.name, wire, scanDate: entry.scanDate });
-    // Fire-and-forget classification
-    setImmediate(() => classifyAndQueue(id, entry.name, entry.description, entry.sourceUrl, wire, 'telegram'));
-    return {
-      status: 'inserted',
-      entryId: id,
-      detectedWire: wire,
-      confirmText: `Captured ${wire} entry #${id}: ${entry.name}`,
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Insert failed';
@@ -1003,14 +895,3 @@ export async function processBatchMessage(
   return result;
 }
 
-/**
- * Cleanup expired pending entries (older than 1 hour).
- */
-export function cleanupPendingEntries(): void {
-  const oneHourAgo = Date.now() - 60 * 60 * 1000;
-  for (const [key, entry] of pendingEntries.entries()) {
-    if (entry.createdAt < oneHourAgo) {
-      pendingEntries.delete(key);
-    }
-  }
-}
