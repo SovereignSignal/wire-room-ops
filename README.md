@@ -2,24 +2,25 @@
 
 Backend pipeline and admin dashboard for an intelligence-to-distribution system. Discovers, ingests, deduplicates, scores, and queues entries for operator review, then distributes approved entries across multiple channels.
 
-Deployed as The Wire Room (grants wire) but designed to be deployment-agnostic — swap brand config and prompts to run any vertical (consulting leads, research intel, etc.).
+Deployed as the Sovereign Signal Grant Wires (crypto/AI/OSS grants) but designed to be deployment-agnostic — swap brand config and prompts to run any vertical (consulting leads, research intel, etc.).
 
-## Current Scope (March 2026)
+## Current Scope (July 2026)
 
-- Scan execution (X search, web search, Perplexity deep web, forum scanning)
-- Multi-channel ingestion (Telegram bot, manual paste, API)
-- Intake pipeline (parse -> dedup -> LLM classify + score -> queue)
-- Queue review + approval workflow with pre-approval validation
-- Multi-channel distribution (Telegram, Discord, Slack, X/Twitter, newsletter)
+- Scan execution (X search, web search, Perplexity deep web, Parallel.ai retrieval)
+- Discovery lanes folded into one daily cycle: source-feeds registry (aggregator APIs, RSS, own-site funder scrapes), governance-forum lane (discuss.watch + LLM judge), X account monitor
+- Multi-channel ingestion (Telegram bot, manual paste, agent API submits)
+- Intake pipeline (parse -> dedup -> LLM classify + score -> decided-recheck -> queue)
+- Queue review + approval workflow with pre-approval validation and curator stamps
+- Distribution: Telegram channels (live) + Friday weekly Substack draft; Discord/Slack/X/newsletter built but unused
 - React dashboard (Lovable design) + server-rendered login
 - DB-backed API key management with env var fallback
-- Org profile management (extraction, enrichment, merge, Notion sync)
-- Schedule management, summary sync bridge, model listing, email alerts
+- Org/contacts CRM layer (extraction, enrichment, merge, Notion sync, people monitor)
+- Schedule management, tele-sum summary-sync bridge, model listing, email digests
 - Deployment-agnostic brand/audience configuration
 
 ## Core Workflow
 
-1. Prompts are stored in `scan_prompts` with a `tool_type` (x_search, web_search, perplexity) and `intent` (discovery, canonical, signal).
+1. Prompts are stored in `scan_prompts` with a `tool_type` (x_search, web_search, perplexity, parallel) and `intent` (discovery, canonical, signal).
 2. `scan-execution` (or manual trigger) routes to the correct provider per tool_type.
 3. Results are parsed into structured entries via 4 parser strategies.
 4. Intake pipeline inserts raw rows, deduplicates primarily by normalized URL, classifies + scores via LLM (Grok), and moves entries to `queued` or `archived` according to the active intake path.
@@ -47,7 +48,7 @@ Deployed as The Wire Room (grants wire) but designed to be deployment-agnostic �
 - DB-backed API key management with env var fallback (api_providers table)
 - Org profile management (auto-extraction, LLM enrichment, merge, Notion CRM sync)
 - Scheduler with per-schedule health and retry-on-failure behavior
-- Summary sync bridge (`summaries` -> approved `scan_entries`, DB-driven wire list)
+- Summary sync bridge (`summaries` -> `scan_entries` as **queued review candidates** with `operator_route='source_check'` — not auto-approved; DB-driven wire list)
 - Multi-channel distribution (Telegram, Discord, Slack, X/Twitter, newsletter markdown)
 - AI-generated posts via Claude Sonnet 4.6 with template fallback
 - Postgres-backed generated file storage and email notifications
@@ -114,70 +115,23 @@ npm start
 ## Project Structure
 
 ```text
-client/                     # React/Vite/Tailwind frontend (Lovable design)
-├── src/                    # Served at dist/client/ for authenticated routes
-├── vite.config.ts
-└── ...
+client/          # React/Vite/Tailwind dashboard SPA (Lovable design)
 src/
-├── index.ts
-├── server.ts
-├── config/
-│   ├── index.ts            # Environment variables and validation
-│   └── brand.ts            # Deployment-agnostic brand config (env-var driven)
-├── db/index.ts
-├── jobs/
-│   ├── daily-digest.ts     # Daily digest email aggregation
-│   ├── daily-intake.ts     # Intake pipeline orchestrator (dedup -> classify -> queue)
-│   ├── enrichment.ts       # Enriches thin entries by scraping + regenerating summaries
-│   ├── forum-scan.ts       # Forum scan orchestrator (discuss.watch -> intake)
-│   ├── process-raw.ts      # Background job to process raw entries through pipeline
-│   ├── scan-execution.ts   # Scan execution (prompt -> Grok/Perplexity -> intake)
-│   └── summary-sync.ts     # Sync tele-sum summaries into scan_entries
-├── services/
-│   ├── anthropic.ts        # Claude API (summarization, prompt review)
-│   ├── api-provider.ts     # DB-backed API key management with env var fallback
-│   ├── api-usage.ts        # Fire-and-forget API usage logging + cost estimation
-│   ├── approval-guard.ts   # Pre-approval validation
-│   ├── auth.ts
-│   ├── classifier.ts       # LLM classifier (GRANT/NEWS/EXPIRED/NOISE + quality score)
-│   ├── dedup.ts
-│   ├── discord-channel.ts  # Discord channel posting (distribution)
-│   ├── distribution.ts     # Distribution orchestrator (5 channel types)
-│   ├── email.ts
-│   ├── forum.ts
-│   ├── grok.ts             # Grok Chat + Responses API
-│   ├── intake.ts           # 4-strategy parser + sanitizeResult()
-│   ├── intake-core.ts      # Channel-agnostic intake logic
-│   ├── job-queue.ts
-│   ├── models.ts           # Dynamic model fetching (Grok, Anthropic, Perplexity)
-│   ├── notion-sync.ts      # Notion CRM sync (DB-backed config)
-│   ├── operator-signals.ts # Feedback loop from approve/decline decisions
-│   ├── org-enricher.ts     # LLM-based org profile enrichment
-│   ├── org-extractor.ts    # Extract org names from entries
-│   ├── org-merge.ts        # Merge duplicate org profiles
-│   ├── perplexity.ts       # Perplexity API (deep web research scans)
-│   ├── post-generator.ts   # Claude Sonnet post generation (tweet + Telegram)
-│   ├── processor.ts
-│   ├── quality-scorer.ts   # Legacy rule-based scorer (replaced by LLM classifier)
-│   ├── scan-stats.ts
-│   ├── scheduler.ts
-│   ├── scraper.ts
-│   ├── storage.ts
-│   ├── telegram-adapter.ts # Telegram intake bot adapter
-│   ├── telegram-channel.ts # Telegram channel posting (distribution)
-│   └── x-client.ts
-├── types/
-│   ├── index.ts
-│   └── intake.ts
-├── utils/
-│   ├── async.ts
-│   ├── html.ts
-│   └── url.ts
-└── views/
-    ├── error.ts
-    ├── login.ts            # Server-rendered (Privy + starfield animation)
-    └── shared.ts           # Page shell (deep space palette, Orbitron headings)
+├── index.ts     # Entry point
+├── server.ts    # Express setup, route mounting, startup, background timers
+├── config/      # Env config + deployment-agnostic brand config
+├── db/          # Postgres queries + startup ensure*/DDL
+├── middleware/  # Privy session auth, internal API key auth, rate limiting
+├── routes/      # 18 Express route modules
+├── jobs/        # Pipeline + discovery + digest/weekly jobs
+├── services/    # Providers, intake, dedup, classify, distribution, CRM
+├── scripts/     # Manual CLI tools (dry-runs, one-offs)
+├── views/       # Server-rendered login/error pages
+├── utils/       # Shared helpers
+└── types/       # TypeScript interfaces
 ```
+
+The **complete annotated file tree** lives in `CLAUDE.md` (File Structure Quick Reference) — kept current there, not duplicated here.
 
 ## Main Endpoints
 
@@ -232,13 +186,14 @@ Authenticated API (partial list -- see CLAUDE.md for complete reference):
 
 ## Scheduler Types
 
-Supported schedule types:
+Supported schedule types (9):
 
+- `daily-digest` — **the anchor cron**: one cycle runs forum scan + source feeds + (Fridays) the weekly issue + digest email + CSV export. Fold new periodic work into this cycle instead of adding crons
 - `scan-execution`
 - `forum-scan`
-- `daily-digest`
+- `source-feeds`
 - `collect-engagement`
-- `experiment-loop`
+- `experiment-loop` (retirement pending)
 - `drip-distribution`
 - `deadline-digest`
 - `account-monitor`
@@ -248,6 +203,7 @@ Notes:
 - `frequencyHours` enables sub-daily runs (`1..23`).
 - Failed jobs send notification email and retry once after 5 minutes.
 - Schedules persist in Postgres and are reloaded on startup.
+- Saving a daily-digest schedule auto-derives per-wire AM/PM scan-execution schedules.
 
 ## Quality Scoring
 
@@ -347,20 +303,33 @@ Scoring Overrides:
 
 Entries can be submitted through multiple channels using the adapter pattern:
 
-- **Telegram bot** (`@GrantWireSummarizer_bot`): Send a URL or text to the bot. Wire is auto-detected from keywords; if ambiguous, the bot presents an inline keyboard for wire selection. Requires `TELEGRAM_INTAKE_BOT_TOKEN`. Only the allowed user ID can submit.
+- **Telegram bot** (`@GrantWireSummarizer_bot`): Send a URL or text to the bot. Wire is auto-detected from keywords (defaults to crypto if ambiguous). Supports single URLs and batch messages. Requires `TELEGRAM_INTAKE_BOT_TOKEN`. Only the allowed user ID can submit.
+
+  Setup: (1) create a bot via @BotFather, (2) set `TELEGRAM_INTAKE_BOT_TOKEN`, `TELEGRAM_INTAKE_WEBHOOK_SECRET` (any random string), and `TELEGRAM_INTAKE_ALLOWED_USER_ID`, (3) deploy — the bot auto-registers its webhook at `{APP_URL}/api/telegram/intake-webhook` on startup. Optional: if the token is not set, the webhook route is a no-op.
 - **Manual paste**: Submit via the dashboard (existing `/api/scan/submit` and `/api/scan/submit-batch` endpoints).
 - **Future adapters**: Slack, Discord, email inbound -- same `intake-core.ts` interface for ingestion (distribution to Slack/Discord channels already works).
 
-The intake core (`src/services/intake-core.ts`) is channel-agnostic: it accepts an `IntakeMessage`, extracts URLs, detects the target wire via per-wire keyword scoring, and inserts a raw `scan_entry`. Channel adapters (like `telegram-adapter.ts`) handle protocol-specific concerns (webhook validation, inline keyboards, etc.) and delegate to the core.
+The intake core (`src/services/intake-core.ts`) is channel-agnostic: it accepts an `IntakeMessage`, extracts URLs, detects the target wire via per-wire keyword scoring, and inserts a raw `scan_entry`. Channel adapters (like `telegram-adapter.ts`) handle protocol-specific concerns (webhook validation, reply formatting) and delegate to the core.
 
 ## Architecture
 
 The `client/` directory contains a React/Vite/Tailwind frontend (Lovable wireops-dashboard design). For authenticated routes, the server serves `dist/client/index.html` as a SPA. Only login and error pages are server-rendered (views in `src/views/`).
 
+## Deploying for a New Vertical
+
+To run this engine for a different vertical (e.g. consulting leads, research intel):
+
+1. Set brand env vars (`BRAND_NAME`, `BRAND_AUDIENCE`, `BRAND_CONTENT_TYPE`, `BRAND_CONTENT_VERB`, …)
+2. Create feeds for your verticals via `POST /api/feeds` (e.g. "enterprise", "startup", "government")
+3. Set per-wire keyword overrides if the defaults don't fit (`INTAKE_WIRE_KEYWORDS_{WIRE}`)
+4. Optionally override scoring keywords (`QUALITY_FUNDING_TYPES`, `QUALITY_ACTIONABLE_TYPES`)
+5. Write scan prompts for the new domain and load via `/api/scan/prompts`
+6. Configure distribution channels per wire — same engine, different config
+
 ## Development Notes
 
 - TypeScript strict mode, CommonJS output.
-- Sessions are DB-backed and survive deploys. Magic links, download tokens, pending intake selections, rate-limit state, and job progress are in-memory and reset on restart.
+- Sessions are DB-backed and survive deploys. Magic links, download tokens, rate-limit state, and job progress are in-memory and reset on restart.
 - Wire list is DB-driven (from `feeds` table), not hardcoded. Fallback via `INTAKE_WIRES` env var.
 - Brand/audience config is env-var driven via `src/config/brand.ts` — AI prompts, emails, and scoring use `getBrand()` instead of hardcoded values.
 - The queue/status model is the publication contract with distribution channels (Telegram, X, newsletter, email).

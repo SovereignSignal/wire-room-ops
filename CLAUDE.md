@@ -12,16 +12,16 @@ Wire lists are DB-driven (from the `feeds` table), not hardcoded.
 
 ## Multi-Repo Architecture
 
-This backend is one half of a two-repo system:
+This backend shares its PostgreSQL database with one sibling service:
 
 | Repo | Role | Location |
 |------|------|----------|
-| `wire-room-ops` (this repo) | Backend pipeline + admin dashboard | `~/GitHub/wire-room-ops` |
-| `the-wire-room` | Next.js website (DEPRECATED) | `~/GitHub/the-wire-room` |
+| `wire-room-ops` (this repo) | Backend pipeline + admin dashboard | working tree: `~/Documents/Sovereign Signal/repos/wire-room-ops` · GitHub: `SovereignSignal/wire-room-ops` · deploy: Railway `wire-room-ops` |
+| `tele-sum` | Telegram channel ingestion — producer of the `summaries` table this repo bridges from | separate repo · Railway `tele-sum` |
 
-> **Note:** The `the-wire-room` frontend (thewireroom.xyz) is deprecated. The system now operates under the **Sovereign Signal** brand and distributes approved entries to Telegram channels, X/Twitter, newsletter, and email. The Wire Room website is no longer the primary output.
+> **History:** the original public front-end `the-wire-room` (thewireroom.xyz) is fully retired — its Railway service was **deleted 2026-07-02** (code remains at `github.com/SovereignSignal/the-wire-room`). The system operates under the **Sovereign Signal** brand; the live output channels are Telegram (active) and the Friday weekly Substack draft. X/newsletter/email distribution is built but unused.
 
-Both repos share the **same PostgreSQL database**. This repo is the primary writer.
+Both services share the **same PostgreSQL database** (Railway project `wire-room-db`). This repo is the primary writer.
 
 ### Approve = Publish Flow
 
@@ -37,9 +37,11 @@ A partial index `idx_scan_entries_approved` on `(wire, created_at DESC) WHERE st
 - Override per deployment via `BRAND_AUDIENCE`, `BRAND_CONTENT_TYPE`, `BRAND_CONTENT_VERB`, etc.
 
 ### Multi-Provider AI Processing
-- **Grok API** handles X.com/Twitter URLs (native access to tweet content) and all scan execution (x_search, web_search tools)
-- **Claude API** handles all other URL summarization, using Firecrawl for web scraping. Also powers prompt review and distribution post generation
+- **Grok API** handles X.com/Twitter URLs (native access to tweet content), Gate-2 classification, and scan execution (x_search, web_search tools)
+- **Claude API** handles non-X URL summarization (with Firecrawl scraping), prompt review, distribution post generation (`claude-sonnet-4-6`), and the Friday weekly issue synthesis (pinned to `claude-opus-4-8` in `src/jobs/weekly-issue.ts`)
 - **Perplexity API** handles deep web research scans (sonar-pro model, natively searches web with citations)
+- **Ollama** (`src/services/ollama.ts`) is the preferred auto-summarize provider (`SUMMARIZE_PROVIDER=auto|ollama|grok`, see `src/services/auto-summarize.ts`) — falls back to Grok
+- **Parallel.ai** (`src/services/parallel.ts` + `parallel-task.ts`) powers `tool_type: 'parallel'` scan prompts (Grok plans → Parallel retrieves → Grok extracts) and the weekly issue's cited verification pass
 - URL routing for summarization happens in `src/services/processor.ts` which imports `isXcomUrl()` from `src/services/grok.ts`
 
 ### API Provider System
@@ -47,7 +49,7 @@ A partial index `idx_scan_entries_approved` on `(wire, created_at DESC) WHERE st
 - Resolution order: explicit param > DB provider default_model > hardcoded default
 - Providers are cached in-memory and refreshed on upsert
 - Dashboard Settings > API Providers tab manages keys, base URLs, default models, and connection testing
-- Known providers: grok, anthropic, firecrawl, perplexity, resend, telegram, telegram-intake
+- Known providers: grok, anthropic, firecrawl, perplexity, resend, telegram, telegram-intake, ollama, parallel
 
 ### Storage Strategy
 - **Generated files** and **schedule configs** are persisted to Postgres (survive restarts)
@@ -68,97 +70,111 @@ client/                       # React/Vite/Tailwind frontend (Lovable wireops-da
 └── ...
 src/
 ├── index.ts              # Entry point - validates config, starts server
-├── server.ts             # Express setup, route mounting, startup sequence
+├── server.ts             # Express setup, route mounting (ORDER MATTERS — see Internal API Key Auth), startup ensures, background interval timers
 ├── config/
 │   ├── index.ts          # Environment variables and validation
 │   ├── brand.ts          # Deployment-agnostic brand config (audience, contentType, contentVerb)
 │   └── db-config.ts      # Persistent DB config file storage
-├── db/index.ts           # Postgres queries, schedules, feeds, scan tables, scan prompts, distribution tables
+├── db/
+│   ├── index.ts          # Postgres queries + ALL startup ensure*/DDL (schedules, feeds, scan tables, scan prompts, distribution, app_state). CHECK constraints defined here — see enum-lockstep warning below
+│   └── migrations/       # 3 stale one-time SQL bootstraps — superseded by the ensure* functions; do NOT run them
 ├── middleware/
 │   ├── auth.ts           # Privy session auth (requireAuth middleware)
 │   ├── internal-auth.ts  # Internal API key auth for agent access (requireAuthOrInternalKey)
-│   └── rate-limit.ts     # Shared rate limit helpers
-├── routes/               # Express route modules (mounted in server.ts)
-│   ├── admin.ts          # Admin operations (migrations, backfills, purges)
+│   └── rate-limit.ts     # In-memory rateLimit() helper used by expensive/admin endpoints
+├── routes/               # Express route modules (mounted in server.ts — 18 routers)
+│   ├── accounts.ts       # monitored_accounts CRUD (X account/people watch-list)
+│   ├── admin.ts          # Admin operations (migrations, backfills, purges, contacts-sync trigger)
 │   ├── auth.ts           # Login, logout, session, file download
 │   ├── dashboard.ts      # Overview stats
 │   ├── database.ts       # DB introspection, paginated queries, schema info
 │   ├── distribution.ts   # Distribution config, channels CRUD, run, newsletter
-│   ├── experiments.ts    # Scoring experiments API
 │   ├── export.ts         # CSV export
 │   ├── feeds.ts          # Feed CRUD
-│   ├── integrations.ts   # Notion CRM sync
-│   ├── jobs.ts           # Background job triggers, SSE progress, Telegram webhook
+│   ├── grants-intel.ts   # Grants-intel asset queries (orgs/opportunities intelligence surface)
+│   ├── integrations.ts   # Notion CRM sync config
+│   ├── jobs.ts           # Background job triggers, SSE progress, Telegram webhook (mounted FIRST)
 │   ├── models.ts         # Model & wire lookup
 │   ├── orgs.ts           # Org profiles
 │   ├── providers.ts      # API providers, usage tracking, pricing
-│   ├── scan-entries.ts   # Scan entry queries, submit, queue, actions, distribution per-entry
-│   ├── scan-execution.ts # Scan execution + forum scan triggers
+│   ├── scan-entries.ts   # Entry queries, submit, queue, actions, curate stamp, redistribute, seen-urls, agent brief
+│   ├── scan-execution.ts # Scan execution + forum/feeds run triggers (/api/scan/run, /api/feeds/run, /api/forum/run)
 │   ├── scan-prompts.ts   # Scan prompts CRUD, test, review, run
-│   └── schedules.ts      # Schedule CRUD, scheduler status
-├── scripts/
-│   ├── collect-engagement.ts  # Fetch X/Twitter public_metrics for distributed posts
-│   └── run-experiment-loop.ts # Evaluate and create scoring parameter experiments
+│   └── schedules.ts      # Schedule CRUD, scheduler status, digest send-now
+├── scripts/              # Manual CLI tools (npx ts-node / railway run) — NOT scheduled
+│   ├── collect-engagement.ts  # Fetch X public_metrics for distributed posts (also a schedule type)
+│   ├── run-experiment-loop.ts # Scoring-experiment loop (also a schedule type; retirement pending)
+│   ├── forum-dryrun.ts / forum-run-once.ts / forum-activity-probe.ts   # Forum lane testing/audit
+│   ├── source-feeds-dryrun.ts / source-feeds-run-once.ts               # Feed lane testing
+│   ├── weekly-preview.ts / weekly-run-once.ts / weekly-seed-prior.ts / weekly-send-md.ts  # Weekly issue tooling
+│   └── cleanup-lane-noise.ts / lane-quality-report.ts / queue-dedup-review.ts  # June-2026 one-off audits
 ├── jobs/
-│   ├── daily-digest.ts     # Daily digest email aggregation (all scan activity across wires)
-│   ├── csv-export.ts       # Approved entries CSV export (cross-wire, for newsletter composition)
+│   ├── account-monitor.ts  # Poll monitored X accounts (orgs + people) for new URLs -> intake
+│   ├── contacts-sync.ts    # Notion Contacts DB -> monitored_accounts reconcile (30-min timer)
+│   ├── csv-export.ts       # Approved entries CSV export (runs inside daily-digest; also on-demand)
+│   ├── daily-digest.ts     # Daily digest aggregation + cost recap (see "the daily fold" below)
 │   ├── daily-intake.ts     # Scan intake pipeline orchestrator (parse -> dedup -> classify -> queue)
-│   ├── drip-distribution.ts # Drip-feed one approved entry per wire per run
-│   ├── enrichment.ts       # Enriches thin entries by scraping source URLs and regenerating summaries
-│   ├── forum-scan.ts       # Forum scan orchestrator (discuss.watch -> intake, DB-driven wire list)
-│   ├── process-raw.ts      # Background job to process raw entries through Gate 1 -> dedup -> classify
-│   ├── scan-execution.ts   # Automated scan execution (prompt fetch -> Grok/Perplexity -> intake)
-│   └── summary-sync.ts     # Sync tele-sum summaries into scan_entries as queued review candidates (watermark-based)
-├── migrations/
-│   ├── cleanup-approved-data.ts  # One-time data cleanup for existing bad entries
-│   ├── cleanup-org-profiles.ts   # Org profile data cleanup
-│   ├── dedup-org-profiles.ts     # Org profile deduplication
-│   └── scoring-experiments.ts    # Scoring experiments tables migration
+│   ├── deadline-digest.ts  # Weekly "Closing Soon (7d)" email of approved entries with deadlines
+│   ├── decided-recheck.ts  # LLM semantic dedup of queued entries vs 365d decided corpus (5-min cycle)
+│   ├── drip-distribution.ts # Drip-feed one approved entry per wire per run (gated on distribute_after)
+│   ├── enrichment.ts       # Thin-entry scrape + re-summarize — MANUAL ONLY (POST /api/enrich)
+│   ├── forum-scan.ts       # Governance-forum lane: discuss.watch allowlist + LLM judge -> intake
+│   ├── process-raw.ts      # 5-min background cycle: raw -> Gate 1 -> dedup -> classify -> queue
+│   ├── scan-execution.ts   # Prompt-driven scans (Grok x_search/web_search, Perplexity, Parallel)
+│   ├── source-feeds.ts     # Registry feed ingester (Karma GAP, Grants.gov, EA Forum, own-site scrapes...) with per-source app_state watermark
+│   ├── summary-sync.ts     # tele-sum summaries -> scan_entries review candidates (15-min timer, watermark)
+│   └── weekly-issue.ts     # Friday weekly Substack draft: gather -> verify (Parallel/Firecrawl) -> synthesize -> email + Notion Paste Log
+├── migrations/           # One-time TS cleanup scripts (historical)
 ├── services/
 │   ├── anthropic.ts      # Claude API calls with scraping integration (uses getBrand())
-│   ├── api-provider.ts     # DB-backed API key management with env var fallback (api_providers table)
-│   ├── api-usage.ts        # Fire-and-forget API usage logging + cost estimation (api_usage_log table)
-│   ├── approval-guard.ts   # Pre-approval validation (blocks bad data from reaching website)
-│   ├── auto-summarize.ts   # Auto-generate newsletter summary on approve (fire-and-forget)
-│   ├── classifier.ts       # Gate 2 LLM classifier (GRANT/NEWS/EXPIRED/NOISE + quality score + tags)
-│   ├── dedup.ts            # URL exact-match + exact-name dedup (fuzzy layer disabled)
-│   ├── discord-channel.ts  # Discord channel posting via REST API (distribution)
-│   ├── distribution.ts     # Distribution orchestrator: send entries to channels, retry, newsletter
-│   ├── email.ts            # Resend email templates (5 types)
-│   ├── entry-actions.ts    # Approve/decline/restore business logic with audit trail (actor/reason/dryRun)
-│   ├── experiment-engine.ts # Scoring parameter experiment lifecycle (create, evaluate, keep/rollback)
-│   ├── forum.ts            # discuss.watch API client (search terms overrideable via FORUM_SEARCH_TERMS)
-│   ├── grok.ts             # Grok Chat + Responses API for X.com content and scans (uses getBrand())
-│   ├── intake.ts           # Scan result parser, URL/name normalization
-│   ├── intake-core.ts      # Channel-agnostic intake logic (URL extraction, wire detection, DB insert)
-│   ├── job-queue.ts        # SSE-based job progress tracking
-│   ├── models.ts           # Dynamic model fetching from Grok, Anthropic, Perplexity APIs
-│   ├── notion-sync.ts      # Notion CRM sync (org_profiles -> Notion database, DB-backed config)
+│   ├── api-provider.ts   # DB-backed API key management with env var fallback (api_providers table)
+│   ├── api-usage.ts      # Fire-and-forget API usage logging + cost estimation (api_usage_log table)
+│   ├── approval-guard.ts # Pre-approval validation (blocks bad source/description data)
+│   ├── auth.ts           # Sessions, magic-link/download tokens, cleanup sweep
+│   ├── auto-summarize.ts # Auto-generate summary on approve (Ollama-first, Grok fallback)
+│   ├── classifier.ts     # Gate 2 LLM classifier (GRANT/NEWS/EXPIRED/NOISE + score + scope gate + wire reassignment)
+│   ├── contact-discovery.ts # Evidence-gated people discovery (org + content anchored) -> discovered_contacts/Notion
+│   ├── curator.ts        # Curator route/confidence stamp logic (queue triage signal, written via /curate)
+│   ├── dedup.ts          # URL exact-match + exact-name dedup (fuzzy layer disabled) + alternate-source annotation
+│   ├── digest-orgs.ts    # Digest-wire org sourcing — GATED OFF by default (DIGEST_ORGS_SYNC_ENABLED)
+│   ├── discord-channel.ts # Discord channel posting via REST API (built, unused in prod)
+│   ├── distribution.ts   # Distribution orchestrator: send entries to channels, retry, newsletter
+│   ├── email.ts          # Resend email templates (digest, weekly draft, deadline digest, CSV, alerts, login)
+│   ├── entry-actions.ts  # Approve/decline/restore business logic + approve side-effects (audit: actor/reason/dryRun)
+│   ├── experiment-engine.ts # Scoring experiment lifecycle (dashboard/API removed; retirement pending)
+│   ├── forum.ts          # discuss.watch client: governance allowlist, age gate, LLM thread judge
+│   ├── grok.ts           # Grok Chat + Responses API for X.com content and scans (uses getBrand())
+│   ├── intake.ts         # Scan result parser (4 strategies) + sanitizeResult()
+│   ├── intake-core.ts    # Channel-agnostic intake (URL extraction, wire detection, dumb-pipe insert)
+│   ├── job-queue.ts      # SSE-based job progress tracking
+│   ├── models.ts         # Dynamic model fetching from provider APIs
+│   ├── notion-sync.ts    # Notion CRM sync (org_profiles -> Notion database, DB-backed config)
+│   ├── ollama.ts         # Ollama client (auto-summarize provider)
 │   ├── operator-signals.ts # Feedback loop: mines approve/decline decisions to calibrate classifier
-│   ├── org-enricher.ts     # LLM-based org profile enrichment (type, source_type, website, tier)
-│   ├── org-extractor.ts    # Extract canonical org names from entries (pattern matching + LLM)
-│   ├── org-merge.ts        # Org profile dedup: merge source into target, relink entries
-│   ├── perplexity.ts       # Perplexity API for deep web research scans (sonar-pro model)
-│   ├── post-generator.ts   # Claude Sonnet 4.6 generates tweet + Telegram HTML per entry
-│   ├── processor.ts        # Entry processing with retry logic
-│   ├── quality-scorer.ts   # Legacy rule-based scorer (replaced by LLM classifier in pipeline)
-│   ├── scan-stats.ts       # Prompt effectiveness and overlap metrics
-│   ├── scheduler.ts        # node-cron scheduling with health tracking (DB-driven wire list)
-│   ├── scraper.ts          # Firecrawl integration, URL resolution
-│   ├── storage.ts          # Postgres-backed file storage with in-memory cache (keeps last 10)
+│   ├── org-enricher.ts   # LLM + web org profile enrichment (6h timer) with url-verify guard
+│   ├── org-extractor.ts  # Canonical org name extraction + fuzzy org dedup + entry linking on approve
+│   ├── org-merge.ts      # Org profile merge (source -> target), relink entries
+│   ├── parallel.ts       # Parallel.ai Search API client (scan retrieval)
+│   ├── parallel-task.ts  # Parallel.ai Task API client (weekly issue cited verification)
+│   ├── perplexity.ts     # Perplexity sonar-pro scans
+│   ├── post-generator.ts # claude-sonnet-4-6 generates tweet + Telegram HTML per entry (template fallback)
+│   ├── processor.ts      # Entry processing with retry logic
+│   ├── quality-scorer.ts # Legacy rule-based scorer — only getActiveParams() still used (experiment tagging)
+│   ├── queue-rubric.ts   # DEAD — zero importers (Phase 2 delete candidate)
+│   ├── scan-stats.ts     # Prompt effectiveness and overlap metrics
+│   ├── scheduler.ts      # node-cron scheduling, DB-driven; daily-digest branch runs the daily fold
+│   ├── scraper.ts        # Firecrawl integration, URL resolution (SSRF-hardened shortener resolution)
+│   ├── source-feeds.ts   # SOURCE_REGISTRY + fetch handlers (rss/atom, rest_json, graphql, github_csv, scrape)
+│   ├── source-filter.ts  # Gate-1 aggregator-source blocklist (SOURCE_BLOCKLIST_EXTRA extendable)
+│   ├── storage.ts        # Postgres-backed file storage with in-memory cache
 │   ├── telegram-adapter.ts # Telegram intake bot adapter (webhook handler -> intake-core)
-│   ├── telegram-channel.ts # Telegram Bot API posting to channels (distribution)
-│   └── x-client.ts         # Twitter/X posting via twitter-api-v2
-├── views/                    # Server-rendered pages (login + error only; dashboard is React SPA)
-│   ├── shared.ts         # Page shell, deep space palette, Orbitron headings, signal cyan accent
-│   ├── login.ts          # Privy login page with starfield canvas animation
-│   └── error.ts          # Error/download/expired link pages
-├── utils/
-│   ├── async.ts          # Shared sleep() utility
-│   ├── html.ts           # Shared escapeHtml() utility
-│   ├── masking.ts        # Credential masking helpers
-│   ├── url.ts            # Shared normalizeUrl() for URL deduplication
-│   └── validation.ts     # Shared validation helpers (isValidUuid, isValidFeedKey, slugifyFeedKey)
+│   ├── telegram-channel.ts # Telegram Bot API posting to channels (the LIVE distribution channel)
+│   ├── url-verify.ts     # Deterministic URL verification (drops 404s in enrichment)
+│   ├── weekly-notion.ts  # Markdown -> Notion blocks + Paste Log landing for the weekly
+│   ├── x-client.ts       # Twitter/X posting via twitter-api-v2 (built, unused in prod)
+│   └── x-thread.ts       # X thread context fetching (aggregate-thread summaries)
+├── views/                # Server-rendered pages (login + error only; dashboard is React SPA)
+├── utils/                # sleep(), escapeHtml(), masking, normalizeUrl(), validation helpers
 └── types/
     ├── index.ts          # Core TypeScript interfaces
     └── intake.ts         # Scan pipeline + distribution types (ScanEntry, DistributionConfig, etc.)
@@ -198,7 +214,7 @@ Server-rendered views (login/error only):
 
 ### Shared PostgreSQL Database
 
-All services (`wire-room-ops`, `the-wire-room`, `tele-sum`) share one PostgreSQL database hosted on Railway (`wire-room-db`). This repo is the primary writer; `the-wire-room` is deprecated (see Multi-Repo Architecture).
+`wire-room-ops` and `tele-sum` share one PostgreSQL database hosted on Railway (`wire-room-db`). This repo is the primary writer. (The retired `the-wire-room` site's Railway service was deleted 2026-07-02.) The `grant-wire-scout` Railway services and the local `grant-wire-engine`/`grant-wire-weekly` tooling also connect to this database directly — treat its schema as a shared contract.
 
 ### Table Groups
 
@@ -218,14 +234,16 @@ All pipeline data flows through `scan_entries`. Key columns:
 
 | Column | Type | Purpose |
 |--------|------|---------|
-| `status` | text | Pipeline stage: `raw` → `deduped` → `queued` → `approved`/`declined`/`archived`/`duplicate`/`skipped` |
+| `status` | text | Pipeline stage: `raw` → `deduped` → `queued` → `approved`/`declined`/`archived`/`duplicate`/`skipped`/`incomplete` |
 | `classification` | varchar | Gate 2 label: `GRANT`, `NEWS`, `EXPIRED`, `NOISE`, `UNCHECKED` |
-| `quality_score` | integer | 0-100 score from LLM classifier |
+| `quality_score` | integer | 0-100 score from LLM classifier (null on dumb-pipe Telegram/manual intake — the curator stamp is the queue's triage signal) |
 | `wire` | text | Feed vertical (crypto/ai/oss) |
-| `scan_source` | text | Ingestion channel: `x-scan`, `web-search`, `forum`, `telegram` |
+| `scan_source` | text | Ingestion channel — all 13 allowed values: `x-scan`, `web-search`, `perplexity`, `community`, `telegram`, `telegram-intake`, `manual-intake`, `email`, `forum`, `x-monitor`, `feed`, `claude-code`, `claude-cohort-notion` |
 | `source_url` | text | Original source link |
-| `metadata` | jsonb | LLM-extracted structured data (amount, deadline, eligibility, summary) |
+| `metadata` | jsonb | LLM-extracted structured data (amount, deadline, eligibility, summary) + curator stamp + decided-recheck verdict |
 | `org_id` | integer | FK to `org_profiles` (auto-linked on approve) |
+
+> ⚠️ **Enum lockstep warning:** the CHECK constraints for `scan_entries.status`/`scan_source`, `scan_prompts.tool_type`/`variant`, and `schedules.schedule_type` are DROP+ADDed by **multiple `ensure*` functions** in `src/db/index.ts` at every boot. Before adding any enum value, grep ALL `CHECK (` writers of that column and update every one, plus the TypeScript unions and route validators — a missed writer silently reverts the constraint on next boot (this crash-looped production 3× in June 2026).
 
 Status distribution (typical): ~46% duplicate, ~22% archived, ~17% queued, ~12% approved, ~3% declined.
 
@@ -277,7 +295,7 @@ All `POST /api/admin/*` — rate-limited maintenance operations: `run-migration`
 
 ### Other Tables
 
-Schedule configuration uses a `schedules` table with UUID primary keys, supporting multiple named schedules with a `schedule_type` field (`scan-execution`, `forum-scan`, or `daily-digest`). Cron expressions are computed dynamically from `hour`/`minute`/`frequencyHours` columns via `buildCronExpression()`.
+Schedule configuration uses a `schedules` table with UUID primary keys, supporting multiple named schedules with a `schedule_type` field (9 types — see Schedule Types below). Cron expressions are computed dynamically from `hour`/`minute`/`frequencyHours` columns via `buildCronExpression()`. Saving a daily-digest schedule auto-derives per-wire AM/PM scan-execution schedules (`syncScanSchedulesFromDigest`).
 
 The `feeds` table manages dynamic wire/feed types, seeded from `SEED_FEEDS` and auto-discovered from `channel_configs`. Scan prompts are stored in `scan_prompts` with CRUD support.
 
@@ -291,7 +309,7 @@ All providers support DB-backed credentials (`api_providers` table) with env var
 - **Claude** (`src/services/anthropic.ts`): Summarization (Opus) + post generation (Sonnet for cost efficiency). Uses `@anthropic-ai/sdk`.
 - **Perplexity** (`src/services/perplexity.ts`): `sonar-pro` model, natively searches web with citations. For `tool_type: 'perplexity'` prompts.
 - **Firecrawl** (`src/services/scraper.ts`): Web scraping for non-X.com URLs.
-- **Resend** (`src/services/email.ts`): 5 email types (login, notification, test alert, failure alert, resend download link).
+- **Resend** (`src/services/email.ts`): all outbound email — daily digest, weekly draft, deadline digest, CSV export, scan digest, login/magic link, test alert, scheduled-job failure alert, download-link resend.
 
 ## Error Handling & Security
 
@@ -299,7 +317,7 @@ All providers support DB-backed credentials (`api_providers` table) with env var
 - **Concurrent job guard**: Duplicate manual jobs return 409. Scheduler skips overlapping cron runs.
 - **Scrape fallback**: If Firecrawl fails, Claude uses cached summary.
 - **Security**: CSRF origin checking, HttpOnly session cookies, `escapeHtml()` XSS prevention, open redirect protection, SSE keepalive (30s).
-- **Memory**: Cleanup timers (15-min) for job queue, one-time tokens, and pending intake selections. Sessions are DB-backed with an in-memory read-through cache. Timers use `.unref()` and graceful shutdown hooks.
+- **Memory**: Cleanup timers (15-min) for the job queue, one-time tokens, and the rate-limit store. Sessions are DB-backed with an in-memory read-through cache. Timers use `.unref()` and graceful shutdown hooks.
 
 ## Testing Locally
 
@@ -313,9 +331,6 @@ All providers support DB-backed credentials (`api_providers` table) with env var
 
 ### "Missing required environment variables"
 Check that all 4 required env vars are set: DATABASE_URL, NOTIFICATION_EMAIL, PRIVY_APP_ID, PRIVY_APP_SECRET. API keys (ANTHROPIC_API_KEY, GROK_API_KEY, FIRECRAWL_API_KEY, RESEND_API_KEY) are optional at startup and produce warnings -- they can also be configured via Settings > API Providers in the dashboard.
-
-### "No entries found for this date range"
-The database query found no `summaries` with `processing_status = 'SUCCESS'` in the date range.
 
 ### Scheduler not running after config change
 Scheduler restarts automatically when you save schedule config via the dashboard API.
@@ -338,7 +353,7 @@ Generated files are persisted to Postgres. Sessions are DB-backed and survive re
 - `RESEND_API_KEY` - Resend email API key
 
 ### Optional
-See `.env.example` for full list. Key optional vars: `PORT`, `APP_URL`, `ALLOWED_EMAILS`, `TELEGRAM_BOT_TOKEN`, `PERPLEXITY_API_KEY`, `FORUM_SCAN_ENABLED`, `BRAND_*` (deployment-agnostic config overrides), `INTERNAL_API_KEY` (agent API access), `X_BEARER_TOKEN` (engagement metrics), `DEV_MODE` (skip auth in dev), `DATA_DIR` (local data storage).
+See `.env.example` for full list. Key optional vars: `PORT`, `APP_URL`, `ALLOWED_EMAILS`, `TELEGRAM_BOT_TOKEN`, `PERPLEXITY_API_KEY`, `PARALLEL_API_KEY` (Parallel.ai scans), `FORUM_SCAN_ENABLED`, `SUMMARIZE_PROVIDER` + `OLLAMA_DEFAULT_MODEL` (auto-summarize provider), `SUMMARY_SYNC_WIRES` (tele-sum bridge wire filter), `SOURCE_BLOCKLIST_EXTRA` (extra Gate-1 blocked domains), `DIGEST_ORGS_SYNC_ENABLED` (off by default), `WEEKLY_PASTE_LOG_PAGE_ID` (Notion landing page), `BRAND_*` (deployment-agnostic config overrides), `INTERNAL_API_KEY` (agent API access), `X_BEARER_TOKEN` (X account monitor + engagement metrics), `DEV_MODE` (skip auth in dev), `DATA_DIR` (local data storage).
 
 ## Feeds System
 
@@ -357,15 +372,19 @@ Dynamic wire/feed management via the `feeds` table.
 Automated discovery of grant opportunities via X.com scanning, web search, and forum scanning. Intake processing eliminates duplicates and surfaces high-quality entries.
 
 ### Ingestion Channels
-- **X.com scan** (`x-scan`): Grok Responses API with `x_search` tool, runs on schedule
+- **X.com scan** (`x-scan`): Grok Responses API with `x_search` tool, prompt-driven
 - **Web search** (`web-search`): Grok Responses API with `web_search` tool, same prompt system as X scan
-- **Perplexity scan** (`web-search` or `perplexity`): Perplexity sonar-pro with native web search and citations (prompts with `tool_type: 'perplexity'`)
-- **Forum scan** (`forum`): discuss.watch API searches across 160+ Discourse forums (search terms overrideable via `FORUM_SEARCH_TERMS`). Pre-filters results with keyword relevance matching on discussion titles and a 30-day createdAt age filter (rejects old posts that were merely bumped)
-- **Telegram intake** (`telegram`): Bot-based URL/article submission via webhook. Supports single URLs and batch messages (numbered lists, bold-name format, or structured `Link:` format). Uses adapter pattern (`telegram-adapter.ts` -> `intake-core.ts`)
-- **Manual paste** (`x-scan`/`web-search`): Dashboard paste-in flow
+- **Perplexity scan** (`perplexity`): Perplexity sonar-pro with native web search and citations (prompts with `tool_type: 'perplexity'`)
+- **Parallel scan** (`web-search` via `tool_type: 'parallel'`): Grok plans queries (operator can pin them via a `Search queries: a | b | c` line in the prompt) → Parallel retrieves → Grok extracts
+- **Source feeds** (`feed`): registry-driven ingester (`src/services/source-feeds.ts` `SOURCE_REGISTRY`) — aggregator APIs (Karma GAP, Grants.gov, EA Forum GraphQL…), RSS/Atom (FLI, NLnet, OTF), and own-site funder scrapes via Firecrawl. Per-source seen-URL watermark in `app_state` (`feed:seen:<key>`); only net-new items reach the classifier; first-run cap prevents queue floods
+- **Forum scan** (`forum`): governance-forum lane via discuss.watch — curated per-wire governance allowlist + `hot=true` catch-all, 30-day createdAt age gate, then an LLM judge per thread batch (opportunity/not + extraction). Replaced the retired broad-keyword search (2% approve / 67% dupes)
+- **X account monitor** (`x-monitor`): polls `monitored_accounts` (funder orgs + key people, Notion Contacts-controlled) for new URLs in recent tweets
+- **Telegram intake** (`telegram`): Bot-based URL/article submission via webhook — a **dumb pipe**: queue raw with URL-only dedup, no classify at intake. Supports single URLs and batch messages (numbered lists, bold-name, or `Link:` format). Adapter pattern (`telegram-adapter.ts` -> `intake-core.ts`)
+- **Agent submits** (`claude-code`, `x-scan`/`web-search` via API): the daily-grant-scan claude.ai routine and The Stringer submit via `POST /api/scan/submit` with the internal API key — inserted raw (`insertOnly`), completed by the 5-minute process-raw cycle
+- **Manual paste** (`manual-intake`): Dashboard paste-in flow (historically the highest-approval channel)
 
 ### Data Flow
-1. **Execute**: `scan-execution.ts` fetches active prompts from `scan_prompts`, routes to the correct provider per `tool_type`: Grok Responses API (`x_search`/`web_search`) or Perplexity (`perplexity`)
+1. **Execute**: `scan-execution.ts` fetches active prompts from `scan_prompts`, routes to the correct provider per `tool_type`: Grok Responses API (`x_search`/`web_search`), Perplexity (`perplexity`), or Parallel (`parallel`)
 2. **Parse**: `intake.ts` extracts structured results via 4 parser strategies (structured text, JSON, X-post format, lenient numbered list). All strategies extract `sourcePublishedAt` when available (Published/Announced/Updated dates)
 3. **Sanitize**: Post-parse `sanitizeResult()` cleans all parsed output — strips leading/trailing brackets from names, truncates names >120 chars, rejects junk deadlines (>50 chars, contains URLs/semicolons), discards suspicious small amounts (<$100 bare), moves excess name text into description
 4. **Insert**: Raw results written to `scan_entries` with `status: raw`
@@ -375,19 +394,22 @@ Automated discovery of grant opportunities via X.com scanning, web search, and f
 8. **Queue/archive**: Source-specific behavior: scan execution archives `NOISE`; raw background processing queues complete non-duplicates; Telegram/manual intake uses `operator_route`.
 9. **Approve Guard**: Pre-approval validation blocks entries with empty descriptions or empty URLs from being published; warns on EXPIRED classification
 
-### Schedule Types
+### Schedule Types (9)
+- **`daily-digest`** — **the anchor cron: one daily cycle runs the whole discovery fold** (`scheduler.ts` daily-digest branch): (1) forum scan (if `FORUM_SCAN_ENABLED`), (2) source feeds, (3) **Fridays only** the weekly Grant Wire issue, then (4) `runDailyDigest()` aggregation — 24h scan activity, the agent scan brief (recorded via `POST /api/scan/agent/send-brief` into `app_state`), per-source intake breakdown (incl. parked counts), API cost recap, top-10 queue snapshot — (5) CSV export of 24h approvals, and (6) one consolidated email (quiet days still report queue state). Each lane is isolated in try/catch so a lane failure never blocks the digest. Saving this schedule auto-derives per-wire AM/PM scan-execution schedules. **Do not add new standalone crons for periodic work — fold it into this cycle** (owner rule)
 - **`scan-execution`**: Runs `runScanExecution()` — executes all active prompts for a wire
-- **`forum-scan`**: Runs `runForumScan()` — searches discuss.watch forums
-- **`daily-digest`**: Runs `runDailyDigest()` — the single combined morning email: 24h scan activity, the agent scan brief (recorded via `POST /api/scan/agent/send-brief` into `app_state`), per-source intake breakdown (incl. parked counts), and top-10 queue snapshot. Sends every day (quiet days still report queue state); the run is marked failed if the email send fails. Auto-derives scan schedules to run before it
+- **`forum-scan`**: Runs `runForumScan()` — standalone/extra forum runs (the daily fold already covers one/day)
+- **`source-feeds`**: Runs `runSourceFeeds()` — standalone/extra feed runs (the daily fold already covers one/day)
 - **`collect-engagement`**: Runs `collectXEngagement()` — fetches X/Twitter public_metrics for recent distributed posts
-- **`experiment-loop`**: Runs `runExperimentLoop()` — evaluates and creates scoring parameter experiments
-- **`drip-distribution`**: Runs `runDripDistribution()` — distributes one approved entry per wire per run
+- **`experiment-loop`**: Runs `runExperimentLoop()` — scoring parameter experiments (retirement pending)
+- **`drip-distribution`**: Runs `runDripDistribution()` — distributes one approved entry per wire per run (only entries with `distribute_after` set)
 - **`deadline-digest`**: Runs `runDeadlineDigest()` — finds approved entries with deadlines within 7 days and emails a "Closing Soon" digest (grouped by wire; sends only when there are entries, quiet otherwise)
 - **`account-monitor`**: Runs `runAccountMonitor()` — polls monitored X accounts for new URLs
 
+Besides node-cron schedules, `src/server.ts` starts plain interval timers at boot: process-raw + decided-recheck cycle (5 min), summary-sync bridge (15 min), contacts-sync (30 min), Notion CRM sync (hourly), org enrichment (6h), contact discovery (12h), digest-orgs (30 min, gated OFF by default).
+
 ### Prompt Management
 - Prompts stored in `scan_prompts` table with `wire`, `label`, `prompt_text`, `response_format`, `variant`, `tool_type`, `intent`
-- `tool_type` values: `x_search` (Grok X.com), `web_search` (Grok web), `perplexity` (Perplexity sonar-pro)
+- `tool_type` values: `x_search` (Grok X.com), `web_search` (Grok web), `perplexity` (Perplexity sonar-pro), `parallel` (Parallel.ai retrieval), `community` (community sources)
 - `intent` values: `discovery` (find newly announced opportunities), `canonical` (find currently-open known programs), `signal` (catch news, funding rounds, signals) — influences classifier behavior via prompt guidance
 - `variant` values: `A`/`B`/`C` (legacy X-scan), `W` (web search), `P` (Perplexity), `N` (neutral/Telegram sync), `S` (signal)
 - `response_format` is the single source of truth for output format instructions -- inline format instructions were removed from prompt texts
@@ -412,7 +434,7 @@ The legacy rule-based scorer (`src/services/quality-scorer.ts`) is still in the 
 ## Distribution System
 
 ### Overview
-Per-feed multi-channel distribution of approved scan entries. Distribution is a **manual action** triggered from the feed dashboard -- it is NOT auto-triggered on approval. Five channel types are supported: Telegram, Discord, Slack, X/Twitter, and newsletter (copyable markdown).
+Per-feed multi-channel distribution of approved scan entries. **Approve = publish**: a normal dashboard approval fires per-entry distribution automatically (fire-and-forget `setImmediate` in `entry-actions.ts`); quiet approvals and internal-key agent approvals set `distributable=false` and skip it. Manual batch distribution from the dashboard remains available for approved-but-undistributed entries. Five channel types are supported: Telegram (**the only live channel in production**), Discord, Slack, X/Twitter, and newsletter (copyable markdown).
 
 ### Architecture
 - **Orchestrator**: `src/services/distribution.ts` -- coordinates sending approved-but-undistributed entries to all enabled channels for a wire, with retry support and newsletter markdown generation
@@ -455,24 +477,27 @@ The classifier is calibrated by operator approve/decline decisions (`src/service
 - Results cached for 6 hours to avoid repeated DB queries
 - The classifier (`src/services/classifier.ts`) calls `computeOperatorSignals()` and `formatSignalsForPrompt()` before each classification
 
-## Scoring Experiments
+## Scoring Experiments (retirement pending)
 
-Automated parameter tuning for the quality scorer (`src/services/experiment-engine.ts`):
-- Creates experiments with mutated scoring parameters (random walk, gradient estimate, explore strategies)
-- Evaluates running experiments against baselines (approval rate, engagement, editorial efficiency)
-- Safety triggers auto-rollback experiments that degrade quality
-- Database tables: `scoring_experiments`, `scoring_param_log`, `engagement_metrics`
-- Run via `experiment-loop` schedule type or `npx ts-node src/scripts/run-experiment-loop.ts`
-- Engagement data collected via `collect-engagement` schedule type or `npx ts-node src/scripts/collect-engagement.ts`
-- Dashboard API at `/api/experiments` for viewing history and results
+Automated parameter tuning for the **legacy rule-based scorer** (`src/services/experiment-engine.ts`). The AutoResearch dashboard tab and the `/api/experiments` server route were **removed 2026-06-13** (commit `112a5a0`); the engine, its tables (`scoring_experiments`, `scoring_param_log`, `engagement_metrics`), and the `experiment-loop`/`collect-engagement` schedule types remain in the codebase but tune parameters nothing reads (the LLM classifier replaced the rule-based scorer). Intake still tags entries with the active `experiment_id` via `getActiveParams()`. Full retirement is planned — do not build on this subsystem.
 
 ## Entry Actions Service
 
 `src/services/entry-actions.ts` extracts approve/decline/restore logic from HTTP handlers into a reusable service layer. Supports `ActionOptions`: `quiet` (skip distribution), `force` (override validation), `actor` (audit trail — who), `reason` (audit trail — why), `dryRun` (validate without committing). Both `singleEntryAction()` and `bulkEntryAction()` are used by REST API routes and agent integrations. Audit columns: `actioned_by`, `action_reason` on `scan_entries`.
 
+Approve side-effects (fire-and-forget unless noted): write-through to `summaries` (synchronous, even for quiet approvals), per-entry distribution (skipped when quiet), auto-summarize when the summary is thin, org extraction/linking/enrichment when unlinked, and — single approves of X-sourced entries only — `monitored_accounts` tracking (3 approvals from the same X account auto-enables it as a recurring discovery source).
+
+## Curator Stamps
+
+The Stringer's queue-triage layer: `POST /api/scan/entries/:id/curate` (internal-key reachable) writes a non-destructive stamp into `scan_entries.metadata.curator` — route + confidence + rationale (`src/services/curator.ts`). It never changes entry status. The queue UI shows curator route + confidence instead of the legacy Score column (PR #45); `quality_score` is null on dumb-pipe intake paths, so the stamp is the primary triage signal for those entries. `GET /api/scan/agent/approval-patterns` serves recent approve/decline examples for agent calibration.
+
 ## Internal API Key Auth
 
-`src/middleware/internal-auth.ts` provides `requireAuthOrInternalKey` middleware. Accepts either a valid `INTERNAL_API_KEY` bearer token (for agent/programmatic access) or falls through to standard Privy session auth. Agent requests get a synthetic `agentSession` identity attached to the request. Mounted on `/api/scan` routes to enable The Stringer agent to take entry actions.
+`src/middleware/internal-auth.ts` provides `requireAuthOrInternalKey` middleware. Accepts either a valid `INTERNAL_API_KEY` bearer token (timing-safe compare; for agent/programmatic access) or falls through to standard Privy session auth. Agent requests get a synthetic `agentSession` identity (`agent:stringer`) attached to the request.
+
+Internal-key mounts (see `src/server.ts`): `/api/scan/prompts`, `/api/scan` (entries, actions, queue, seen-urls, agent endpoints), `/api` scan-execution (`/api/scan/run`, `/api/feeds/run`, `/api/forum/run`), `/api/grants-intel`, `/api/accounts`, and the SSE job-progress endpoint. Agent behaviors enforced server-side: entry actions are **force-quieted** (agents cannot trigger distribution), `POST /api/scan/submit` runs `insertOnly` (dedup/classify completed by the 5-min process-raw cycle), and `POST /entries/:id/curate` writes a non-destructive curator stamp.
+
+**Mount order in `server.ts` is load-bearing**: the Telegram webhook router mounts first, and `scanExecutionRouter` must mount before the session-only `/api/feeds` + schedule routers or the internal key gets 401s from prefix shadowing (this broke agent access once — fixed in `8cc119f`).
 
 ## API Usage Tracking
 
@@ -496,9 +521,13 @@ Org profiles track organizations mentioned in entries (`org_profiles` table):
 
 Cross-wire CSV export via `src/jobs/csv-export.ts`. `GET /api/export/csv?hoursBack=24` for direct download, `POST /api/export/csv` to generate + email. Runs automatically after daily-digest (skipped if 0 entries).
 
+## Weekly Grant Wire Issue
+
+`src/jobs/weekly-issue.ts` — runs **Fridays only inside the daily-digest fold** (no separate cron). Gathers the week's distributed+approved entries (spine = `distribution_logs` success joined to approved `scan_entries`, window from the prior issue's date) plus currently-open queued/approved GRANT items ("Also open"); verifies each item is still open via Parallel Task API (primary, cited) or Firecrawl scrape + Sonnet judge (fallback), correcting amounts/deadlines and dropping closed items; synthesizes the locked Substack shape with `claude-opus-4-8`; emails the draft (`sendWeeklyDraftEmail`) and lands it in the Notion "Weekly Summaries Paste Log" (`src/services/weekly-notion.ts`). Continuity via `app_state` keys `weekly:last-issue` and `weekly:week-number`. Publishing to Substack stays human. Manual tooling: `src/scripts/weekly-run-once.ts` (`--no-email`), `weekly-preview.ts`, `weekly-seed-prior.ts`.
+
 ## Rate Limiting
 
-In-memory rate limiter in `src/server.ts`. All expensive/admin endpoints are rate-limited (search code for `checkRateLimit` to see specific limits).
+In-memory `rateLimit()` helper in `src/middleware/rate-limit.ts` (15-min cleanup sweep). All expensive/admin endpoints are rate-limited (search code for `rateLimit(` to see specific limits).
 
 ## Code Style Notes
 
@@ -510,6 +539,11 @@ In-memory rate limiter in `src/server.ts`. All expensive/admin endpoints are rat
 - Validation helpers (`isValidUuid()`, `isValidFeedKey()`, `slugifyFeedKey()`) are defined in `src/utils/validation.ts`
 - Minimal dependencies
 - Error messages include context for debugging
+
+### Dashboard UI lessons (operator feedback)
+- In wide settings tables, keep primary actions (edit/remove) visible inline — don't hide them in the last column
+- Don't expose internal identifiers (slugs/keys) in create flows when a human-facing name suffices; generate them automatically
+- Action labels must match real behavior (if it archives, say "Archive", not "Delete"), and don't blur "edit metadata" vs "open workspace" actions
 
 ## Planned / Not Yet Implemented
 
