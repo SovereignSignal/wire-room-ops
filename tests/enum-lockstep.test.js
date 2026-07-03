@@ -17,7 +17,7 @@ const {
 } = require('../src/types/intake');
 
 test('canonical consts have the expected shape', () => {
-  assert.equal(SCAN_SOURCES.length, 13);
+  assert.equal(SCAN_SOURCES.length, 14);
   assert.equal(SCAN_STATUSES.length, 11);
   assert.ok(SCAN_STATUSES.includes('incomplete'), 'the June drift value must stay in the list');
   assert.equal(SCHEDULE_TYPES.length, 6);

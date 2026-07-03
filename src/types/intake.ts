@@ -32,7 +32,7 @@ export type ToolType = typeof TOOL_TYPES[number];
 export const TOOL_TYPES_DB = [...TOOL_TYPES, 'community'] as const;
 
 // Where a result came from.
-export const SCAN_SOURCES = ['x-scan', 'web-search', 'perplexity', 'community', 'telegram', 'telegram-intake', 'manual-intake', 'email', 'forum', 'x-monitor', 'feed', 'claude-code', 'claude-cohort-notion'] as const;
+export const SCAN_SOURCES = ['x-scan', 'web-search', 'perplexity', 'community', 'telegram', 'telegram-intake', 'manual-intake', 'email', 'forum', 'x-monitor', 'x-list', 'feed', 'claude-code', 'claude-cohort-notion'] as const;
 export type ScanSource = typeof SCAN_SOURCES[number];
 
 // Processing state for scan results as they move through the pipeline:
