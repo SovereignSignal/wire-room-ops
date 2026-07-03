@@ -116,7 +116,7 @@ export const SCOUT_SEED_SURFACES: SurfaceRow[] = [
   scout('FreeBSD Foundation', 'oss', 'https://freebsdfoundation.org'),
 ];
 
-async function upsert(rows: SurfaceRow[], write: boolean): Promise<{ byType: Record<string, number> }> {
+export async function upsertSurfaces(rows: SurfaceRow[], write: boolean): Promise<{ byType: Record<string, number> }> {
   const byType: Record<string, number> = {};
   for (const r of rows) byType[r.surface_type] = (byType[r.surface_type] || 0) + 1;
   if (!write) return { byType };
@@ -145,7 +145,7 @@ async function main(): Promise<void> {
   console.log(`[Import] Querying Sov's Orgs (${ORGS_DATABASE_ID})...`);
   const pages = await queryAllNotionPages(token, ORGS_DATABASE_ID);
   const rows = pages.flatMap(p => mapOrgToSurfaces(p as NotionPage)).concat(SCOUT_SEED_SURFACES);
-  const { byType } = await upsert(rows, write);
+  const { byType } = await upsertSurfaces(rows, write);
   console.log(`[Import] ${pages.length} org pages -> ${rows.length} surfaces ${write ? '(WRITTEN)' : '(dry run — pass --write to persist)'}`);
   for (const [t, n] of Object.entries(byType).sort()) console.log(`  ${t}: ${n}`);
 }
