@@ -70,13 +70,14 @@ client/                       # React/Vite/Tailwind frontend (Lovable wireops-da
 └── ...
 src/
 ├── index.ts              # Entry point - validates config, starts server
-├── server.ts             # Express setup, route mounting (ORDER MATTERS — see Internal API Key Auth), startup ensures, background interval timers
+├── server.ts             # Express setup, route mounting (ORDER MATTERS — see Internal API Key Auth), runs STARTUP_MIGRATIONS, background interval timers
 ├── config/
 │   ├── index.ts          # Environment variables and validation
 │   ├── brand.ts          # Deployment-agnostic brand config (audience, contentType, contentVerb)
 │   └── db-config.ts      # Persistent DB config file storage
 ├── db/
-│   └── index.ts          # Postgres queries + ALL startup ensure*/DDL (schedules, feeds, scan tables, scan prompts, distribution, app_state). CHECK constraints defined here — see enum-lockstep warning below
+│   ├── startup-migrations.ts # THE ordered migration list — server boot + CI both run it; add schema changes HERE
+│   └── index.ts          # Postgres queries + ensure*/DDL implementations (schedules, feeds, scan tables, scan prompts, distribution, app_state). CHECK constraints defined here — see enum-lockstep warning below
 ├── middleware/
 │   ├── auth.ts           # Privy session auth (requireAuth middleware)
 │   ├── internal-auth.ts  # Internal API key auth for agent access (requireAuthOrInternalKey)
@@ -196,6 +197,16 @@ Server-rendered views (login/error only):
 - Classifier prompt: `src/services/classifier.ts` - `buildClassificationPrompt()` function
 - Scan prompts: Stored in `scan_prompts` table, managed via `/api/scan/prompts` CRUD API. Each prompt has `prompt_text` and optional `response_format`.
 
+### Adding an Enum Value (status / scan_source / tool_type / schedule_type)
+1. Add the value to the ONE canonical const in `src/types/intake.ts`
+2. Done — DDL CHECK constraints, TS unions, and route validators derive from it
+3. `tests/enum-lockstep.test.js` verifies the wiring; deploy applies the new constraint at boot
+
+### Adding a Table or Column
+1. Write/extend the `ensure*` function (usually in `src/db/index.ts`)
+2. Add ONE entry to `STARTUP_MIGRATIONS` in `src/db/startup-migrations.ts` (order matters)
+3. Server boot and CI both run the same list — never call `ensure*` ad hoc from startup paths
+
 ### Adding Environment Variables
 1. Add to `src/config/index.ts` in the `config` object
 2. Add validation in `validateConfig()` if required
@@ -235,7 +246,7 @@ All pipeline data flows through `scan_entries`. Key columns:
 | `metadata` | jsonb | LLM-extracted structured data (amount, deadline, eligibility, summary) + curator stamp + decided-recheck verdict |
 | `org_id` | integer | FK to `org_profiles` (auto-linked on approve) |
 
-> ⚠️ **Enum lockstep warning:** the CHECK constraints for `scan_entries.status`/`scan_source`, `scan_prompts.tool_type`/`variant`, and `schedules.schedule_type` are DROP+ADDed by **multiple `ensure*` functions** in `src/db/index.ts` at every boot. Before adding any enum value, grep ALL `CHECK (` writers of that column and update every one, plus the TypeScript unions and route validators — a missed writer silently reverts the constraint on next boot (this crash-looped production 3× in June 2026).
+> ✅ **Enum single-source-of-truth (since 2026-07-03):** the canonical lists for `scan_entries.status`/`scan_source`, `scan_prompts.tool_type`, and `schedules.schedule_type` live as consts in `src/types/intake.ts` (`SCAN_STATUSES`, `SCAN_SOURCES`, `TOOL_TYPES`/`TOOL_TYPES_DB`, `SCHEDULE_TYPES`). Every CHECK constraint interpolates them via `sqlEnumList()`, every TS union derives from them, and every route validator references them. **To add an enum value: edit the ONE const** — DDL, types, and validators pick it up automatically (`tests/enum-lockstep.test.js` fails if anyone reintroduces a literal list). This replaced the multi-writer drift pattern that crash-looped production 3× in June 2026. Note `scan_prompts.variant` remains a hand-list (legacy, stable).
 
 Status distribution (typical): ~46% duplicate, ~22% archived, ~17% queued, ~12% approved, ~3% declined.
 
@@ -387,14 +398,14 @@ Automated discovery of grant opportunities via X.com scanning, web search, and f
 9. **Approve Guard**: Pre-approval validation blocks entries with empty descriptions or empty URLs from being published; warns on EXPIRED classification
 
 ### Schedule Types (6)
-- **`daily-digest`** — **the anchor cron: one daily cycle runs the whole discovery fold** (`scheduler.ts` daily-digest branch): (1) forum scan (if `FORUM_SCAN_ENABLED`), (2) source feeds, (3) **Fridays only** the weekly Grant Wire issue, then (4) `runDailyDigest()` aggregation — 24h scan activity, the agent scan brief (recorded via `POST /api/scan/agent/send-brief` into `app_state`), per-source intake breakdown (incl. parked counts), API cost recap, top-10 queue snapshot — (5) CSV export of 24h approvals, and (6) one consolidated email (quiet days still report queue state). Each lane is isolated in try/catch so a lane failure never blocks the digest. Saving this schedule auto-derives per-wire AM/PM scan-execution schedules. **Do not add new standalone crons for periodic work — fold it into this cycle** (owner rule)
+- **`daily-digest`** — **the anchor cron: one daily cycle runs the whole discovery fold** (`scheduler.ts` daily-digest branch): (1) forum scan (if `FORUM_SCAN_ENABLED`), (2) source feeds, (3) **Fridays only** the weekly Grant Wire issue, then (4) `runDailyDigest()` aggregation — 24h scan activity, the agent scan brief (recorded via `POST /api/scan/agent/send-brief` into `app_state`), per-source intake breakdown (incl. parked counts), API cost recap, top-10 queue snapshot — (5) CSV export of 24h approvals, (6) one consolidated email (quiet days still report queue state), then (7) the daily CRM cycle — org enrichment (40), contact discovery (20, 90-day revisit), Notion CRM sync — after the email so it can never delay it. Each lane is isolated in try/catch so a lane failure never blocks the digest. Saving this schedule auto-derives per-wire AM/PM scan-execution schedules. **Do not add new standalone crons for periodic work — fold it into this cycle** (owner rule)
 - **`scan-execution`**: Runs `runScanExecution()` — executes all active prompts for a wire
 - **`forum-scan`**: Runs `runForumScan()` — standalone/extra forum runs (the daily fold already covers one/day)
 - **`source-feeds`**: Runs `runSourceFeeds()` — standalone/extra feed runs (the daily fold already covers one/day)
 - **`deadline-digest`**: Runs `runDeadlineDigest()` — finds approved entries with deadlines within 7 days and emails a "Closing Soon" digest (grouped by wire; sends only when there are entries, quiet otherwise)
 - **`account-monitor`**: Runs `runAccountMonitor()` — polls monitored X accounts for new URLs
 
-Besides node-cron schedules, `src/server.ts` starts plain interval timers at boot: process-raw + decided-recheck cycle (5 min), summary-sync bridge (15 min), contacts-sync (30 min), Notion CRM sync (hourly), org enrichment (6h), contact discovery (12h). (Retired 2026-07-03: drip-distribution, experiment-loop, collect-engagement schedule types and the digest-orgs timer — their `schedules` rows are deleted at boot.)
+Besides node-cron schedules, `src/server.ts` starts plain interval timers at boot: process-raw + decided-recheck cycle (5 min), summary-sync bridge (15 min), contacts-sync (30 min). **CRM work (org enrichment, contact discovery, Notion CRM sync) is folded into the daily-digest cycle** — it runs AFTER the digest email sends, so CRM latency can never delay the morning touchpoint. (Retired 2026-07-03: drip-distribution, experiment-loop, collect-engagement schedule types and the digest-orgs timer — their `schedules` rows are deleted at boot.)
 
 ### Prompt Management
 - Prompts stored in `scan_prompts` table with `wire`, `label`, `prompt_text`, `response_format`, `variant`, `tool_type`, `intent`
@@ -497,9 +508,9 @@ All LLM API calls are logged for cost monitoring (`src/services/api-usage.ts`):
 
 ## Organization Management
 
-Org profiles track organizations mentioned in entries (`org_profiles` table):
+Org profiles track organizations mentioned in entries (`org_profiles` table). Contact discovery revisits each org every 90 days (`contacts_checked_at` gate) rather than one-shot-forever:
 - **Extractor** (`src/services/org-extractor.ts`): Pattern matching + LLM-based extraction of canonical org names from entry text. Auto-links entries to `org_profiles` on approve.
-- **Enricher** (`src/services/org-enricher.ts`): LLM-based enrichment of org profiles (type, source_type, website, tier). Admin endpoint for batch enrichment.
+- **Enricher** (`src/services/org-enricher.ts`): LLM + web enrichment of org profiles (type, source_type, website, tier, relationship_context, last_signal). Runs daily in the digest fold; admin endpoint for batch enrichment.
 - **Merge** (`src/services/org-merge.ts`): Merge duplicate org profiles (source -> target), relink all entries. Admin endpoint for manual dedup.
 - **Notion sync** (`src/services/notion-sync.ts`): Sync org profiles to a Notion database. Config stored in `integration_config` table (DB-backed, not env vars).
 - Admin endpoints: `/api/admin/clean-orgs`, `/api/admin/dedup-orgs`, `/api/admin/enrich-orgs`

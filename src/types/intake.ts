@@ -11,29 +11,40 @@ export type PromptVariant = 'A' | 'B' | 'C' | 'W' | 'P' | 'N' | 'S';
 // Prompt strategy labels (for human readability)
 export type PromptStrategy = 'Action' | 'Landscape' | 'Open Sweep';
 
-// Which provider/tool to use for scan execution
-export type ToolType = 'x_search' | 'web_search' | 'perplexity' | 'parallel';
+// ─── Canonical enum lists ───────────────────────────────────────────────────
+// These consts are THE single source of truth for every DB CHECK constraint,
+// TypeScript union, and route validator that touches these columns. The DDL in
+// src/db/index.ts interpolates them via sqlEnumList(), so a value added here
+// automatically lands in every constraint writer — the June-2026 drift class
+// (multiple hand-maintained lists falling out of sync) is impossible by
+// construction. tests/enum-lockstep.test.js pins this wiring.
 
-// Where the result came from.
-// LOCKSTEP: this list must match the scan_entries.scan_source CHECK constraint
-// in src/db/index.ts (all writers). tests/enum-lockstep.test.js enforces it.
+/** Render an enum list for SQL: ['a','b'] -> "'a', 'b'" */
+export function sqlEnumList(values: readonly string[]): string {
+  return values.map(v => `'${v}'`).join(', ');
+}
+
+// Which provider/tool a scan prompt can use. TOOL_TYPES is what the API
+// accepts for new prompts; TOOL_TYPES_DB additionally allows legacy
+// 'community' rows that still exist in the database.
+export const TOOL_TYPES = ['x_search', 'web_search', 'perplexity', 'parallel'] as const;
+export type ToolType = typeof TOOL_TYPES[number];
+export const TOOL_TYPES_DB = [...TOOL_TYPES, 'community'] as const;
+
+// Where a result came from.
 export const SCAN_SOURCES = ['x-scan', 'web-search', 'perplexity', 'community', 'telegram', 'telegram-intake', 'manual-intake', 'email', 'forum', 'x-monitor', 'feed', 'claude-code', 'claude-cohort-notion'] as const;
 export type ScanSource = typeof SCAN_SOURCES[number];
 
-// Processing state for scan results as they move through the pipeline.
-// LOCKSTEP: must match the scan_entries.status CHECK constraint in src/db/index.ts.
-export type ScanStatus =
-  | 'raw'           // Just ingested, no processing yet
-  | 'deduped'       // Passed dedup check (unique)
-  | 'duplicate'     // Flagged as duplicate
-  | 'queued'        // Ready for operator review
-  | 'enriched'      // AI summary generated
-  | 'published'     // Included in a newsletter output
-  | 'archived'      // Below quality threshold, kept for reference
-  | 'skipped'       // Manually skipped by user
-  | 'approved'      // Approved for publication + distribution
-  | 'declined'      // Rejected by reviewer
-  | 'incomplete';   // Failed Gate 1 completeness (missing name/description/url)
+// Processing state for scan results as they move through the pipeline:
+// raw (just ingested) -> deduped -> queued (operator review) -> approved/declined;
+// side states: duplicate, incomplete (failed Gate 1), archived (off-scope/NOISE),
+// skipped (review-later), enriched (AI summary generated), published (newsletter).
+export const SCAN_STATUSES = ['raw', 'deduped', 'duplicate', 'queued', 'enriched', 'published', 'archived', 'skipped', 'approved', 'declined', 'incomplete'] as const;
+export type ScanStatus = typeof SCAN_STATUSES[number];
+
+// node-cron schedule types the scheduler dispatches (see scheduler.ts).
+export const SCHEDULE_TYPES = ['scan-execution', 'forum-scan', 'daily-digest', 'deadline-digest', 'account-monitor', 'source-feeds'] as const;
+export type ScheduleType = typeof SCHEDULE_TYPES[number];
 
 // Output format for scan prompts
 export type OutputFormat = 'text' | 'json';

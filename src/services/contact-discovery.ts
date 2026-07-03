@@ -498,16 +498,27 @@ export async function runContactDiscovery(
 
   // Step 4: org-anchored discovery
   // Select qualifying orgs ordered by signal volume (scan_entries; digest lane retired 2026-07-03)
+  // Revisit gate: an org is eligible when never checked, or last checked >90
+  // days ago — so programs whose teams change get re-discovered instead of the
+  // old one-shot-forever NOT IN (discovered_contacts) behavior.
   const { rows: orgs } = await pool.query(
     `SELECT id, name, website FROM org_profiles
      WHERE website IS NOT NULL
-       AND id NOT IN (SELECT org_id FROM discovered_contacts)
+       AND (contacts_checked_at IS NULL OR contacts_checked_at < NOW() - INTERVAL '90 days')
      ORDER BY (
        (SELECT count(*) FROM scan_entries WHERE org_id = org_profiles.id)
      ) DESC
      LIMIT $1`,
     [limit],
   );
+
+  // Stamp attempts up front so a failing org can't hot-loop the daily cycle.
+  if (orgs.length > 0) {
+    await pool.query(
+      `UPDATE org_profiles SET contacts_checked_at = NOW() WHERE id = ANY($1::int[])`,
+      [orgs.map((o: { id: number }) => o.id)],
+    );
+  }
 
   for (const org of orgs) {
     try {
