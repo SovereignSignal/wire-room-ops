@@ -27,11 +27,13 @@ export interface BdLeadsResult {
   created: number;
   skipped: number;
   message: string;
+  /** the deduped verified leads (for the digest email's BD block) */
+  leads: LeadRecord[];
 }
 
 export async function runBdLeads(pool: Pool, opts: { days?: number } = {}): Promise<BdLeadsResult> {
   const days = opts.days ?? 7;
-  const out: BdLeadsResult = { signals: 0, shapeFit: 0, verified: 0, unique: 0, created: 0, skipped: 0, message: '' };
+  const out: BdLeadsResult = { signals: 0, shapeFit: 0, verified: 0, unique: 0, created: 0, skipped: 0, message: '', leads: [] };
 
   const { rows } = await pool.query(
     `SELECT id, name, description, wire, source_url, classification
@@ -83,6 +85,7 @@ export async function runBdLeads(pool: Pool, opts: { days?: number } = {}): Prom
   }
   const leads = Array.from(byOrg.values()).map(x => x.rec);
   out.unique = leads.length;
+  out.leads = leads;
 
   // Write to the Notion Leads list (dedups by Source URL across weeks)
   const w = await writeLeadsToNotion(leads);
