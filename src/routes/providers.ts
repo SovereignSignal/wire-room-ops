@@ -98,22 +98,6 @@ router.get('/usage/summary', async (req: Request, res: Response) => {
   }
 });
 
-// GET /usage/timeline — daily rollup for charts
-router.get('/usage/timeline', async (req: Request, res: Response) => {
-  try {
-    const days = Math.min(Math.max(Number(req.query.days) || 7, 1), 90);
-    const rows = await getUsageTimeline({
-      days,
-      provider: req.query.provider as string | undefined,
-      granularity: req.query.granularity === 'hour' ? 'hour' : 'day',
-    });
-    res.json(rows);
-  } catch (error) {
-    console.error('[Usage] Timeline failed:', error);
-    res.status(500).json({ error: 'Failed to fetch usage timeline' });
-  }
-});
-
 // GET /usage/recent — last N raw log entries
 router.get('/usage/recent', async (req: Request, res: Response) => {
   try {

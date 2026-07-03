@@ -76,8 +76,7 @@ src/
 │   ├── brand.ts          # Deployment-agnostic brand config (audience, contentType, contentVerb)
 │   └── db-config.ts      # Persistent DB config file storage
 ├── db/
-│   ├── index.ts          # Postgres queries + ALL startup ensure*/DDL (schedules, feeds, scan tables, scan prompts, distribution, app_state). CHECK constraints defined here — see enum-lockstep warning below
-│   └── migrations/       # 3 stale one-time SQL bootstraps — superseded by the ensure* functions; do NOT run them
+│   └── index.ts          # Postgres queries + ALL startup ensure*/DDL (schedules, feeds, scan tables, scan prompts, distribution, app_state). CHECK constraints defined here — see enum-lockstep warning below
 ├── middleware/
 │   ├── auth.ts           # Privy session auth (requireAuth middleware)
 │   ├── internal-auth.ts  # Internal API key auth for agent access (requireAuthOrInternalKey)
@@ -160,7 +159,6 @@ src/
 │   ├── post-generator.ts # claude-sonnet-4-6 generates tweet + Telegram HTML per entry (template fallback)
 │   ├── processor.ts      # Entry processing with retry logic
 │   ├── quality-scorer.ts # Legacy rule-based scorer — only getActiveParams() still used (experiment tagging)
-│   ├── queue-rubric.ts   # DEAD — zero importers (Phase 2 delete candidate)
 │   ├── scan-stats.ts     # Prompt effectiveness and overlap metrics
 │   ├── scheduler.ts      # node-cron scheduling, DB-driven; daily-digest branch runs the daily fold
 │   ├── scraper.ts        # Firecrawl integration, URL resolution (SSRF-hardened shortener resolution)
@@ -196,7 +194,7 @@ The dashboard uses a **dual architecture**:
 Server-rendered views (login/error only):
 - `renderLoginPage()` - Login form (Privy-based, starfield canvas animation, signal cyan #00eaff accent)
 - `renderErrorPage()` - Error display
-- All server-rendered views use `renderPageShell()` from `shared.ts` for consistent layout
+- Both use the shared head/style helpers from `src/views/shared.ts` (`sharedHead`, `sharedBaseStyles`, `sharedCenteredPageStyles`)
 
 ### Changing AI Prompts
 - Grok newsletter prompt: `src/services/grok.ts` - `buildGrokPrompt()` function
@@ -534,8 +532,7 @@ In-memory `rateLimit()` helper in `src/middleware/rate-limit.ts` (15-min cleanup
 - TypeScript strict mode
 - Express for HTTP server
 - Login page uses React (via ESM) with Privy + starfield canvas animation; dashboard is a React/Vite/Tailwind SPA (`client/`)
-- Server-rendered views (login/error only) are in `src/views/` with a shared page shell pattern (deep space palette, Orbitron headings)
-- Client-side `escapeHtml()` is defined once in `shared.ts` via `CLIENT_ESCAPE_HTML` constant
+- Server-rendered views (login/error only) are in `src/views/` sharing head/style helpers from `shared.ts` (deep space palette, Orbitron headings)
 - Validation helpers (`isValidUuid()`, `isValidFeedKey()`, `slugifyFeedKey()`) are defined in `src/utils/validation.ts`
 - Minimal dependencies
 - Error messages include context for debugging

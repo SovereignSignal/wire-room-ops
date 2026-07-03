@@ -1,4 +1,4 @@
-import { ScanEntry, WireCounts, DbStats, DbTableResponse, ScanPrompt, ScoringExperiment, ScoringParams, ParamMutation, DEFAULT_PARAMS, GrantsIntelSummary, GrantsIntelObservation } from '@/types';
+import { ScanEntry, WireCounts, DbStats, DbTableResponse, ScanPrompt, GrantsIntelSummary, GrantsIntelObservation } from '@/types';
 
 const BASE = "/api";
 
@@ -156,19 +156,6 @@ export async function fetchWires(): Promise<{ key: string; displayName: string; 
   }));
 }
 
-export async function classifyQueue(wire?: string): Promise<{ classified: number; errors: number; durationMs: number }> {
-  const res = await authFetch(`${BASE}/scan/classify-queue`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(wire ? { wire } : {}),
-  });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || `Failed: ${res.status}`);
-  }
-  return res.json();
-}
-
 export async function fetchWireCounts(): Promise<WireCounts[]> {
   // Fetch queue depth per wire using /api/scan/status-counts endpoint
   // Called once per wire — aggregate across known wires
@@ -300,72 +287,6 @@ export async function createSchedule(schedule: Partial<Omit<ScheduleResponse, 'i
   return res.json();
 }
 
-// --- Experiment API ---
-
-/**
- * Compute param mutations by diffing experiment params against a baseline.
- */
-function computeMutations(params: ScoringParams, baseline: ScoringParams): ParamMutation[] {
-  const mutations: ParamMutation[] = [];
-  for (const key of Object.keys(baseline)) {
-    if (params[key] !== undefined && params[key] !== baseline[key]) {
-      mutations.push({ param: key, from: baseline[key], to: params[key] });
-    }
-  }
-  return mutations;
-}
-
-export async function getExperiments(status?: string, limit = 50): Promise<ScoringExperiment[]> {
-  const params = new URLSearchParams();
-  if (status) params.set('status', status);
-  params.set('limit', String(limit));
-  const q = params.toString();
-  const res = await authFetch(`${BASE}/experiments${q ? '?' + q : ''}`);
-  if (!res.ok) throw new Error(`Failed to fetch experiments: ${res.status}`);
-  const data = await res.json();
-  const experiments: ScoringExperiment[] = data.experiments || data;
-  // Enrich each experiment with computed mutations
-  return experiments.map((exp) => ({
-    ...exp,
-    defaultParams: exp.defaultParams || DEFAULT_PARAMS,
-    mutations: exp.mutations || computeMutations(exp.params, DEFAULT_PARAMS),
-  }));
-}
-
-export async function getActiveExperiment(): Promise<ScoringExperiment | null> {
-  const res = await authFetch(`${BASE}/experiments/active`);
-  if (!res.ok) {
-    if (res.status === 404) return null;
-    throw new Error(`Failed to fetch active experiment: ${res.status}`);
-  }
-  const data = await res.json();
-  const experiment = data.active;
-  if (!experiment) return null;
-  const defaultParams = data.defaultParams || DEFAULT_PARAMS;
-  return {
-    ...experiment,
-    defaultParams,
-    mutations: computeMutations(experiment.params, defaultParams),
-  };
-}
-
-export async function createExperiment(
-  name: string,
-  params?: Partial<ScoringParams>,
-  parentId?: string
-): Promise<ScoringExperiment> {
-  const res = await authFetch(`${BASE}/experiments/create`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, params, parentId }),
-  });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || `Failed to create experiment: ${res.status}`);
-  }
-  return res.json();
-}
-
 export async function updateSchedule(id: string, updates: Partial<Omit<ScheduleResponse, 'id' | 'description' | 'nextRun'>>): Promise<ScheduleResponse> {
   const res = await authFetch(`${BASE}/schedules/${id}`, {
     method: 'PUT',
@@ -457,50 +378,9 @@ export async function fetchUsageSummary(params: { days?: number; provider?: stri
   return res.json();
 }
 
-export async function fetchUsageTimeline(params: { days?: number; provider?: string; granularity?: string } = {}): Promise<any[]> {
-  const q = new URLSearchParams(
-    Object.fromEntries(Object.entries(params).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)]))
-  ).toString();
-  const res = await authFetch(`${BASE}/usage/timeline${q ? '?' + q : ''}`);
-  if (!res.ok) throw new Error(`Failed to fetch timeline: ${res.status}`);
-  return res.json();
-}
-
 export async function fetchRecentUsage(limit = 20): Promise<any[]> {
   const res = await authFetch(`${BASE}/usage/recent?limit=${limit}`);
   if (!res.ok) throw new Error(`Failed to fetch recent usage: ${res.status}`);
-  return res.json();
-}
-
-// --- Model Pricing ---
-
-export interface ModelPricingRow {
-  id: number;
-  provider: string;
-  model: string;
-  input_cost_per_1m: number;
-  output_cost_per_1m: number;
-  per_request_cost: number | null;
-  updated_at: string;
-}
-
-export async function fetchModelPricing(): Promise<ModelPricingRow[]> {
-  const res = await authFetch(`${BASE}/pricing`);
-  if (!res.ok) throw new Error(`Failed to fetch pricing: ${res.status}`);
-  return res.json();
-}
-
-export async function updateModelPricing(provider: string, model: string, data: {
-  input_cost_per_1m?: number;
-  output_cost_per_1m?: number;
-  per_request_cost?: number | null;
-}): Promise<ModelPricingRow> {
-  const res = await authFetch(`${BASE}/pricing/${encodeURIComponent(provider)}/${encodeURIComponent(model)}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  });
-  if (!res.ok) throw new Error(`Failed to update pricing: ${res.status}`);
   return res.json();
 }
 
@@ -626,22 +506,6 @@ export function subscribeToJob(jobId: string, onUpdate: (data: any) => void, onD
   return () => es.close();
 }
 
-export async function testScanPrompt(id: string): Promise<{
-  success: boolean;
-  content: string;
-  parsedResults: any[];
-  parsedCount: number;
-  model: string;
-  tokensUsed: number;
-}> {
-  const res = await authFetch(`${BASE}/scan/prompts/${id}/test`, { method: 'POST' });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `Test failed: ${res.status}`);
-  }
-  return res.json();
-}
-
 export async function runScanPrompt(id: string): Promise<{
   success: boolean;
   parsedCount: number;
@@ -656,42 +520,6 @@ export async function runScanPrompt(id: string): Promise<{
     throw new Error(err.error || `Run failed: ${res.status}`);
   }
   return res.json();
-}
-
-export async function testUnsavedPrompt(data: {
-  promptText: string;
-  responseFormat?: string;
-  toolType?: string;
-}): Promise<{
-  success: boolean;
-  content: string;
-  parsedResults: any[];
-  parsedCount: number;
-  model: string;
-  tokensUsed: number;
-}> {
-  const res = await authFetch(`${BASE}/scan/prompts/test`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `Test failed: ${res.status}`);
-  }
-  return res.json();
-}
-
-export async function rollbackExperiment(id: string, reason?: string): Promise<void> {
-  const res = await authFetch(`${BASE}/experiments/${id}/rollback`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reason }),
-  });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || `Failed to rollback experiment: ${res.status}`);
-  }
 }
 
 // --- Cost Stats API ---

@@ -33,17 +33,6 @@ export interface ProcessingStats {
   entriesByWire?: Record<string, number>;
 }
 
-export interface WeeklySummaryResult {
-  markdown: string;
-  stats: ProcessingStats;
-  dateRange: {
-    start: Date;
-    end: Date;
-  };
-  generatedAt: Date;
-  wire?: string;
-}
-
 export interface MagicLinkToken {
   token: string;
   email: string;
