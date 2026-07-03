@@ -55,6 +55,13 @@ test('Action(s) carries description and last_signal when present', () => {
   assert.ok(text.includes('AI lab.') && text.includes('Shipped X.'));
 });
 
+test('Action(s) renders the BD operator_read between description and latest signal', () => {
+  const props = buildOrgProperties({ name: 'Acme', description: 'AI lab.', operator_read: 'scaling a new fund, thin team', last_signal: 'Shipped X.' });
+  const text = props['Action(s)'].rich_text.map(r => r.text.content).join('');
+  assert.ok(text.includes('Operator read: scaling a new fund, thin team'));
+  assert.ok(text.indexOf('AI lab.') < text.indexOf('Operator read:') && text.indexOf('Operator read:') < text.indexOf('Latest:'));
+});
+
 test('no Action(s) when neither description nor last_signal present', () => {
   assert.equal('Action(s)' in buildOrgProperties({ name: 'Acme' }), false);
 });
