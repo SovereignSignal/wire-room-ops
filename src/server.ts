@@ -5,7 +5,7 @@ import { config } from './config';
 import { stopAuthCleanup, ensureSessionsTable } from './services/auth';
 import { requireAuth } from './middleware/auth';
 import { requireAuthOrInternalKey } from './middleware/internal-auth';
-import { closePool, ensureFeedsTable, ensureClassificationColumns, ensureEngagementMetricsTable, ensureDistributeAfterColumn, ensureAutoSummarizeFailedColumn, ensureOperatorNotesColumn, ensureAppStateTable, ensureMonitoredAccountsTable, getPool } from './db';
+import { closePool, ensureFeedsTable, ensureClassificationColumns, ensureAutoSummarizeFailedColumn, ensureOperatorNotesColumn, ensureAppStateTable, ensureMonitoredAccountsTable, getPool } from './db';
 import { jobQueue } from './services/job-queue';
 import { getSchedules, addSchedule, initScheduler, stopScheduler, getSchedulerStatus } from './services/scheduler';
 import { ensureOrgProfilesTable } from './services/org-extractor';
@@ -265,20 +265,6 @@ export async function startServer(): Promise<void> {
     console.error('Entry action columns migration failed (non-fatal):', error);
   }
 
-  // Ensure engagement_metrics table exists
-  try {
-    await ensureEngagementMetricsTable();
-  } catch (error) {
-    console.error('Engagement metrics table migration failed (non-fatal):', error);
-  }
-
-  // Ensure distribute_after column exists
-  try {
-    await ensureDistributeAfterColumn();
-  } catch (error) {
-    console.error('distribute_after column migration failed (non-fatal):', error);
-  }
-
   // Ensure auto_summarize_failed column exists
   try {
     await ensureAutoSummarizeFailedColumn();
@@ -435,22 +421,6 @@ export async function startServer(): Promise<void> {
   // Digest-org sourcing every 30 min: extract + link orgs from AI summaries → org_profiles.
   // DISABLED by default — the digest wires (repos/models/claw) are Sov's content channels,
   // not grant funders, so this was polluting the grants CRM with GitHub handles/projects.
-  // Set DIGEST_ORGS_SYNC_ENABLED=true to re-enable.
-  const digestOrgsSync = async () => {
-    try {
-      const { sourceDigestOrgs } = await import('./services/digest-orgs');
-      await sourceDigestOrgs(getPool());
-    } catch (error) {
-      console.error('[DigestOrgs] Scheduled run failed:', error);
-    }
-  };
-  let digestOrgsSyncTimer: ReturnType<typeof setInterval> | undefined;
-  if (process.env.DIGEST_ORGS_SYNC_ENABLED === 'true') {
-    digestOrgsSyncTimer = setInterval(digestOrgsSync, 30 * 60 * 1000);
-    digestOrgsSyncTimer.unref();
-  } else {
-    console.log('[DigestOrgs] Sourcing DISABLED (digest wires excluded from grants CRM). Set DIGEST_ORGS_SYNC_ENABLED=true to re-enable.');
-  }
 
   // CRM sync every hour at :15 offset (so sourcing runs first): org_profiles → SimpleCRM Notion DB
   const crmSync = async () => {
@@ -500,7 +470,6 @@ export async function startServer(): Promise<void> {
     jobQueue.stopPeriodicCleanup();
     clearInterval(processRawTimer);
     clearInterval(contactsSyncTimer);
-    clearInterval(digestOrgsSyncTimer);
     clearInterval(crmSyncTimer);
     clearInterval(enrichTimer);
     clearInterval(contactDiscoveryTimer);

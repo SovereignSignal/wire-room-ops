@@ -5,13 +5,9 @@ import { runSourceFeeds } from '../jobs/source-feeds';
 import { runWeeklyIssue } from '../jobs/weekly-issue';
 import { config } from '../config';
 import { sendTestAlertEmail, sendScheduledJobFailureEmail, sendDailyDigestEmail, sendDeadlineDigestEmail } from './email';
-import { ExperimentEngine } from './experiment-engine';
 import { runCsvExport } from '../jobs/csv-export';
 import { createMagicLink } from './auth';
 import { runDailyDigest, getTopPendingFinds, getSourceBreakdown, SourceBreakdownRow, getCostRecap, CostRow } from '../jobs/daily-digest';
-import { collectXEngagement } from '../scripts/collect-engagement';
-import { runExperimentLoop } from '../scripts/run-experiment-loop';
-import { runDripDistribution } from '../jobs/drip-distribution';
 import { runDeadlineDigest } from '../jobs/deadline-digest';
 import { runAccountMonitor } from '../jobs/account-monitor';
 import { ensureScheduleTable, getAllSchedules, getScheduleById, createSchedule, updateSchedule, deleteSchedule as dbDeleteSchedule, StoredScheduleConfig, ensureFeedsTable, ensureScanTables, ensureScanPromptsTable, ensureDistributionTables, getPool, getAppState } from '../db';
@@ -29,7 +25,7 @@ export interface ScheduleConfig {
   anthropicModel?: string;
   timezone: string;
   wire?: string; // Optional wire/feed filter
-  scheduleType?: 'scan-execution' | 'forum-scan' | 'daily-digest' | 'collect-engagement' | 'experiment-loop' | 'drip-distribution' | 'deadline-digest' | 'account-monitor' | 'source-feeds';
+  scheduleType?: 'scan-execution' | 'forum-scan' | 'daily-digest' | 'deadline-digest' | 'account-monitor' | 'source-feeds';
   frequencyHours?: number; // Sub-daily interval (1-23) for scan-execution
   notifyEmails?: string; // Comma-separated email recipients
 }
@@ -261,9 +257,6 @@ export function formatScheduleDescription(schedule: ScheduleConfig): string {
   const typeLabel =
     schedule.scheduleType === 'forum-scan' ? 'Forum Scan' :
     schedule.scheduleType === 'daily-digest' ? 'Daily Digest' :
-    schedule.scheduleType === 'collect-engagement' ? 'Collect Engagement' :
-    schedule.scheduleType === 'experiment-loop' ? 'Experiment Loop' :
-    schedule.scheduleType === 'drip-distribution' ? 'Drip Distribution' :
     schedule.scheduleType === 'deadline-digest' ? 'Deadline Digest' :
     schedule.scheduleType === 'account-monitor' ? 'Account Monitor' :
     schedule.scheduleType === 'source-feeds' ? 'Source Feeds' :
@@ -469,28 +462,9 @@ function createJobExecutor(schedule: ScheduleConfig) {
             console.error(`[Scheduler] Failed to run CSV export:`, csvErr);
           }
 
-          // Pull active experiment status
-          let experimentStatus: { name: string; entriesScored: number; approvalRate: number; status: string } | null = null;
-          try {
-            const engine = new ExperimentEngine(pool);
-            const activeExp = await engine.getActiveExperiment();
-            if (activeExp) {
-              const total = activeExp.approved_count + activeExp.declined_count;
-              const approvalRate = total > 0 ? (activeExp.approved_count / total) * 100 : 0;
-              experimentStatus = {
-                name: activeExp.name,
-                entriesScored: total,
-                approvalRate,
-                status: activeExp.status,
-              };
-            }
-          } catch (expErr) {
-            console.error(`[Scheduler] Failed to fetch experiment status:`, expErr);
-          }
-
           // Send single consolidated email
           try {
-            await sendDailyDigestEmail(digest, dashboardUrl, recipients, topFinds, csvResult, downloadUrls, experimentStatus, agentBrief, sourceBreakdown, costRecap);
+            await sendDailyDigestEmail(digest, dashboardUrl, recipients, topFinds, csvResult, downloadUrls, agentBrief, sourceBreakdown, costRecap);
             console.log(`[Scheduler] Daily digest email sent (${digest.totalNewUnique} new, ${csvResult?.entryCount ?? 0} approved)`);
           } catch (emailErr) {
             console.error(`[Scheduler] Failed to send daily digest email:`, emailErr);
@@ -507,39 +481,6 @@ function createJobExecutor(schedule: ScheduleConfig) {
           status.error = null;
           console.log(`[Scheduler] Daily digest completed`);
         }
-
-      } else if (currentScheduleData.scheduleType === 'collect-engagement') {
-        // ---- Collect Engagement Metrics Job ----
-        const pool = getPool();
-        console.log(`[Scheduler] Running engagement metrics collection...`);
-
-        const collected = await collectXEngagement(pool, 4, 8);
-
-        status.status = 'success';
-        status.error = null;
-        console.log(`[Scheduler] Engagement collection completed: ${collected} metrics collected`);
-
-      } else if (currentScheduleData.scheduleType === 'experiment-loop') {
-        // ---- Experiment Loop Job ----
-        const pool = getPool();
-        console.log(`[Scheduler] Running experiment loop...`);
-
-        await runExperimentLoop(pool);
-
-        status.status = 'success';
-        status.error = null;
-        console.log(`[Scheduler] Experiment loop completed`);
-
-      } else if (currentScheduleData.scheduleType === 'drip-distribution') {
-        // ---- Drip Distribution Job ----
-        const pool = getPool();
-        console.log(`[Scheduler] Running drip distribution...`);
-
-        const dripResult = await runDripDistribution(pool);
-
-        status.status = 'success';
-        status.error = null;
-        console.log(`[Scheduler] Drip distribution completed: ${dripResult.distributed} distributed, ${dripResult.skipped} skipped, ${dripResult.errors} errors`);
 
       } else if (currentScheduleData.scheduleType === 'account-monitor') {
         // ---- Account Monitor Job ----

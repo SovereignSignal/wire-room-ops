@@ -409,17 +409,3 @@ export async function getQueuedEntries(filters?: {
   return result.rows as ScanEntry[];
 }
 
-/**
- * Schedule an approved entry for distribution via the drip job.
- * Sets distribute_after timestamp — drip job only picks up entries with this set.
- * @param entryId - The entry ID to schedule
- * @param distributeAfter - When to distribute (default: now)
- */
-export async function scheduleForDistribution(entryId: number, distributeAfter?: Date): Promise<void> {
-  const pool = getPool();
-  const when = distributeAfter || new Date();
-  await pool.query(
-    `UPDATE scan_entries SET distribute_after = $1, updated_at = NOW() WHERE id = $2`,
-    [when, entryId]
-  );
-}

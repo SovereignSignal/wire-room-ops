@@ -15,8 +15,6 @@ import {
   ensureScanPromptsTable,
   ensureScheduleTable,
   ensureDistributionTables,
-  ensureEngagementMetricsTable,
-  ensureDistributeAfterColumn,
   ensureAutoSummarizeFailedColumn,
   ensureOperatorNotesColumn,
   ensureAppStateTable,
@@ -24,7 +22,6 @@ import {
   closePool,
 } from '../src/db';
 import { ensureEntryActionColumns } from '../src/services/entry-actions';
-import { runScoringExperimentsMigration } from '../src/migrations/scoring-experiments';
 import { getPool } from '../src/db';
 
 async function main(): Promise<void> {
@@ -38,14 +35,11 @@ async function main(): Promise<void> {
   await ensureScanPromptsTable();
   await ensureScheduleTable();
   await ensureDistributionTables();
-  await ensureEngagementMetricsTable();
-  await ensureDistributeAfterColumn();
   await ensureAutoSummarizeFailedColumn();
   await ensureOperatorNotesColumn();
   await ensureAppStateTable();
   await ensureMonitoredAccountsTable();
   await ensureEntryActionColumns();
-  await runScoringExperimentsMigration(getPool());
 
   console.log('[CI] Database schema ready');
 }

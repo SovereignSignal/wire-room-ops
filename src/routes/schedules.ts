@@ -23,8 +23,8 @@ const router = Router();
 /** Validate schedule numeric parameters. Returns error string or null. */
 function validateScheduleParams(body: Record<string, any>): string | null {
   const { dayOfWeek, hour, minute, lookbackDays, scheduleType, frequencyHours, notifyEmails } = body;
-  if (scheduleType && !['scan-execution', 'forum-scan', 'daily-digest', 'collect-engagement', 'experiment-loop', 'drip-distribution', 'deadline-digest', 'account-monitor', 'source-feeds'].includes(scheduleType)) {
-    return 'scheduleType must be one of: scan-execution, forum-scan, daily-digest, collect-engagement, experiment-loop, drip-distribution, deadline-digest, account-monitor, source-feeds';
+  if (scheduleType && !['scan-execution', 'forum-scan', 'daily-digest', 'deadline-digest', 'account-monitor', 'source-feeds'].includes(scheduleType)) {
+    return 'scheduleType must be one of: scan-execution, forum-scan, daily-digest, deadline-digest, account-monitor, source-feeds';
   }
   if (typeof dayOfWeek === 'number' && (dayOfWeek < 0 || dayOfWeek > 7)) {
     return 'dayOfWeek must be between 0 (Sunday) and 6 (Saturday), or 7 for daily';
@@ -193,7 +193,7 @@ router.post('/digest/send-now', async (req: Request, res: Response) => {
     const sourceBreakdown = await getSourceBreakdown(pool).catch(() => undefined);
     const costRecap = await getCostRecap(pool).catch(() => undefined);
 
-    await sendDailyDigestEmail(digest, config.app.url, recipients, topFinds, undefined, undefined, undefined, undefined, sourceBreakdown, costRecap);
+    await sendDailyDigestEmail(digest, config.app.url, recipients, topFinds, undefined, undefined, undefined, sourceBreakdown, costRecap);
     res.json({ success: true, message: `Digest sent to ${recipients?.join(', ') || 'default recipients'}`, stats: { wires: digest.wires.length, pendingReview: digest.totalPendingReview } });
   } catch (error) {
     console.error('[DigestNow] Failed:', error);

@@ -101,8 +101,6 @@ src/
 │   ├── scan-prompts.ts   # Scan prompts CRUD, test, review, run
 │   └── schedules.ts      # Schedule CRUD, scheduler status, digest send-now
 ├── scripts/              # Manual CLI tools (npx ts-node / railway run) — NOT scheduled
-│   ├── collect-engagement.ts  # Fetch X public_metrics for distributed posts (also a schedule type)
-│   ├── run-experiment-loop.ts # Scoring-experiment loop (also a schedule type; retirement pending)
 │   ├── forum-dryrun.ts / forum-run-once.ts / forum-activity-probe.ts   # Forum lane testing/audit
 │   ├── source-feeds-dryrun.ts / source-feeds-run-once.ts               # Feed lane testing
 │   ├── weekly-preview.ts / weekly-run-once.ts / weekly-seed-prior.ts / weekly-send-md.ts  # Weekly issue tooling
@@ -115,7 +113,6 @@ src/
 │   ├── daily-intake.ts     # Scan intake pipeline orchestrator (parse -> dedup -> classify -> queue)
 │   ├── deadline-digest.ts  # Weekly "Closing Soon (7d)" email of approved entries with deadlines
 │   ├── decided-recheck.ts  # LLM semantic dedup of queued entries vs 365d decided corpus (5-min cycle)
-│   ├── drip-distribution.ts # Drip-feed one approved entry per wire per run (gated on distribute_after)
 │   ├── enrichment.ts       # Thin-entry scrape + re-summarize — MANUAL ONLY (POST /api/enrich)
 │   ├── forum-scan.ts       # Governance-forum lane: discuss.watch allowlist + LLM judge -> intake
 │   ├── process-raw.ts      # 5-min background cycle: raw -> Gate 1 -> dedup -> classify -> queue
@@ -135,12 +132,10 @@ src/
 │   ├── contact-discovery.ts # Evidence-gated people discovery (org + content anchored) -> discovered_contacts/Notion
 │   ├── curator.ts        # Curator route/confidence stamp logic (queue triage signal, written via /curate)
 │   ├── dedup.ts          # URL exact-match + exact-name dedup (fuzzy layer disabled) + alternate-source annotation
-│   ├── digest-orgs.ts    # Digest-wire org sourcing — GATED OFF by default (DIGEST_ORGS_SYNC_ENABLED)
 │   ├── discord-channel.ts # Discord channel posting via REST API (built, unused in prod)
 │   ├── distribution.ts   # Distribution orchestrator: send entries to channels, retry, newsletter
 │   ├── email.ts          # Resend email templates (digest, weekly draft, deadline digest, CSV, alerts, login)
 │   ├── entry-actions.ts  # Approve/decline/restore business logic + approve side-effects (audit: actor/reason/dryRun)
-│   ├── experiment-engine.ts # Scoring experiment lifecycle (dashboard/API removed; retirement pending)
 │   ├── forum.ts          # discuss.watch client: governance allowlist, age gate, LLM thread judge
 │   ├── grok.ts           # Grok Chat + Responses API for X.com content and scans (uses getBrand())
 │   ├── intake.ts         # Scan result parser (4 strategies) + sanitizeResult()
@@ -158,7 +153,6 @@ src/
 │   ├── perplexity.ts     # Perplexity sonar-pro scans
 │   ├── post-generator.ts # claude-sonnet-4-6 generates tweet + Telegram HTML per entry (template fallback)
 │   ├── processor.ts      # Entry processing with retry logic
-│   ├── quality-scorer.ts # Legacy rule-based scorer — only getActiveParams() still used (experiment tagging)
 │   ├── scan-stats.ts     # Prompt effectiveness and overlap metrics
 │   ├── scheduler.ts      # node-cron scheduling, DB-driven; daily-digest branch runs the daily fold
 │   ├── scraper.ts        # Firecrawl integration, URL resolution (SSRF-hardened shortener resolution)
@@ -351,7 +345,7 @@ Generated files are persisted to Postgres. Sessions are DB-backed and survive re
 - `RESEND_API_KEY` - Resend email API key
 
 ### Optional
-See `.env.example` for full list. Key optional vars: `PORT`, `APP_URL`, `ALLOWED_EMAILS`, `TELEGRAM_BOT_TOKEN`, `PERPLEXITY_API_KEY`, `PARALLEL_API_KEY` (Parallel.ai scans), `FORUM_SCAN_ENABLED`, `SUMMARIZE_PROVIDER` + `OLLAMA_DEFAULT_MODEL` (auto-summarize provider), `SUMMARY_SYNC_WIRES` (tele-sum bridge wire filter), `SOURCE_BLOCKLIST_EXTRA` (extra Gate-1 blocked domains), `DIGEST_ORGS_SYNC_ENABLED` (off by default), `WEEKLY_PASTE_LOG_PAGE_ID` (Notion landing page), `BRAND_*` (deployment-agnostic config overrides), `INTERNAL_API_KEY` (agent API access), `X_BEARER_TOKEN` (X account monitor + engagement metrics), `DEV_MODE` (skip auth in dev), `DATA_DIR` (local data storage).
+See `.env.example` for full list. Key optional vars: `PORT`, `APP_URL`, `ALLOWED_EMAILS`, `TELEGRAM_BOT_TOKEN`, `PERPLEXITY_API_KEY`, `PARALLEL_API_KEY` (Parallel.ai scans), `FORUM_SCAN_ENABLED`, `SUMMARIZE_PROVIDER` + `OLLAMA_DEFAULT_MODEL` (auto-summarize provider), `SUMMARY_SYNC_WIRES` (tele-sum bridge wire filter), `SOURCE_BLOCKLIST_EXTRA` (extra Gate-1 blocked domains), `WEEKLY_PASTE_LOG_PAGE_ID` (Notion landing page), `BRAND_*` (deployment-agnostic config overrides), `INTERNAL_API_KEY` + `INTERNAL_API_KEY_DAILY_SCAN` (named agent API keys — see Internal API Key Auth), `X_BEARER_TOKEN` (X account monitor), `DEV_MODE` (skip auth in dev), `DATA_DIR` (local data storage).
 
 ## Feeds System
 
@@ -392,18 +386,15 @@ Automated discovery of grant opportunities via X.com scanning, web search, and f
 8. **Queue/archive**: Source-specific behavior: scan execution archives `NOISE`; raw background processing queues complete non-duplicates; Telegram/manual intake uses `operator_route`.
 9. **Approve Guard**: Pre-approval validation blocks entries with empty descriptions or empty URLs from being published; warns on EXPIRED classification
 
-### Schedule Types (9)
+### Schedule Types (6)
 - **`daily-digest`** — **the anchor cron: one daily cycle runs the whole discovery fold** (`scheduler.ts` daily-digest branch): (1) forum scan (if `FORUM_SCAN_ENABLED`), (2) source feeds, (3) **Fridays only** the weekly Grant Wire issue, then (4) `runDailyDigest()` aggregation — 24h scan activity, the agent scan brief (recorded via `POST /api/scan/agent/send-brief` into `app_state`), per-source intake breakdown (incl. parked counts), API cost recap, top-10 queue snapshot — (5) CSV export of 24h approvals, and (6) one consolidated email (quiet days still report queue state). Each lane is isolated in try/catch so a lane failure never blocks the digest. Saving this schedule auto-derives per-wire AM/PM scan-execution schedules. **Do not add new standalone crons for periodic work — fold it into this cycle** (owner rule)
 - **`scan-execution`**: Runs `runScanExecution()` — executes all active prompts for a wire
 - **`forum-scan`**: Runs `runForumScan()` — standalone/extra forum runs (the daily fold already covers one/day)
 - **`source-feeds`**: Runs `runSourceFeeds()` — standalone/extra feed runs (the daily fold already covers one/day)
-- **`collect-engagement`**: Runs `collectXEngagement()` — fetches X/Twitter public_metrics for recent distributed posts
-- **`experiment-loop`**: Runs `runExperimentLoop()` — scoring parameter experiments (retirement pending)
-- **`drip-distribution`**: Runs `runDripDistribution()` — distributes one approved entry per wire per run (only entries with `distribute_after` set)
 - **`deadline-digest`**: Runs `runDeadlineDigest()` — finds approved entries with deadlines within 7 days and emails a "Closing Soon" digest (grouped by wire; sends only when there are entries, quiet otherwise)
 - **`account-monitor`**: Runs `runAccountMonitor()` — polls monitored X accounts for new URLs
 
-Besides node-cron schedules, `src/server.ts` starts plain interval timers at boot: process-raw + decided-recheck cycle (5 min), summary-sync bridge (15 min), contacts-sync (30 min), Notion CRM sync (hourly), org enrichment (6h), contact discovery (12h), digest-orgs (30 min, gated OFF by default).
+Besides node-cron schedules, `src/server.ts` starts plain interval timers at boot: process-raw + decided-recheck cycle (5 min), summary-sync bridge (15 min), contacts-sync (30 min), Notion CRM sync (hourly), org enrichment (6h), contact discovery (12h). (Retired 2026-07-03: drip-distribution, experiment-loop, collect-engagement schedule types and the digest-orgs timer — their `schedules` rows are deleted at boot.)
 
 ### Prompt Management
 - Prompts stored in `scan_prompts` table with `wire`, `label`, `prompt_text`, `response_format`, `variant`, `tool_type`, `intent`
@@ -427,7 +418,6 @@ Quality scoring is done by the Grok LLM classifier (`src/services/classifier.ts`
 
 Failed classifications retry once with a 2-second delay in scan execution. If classification still fails, entries generally remain visible with score 0 and classification UNCHECKED. A backfill endpoint (`POST /api/admin/classify-backfill`) can batch-classify UNCHECKED entries later.
 
-The legacy rule-based scorer (`src/services/quality-scorer.ts`) is still in the codebase but is no longer used in the main pipeline.
 
 ## Distribution System
 
@@ -458,7 +448,6 @@ Approve entries → configure channels in Settings > Distribution → click "Dis
 - **Concurrent execution guard**: Prevents double-posting if distribution is triggered while already running (returns 409 with existing job ID)
 - **Config merge on partial update**: PUT to config endpoint merges new fields into existing JSONB, preventing accidental credential loss
 - **Retry sends only to failed channels**: Redistribution skips channels that already have a `success` or `pending` log entry
-- **Drip mode**: `src/jobs/drip-distribution.ts` distributes one entry per wire per run on a schedule, creating a natural stream instead of batch distribution
 
 ### Key Endpoints
 - `POST /api/distribution/run/:wire` — trigger distribution for a wire
@@ -475,9 +464,9 @@ The classifier is calibrated by operator approve/decline decisions (`src/service
 - Results cached for 6 hours to avoid repeated DB queries
 - The classifier (`src/services/classifier.ts`) calls `computeOperatorSignals()` and `formatSignalsForPrompt()` before each classification
 
-## Scoring Experiments (retirement pending)
+## Scoring Experiments (RETIRED 2026-07-03)
 
-Automated parameter tuning for the **legacy rule-based scorer** (`src/services/experiment-engine.ts`). The AutoResearch dashboard tab and the `/api/experiments` server route were **removed 2026-06-13** (commit `112a5a0`); the engine, its tables (`scoring_experiments`, `scoring_param_log`, `engagement_metrics`), and the `experiment-loop`/`collect-engagement` schedule types remain in the codebase but tune parameters nothing reads (the LLM classifier replaced the rule-based scorer). Intake still tags entries with the active `experiment_id` via `getActiveParams()`. Full retirement is planned — do not build on this subsystem.
+The AutoResearch subsystem is fully retired: dashboard tab + `/api/experiments` removed 2026-06-13 (`112a5a0`); engine, rule-based scorer, `experiment-loop`/`collect-engagement` schedule types, drip lane, and `experiment_id` intake tagging removed 2026-07-03 (Phase 4). The DB tables (`scoring_experiments`, `scoring_param_log`, `engagement_metrics`) and columns (`scan_entries.experiment_id`, `distribute_after`) remain as dormant data — nothing reads or writes them. Do not build on this subsystem.
 
 ## Entry Actions Service
 
@@ -491,7 +480,7 @@ The Stringer's queue-triage layer: `POST /api/scan/entries/:id/curate` (internal
 
 ## Internal API Key Auth
 
-`src/middleware/internal-auth.ts` provides `requireAuthOrInternalKey` middleware. Accepts either a valid `INTERNAL_API_KEY` bearer token (timing-safe compare; for agent/programmatic access) or falls through to standard Privy session auth. Agent requests get a synthetic `agentSession` identity (`agent:stringer`) attached to the request.
+`src/middleware/internal-auth.ts` provides `requireAuthOrInternalKey` middleware. Accepts a valid **named** internal API key bearer token (timing-safe compare) or falls through to standard Privy session auth. Each key maps to its own audit-trail identity: `INTERNAL_API_KEY` → `agent:stringer` (The Stringer), `INTERNAL_API_KEY_DAILY_SCAN` → `agent:daily-scan` (the claude.ai daily-grant-scan routine). **Agents can never publish**: entry actions are force-quieted server-side and `POST /entries/:id/redistribute` returns 403 for agent sessions (operator-only).
 
 Internal-key mounts (see `src/server.ts`): `/api/scan/prompts`, `/api/scan` (entries, actions, queue, seen-urls, agent endpoints), `/api` scan-execution (`/api/scan/run`, `/api/feeds/run`, `/api/forum/run`), `/api/grants-intel`, `/api/accounts`, and the SSE job-progress endpoint. Agent behaviors enforced server-side: entry actions are **force-quieted** (agents cannot trigger distribution), `POST /api/scan/submit` runs `insertOnly` (dedup/classify completed by the 5-min process-raw cycle), and `POST /entries/:id/curate` writes a non-destructive curator stamp.
 
