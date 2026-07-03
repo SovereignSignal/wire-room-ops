@@ -21,6 +21,7 @@ test('canonical consts have the expected shape', () => {
   assert.equal(SCAN_STATUSES.length, 11);
   assert.ok(SCAN_STATUSES.includes('incomplete'), 'the June drift value must stay in the list');
   assert.equal(SCHEDULE_TYPES.length, 6);
+  assert.equal(SURFACE_TYPES.length, 12);
   for (const t of TOOL_TYPES) assert.ok(TOOL_TYPES_DB.includes(t), `TOOL_TYPES_DB must contain '${t}'`);
   assert.ok(TOOL_TYPES_DB.includes('community'), 'legacy community rows must stay DB-valid');
   assert.equal(sqlEnumList(['a', 'b']), "'a', 'b'");

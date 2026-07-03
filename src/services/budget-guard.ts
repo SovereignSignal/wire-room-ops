@@ -2,13 +2,15 @@
  * Watchtower budget guard. One number, one gate: month-to-date discovery spend
  * vs WATCHTOWER_BUDGET_MONTHLY_USD (Sov's cap: $10-20). Grok spend comes from
  * api_usage_log.estimated_cost_usd; X reads are metered here (pay-per-use has
- * no pricing row) via an app_state monthly counter at $0.005/post read.
+ * no pricing row) via an app_state monthly counter at TWITTER_READ_UNIT_USD
+ * per read — the owned-read price, since these reads are of the account's
+ * own X Lists, not third-party posts.
  */
 import type { Pool } from 'pg';
 import { getAppState, setAppState } from '../db';
 import { config } from '../config';
 
-export const TWITTER_READ_UNIT_USD = 0.005; // X pay-per-use post read (Feb 2026 pricing)
+export const TWITTER_READ_UNIT_USD = 0.001; // owned-read price: reads of the account's own Lists (X pay-per-use, Feb 2026)
 
 function monthKey(): string {
   return `watchtower:xreads:${new Date().toISOString().slice(0, 7)}`; // e.g. watchtower:xreads:2026-07
