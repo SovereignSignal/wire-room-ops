@@ -14,8 +14,9 @@ Deployed as the Sovereign Signal Grant Wires (crypto/AI/OSS grants) but designed
 - Distribution: Telegram channels (live) + Friday weekly Substack draft; Discord/Slack/X/newsletter built but unused
 - React dashboard (Lovable design) + server-rendered login
 - DB-backed API key management with env var fallback
-- Org/contacts CRM layer (extraction, enrichment, merge, Notion sync, people monitor)
-- Schedule management, tele-sum summary-sync bridge, model listing, email digests
+- Org/contacts CRM layer (extraction, BD-lens enrichment with per-org `operator_read`, merge, Notion sync, people monitor)
+- BD leads loop (Wednesdays): relationship signals + a 17-source senior-roles registry -> SOV_SHAPE qualifier -> Parallel verification -> Notion Paid Work Leads (find + qualify only, never contacts)
+- Schedule management, tele-sum summary-sync bridge, model listing, decisions-first daily digest email
 - Deployment-agnostic brand/audience configuration
 
 ## Core Workflow
@@ -186,15 +187,12 @@ Authenticated API (partial list -- see CLAUDE.md for complete reference):
 
 ## Scheduler Types
 
-Supported schedule types (9):
+Supported schedule types (6):
 
-- `daily-digest` — **the anchor cron**: one cycle runs forum scan + source feeds + (Fridays) the weekly issue + digest email + CSV export. Fold new periodic work into this cycle instead of adding crons
+- `daily-digest` — **the anchor cron**: one cycle runs forum scan + source feeds + (Wednesdays) the BD leads run + (Fridays) the weekly issue + digest email + CSV export + the daily CRM cycle (org enrichment, contact discovery, Notion sync — after the email). Fold new periodic work into this cycle instead of adding crons
 - `scan-execution`
 - `forum-scan`
 - `source-feeds`
-- `collect-engagement`
-- `experiment-loop` (retirement pending)
-- `drip-distribution`
 - `deadline-digest`
 - `account-monitor`
 
@@ -268,6 +266,7 @@ Optional:
 - `TELEGRAM_BOT_TOKEN` -- bot token for channel distribution posting
 - `DB_SSL_REJECT_UNAUTHORIZED`
 - `FORUM_SCAN_ENABLED`
+- `BD_LEADS_DATABASE_ID` -- Notion Paid Work Leads db for the Wednesday BD loop
 - `DISCUSS_WATCH_API_URL`
 - `PERPLEXITY_API_KEY` -- for deep web research scans (variant P prompts)
 
