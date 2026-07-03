@@ -51,6 +51,7 @@ export interface EnrichedOrg {
   description: string | null;
   tags: string[];
   last_signal: string | null;
+  operator_read: string | null;
   source: string | null;
 }
 
@@ -104,6 +105,7 @@ export function parseEnrichmentResponse(text: string): EnrichedOrg[] {
         ? (o['tags'] as unknown[]).slice(0, 5).map(String)
         : [],
       last_signal: typeof o['last_signal'] === 'string' ? o['last_signal'] : null,
+      operator_read: typeof o['operator_read'] === 'string' ? o['operator_read'] : null,
       source: isHttpUrl(o['source']) ? (o['source'] as string) : null,
     }];
   });
@@ -151,7 +153,7 @@ export async function enrichOrgs(
     `${i + 1}. [ID:${o.id}] "${o.name}" (wires: ${o.wires.join(', ')}, entries: ${o.entry_count})`
   ).join('\n');
 
-  const prompt = `You are enriching organizations that appear in a grant/funding discovery pipeline. For each org below, research it on the web and return a JSON array with these fields:
+  const prompt = `You are enriching organizations in a business-development intelligence asset for a senior operator-for-hire whose specialty is FUNDING ECOSYSTEMS (grant program operations, ecosystem BD/partnerships/revenue, governance operations). For each org below, research it on the web and return a JSON array with these fields:
 
 - id: the numeric ID shown in brackets
 - org_type: exactly one of: ${VALID_ORG_TYPES.join(', ')}
@@ -159,9 +161,10 @@ export async function enrichOrgs(
 - website: the org's primary website URL (https://...), or null if unknown
 - twitter: the org's Twitter/X URL (https://x.com/...), or null if unknown
 - github_url: the org's GitHub URL (https://github.com/...), or null if unknown
-- description: 1-2 sentences describing what the org does
+- description: 2-3 sentences, BD lens: what the org is AND how it runs funding/programs — do they operate grant/ecosystem/credit programs, who runs them (name teams or leads when sourced), are those programs growing, restructuring, or winding down? Written for an operator deciding whether this org could need him.
 - tags: 3-5 lowercase keywords describing the org (e.g. ["defi","grants","ethereum"])
-- last_signal: the most recent notable thing they shipped, announced, or funded (1 sentence)
+- last_signal: the most recent CONCRETE org-side trigger, dated (~last 60 days if any): a program launched/expanded/paused, a fund raised/allocated, a key hire or departure, a governance change. If nothing recent, the most recent notable event with its date.
+- operator_read: one blunt sentence — the org-side operator need (or absence of one) an outside senior operator could serve right now, e.g. "scaling a new $30M fund with a 2-person team" or "mature program, no visible gap". Ground it in what you found; never invent need.
 - source: a URL (https://...) that backs the claims you are making
 
 Rules:
@@ -305,6 +308,7 @@ export async function enrichBatch(opts?: {
               twitter = COALESCE($4, twitter),
               github_url = COALESCE($5, github_url),
               description = COALESCE($6, description),
+              operator_read = COALESCE($11, operator_read),
               tags = CASE WHEN array_length($7::text[],1) IS NULL THEN tags
                           ELSE (SELECT ARRAY(SELECT DISTINCT unnest(COALESCE(tags,'{}') || $7::text[]))) END,
               last_signal = $8,
@@ -317,6 +321,7 @@ export async function enrichBatch(opts?: {
               data.github_url, data.description,
               data.tags.length > 0 ? data.tags : null,
               data.last_signal, data.source, orgId,
+              data.operator_read,
             ]
           );
           stats.enriched++;

@@ -35,3 +35,12 @@ test('drops items with missing/NaN id', () => {
   assert.equal(out.length, 1);
   assert.equal(out[0].id, 9);
 });
+
+test('parseEnrichmentResponse carries operator_read and tolerates its absence', () => {
+  const { parseEnrichmentResponse } = require('../src/services/org-enricher');
+  const withRead = parseEnrichmentResponse(JSON.stringify([{ id: 1, operator_read: 'scaling a new fund with a 2-person team', description: 'x', tags: [] }]));
+  assert.equal(withRead[0].operator_read, 'scaling a new fund with a 2-person team');
+  const without = parseEnrichmentResponse(JSON.stringify([{ id: 2, description: 'y', tags: [] }]));
+  assert.equal(without[0].operator_read, null);
+});
+

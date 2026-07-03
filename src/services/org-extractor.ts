@@ -449,6 +449,7 @@ export async function ensureOrgProfilesTable(): Promise<void> {
   // Columns written by org-enricher / contact-discovery — MUST exist on a
   // fresh DB or every enrichment UPDATE breaks (the ensure*-drift pattern):
   await pool.query(`ALTER TABLE org_profiles ADD COLUMN IF NOT EXISTS relationship_context TEXT`);
+  await pool.query(`ALTER TABLE org_profiles ADD COLUMN IF NOT EXISTS operator_read TEXT`);
   await pool.query(`ALTER TABLE org_profiles ADD COLUMN IF NOT EXISTS last_signal TEXT`);
   await pool.query(`ALTER TABLE org_profiles ADD COLUMN IF NOT EXISTS contacts_checked_at TIMESTAMPTZ`);
 
