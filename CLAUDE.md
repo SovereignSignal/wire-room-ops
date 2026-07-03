@@ -108,6 +108,7 @@ src/
 │   └── cleanup-lane-noise.ts / lane-quality-report.ts / queue-dedup-review.ts  # June-2026 one-off audits
 ├── jobs/
 │   ├── account-monitor.ts  # Poll monitored X accounts (orgs + people) for new URLs -> intake
+│   ├── bd-leads.ts         # Weekly BD leads (Wednesdays in the digest fold): relationship signals -> qualify -> verify -> Notion Paid Work Leads
 │   ├── contacts-sync.ts    # Notion Contacts DB -> monitored_accounts reconcile (30-min timer)
 │   ├── csv-export.ts       # Approved entries CSV export (runs inside daily-digest; also on-demand)
 │   ├── daily-digest.ts     # Daily digest aggregation + cost recap (see "the daily fold" below)
@@ -129,6 +130,9 @@ src/
 │   ├── approval-guard.ts # Pre-approval validation (blocks bad source/description data)
 │   ├── auth.ts           # Sessions, magic-link/download tokens, cleanup sweep
 │   ├── auto-summarize.ts # Auto-generate summary on approve (Ollama-first, Grok fallback)
+│   ├── bd-leads-notion.ts # Write verified BD leads to the Notion Paid Work Leads db (dedup by Source URL)
+│   ├── bd-qualifier.ts   # BD shape-screen: scores signals against SOV_SHAPE (3 service lines, ecosystem-blind)
+│   ├── bd-verify.ts      # BD verification via Parallel Task API (real? currently active? cited status)
 │   ├── classifier.ts     # Gate 2 LLM classifier (GRANT/NEWS/EXPIRED/NOISE + score + scope gate + wire reassignment)
 │   ├── contact-discovery.ts # Evidence-gated people discovery (org + content anchored) -> discovered_contacts/Notion
 │   ├── curator.ts        # Curator route/confidence stamp logic (queue triage signal, written via /curate)
@@ -268,7 +272,7 @@ INGESTION (raw data)                    THE REFINERY (processing)               
                                          approved ──→ distribution channels (TG, X, newsletter, email)
 ```
 
-`*` Queue/archive rules are not identical for every intake path. Scan execution archives `NOISE`; raw background processing queues complete non-duplicates even when classification is weak; Telegram/manual intake uses `operator_route`, keeping Telegram `park` and `relationship_signal` items visible for review. `quality_score` ranks and explains items but is no longer a universal queue threshold.
+`*` Queue/archive rules are not identical for every intake path. Scan execution archives `NOISE`; raw background processing queues complete non-duplicates even when classification is weak (archiving only off-scope items). **Operator intake (Telegram bot + manual paste) never auto-archives** — the dumb pipe queues everything raw, and `determinePostClassificationStatus` returns `queued` for every route (wide net). The classifier's `operator_route` (`publish`/`source_check`/`park`/`relationship_signal`/`decline`) persists into `metadata.operator_route` (written by process-raw Gate 2 and the classify backfill — the BD loop and the queue's ROUTE filter depend on it). `quality_score` ranks and explains items but is no longer a universal queue threshold.
 
 ### Dedup Tables
 
@@ -356,15 +360,16 @@ Generated files are persisted to Postgres. Sessions are DB-backed and survive re
 - `RESEND_API_KEY` - Resend email API key
 
 ### Optional
-See `.env.example` for full list. Key optional vars: `PORT`, `APP_URL`, `ALLOWED_EMAILS`, `TELEGRAM_BOT_TOKEN`, `PERPLEXITY_API_KEY`, `PARALLEL_API_KEY` (Parallel.ai scans), `FORUM_SCAN_ENABLED`, `SUMMARIZE_PROVIDER` + `OLLAMA_DEFAULT_MODEL` (auto-summarize provider), `SUMMARY_SYNC_WIRES` (tele-sum bridge wire filter), `SOURCE_BLOCKLIST_EXTRA` (extra Gate-1 blocked domains), `WEEKLY_PASTE_LOG_PAGE_ID` (Notion landing page), `BRAND_*` (deployment-agnostic config overrides), `INTERNAL_API_KEY` + `INTERNAL_API_KEY_DAILY_SCAN` (named agent API keys — see Internal API Key Auth), `X_BEARER_TOKEN` (X account monitor), `DEV_MODE` (skip auth in dev), `DATA_DIR` (local data storage).
+See `.env.example` for full list. Key optional vars: `PORT`, `APP_URL`, `ALLOWED_EMAILS`, `TELEGRAM_BOT_TOKEN`, `PERPLEXITY_API_KEY`, `PARALLEL_API_KEY` (Parallel.ai scans), `FORUM_SCAN_ENABLED`, `SUMMARIZE_PROVIDER` + `OLLAMA_DEFAULT_MODEL` (auto-summarize provider), `SUMMARY_SYNC_WIRES` (tele-sum bridge wire filter), `SOURCE_BLOCKLIST_EXTRA` (extra Gate-1 blocked domains), `WEEKLY_PASTE_LOG_PAGE_ID` (Notion landing page), `BD_LEADS_DATABASE_ID` (Notion Paid Work Leads db for the BD loop), `BRAND_*` (deployment-agnostic config overrides), `INTERNAL_API_KEY` + `INTERNAL_API_KEY_DAILY_SCAN` (named agent API keys — see Internal API Key Auth), `X_BEARER_TOKEN` (X account monitor), `DEV_MODE` (skip auth in dev), `DATA_DIR` (local data storage).
 
 ## Feeds System
 
 Dynamic wire/feed management via the `feeds` table.
 
 ### How Feeds Work
+- **Wires are locked to the canonical `CORE_WIRES` (crypto / ai / oss)** in `src/db/index.ts` — `getAvailableWires()` and every wire picker/validator derive from it; stray wire values in `channel_configs` can no longer pollute the feeds table or dropdowns. `GET /api/feeds?includeArchived=true` is the raw-table escape hatch.
 - Seeded from `SEED_FEEDS` in `src/db/index.ts` (crypto, ai, oss)
-- Auto-discovered from `channel_configs` table if it exists
+- Auto-discovered from `channel_configs` table only for core wires
 - CRUD API at `/api/feeds` (GET, POST) and `/api/feeds/:key` (PUT, DELETE)
 - `archived` flag soft-deletes feeds; use `?includeArchived=true` to list all
 - Used throughout the app to filter summaries, schedules, and scan prompts by wire
@@ -465,6 +470,10 @@ Approve entries → configure channels in Settings > Distribution → click "Dis
 - `GET /api/distribution/newsletter/:wire` — generate newsletter markdown
 - `POST /api/scan/entries/:id/redistribute` — retry failed sends
 - Channel CRUD + config via `/api/distribution/config` routes (see `src/routes/distribution.ts`)
+
+## BD Leads Loop (find + qualify, never contact)
+
+Pillar-2 revenue loop (strategy: Notion "BD Loop — Strategy & Direction"). **Wednesdays only, inside the daily-digest fold** (`scheduler.ts`, same pattern as the Friday weekly): `src/jobs/bd-leads.ts` pulls the last 7 days of `metadata.operator_route = 'relationship_signal'` entries → `bd-qualifier.ts` shape-screens them against `SOV_SHAPE` (three service lines; crypto/AI/OSS treated equally, organic no-bias, default-no) → `bd-verify.ts` grounds survivors in current reality via the Parallel Task API (strict: unverified = disqualified) → dedup by org → `bd-leads-notion.ts` writes them to the Notion **Paid Work Leads** db as Status=Lead (dedup by Source URL across weeks; db id from integration_config `leads_database_id` or `BD_LEADS_DATABASE_ID` env). **Structural guarantees:** finds + qualifies ONLY — imports no send/contact path; never creates Opps (Sov converts manually in Notion); no email in Phase A (review-first). Manual tooling: `src/scripts/bd-pipeline-run.ts`, `bd-qualify-demo.ts`, `smoke-bd-signals.ts`.
 
 ## Operator Signals (Feedback Loop)
 

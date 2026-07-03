@@ -356,13 +356,18 @@ async function insertEntry(entry: {
 // Post-insert classification (fire-and-forget)
 // ────────────────────────────────────────────────────────────────────────────
 
-export function determinePostClassificationStatus(result: {
+export function determinePostClassificationStatus(_result: {
   classification: Classification;
   qualityScore: number;
   operatorRoute?: OperatorRoute;
-}, scanSource = 'manual-intake'): 'queued' | 'archived' {
-  if (result.operatorRoute === 'publish' || result.operatorRoute === 'source_check') return 'queued';
-  return 'archived';
+}, _scanSource = 'manual-intake'): 'queued' | 'archived' {
+  // Wide net, label by route: operator intake (Telegram + manual paste) never
+  // auto-archives. Every classified item lands in the review queue carrying its
+  // operator_route (publish/source_check/park/relationship_signal/decline) in
+  // metadata, and the operator filters by route in the dashboard. This replaced
+  // the prior gate that silently archived everything except publish/source_check
+  // — which was hiding real grants (park/relationship_signal) from review.
+  return 'queued';
 }
 
 export function normalizeDeadlineForDb(value?: string | null, referenceDate = new Date().toISOString().slice(0, 10)): string | null {

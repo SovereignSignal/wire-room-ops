@@ -275,7 +275,10 @@ export async function classifyBatch(
             result.reason,
             result.qualityScore,
             JSON.stringify({ scoreReason: result.scoreReason }),
-            JSON.stringify(result.extracted),
+            // Keep operator_route persistence in lockstep with process-raw —
+            // this backfill path classifies dumb-pipe (telegram/manual) entries,
+            // so without it those lanes never carry the BD/relationship signal.
+            JSON.stringify({ ...result.extracted, operator_route: result.operatorRoute || null }),
             result.tags,
             entry.id,
           ]
