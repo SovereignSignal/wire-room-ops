@@ -42,6 +42,12 @@ export type ScanSource = typeof SCAN_SOURCES[number];
 export const SCAN_STATUSES = ['raw', 'deduped', 'duplicate', 'queued', 'enriched', 'published', 'archived', 'skipped', 'approved', 'declined', 'incomplete'] as const;
 export type ScanStatus = typeof SCAN_STATUSES[number];
 
+// Watch-surface kinds for the Watchtower registry (watch_surfaces table).
+// Same single-source-of-truth pattern as SCAN_SOURCES: the DDL CHECK derives
+// from this const via sqlEnumList().
+export const SURFACE_TYPES = ['grants_page', 'blog', 'forum', 'rss', 'application', 'website', 'x_account', 'github', 'career_page', 'telegram', 'news_rss', 'api'] as const;
+export type SurfaceType = typeof SURFACE_TYPES[number];
+
 // node-cron schedule types the scheduler dispatches (see scheduler.ts).
 export const SCHEDULE_TYPES = ['scan-execution', 'forum-scan', 'daily-digest', 'deadline-digest', 'account-monitor', 'source-feeds'] as const;
 export type ScheduleType = typeof SCHEDULE_TYPES[number];
