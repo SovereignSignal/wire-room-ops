@@ -521,7 +521,7 @@ Org profiles track organizations mentioned in entries (`org_profiles` table). Co
 - **Extractor** (`src/services/org-extractor.ts`): Pattern matching + LLM-based extraction of canonical org names from entry text. Auto-links entries to `org_profiles` on approve.
 - **Enricher** (`src/services/org-enricher.ts`): LLM + web enrichment of org profiles (type, source_type, website, tier, relationship_context, last_signal). Runs daily in the digest fold; admin endpoint for batch enrichment.
 - **Merge** (`src/services/org-merge.ts`): Merge duplicate org profiles (source -> target), relink all entries. Admin endpoint for manual dedup.
-- **Notion sync** (`src/services/notion-sync.ts`): Sync org profiles to a Notion database. Config stored in `integration_config` table (DB-backed, not env vars).
+- **Notion sync** (`src/services/notion-sync.ts`): Sync org profiles to the Notion CRM. Config stored in `integration_config` table (DB-backed, not env vars). **The Notion Orgs db is a pruned 10-field HUMAN VIEW** (Name, Type, Wire, Relationship, Website, Action(s), Quality Score, Tier, Contacts, Last Checked — CRM simplification 2026-07-03); Twitter/GitHub/Tags/Source Type/Items Sourced live only in Postgres `org_profiles`. Do not add Notion property writes without adding the schema field in the same change (tests/notion-sync-props.test.js pins this).
 - Admin endpoints: `/api/admin/clean-orgs`, `/api/admin/dedup-orgs`, `/api/admin/enrich-orgs`
 
 ## Approved Entries Export
