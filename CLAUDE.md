@@ -229,6 +229,7 @@ Server-rendered views (login/error only):
 | Group | Tables | Purpose |
 |-------|--------|---------|
 | **Scan pipeline** | `scan_entries`, `seen_urls`, `seen_names`, `intake_runs`, `scan_prompts` | Core intake/dedup/queue pipeline |
+| **Watchtower** | `watch_surfaces` | Discovery registry: one row per watchable surface of an org (grants page, blog, forum, RSS, X account, ...) with tier/wire and per-surface machine state (last checked/changed, failure streak). Seeded 2026-07-03 with 1,136 surfaces via `src/scripts/import-watch-surfaces*.ts`; humans edit orgs in Notion, machine state lives only here |
 | **tele-sum legacy** | `messages`, `summaries`, `categories`, `users`, `telegram_bots`, `channel_configs` | Telegram ingestion (bridged via `summary-sync.ts`) |
 | **Distribution** | `distribution_channels`, `distribution_logs`, `distribution_config` (legacy) | Channel output tracking |
 | **Config** | `feeds`, `schedules`, `integration_config` | Wire/schedule/integration config |

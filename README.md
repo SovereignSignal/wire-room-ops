@@ -7,7 +7,7 @@ Deployed as the Sovereign Signal Grant Wires (crypto/AI/OSS grants) but designed
 ## Current Scope (July 2026)
 
 - Scan execution (X search, web search, Perplexity deep web, Parallel.ai retrieval)
-- Discovery lanes folded into one daily cycle: source-feeds registry (aggregator APIs, RSS, own-site funder scrapes), governance-forum lane (discuss.watch + LLM judge), X account monitor
+- Discovery lanes folded into one daily cycle: source-feeds registry (aggregator APIs, RSS, own-site funder scrapes), governance-forum lane (discuss.watch + LLM judge), X account monitor, X list watcher (Watchtower Phase 0, env-gated)
 - Multi-channel ingestion (Telegram bot, manual paste, agent API submits)
 - Intake pipeline (parse -> dedup -> LLM classify + score -> decided-recheck -> queue)
 - Queue review + approval workflow with pre-approval validation and curator stamps
