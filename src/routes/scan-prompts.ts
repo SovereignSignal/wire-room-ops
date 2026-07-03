@@ -379,11 +379,18 @@ router.post('/:id/run', async (req: Request, res: Response) => {
           });
         }
         if (prompt.toolType === 'parallel') {
+          // Mirror jobs/scan-execution.ts: discovery prompts get a server-side
+          // freshness floor; canonical/signal prompts must NOT (it would drop
+          // long-standing rolling programs that are still open).
+          const afterDate = prompt.intent === 'discovery'
+            ? new Date(Date.now() - 90 * 86400000).toISOString().split('T')[0]
+            : undefined;
           return executeParallelScan(prompt.promptText, {
             model: prompt.model || undefined,
             responseFormat: prompt.responseFormat,
             outputFormat: prompt.outputFormat,
             wire: prompt.wire,
+            afterDate,
           });
         }
         return executeScanPrompt(prompt.promptText, {
@@ -403,9 +410,11 @@ router.post('/:id/run', async (req: Request, res: Response) => {
     const VALID_VARIANTS = ['A', 'B', 'C', 'W', 'P', 'N', 'S'];
     const variant = (prompt.variant && VALID_VARIANTS.includes(prompt.variant)) ? prompt.variant : 'A';
 
-    // Determine source
+    // Determine source — keep in lockstep with jobs/scan-execution.ts
+    // (parallel runs land as 'web-search'; they were mislabeled 'x-scan' before)
     const source =
       prompt.toolType === 'perplexity' ? 'perplexity' as const :
+      prompt.toolType === 'parallel' ? 'web-search' as const :
       prompt.toolType === 'web_search' ? 'web-search' as const
         : 'x-scan' as const;
 

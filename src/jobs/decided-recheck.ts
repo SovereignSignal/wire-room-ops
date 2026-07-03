@@ -23,6 +23,7 @@ import type { Pool } from 'pg';
 import http from 'node:http';
 import https from 'node:https';
 import { lookup as dnsLookup } from 'node:dns';
+import { isBlockedHost, isSafeHttpUrl } from '../utils/ssrf';
 import { getCachedProvider } from '../services/api-provider';
 import { logApiUsage } from '../services/api-usage';
 import { config } from '../config';
@@ -214,51 +215,6 @@ export function classifySourceLink(url: string | null | undefined): SourceLinkCl
   return 'ok';
 }
 
-// Block resolution to non-public addresses. Shortener targets come from
-// scraped tweets (untrusted), so an attacker could point one at cloud
-// metadata (169.254.169.254) or an internal Railway host. We validate the
-// host at every hop and never let fetch auto-follow redirects.
-function isBlockedHost(hostname: string): boolean {
-  const h = hostname.toLowerCase().replace(/^\[|\]$/g, ''); // strip IPv6 brackets
-  if (!h || h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.internal') || h.endsWith('.local')) return true;
-  // IPv4 literal?
-  const v4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (v4) {
-    const o = v4.slice(1).map(Number);
-    if (o.some(n => n > 255)) return true;
-    const [a, b] = o;
-    if (a === 0 || a === 127 || a === 10 || a >= 224) return true;            // 0/8, loopback, 10/8, multicast/reserved
-    if (a === 169 && b === 254) return true;                                  // link-local + cloud metadata
-    if (a === 172 && b >= 16 && b <= 31) return true;                         // 172.16/12
-    if (a === 192 && b === 168) return true;                                  // 192.168/16
-    if (a === 100 && b >= 64 && b <= 127) return true;                        // CGNAT 100.64/10
-    return false;
-  }
-  // IPv6 literal — block loopback, link-local, ULA, unspecified
-  if (h.includes(':')) {
-    if (h === '::1' || h === '::') return true;
-    if (h.startsWith('fe80') || h.startsWith('fc') || h.startsWith('fd')) return true;
-    if (h.startsWith('::ffff:')) return true;                                 // IPv4-mapped — reject; can't cheaply re-validate here
-    return false;
-  }
-  return false; // a DNS name; the per-hop fetch below resolves it and we re-check the final URL
-}
-
-function isSafeHttpUrl(raw: string): URL | null {
-  let u: URL;
-  try { u = new URL(raw); } catch { return null; }
-  if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
-  if (u.username || u.password) return null;               // reject user:pass@ userinfo
-  // Hostname must be a literal IP we can check, or a normal dotted DNS name.
-  // WHATWG URL already normalizes integer/hex/octal IPv4 to dotted-quad, so
-  // anything else weird (no dot, not an IP) is rejected up front.
-  const host = u.hostname.replace(/^\[|\]$/g, '');
-  const looksLikeDns = /^[a-z0-9_-]+(\.[a-z0-9_-]+)+$/i.test(host);
-  const looksLikeIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(':');
-  if (!looksLikeDns && !looksLikeIp) return null;
-  if (isBlockedHost(u.hostname)) return null;              // fast-path for IP literals
-  return u;
-}
 
 // DNS lookup that validates EVERY resolved address against the blocklist and
 // pins the connection to a validated IP. Passed as http(s).request's `lookup`

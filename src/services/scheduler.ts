@@ -144,7 +144,6 @@ export async function syncScanSchedulesFromDigest(digestSchedule: ScheduleConfig
   const digestHour = digestSchedule.hour;
   const digestMinute = digestSchedule.minute;
   const timezone = digestSchedule.timezone;
-  const digestEnabled = digestSchedule.enabled;
 
   // Load active wires dynamically from DB/env
   const activeWireKeys = await getActiveWires();
@@ -189,14 +188,16 @@ export async function syncScanSchedulesFromDigest(digestSchedule: ScheduleConfig
     );
 
     if (existing.rows.length === 0) {
-      // Create new scan schedules for this wire
+      // Create new scan schedules for this wire — DISABLED by default. Scan
+      // execution is a paid Grok/Perplexity spend lever the operator enables
+      // explicitly; deriving times from the digest must never turn it on.
       for (const [idx, run] of [firstRun, secondRun].entries()) {
         await pool.query(
           `INSERT INTO schedules (id, name, enabled, hour, minute, timezone, wire, schedule_type, lookback_days, created_at, updated_at)
            VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, 'scan-execution', 7, NOW(), NOW())`,
           [
             `${wire} scan (${idx === 0 ? 'AM' : 'PM'}) — auto`,
-            digestEnabled,
+            false,
             run.hour,
             run.minute,
             timezone,
@@ -204,18 +205,21 @@ export async function syncScanSchedulesFromDigest(digestSchedule: ScheduleConfig
           ]
         );
       }
-      console.log(`[Scheduler] Created scan schedules for ${wire}: AM at ${firstRun.hour}:${String(firstRun.minute).padStart(2,'0')}, PM at ${secondRun.hour}:${String(secondRun.minute).padStart(2,'0')}`);
+      console.log(`[Scheduler] Created scan schedules for ${wire} (disabled — enable explicitly): AM at ${firstRun.hour}:${String(firstRun.minute).padStart(2,'0')}, PM at ${secondRun.hour}:${String(secondRun.minute).padStart(2,'0')}`);
     } else {
-      // Update existing schedules: first row = first run, second row = second run
+      // Update existing schedules: first row = first run, second row = second run.
+      // Only times/timezone are synced — the enabled flag is the operator's and
+      // must survive digest edits (force-setting it here silently re-enabled
+      // deliberately disabled paid scan crons on every digest-settings save).
       const sortedRows = existing.rows.sort((a: { hour: number }, b: { hour: number }) => a.hour - b.hour);
       const updates = [firstRun, secondRun];
       for (let j = 0; j < Math.min(sortedRows.length, updates.length); j++) {
         await pool.query(
-          `UPDATE schedules SET hour = $1, minute = $2, timezone = $3, enabled = $4, updated_at = NOW() WHERE id = $5`,
-          [updates[j].hour, updates[j].minute, timezone, digestEnabled, sortedRows[j].id]
+          `UPDATE schedules SET hour = $1, minute = $2, timezone = $3, updated_at = NOW() WHERE id = $4`,
+          [updates[j].hour, updates[j].minute, timezone, sortedRows[j].id]
         );
       }
-      console.log(`[Scheduler] Updated scan schedules for ${wire}: AM at ${firstRun.hour}:${String(firstRun.minute).padStart(2,'0')}, PM at ${secondRun.hour}:${String(secondRun.minute).padStart(2,'0')}`);
+      console.log(`[Scheduler] Updated scan schedule times for ${wire} (enabled flags untouched): AM at ${firstRun.hour}:${String(firstRun.minute).padStart(2,'0')}, PM at ${secondRun.hour}:${String(secondRun.minute).padStart(2,'0')}`);
     }
   }
 
@@ -578,8 +582,24 @@ function createJobExecutor(schedule: ScheduleConfig) {
         console.warn(`[Scheduler] Unsupported schedule type "${currentScheduleData.scheduleType}" — skipping`);
       }
 
-      status.status = 'success';
-      status.error = null;
+      if (status.status === 'failed') {
+        // A branch recorded an in-run failure (e.g. the digest email send).
+        // `status` is fresh per run, so this can only be THIS run's verdict —
+        // keep it and alert, instead of clobbering it back to success (which
+        // silently hid digest-email failures from the operator).
+        try {
+          const recipients = currentScheduleData.notifyEmails
+            ? currentScheduleData.notifyEmails.split(',').map(e => e.trim()).filter(Boolean)
+            : undefined;
+          await sendScheduledJobFailureEmail(`[${currentScheduleData.name}] ${status.error || 'run marked failed'}`, jobStartTime, recipients);
+          console.log(`[Scheduler] Failure notification email sent for in-run failure.`);
+        } catch (emailError) {
+          console.error(`[Scheduler] Failed to send failure notification:`, emailError);
+        }
+      } else {
+        status.status = 'success';
+        status.error = null;
+      }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       const isNoEntries = errorMsg.includes('No entries found');

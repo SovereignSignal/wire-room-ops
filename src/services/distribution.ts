@@ -4,7 +4,7 @@
  * Newsletter generation is a separate read-only operation.
  */
 
-import { getDistributionConfigs, getUndistributedEntries, logDistribution, deleteFailedDistributionLogs, getDistributionLogs, getPool, getEnabledDistributionChannelsForWire, DistributionChannelRecord } from '../db';
+import { getDistributionConfigs, getUndistributedEntries, logDistribution, getDistributionLogs, getPool, getEnabledDistributionChannelsForWire, DistributionChannelRecord } from '../db';
 import { config } from '../config';
 import { getCachedProvider } from './api-provider';
 import { generatePosts } from './post-generator';
@@ -449,7 +449,6 @@ export async function distributeEntry(entryId: number, wire: string): Promise<Di
 }
 
 export async function retryDistribution(entryId: number, wire: string): Promise<DistributeResult> {
-  // Validate entry exists before deleting any logs
   const pool = getPool();
   const entryResult = await pool.query(
     `SELECT * FROM scan_entries WHERE id = $1 AND status = 'approved'`,
@@ -460,22 +459,27 @@ export async function retryDistribution(entryId: number, wire: string): Promise<
     return { wire, totalEntries: 0, distributed: 0, failed: 0, skipped: 0, details: [] };
   }
 
-  // Identify which channels already succeeded — only retry the rest
+  // Only retry channels without a success or in-flight send. Failed logs are
+  // KEPT — they're the audit trail (and the unique partial index only covers
+  // pending/success, so old failures never block a new attempt).
   const existingLogs = await getDistributionLogs(entryId);
-  const succeededChannels = new Set(
-    existingLogs.filter(l => l.status === 'success').map(l => l.channel)
+  const settledChannels = new Set<string>(
+    existingLogs.filter(l => l.status === 'success' || l.status === 'pending').map(l => l.channel)
   );
 
   const configs = await getDistributionConfigs(wire);
   const retryConfigs = configs.filter(
-    c => c.enabled && c.channel !== 'newsletter' && !succeededChannels.has(c.channel)
+    c => c.enabled && c.channel !== 'newsletter' && !settledChannels.has(c.channel)
   );
+  // Managed channels (distribution_channels) — the live production path.
+  // dispatchToManagedChannel has its own per-(entry, channel) pending/success
+  // guard, so calling it here can never double-post.
+  const managedChannels = (await getEnabledDistributionChannelsForWire(wire))
+    .filter(mc => !settledChannels.has(mc.channel));
 
-  if (retryConfigs.length === 0) {
+  if (retryConfigs.length === 0 && managedChannels.length === 0) {
     return { wire, totalEntries: 0, distributed: 0, failed: 0, skipped: 0, details: [] };
   }
-
-  await deleteFailedDistributionLogs(entryId);
 
   const entry = entryResult.rows[0];
   const telegramBotToken = getTelegramBotToken();
@@ -505,6 +509,14 @@ export async function retryDistribution(entryId: number, wire: string): Promise<
   for (const cfg of retryConfigs) {
     const channelResult = await dispatchToChannel(cfg, entry, posts, telegramBotToken);
     detail.channels[cfg.channel] = channelResult;
+    if (channelResult === 'success') result.distributed++;
+    if (channelResult === 'failed') result.failed++;
+    if (channelResult === 'skipped') result.skipped++;
+  }
+
+  for (const mc of managedChannels) {
+    const channelResult = await dispatchToManagedChannel(mc, entry, posts);
+    detail.channels[`${mc.channel}:${mc.id.slice(0, 8)}`] = channelResult;
     if (channelResult === 'success') result.distributed++;
     if (channelResult === 'failed') result.failed++;
     if (channelResult === 'skipped') result.skipped++;

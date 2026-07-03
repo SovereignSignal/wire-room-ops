@@ -16,6 +16,7 @@ import { getActiveParams } from './quality-scorer';
 import { scrapeUrl, isScrapableUrl, truncateContent } from './scraper';
 import { normalizeUrl } from '../utils/url';
 import { blockedSourceDomain } from '../services/source-filter';
+import { safePublicFetch } from '../utils/ssrf';
 
 // ────────────────────────────────────────────────────────────────────────────────────
 // URL Title Fetcher
@@ -30,7 +31,8 @@ async function fetchUrlTitle(url: string): Promise<string | null> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000); // 5 second timeout
     
-    const resp = await fetch(url, {
+    // SSRF guard: these URLs arrive in forwarded messages (untrusted input)
+    const resp = await safePublicFetch(url, {
       signal: controller.signal,
       headers: {
         'User-Agent': 'Mozilla/5.0 (compatible; StringerBot/1.0; +https://sovereignsignal.com)',
@@ -38,8 +40,8 @@ async function fetchUrlTitle(url: string): Promise<string | null> {
       },
     });
     clearTimeout(timeout);
-    
-    if (!resp.ok) return null;
+
+    if (!resp || !resp.ok) return null;
     
     const html = await resp.text();
     

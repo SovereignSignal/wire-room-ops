@@ -59,7 +59,7 @@ export async function summarizeWithGrok(entry: DatabaseEntry, model?: string): P
     try {
       const pool = getPool();
       await pool.query(
-        `UPDATE scan_entries SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb WHERE url = $2`,
+        `UPDATE scan_entries SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb WHERE source_url = $2`,
         [JSON.stringify({ thread_context: { authorHandle: threadContext.authorHandle, tweetCount: threadContext.tweetCount } }), entry.url]
       );
     } catch (metaErr) {

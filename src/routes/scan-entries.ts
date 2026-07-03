@@ -26,6 +26,7 @@ import { getPromptEffectivenessStats } from '../services/scan-stats';
 import { singleEntryAction, bulkEntryAction, ApprovalBlockedError, BulkApprovalBlockedError, scheduleForDistribution } from '../services/entry-actions';
 import { buildCuratorStamp } from '../services/curator';
 import { retryDistribution } from '../services/distribution';
+import { SCAN_SOURCES } from '../types/intake';
 
 const router = Router();
 
@@ -51,6 +52,13 @@ router.post('/submit', async (req: Request, res: Response) => {
     }
     if (!rawText || typeof rawText !== 'string' || rawText.trim().length === 0) {
       res.status(400).json({ error: 'rawText is required and must be non-empty' });
+      return;
+    }
+    // Validate source against the shared ScanSource list — an unknown value
+    // would otherwise fail the DB CHECK constraint deep in intake (a silent
+    // insert failure for background/agent submissions, a 500 for sync ones).
+    if (source !== undefined && !SCAN_SOURCES.includes(source)) {
+      res.status(400).json({ error: `Invalid source "${source}". Valid: ${SCAN_SOURCES.join(', ')}` });
       return;
     }
 

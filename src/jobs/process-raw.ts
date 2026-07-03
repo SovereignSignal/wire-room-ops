@@ -101,8 +101,16 @@ export async function processRawEntries(pool?: Pool): Promise<{
     // Use provided pool or get default
     const db = pool || (await import('../db')).getPool();
 
-    // Process in batches until no more raw entries
-    while (true) {
+    // Process in batches until no more raw entries. Every fetched row is added
+    // to `attempted` and excluded from later batch queries THIS RUN, so a row
+    // whose processing throws (and therefore stays status='raw') can't be
+    // refetched forever — the loop is guaranteed to make progress past poisoned
+    // rows to the healthy ones behind them, and they retry next 5-min cycle.
+    // MAX_BATCHES is a belt-and-braces bound on a single run.
+    const attempted: number[] = [];
+    const MAX_BATCHES = 40;
+    let batches = 0;
+    while (batches++ < MAX_BATCHES) {
       const batch = await db.query(
         `SELECT se.id, se.name, se.description, se.source_url, se.amount, se.deadline,
                 se.wire, se.scan_date, se.prompt_id, sp.intent AS prompt_intent
@@ -110,9 +118,10 @@ export async function processRawEntries(pool?: Pool): Promise<{
          LEFT JOIN scan_prompts sp ON se.prompt_id = sp.id
          WHERE se.status = 'raw'
            AND se.created_at < NOW() - INTERVAL '2 minutes'
+           AND NOT (se.id = ANY($2::bigint[]))
          ORDER BY se.created_at ASC
          LIMIT $1`,
-        [BATCH_SIZE]
+        [BATCH_SIZE, attempted]
       );
 
       if (batch.rows.length === 0) break;
@@ -120,6 +129,7 @@ export async function processRawEntries(pool?: Pool): Promise<{
       console.log(`[ProcessRaw] Processing batch of ${batch.rows.length} entries`);
 
       for (const row of batch.rows) {
+        attempted.push(row.id);
         try {
           // Gate 1: Completeness check
           const completeness = isCompletionSufficient({
