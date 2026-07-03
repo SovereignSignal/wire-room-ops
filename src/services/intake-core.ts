@@ -12,7 +12,6 @@
 import { getPool, getAllFeeds } from '../db';
 import { checkDuplicate, registerSeen } from '../services/dedup';
 import { type Classification, type OperatorRoute } from '../services/classifier';
-import { getActiveParams } from './quality-scorer';
 import { scrapeUrl, isScrapableUrl, truncateContent } from './scraper';
 import { normalizeUrl } from '../utils/url';
 import { blockedSourceDomain } from '../services/source-filter';
@@ -340,16 +339,15 @@ async function insertEntry(entry: {
   scanSource: string;
   status?: string;
   deadline?: string | null;
-  experimentId?: string | null;
 }): Promise<number> {
   const pool = getPool();
   const status = entry.status ?? 'raw'; // Raw entries flow through the classification pipeline
   const res = await pool.query(
     `INSERT INTO scan_entries
-     (name, description, source_url, wire, prompt_variant, scan_source, scan_date, status, submitted_by, deadline, experiment_id)
-     VALUES ($1, $2, $3, $4, 'N', $5, $6, $7, $8, $9, $10)
+     (name, description, source_url, wire, prompt_variant, scan_source, scan_date, status, submitted_by, deadline)
+     VALUES ($1, $2, $3, $4, 'N', $5, $6, $7, $8, $9)
      RETURNING id`,
-    [entry.name, entry.description, entry.sourceUrl, entry.wire, entry.scanSource, entry.scanDate, status, entry.submittedBy, entry.deadline ?? null, entry.experimentId ?? null]
+    [entry.name, entry.description, entry.sourceUrl, entry.wire, entry.scanSource, entry.scanDate, status, entry.submittedBy, entry.deadline ?? null]
   );
   return res.rows[0].id;
 }
@@ -407,8 +405,6 @@ export async function processIntakeMessage(
   if (wires.length === 0) {
     return { status: 'error', errorMessage: 'No active wires configured' };
   }
-
-  const { experimentId } = await getActiveParams();
 
   // Extract URLs
   const textUrls = extractUrls(text);
@@ -482,7 +478,6 @@ export async function processIntakeMessage(
         submittedBy: msg.senderId,
         scanSource,
         status: 'queued',
-        experimentId,
       });
       await registerSeen(getPool(), { id, sourceUrl: primaryUrl, name, wire, scanDate });
       // Dumb pipe: no classification at intake — the row lands in the queue as-is.
@@ -522,7 +517,6 @@ export async function processIntakeMessage(
       submittedBy: msg.senderId,
       scanSource,
       status: 'queued',
-      experimentId,
     });
     await registerSeen(getPool(), { id, sourceUrl: primaryUrl, name, wire: fallbackWire, scanDate });
     // Dumb pipe: no classification at intake — lands in the queue as-is (filter runs downstream).
@@ -791,7 +785,6 @@ export async function processBatchMessage(
     }
   }
   entries = Array.from(bestBySemanticKey.values());
-  const { experimentId } = await getActiveParams();
 
   const result: BatchIntakeResult = {
     inserted: 0,
@@ -867,7 +860,6 @@ export async function processBatchMessage(
         scanSource,
         status: 'queued',
         deadline: normalizeDeadlineForDb(entry.deadline, scanDate),
-        experimentId,
       });
       await registerSeen(getPool(), { id, sourceUrl: entry.sourceUrl, name: entry.name, wire: resolvedWire, scanDate });
       seenInBatch.add(normalizedBatchUrl);
@@ -882,17 +874,6 @@ export async function processBatchMessage(
 
   // Dumb pipe: batch items land in the queue as-is. No classification at intake —
   // scoring/classification/routing is the downstream filter's job.
-
-  // Refresh experiment counts after batch insert
-  if (experimentId && result.inserted > 0) {
-    try {
-      const { ExperimentEngine } = await import('./experiment-engine');
-      const engine = new ExperimentEngine();
-      await engine.refreshCounts(experimentId);
-    } catch (err) {
-      console.error('[IntakeCore] Failed to refresh experiment counts:', err);
-    }
-  }
 
   return result;
 }

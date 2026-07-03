@@ -168,7 +168,7 @@ export interface StoredScheduleConfig {
   anthropicModel?: string;
   timezone: string;
   wire?: string;
-  scheduleType?: 'scan-execution' | 'forum-scan' | 'daily-digest' | 'collect-engagement' | 'experiment-loop' | 'drip-distribution' | 'deadline-digest' | 'account-monitor' | 'source-feeds';
+  scheduleType?: 'scan-execution' | 'forum-scan' | 'daily-digest' | 'deadline-digest' | 'account-monitor' | 'source-feeds';
   frequencyHours?: number;
   notifyEmails?: string;
   createdAt?: Date;
@@ -204,17 +204,21 @@ export async function ensureScheduleTable(): Promise<void> {
   await pool.query(`ALTER TABLE schedules ADD COLUMN IF NOT EXISTS schedule_type TEXT DEFAULT 'scan-execution'`);
   await pool.query(`ALTER TABLE schedules ADD COLUMN IF NOT EXISTS frequency_hours INTEGER`);
   await pool.query(`ALTER TABLE schedules ADD COLUMN IF NOT EXISTS notify_emails TEXT`);
+  // Phase 4 (2026-07-03): drip-distribution, experiment-loop and collect-engagement
+  // are retired. Their schedule rows are DELETED (not normalized) — normalizing
+  // them would silently turn a retired lane into a paid scan-execution cron.
+  await pool.query(`DELETE FROM schedules WHERE schedule_type IN ('collect-engagement', 'experiment-loop', 'drip-distribution')`);
   await pool.query(`
     UPDATE schedules
     SET schedule_type = 'scan-execution'
     WHERE schedule_type IS NULL
-      OR schedule_type NOT IN ('scan-execution', 'forum-scan', 'daily-digest', 'collect-engagement', 'experiment-loop', 'drip-distribution', 'deadline-digest', 'account-monitor', 'source-feeds')
+      OR schedule_type NOT IN ('scan-execution', 'forum-scan', 'daily-digest', 'deadline-digest', 'account-monitor', 'source-feeds')
   `);
   await pool.query(`ALTER TABLE schedules DROP CONSTRAINT IF EXISTS schedules_schedule_type_check`);
   await pool.query(`
     ALTER TABLE schedules
     ADD CONSTRAINT schedules_schedule_type_check
-    CHECK (schedule_type IN ('scan-execution', 'forum-scan', 'daily-digest', 'collect-engagement', 'experiment-loop', 'drip-distribution', 'deadline-digest', 'account-monitor', 'source-feeds'))
+    CHECK (schedule_type IN ('scan-execution', 'forum-scan', 'daily-digest', 'deadline-digest', 'account-monitor', 'source-feeds'))
   `);
 
   // Migrate data from old schedule_config table if it exists
@@ -257,9 +261,6 @@ function parseScheduleRow(row: any): StoredScheduleConfig {
   const normalizedScheduleType: StoredScheduleConfig['scheduleType'] =
     row.schedule_type === 'forum-scan' ? 'forum-scan' :
     row.schedule_type === 'daily-digest' ? 'daily-digest' :
-    row.schedule_type === 'collect-engagement' ? 'collect-engagement' :
-    row.schedule_type === 'experiment-loop' ? 'experiment-loop' :
-    row.schedule_type === 'drip-distribution' ? 'drip-distribution' :
     row.schedule_type === 'deadline-digest' ? 'deadline-digest' :
     row.schedule_type === 'account-monitor' ? 'account-monitor' :
     row.schedule_type === 'source-feeds' ? 'source-feeds' : 'scan-execution';
@@ -1934,44 +1935,6 @@ export interface ExportEntry {
   updated_at: Date;
 }
 
-// --- Engagement metrics table ---
-
-export async function ensureEngagementMetricsTable(): Promise<void> {
-  const pool = getPool();
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS engagement_metrics (
-      id SERIAL PRIMARY KEY,
-      entry_id INTEGER NOT NULL,
-      channel TEXT NOT NULL,
-      wire TEXT,
-      external_id TEXT,
-      impressions INTEGER,
-      likes INTEGER,
-      retweets INTEGER,
-      replies INTEGER,
-      quotes INTEGER,
-      bookmarks INTEGER,
-      engagement_score REAL,
-      measured_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      post_age_hours REAL,
-      UNIQUE(entry_id, channel, measured_at)
-    )
-  `);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_engagement_metrics_entry ON engagement_metrics(entry_id)`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_engagement_metrics_wire ON engagement_metrics(wire)`);
-  // Functional unique index: one measurement per entry+channel per calendar day
-  // (The original UNIQUE(entry_id, channel, measured_at) is a no-op due to NOW() precision)
-  try {
-    await pool.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_engagement_metrics_daily_unique
-      ON engagement_metrics (entry_id, channel, (measured_at::date))
-    `);
-  } catch (err) {
-    console.warn('[DB] Could not create daily unique index on engagement_metrics (may have duplicate rows):', err);
-  }
-  console.log('[DB] Engagement metrics table ready');
-}
-
 export async function getApprovedEntriesForExport(hoursBack = 24): Promise<ExportEntry[]> {
   const pool = getPool();
   const result = await pool.query<ExportEntry>(
@@ -1986,18 +1949,6 @@ export async function getApprovedEntriesForExport(hoursBack = 24): Promise<Expor
   return result.rows;
 }
 
-export async function ensureDistributeAfterColumn(): Promise<void> {
-  const pool = getPool();
-  await pool.query(`
-    ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS distribute_after TIMESTAMPTZ
-  `);
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS idx_scan_entries_distribute_after 
-    ON scan_entries(distribute_after) 
-    WHERE distribute_after IS NOT NULL
-  `);
-  console.log('[DB] distribute_after column ready');
-}
 
 export async function ensureAutoSummarizeFailedColumn(): Promise<void> {
   const pool = getPool();

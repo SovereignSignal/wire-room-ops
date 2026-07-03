@@ -327,7 +327,6 @@ export async function sendDailyDigestEmail(
   topFinds?: TopFindEntry[],
   csvExport?: import('../jobs/csv-export').CsvExportResult,
   downloadUrls?: { csv: string | null; md: string | null },
-  experimentStatus?: { name: string; entriesScored: number; approvalRate: number; status: string } | null,
   agentBrief?: StoredAgentBrief | null,
   sourceBreakdown?: import('../jobs/daily-digest').SourceBreakdownRow[],
   costRecap?: { rows: import('../jobs/daily-digest').CostRow[]; total: number }
@@ -349,25 +348,6 @@ export async function sendDailyDigestEmail(
   const wireText = digest.wires.map(w =>
     `  ${w.wire.padEnd(10)} scans:${w.scansRun}  new:${w.newUnique}  approved:${w.recentlyApproved}  pending:${w.pendingReview}`
   ).join('\n');
-
-  // Autoresearch experiment status section
-  let experimentHtml = '';
-  let experimentText = '';
-  if (experimentStatus !== undefined) {
-    if (experimentStatus === null) {
-      experimentHtml = `
-      ${sectionLabel('Autoresearch')}
-      <p style="margin:0 0 16px;font-size:12px;color:#999;">No active experiment</p>`;
-      experimentText = '\nAUTORESEARCH\nNo active experiment\n';
-    } else {
-      const approvalPct = Math.round(experimentStatus.approvalRate);
-      const expLine = `\u{1F9EA} ${escapeHtml(experimentStatus.name)} | ${experimentStatus.entriesScored} entries scored | ${approvalPct}% approval | ${escapeHtml(experimentStatus.status)}`;
-      experimentHtml = `
-      ${sectionLabel('Autoresearch')}
-      <p style="margin:0 0 16px;font-size:12px;color:#555;${MONO}">${expLine}</p>`;
-      experimentText = `\nAUTORESEARCH\n\u{1F9EA} ${experimentStatus.name} | ${experimentStatus.entriesScored} entries scored | ${approvalPct}% approval | ${experimentStatus.status}\n`;
-    }
-  }
 
   // Agent scan brief (recorded by the daily-grant-scan agent)
   let agentBriefHtml = '';
@@ -515,7 +495,6 @@ export async function sendDailyDigestEmail(
   const body = `
     <p style="margin:0 0 20px;font-size:14px;color:#222;">${summaryLine}</p>
     ${agentBriefHtml}
-    ${experimentHtml}
     ${sectionLabel('By Wire')}
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-bottom:20px;">
       <tr>
@@ -540,7 +519,7 @@ export async function sendDailyDigestEmail(
   const textContent = `WIREOPS - ${digest.date}
 
 ${digest.totalNewUnique} new finds. ${digest.totalPendingReview > 0 ? `${digest.totalPendingReview} pending review.` : 'Queue is clear.'}
-${agentBriefText}${experimentText}
+${agentBriefText}
 BY WIRE
 ${wireText}
 ${sourceText}${costText}${topFindsText}

@@ -23,7 +23,7 @@ import { isValidUuid, isValidFeedKey } from '../utils/validation';
 import { buildSubmission, buildBatchSubmission } from '../services/intake';
 import { runDailyIntake, getDailyQueue, getIntakeStats } from '../jobs/daily-intake';
 import { getPromptEffectivenessStats } from '../services/scan-stats';
-import { singleEntryAction, bulkEntryAction, ApprovalBlockedError, BulkApprovalBlockedError, scheduleForDistribution } from '../services/entry-actions';
+import { singleEntryAction, bulkEntryAction, ApprovalBlockedError, BulkApprovalBlockedError } from '../services/entry-actions';
 import { buildCuratorStamp } from '../services/curator';
 import { retryDistribution } from '../services/distribution';
 import { SCAN_SOURCES } from '../types/intake';
@@ -524,6 +524,12 @@ router.get('/entries/:id/distribution', async (req: Request, res: Response) => {
 
 // POST /entries/:id/redistribute — retry failed distribution
 router.post('/entries/:id/redistribute', async (req: Request, res: Response) => {
+  // Publishing is operator-only: the internal API key must not be able to
+  // trigger a send (it would bypass the forced-quiet rule on agent approvals).
+  if ((req as any).agentSession) {
+    res.status(403).json({ error: 'Redistribute is operator-only — agent keys cannot publish' });
+    return;
+  }
   const entryId = parseInt(req.params.id, 10);
   if (isNaN(entryId)) {
     res.status(400).json({ error: 'Invalid entry ID' });
@@ -576,24 +582,6 @@ router.post('/entries/:id/retry-summarize', async (req: Request, res: Response) 
     // Clear the failed flag
     await pool.query(`UPDATE scan_entries SET auto_summarize_failed = false WHERE id = $1`, [entryId]);
     res.json({ success: true, entryId });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : 'Unknown error';
-    res.status(500).json({ error: msg });
-  }
-});
-
-// POST /entries/:id/schedule-distribution — queue an approved entry for drip distribution
-router.post('/entries/:id/schedule-distribution', async (req: Request, res: Response) => {
-  const entryId = parseInt(req.params.id, 10);
-  if (isNaN(entryId)) { res.status(400).json({ error: 'Invalid entry ID' }); return; }
-
-  const { distributeAfter } = req.body;
-  const when = distributeAfter ? new Date(distributeAfter) : new Date();
-  if (isNaN(when.getTime())) { res.status(400).json({ error: 'Invalid distributeAfter date' }); return; }
-
-  try {
-    await scheduleForDistribution(entryId, when);
-    res.json({ success: true, entryId, distributeAfter: when.toISOString() });
   } catch (error) {
     const msg = error instanceof Error ? error.message : 'Unknown error';
     res.status(500).json({ error: msg });

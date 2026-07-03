@@ -497,14 +497,13 @@ export async function runContactDiscovery(
   const deps = { pool, token, contactsDbId, orgsDbId, existingContacts, orgPages };
 
   // Step 4: org-anchored discovery
-  // Select qualifying orgs ordered by signal volume (scan_entries + digest_item_orgs)
+  // Select qualifying orgs ordered by signal volume (scan_entries; digest lane retired 2026-07-03)
   const { rows: orgs } = await pool.query(
     `SELECT id, name, website FROM org_profiles
      WHERE website IS NOT NULL
        AND id NOT IN (SELECT org_id FROM discovered_contacts)
      ORDER BY (
        (SELECT count(*) FROM scan_entries WHERE org_id = org_profiles.id)
-       + (SELECT count(*) FROM digest_item_orgs WHERE org_id = org_profiles.id)
      ) DESC
      LIMIT $1`,
     [limit],

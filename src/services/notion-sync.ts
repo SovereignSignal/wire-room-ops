@@ -203,13 +203,12 @@ export async function syncOrgsToNotion(integrationId: number): Promise<{
   const databaseId = integration.config.database_id;
   if (!token || !databaseId) throw new Error('Missing Notion token or database ID');
 
-  // Get all org profiles with live items_sourced (sum of grant + digest links).
+  // Get all org profiles with live items_sourced (grant-pipeline links; the digest lane was retired 2026-07-03).
   // entry_count is grant-pipeline-owned and must not be relied on for sorting or display;
   // compute the combined count here so it never lags behind digest activity.
   const { rows: orgs } = await pool.query(
     `SELECT op.*,
-            (SELECT COUNT(*) FROM scan_entries se WHERE se.org_id = op.id)
-          + (SELECT COUNT(*) FROM digest_item_orgs d WHERE d.org_id = op.id) AS items_sourced
+            (SELECT COUNT(*) FROM scan_entries se WHERE se.org_id = op.id) AS items_sourced
      FROM org_profiles op
      ORDER BY items_sourced DESC`
   );

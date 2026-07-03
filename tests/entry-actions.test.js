@@ -14,7 +14,6 @@ if (!DB_URL) {
 const {
   getEntry,
   getQueuedEntries,
-  scheduleForDistribution,
 } = require('../src/services/entry-actions');
 
 test('getEntry returns null for non-existent entry', async () => {
@@ -49,23 +48,3 @@ test('getQueuedEntries filters by wire', async () => {
   }
 });
 
-test('scheduleForDistribution sets distribute_after on approved entry', async () => {
-  // Find an approved entry to test with
-  const { getPool } = require('../src/db');
-  const pool = getPool();
-  const res = await pool.query(`SELECT id FROM scan_entries WHERE status = 'approved' LIMIT 1`);
-  if (res.rows.length === 0) {
-    // No approved entries, skip
-    return;
-  }
-  const entryId = res.rows[0].id;
-  const when = new Date('2099-01-01T00:00:00Z'); // Far future so it won't actually distribute
-
-  await scheduleForDistribution(entryId, when);
-
-  const check = await pool.query('SELECT distribute_after FROM scan_entries WHERE id = $1', [entryId]);
-  assert.ok(check.rows[0].distribute_after, 'distribute_after should be set');
-
-  // Clean up — unset it
-  await pool.query('UPDATE scan_entries SET distribute_after = NULL WHERE id = $1', [entryId]);
-});
