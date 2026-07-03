@@ -3,6 +3,7 @@ import { ScheduleType } from '../types/intake';
 import { runScanExecution } from '../jobs/scan-execution';
 import { runForumScan } from '../jobs/forum-scan';
 import { runSourceFeeds } from '../jobs/source-feeds';
+import { runXLists } from '../jobs/x-lists';
 import { runWeeklyIssue } from '../jobs/weekly-issue';
 import { runBdLeads } from '../jobs/bd-leads';
 import { config } from '../config';
@@ -374,6 +375,14 @@ function createJobExecutor(schedule: ScheduleConfig) {
         const failed = feedsResult.perSource.filter(s => s.error).length;
         console.log(`[Scheduler] Source feeds "${currentScheduleData.name}" completed: ${feedsResult.totalFresh} fresh from ${feedsResult.perSource.length} sources (${failed} errored), ${feedsResult.intakeSummary.newUnique} unique`);
 
+        if (config.watchtower.xListsEnabled) {
+          try {
+            await runXLists(pool);
+          } catch (err) {
+            console.error('[Scheduler] X Lists run failed:', err instanceof Error ? err.message : err);
+          }
+        }
+
       } else if (currentScheduleData.scheduleType === 'daily-digest') {
         // ---- Daily Digest Job ----
         const pool = getPool();
@@ -403,6 +412,13 @@ function createJobExecutor(schedule: ScheduleConfig) {
         } catch (e) {
           console.error('[Scheduler] Daily source feeds failed (non-fatal):', e instanceof Error ? e.message : e);
           anomalies.push(`Source-feeds lane failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+        if (config.watchtower.xListsEnabled) {
+          try {
+            await runXLists(pool);
+          } catch (err) {
+            console.error('[Scheduler] X Lists run failed:', err instanceof Error ? err.message : err);
+          }
         }
 
         // Weekly Grant Wire draft — Fridays only, as part of the same daily run (no separate

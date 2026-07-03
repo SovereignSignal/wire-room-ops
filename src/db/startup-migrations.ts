@@ -24,6 +24,7 @@ import {
   ensureOperatorNotesColumn,
   ensureAppStateTable,
   ensureMonitoredAccountsTable,
+  ensureWatchSurfacesTable,
 } from './index';
 import { ensureSessionsTable } from '../services/auth';
 import { ensureOrgProfilesTable } from '../services/org-extractor';
@@ -41,6 +42,7 @@ export const STARTUP_MIGRATIONS: ReadonlyArray<{ name: string; run: () => Promis
   { name: 'schedules', run: ensureScheduleTable },
   { name: 'distribution', run: ensureDistributionTables },
   { name: 'org-profiles', run: ensureOrgProfilesTable },
+  { name: 'watch-surfaces', run: ensureWatchSurfacesTable },
   { name: 'integration-config', run: ensureIntegrationConfigTable },
   { name: 'entry-action-columns', run: ensureEntryActionColumns },
   { name: 'auto-summarize-failed-column', run: ensureAutoSummarizeFailedColumn },

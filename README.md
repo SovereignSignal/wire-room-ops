@@ -299,6 +299,13 @@ Scoring Overrides:
 - `QUALITY_ACTIONABLE_TYPES` -- JSON array override for actionable type keywords
 - `FORUM_SEARCH_TERMS` -- comma-separated search terms override
 
+Watchtower Discovery Layer (Phase 0) -- all default-safe:
+
+- `WATCHTOWER_BUDGET_MONTHLY_USD` -- monthly discovery spend cap in USD (default: 20)
+- `X_LISTS_ENABLED` -- enable the X list watcher lane (default: false)
+- `X_LISTS_DRY_RUN` -- log without submitting to intake (default: true)
+- `X_LIST_IDS` -- comma-separated wire:listId pairs, e.g. "crypto:123,ai:456,oss:789"
+
 ## Multi-Channel Ingestion
 
 Entries can be submitted through multiple channels using the adapter pattern:

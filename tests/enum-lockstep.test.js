@@ -13,14 +13,15 @@ const path = require('node:path');
 
 const read = (rel) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
 const {
-  SCAN_SOURCES, SCAN_STATUSES, SCHEDULE_TYPES, TOOL_TYPES, TOOL_TYPES_DB, sqlEnumList,
+  SCAN_SOURCES, SCAN_STATUSES, SCHEDULE_TYPES, SURFACE_TYPES, TOOL_TYPES, TOOL_TYPES_DB, sqlEnumList,
 } = require('../src/types/intake');
 
 test('canonical consts have the expected shape', () => {
-  assert.equal(SCAN_SOURCES.length, 13);
+  assert.equal(SCAN_SOURCES.length, 14);
   assert.equal(SCAN_STATUSES.length, 11);
   assert.ok(SCAN_STATUSES.includes('incomplete'), 'the June drift value must stay in the list');
   assert.equal(SCHEDULE_TYPES.length, 6);
+  assert.equal(SURFACE_TYPES.length, 12);
   for (const t of TOOL_TYPES) assert.ok(TOOL_TYPES_DB.includes(t), `TOOL_TYPES_DB must contain '${t}'`);
   assert.ok(TOOL_TYPES_DB.includes('community'), 'legacy community rows must stay DB-valid');
   assert.equal(sqlEnumList(['a', 'b']), "'a', 'b'");
@@ -32,11 +33,13 @@ test('db/index.ts builds every CHECK constraint from the canonical consts (no li
   assert.ok((db.match(/sqlEnumList\(SCAN_STATUSES\)/g) || []).length >= 3, 'all 3 status CHECK writers must interpolate SCAN_STATUSES');
   assert.ok((db.match(/sqlEnumList\(SCAN_SOURCES\)/g) || []).length >= 1, 'scan_source CHECK must interpolate SCAN_SOURCES');
   assert.ok((db.match(/sqlEnumList\(SCHEDULE_TYPES\)/g) || []).length >= 2, 'schedule_type normalizer + CHECK must interpolate SCHEDULE_TYPES');
+  assert.ok((db.match(/sqlEnumList\(SURFACE_TYPES\)/g) || []).length >= 1, 'surface_type CHECK must interpolate SURFACE_TYPES');
   assert.ok((db.match(/sqlEnumList\(TOOL_TYPES_DB\)/g) || []).length >= 2, 'both tool_type CHECK writers must interpolate TOOL_TYPES_DB');
   // No hand-maintained literal CHECK lists may remain for these columns
   assert.ok(!/CHECK \(status IN \('raw'/.test(db), 'literal status CHECK list reintroduced');
   assert.ok(!/CHECK \(scan_source IN \('x-scan'/.test(db), 'literal scan_source CHECK list reintroduced');
   assert.ok(!/CHECK \(schedule_type IN \('scan-execution'/.test(db), 'literal schedule_type CHECK list reintroduced');
+  assert.ok(!/CHECK \(surface_type IN \('grants_page'/.test(db), 'literal surface_type CHECK list reintroduced');
   assert.ok(!/CHECK \(tool_type IN \('x_search'/.test(db), 'literal tool_type CHECK list reintroduced');
   // parseScheduleRow validates via the const, not a branch chain
   assert.ok(/SCHEDULE_TYPES as readonly string\[\]\)\.includes\(row\.schedule_type\)/.test(db), 'parseScheduleRow must validate via SCHEDULE_TYPES');
@@ -53,7 +56,7 @@ test('route validators use the canonical consts', () => {
 
 test('TS unions derive from the consts (typeof X[number])', () => {
   const t = read('src/types/intake.ts');
-  for (const name of ['SCAN_SOURCES', 'SCAN_STATUSES', 'SCHEDULE_TYPES', 'TOOL_TYPES']) {
+  for (const name of ['SCAN_SOURCES', 'SCAN_STATUSES', 'SCHEDULE_TYPES', 'SURFACE_TYPES', 'TOOL_TYPES']) {
     assert.ok(t.includes(`typeof ${name}[number]`), `union for ${name} must derive from the const`);
   }
   const db = read('src/db/index.ts');

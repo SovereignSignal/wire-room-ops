@@ -1,5 +1,5 @@
 import { Pool } from 'pg';
-import { SCAN_SOURCES, SCAN_STATUSES, SCHEDULE_TYPES, TOOL_TYPES_DB, ScheduleType, sqlEnumList } from '../types/intake';
+import { SCAN_SOURCES, SCAN_STATUSES, SCHEDULE_TYPES, SURFACE_TYPES, TOOL_TYPES_DB, ScheduleType, sqlEnumList } from '../types/intake';
 import { config } from '../config';
 import { DatabaseEntry } from '../types';
 import type { ToolType, DistributionChannel, DistributionStatus, DistributionConfig, DistributionLog } from '../types/intake';
@@ -2059,4 +2059,37 @@ export async function ensureMonitoredAccountsTable(): Promise<void> {
     ON monitored_accounts(enabled) WHERE enabled = true
   `);
   console.log('[DB] monitored_accounts table ready');
+}
+
+/**
+ * Watchtower registry: one row per watchable surface of an org.
+ * Human-facing fields (tier, wire, org_name) mirror Notion Sov's Orgs;
+ * machine state (last_checked_at, failure_streak, ...) lives only here.
+ */
+export async function ensureWatchSurfacesTable(): Promise<void> {
+  const pool = getPool();
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS watch_surfaces (
+      id SERIAL PRIMARY KEY,
+      org_id INTEGER REFERENCES org_profiles(id) ON DELETE SET NULL,
+      org_name TEXT NOT NULL,
+      wire TEXT,
+      surface_type TEXT NOT NULL CHECK (surface_type IN (${sqlEnumList(SURFACE_TYPES)})),
+      url TEXT NOT NULL,
+      tier TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      source_of_truth TEXT NOT NULL DEFAULT 'notion-orgs',
+      notion_page_id TEXT,
+      last_checked_at TIMESTAMPTZ,
+      last_changed_at TIMESTAMPTZ,
+      failure_streak INTEGER NOT NULL DEFAULT 0,
+      items_found_30d INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE (surface_type, url)
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_watch_surfaces_wire_type ON watch_surfaces(wire, surface_type)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_watch_surfaces_org ON watch_surfaces(org_name)`);
+  console.log('[DB] Watch surfaces table ready');
 }

@@ -246,7 +246,7 @@ All pipeline data flows through `scan_entries`. Key columns:
 | `classification` | varchar | Gate 2 label: `GRANT`, `NEWS`, `EXPIRED`, `NOISE`, `UNCHECKED` |
 | `quality_score` | integer | 0-100 score from LLM classifier (null on dumb-pipe Telegram/manual intake — the curator stamp is the queue's triage signal) |
 | `wire` | text | Feed vertical (crypto/ai/oss) |
-| `scan_source` | text | Ingestion channel — all 13 allowed values: `x-scan`, `web-search`, `perplexity`, `community`, `telegram`, `telegram-intake`, `manual-intake`, `email`, `forum`, `x-monitor`, `feed`, `claude-code`, `claude-cohort-notion` |
+| `scan_source` | text | Ingestion channel — all 14 allowed values: `x-scan`, `web-search`, `perplexity`, `community`, `telegram`, `telegram-intake`, `manual-intake`, `email`, `forum`, `x-monitor`, `x-list`, `feed`, `claude-code`, `claude-cohort-notion` |
 | `source_url` | text | Original source link |
 | `metadata` | jsonb | LLM-extracted structured data (amount, deadline, eligibility, summary) + curator stamp + decided-recheck verdict |
 | `org_id` | integer | FK to `org_profiles` (auto-linked on approve) |
@@ -361,7 +361,7 @@ Generated files are persisted to Postgres. Sessions are DB-backed and survive re
 - `RESEND_API_KEY` - Resend email API key
 
 ### Optional
-See `.env.example` for full list. Key optional vars: `PORT`, `APP_URL`, `ALLOWED_EMAILS`, `TELEGRAM_BOT_TOKEN`, `PERPLEXITY_API_KEY`, `PARALLEL_API_KEY` (Parallel.ai scans), `FORUM_SCAN_ENABLED`, `SUMMARIZE_PROVIDER` + `OLLAMA_DEFAULT_MODEL` (auto-summarize provider), `SUMMARY_SYNC_WIRES` (tele-sum bridge wire filter), `SOURCE_BLOCKLIST_EXTRA` (extra Gate-1 blocked domains), `WEEKLY_PASTE_LOG_PAGE_ID` (Notion landing page), `BD_LEADS_DATABASE_ID` (Notion Paid Work Leads db for the BD loop), `BRAND_*` (deployment-agnostic config overrides), `INTERNAL_API_KEY` + `INTERNAL_API_KEY_DAILY_SCAN` (named agent API keys — see Internal API Key Auth), `X_BEARER_TOKEN` (X account monitor), `DEV_MODE` (skip auth in dev), `DATA_DIR` (local data storage).
+See `.env.example` for full list. Key optional vars: `PORT`, `APP_URL`, `ALLOWED_EMAILS`, `TELEGRAM_BOT_TOKEN`, `PERPLEXITY_API_KEY`, `PARALLEL_API_KEY` (Parallel.ai scans), `FORUM_SCAN_ENABLED`, `SUMMARIZE_PROVIDER` + `OLLAMA_DEFAULT_MODEL` (auto-summarize provider), `SUMMARY_SYNC_WIRES` (tele-sum bridge wire filter), `SOURCE_BLOCKLIST_EXTRA` (extra Gate-1 blocked domains), `WEEKLY_PASTE_LOG_PAGE_ID` (Notion landing page), `BD_LEADS_DATABASE_ID` (Notion Paid Work Leads db for the BD loop), `BRAND_*` (deployment-agnostic config overrides), `INTERNAL_API_KEY` + `INTERNAL_API_KEY_DAILY_SCAN` (named agent API keys — see Internal API Key Auth), `X_BEARER_TOKEN` (X account monitor, X list watcher), `WATCHTOWER_BUDGET_MONTHLY_USD` (monthly discovery spend cap, default $20), `X_LISTS_ENABLED` (enable the X list watcher lane, default false), `X_LISTS_DRY_RUN` (log without submitting to intake, default true), `X_LIST_IDS` (comma-separated wire:listId pairs), `DEV_MODE` (skip auth in dev), `DATA_DIR` (local data storage).
 
 ## Feeds System
 
@@ -388,6 +388,7 @@ Automated discovery of grant opportunities via X.com scanning, web search, and f
 - **Source feeds** (`feed`): registry-driven ingester (`src/services/source-feeds.ts` `SOURCE_REGISTRY`) — aggregator APIs (Karma GAP, Grants.gov, EA Forum GraphQL…), RSS/Atom (FLI, NLnet, OTF), and own-site funder scrapes via Firecrawl. Per-source seen-URL watermark in `app_state` (`feed:seen:<key>`); only net-new items reach the classifier; first-run cap prevents queue floods
 - **Forum scan** (`forum`): governance-forum lane via discuss.watch — curated per-wire governance allowlist + `hot=true` catch-all, 30-day createdAt age gate, then an LLM judge per thread batch (opportunity/not + extraction). Replaced the retired broad-keyword search (2% approve / 67% dupes)
 - **X account monitor** (`x-monitor`): polls `monitored_accounts` (funder orgs + key people, Notion Contacts-controlled) for new URLs in recent tweets
+- **X list watcher** (`x-list`): Watchtower Tier 1 — polls the latest posts per curated per-wire X List and filters client-side against an id watermark (the Lists endpoint has no `since_id` support), one API read per wire per scheduled run, budget-gated (`src/jobs/x-lists.ts`). Env-gated: `X_LISTS_ENABLED`, dry-run default
 - **Telegram intake** (`telegram`): Bot-based URL/article submission via webhook — a **dumb pipe**: queue raw with URL-only dedup, no classify at intake. Supports single URLs and batch messages (numbered lists, bold-name, or `Link:` format). Adapter pattern (`telegram-adapter.ts` -> `intake-core.ts`)
 - **Agent submits** (`claude-code`, `x-scan`/`web-search` via API): the daily-grant-scan claude.ai routine and The Stringer submit via `POST /api/scan/submit` with the internal API key — inserted raw (`insertOnly`), completed by the 5-minute process-raw cycle
 - **Manual paste** (`manual-intake`): Dashboard paste-in flow (historically the highest-approval channel)
