@@ -410,6 +410,25 @@ export interface WireInfo {
   entryCount: number;
 }
 
+/**
+ * The canonical, fixed set of wires (verticals) for this deployment.
+ *
+ * The queue wire selector, the feed/vertical picker, channel assignment, and
+ * wire validation are ALL locked to these three. Wires are never added
+ * dynamically — this list is the source of truth. Display names + title
+ * templates still come from the seeded feeds table below.
+ *
+ * This exists to kill the feedback loop where stray wire values in
+ * channel_configs kept re-seeding the feeds table on every deploy and
+ * polluting every dropdown in the dashboard.
+ */
+export const CORE_WIRES = ['crypto', 'ai', 'oss'] as const;
+export type CoreWire = (typeof CORE_WIRES)[number];
+
+export function isCoreWire(key: string): key is CoreWire {
+  return (CORE_WIRES as readonly string[]).includes(key);
+}
+
 function isMissingRelationError(error: unknown, relation: string): boolean {
   const message = error instanceof Error
     ? error.message
@@ -447,15 +466,24 @@ export async function getEntryCountsByWire(): Promise<Record<string, number>> {
 }
 
 export async function getAvailableWires(): Promise<WireInfo[]> {
-  const feeds = await getAllFeeds(false);
+  // Locked to the canonical core wires. Display names come from the feeds
+  // table when present (including archived rows, in case a core feed was
+  // accidentally archived); otherwise we fall back to a capitalized key.
+  // This is the single source of truth for every wire picker and for wire
+  // validation, so the dropdown can never show stray/legacy values.
+  const feeds = await getAllFeeds(true);
+  const byKey = new Map(feeds.map(f => [f.key, f]));
   const counts = await getEntryCountsByWire();
 
-  return feeds.map(f => ({
-    key: f.key,
-    wire: f.key,
-    displayName: f.displayName,
-    entryCount: counts[f.key] || 0,
-  }));
+  return CORE_WIRES.map(key => {
+    const feed = byKey.get(key);
+    return {
+      key,
+      wire: key,
+      displayName: feed?.displayName ?? (key.charAt(0).toUpperCase() + key.slice(1)),
+      entryCount: counts[key] || 0,
+    };
+  });
 }
 
 // --- Feeds table management ---
@@ -548,7 +576,12 @@ export async function ensureFeedsTable(): Promise<void> {
 
     for (const row of discovered.rows) {
       const wireKey = row.wire as string;
-      if (!SEED_FEEDS[wireKey]) {
+      // Only canonical core wires are valid verticals. Ignore stray/legacy
+      // wire values in channel_configs so they never pollute the feeds table
+      // (and therefore every dropdown). In practice this never inserts
+      // anything, because all core wires are already seeded above — but the
+      // guard makes that invariant explicit and future-proof.
+      if (!SEED_FEEDS[wireKey] && isCoreWire(wireKey)) {
         // Auto-generate display name: capitalize first letter of each word
         const displayName = wireKey.charAt(0).toUpperCase() + wireKey.slice(1);
         await pool.query(`

@@ -250,7 +250,11 @@ export async function processRawEntries(pool?: Pool): Promise<{
                   classResult.reason,
                   classResult.qualityScore,
                   JSON.stringify({ scoreReason: classResult.scoreReason, in_scope: classResult.inScope, detected_wire: classResult.detectedWire }),
-                  JSON.stringify(classResult.extracted),
+                  // operator_route MUST persist into metadata — it is the BD
+                  // loop's source signal (relationship_signal) and the queue's
+                  // route filter. It was silently dropped when classify-at-intake
+                  // was removed (#44); this is now the canonical persistence point.
+                  JSON.stringify({ ...classResult.extracted, operator_route: classResult.operatorRoute || null }),
                   classResult.tags,
                   row.id,
                   classStatus,

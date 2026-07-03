@@ -34,6 +34,41 @@ function ClassificationBadge({ classification }: { classification?: Classificati
   );
 }
 
+// operator_route is the classifier's editorial routing hint. It is no longer
+// used to auto-archive (everything reaches the queue); it is shown and filtered
+// here so the operator can triage the wide-net queue by route.
+const ROUTE_OPTIONS = ['publish', 'source_check', 'park', 'relationship_signal', 'decline'] as const;
+type RouteKey = typeof ROUTE_OPTIONS[number];
+
+const routeStyles: Record<string, string> = {
+  publish: 'border-green-500/50 text-green-400 bg-green-500/10',
+  source_check: 'border-cyan-400/50 text-cyan-300 bg-cyan-500/10',
+  park: 'border-amber-400/50 text-amber-400 bg-amber-400/10',
+  relationship_signal: 'border-violet-500/50 text-violet-400 bg-violet-500/10',
+  decline: 'border-red-500/50 text-red-400 bg-red-500/10',
+  none: 'border-border text-muted-foreground bg-muted/20',
+};
+
+const routeLabels: Record<string, string> = {
+  publish: 'PUBLISH',
+  source_check: 'SRC-CHECK',
+  park: 'PARK',
+  relationship_signal: 'BD-SIGNAL',
+  decline: 'DECLINE',
+  none: 'NO ROUTE',
+};
+
+function RouteBadge({ route }: { route?: string }) {
+  const r = route && routeLabels[route] ? route : (route ? route : 'none');
+  const style = routeStyles[r] || routeStyles.none;
+  const label = routeLabels[r] || r.toUpperCase();
+  return (
+    <span title={`operator_route: ${route || 'none'}`} className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-mono font-medium border ${style}`}>
+      {label}
+    </span>
+  );
+}
+
 function RelatedSourceBadge({ entry }: { entry: ScanEntry }) {
   const related = entry.metadata?.related_source;
   if (!related) return null;
@@ -134,7 +169,12 @@ function WireSelector({ wire, wires, entryId, onWiresChange, availableWires = []
   const [fetchedWires, setFetchedWires] = useState<{ key: string; displayName: string }[]>([]);
   const effectiveWires = availableWires.length > 0 ? availableWires : fetchedWires;
   const options = effectiveWires.length > 0 ? effectiveWires.map(w => w.key) : [wire];
-  const selected = (wires && wires.length > 0) ? wires : [wire];
+  // Only core options can be selected. If an entry carries a legacy/non-core
+  // wire (from before the dropdown was locked), it is dropped from the picker
+  // so the user can cleanly re-tag it to a valid wire instead of being stuck
+  // with an un-toggleable value.
+  const rawSelected = (wires && wires.length > 0) ? wires : [wire];
+  const selected = rawSelected.filter(s => options.includes(s));
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -172,7 +212,7 @@ function WireSelector({ wire, wires, entryId, onWiresChange, availableWires = []
         onClick={(e) => { e.stopPropagation(); setOpen(!open); }}
         className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-display font-medium border uppercase tracking-wider transition-colors cursor-pointer ${primaryColor}`}
       >
-        {selected.length > 1 ? `${selected[0]} +${selected.length - 1}` : selected[0]}
+        {selected.length === 0 ? 'PICK' : selected.length > 1 ? `${selected[0]} +${selected.length - 1}` : selected[0]}
         <ChevronDown className="w-2.5 h-2.5 opacity-60" />
       </button>
       {open && (
@@ -219,6 +259,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [wireFilter, setWireFilter] = useState<string | null>(null);
   const [classificationFilter, setClassificationFilter] = useState<string | null>(null);
+  const [routeFilter, setRouteFilter] = useState<string | null>(null);
   const [availableWires, setAvailableWires] = useState<{ key: string; displayName: string }[]>([]);
 
   useEffect(() => {
@@ -251,6 +292,11 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
         const entryCls = entry.classification || 'UNCHECKED';
         if (entryCls !== classificationFilter) return false;
       }
+      // Operator-route filter (wide-net queue triage)
+      if (routeFilter) {
+        const entryRoute = entry.metadata?.operator_route || 'none';
+        if (entryRoute !== routeFilter) return false;
+      }
       // Advanced filters
       if (filters.wire && entry.wire !== filters.wire) return false;
       if (filters.scoreMin !== null && entry.quality_score < filters.scoreMin) return false;
@@ -267,7 +313,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
       
       return true;
     });
-  }, [entries, filters, wireFilter, classificationFilter]);
+  }, [entries, filters, wireFilter, classificationFilter, routeFilter]);
 
   const toggleSelect = (id: string) => {
     const newSet = new Set(selectedIds);
@@ -351,6 +397,34 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
         ))}
       </div>
 
+      {/* Operator-route filter — triage the wide-net queue by editorial route */}
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <span className="text-[10px] text-muted-foreground font-mono mr-1">ROUTE:</span>
+        <button
+          onClick={() => setRouteFilter(null)}
+          className={`px-2 py-1 rounded text-[9px] font-mono border transition-colors ${
+            routeFilter === null
+              ? 'bg-primary/20 text-primary border-primary/50'
+              : 'bg-muted/20 text-muted-foreground border-border hover:text-foreground hover:bg-muted/40'
+          }`}
+        >
+          All
+        </button>
+        {ROUTE_OPTIONS.map((r: RouteKey) => (
+          <button
+            key={r}
+            onClick={() => setRouteFilter(routeFilter === r ? null : r)}
+            className={`px-2 py-1 rounded text-[9px] font-mono border transition-colors ${
+              routeFilter === r
+                ? routeStyles[r]
+                : 'bg-muted/20 text-muted-foreground border-border hover:text-foreground hover:bg-muted/40'
+            }`}
+          >
+            {routeLabels[r]}
+          </button>
+        ))}
+      </div>
+
       <FilterBar filters={filters} onFilterChange={setFilters} verticals={verticals} />
       
       {/* Mobile card view */}
@@ -397,6 +471,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                 <WireSelector wire={entry.wire} wires={entry.wires} entryId={entry.id} onWiresChange={handleWiresChange} availableWires={availableWires} />
               </div>
               <ClassificationBadge classification={entry.classification} />
+              <RouteBadge route={entry.metadata?.operator_route} />
               <RelatedSourceBadge entry={entry} />
               <CuratorBadge curator={entry.metadata?.curator} />
               {entry.source_published_at && (
@@ -482,6 +557,11 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                 </td>
                 <td className="overflow-hidden">
                   <div className="font-medium text-foreground truncate">{entry.name}</div>
+                  <div className="flex items-center gap-1 mt-0.5 flex-wrap">
+                    <ClassificationBadge classification={entry.classification} />
+                    <RouteBadge route={entry.metadata?.operator_route} />
+                    <RelatedSourceBadge entry={entry} />
+                  </div>
                   {entry.description && (
                     <ExpandableDescription text={entry.description} />
                   )}

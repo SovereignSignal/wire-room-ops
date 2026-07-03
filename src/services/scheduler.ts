@@ -4,6 +4,7 @@ import { runScanExecution } from '../jobs/scan-execution';
 import { runForumScan } from '../jobs/forum-scan';
 import { runSourceFeeds } from '../jobs/source-feeds';
 import { runWeeklyIssue } from '../jobs/weekly-issue';
+import { runBdLeads } from '../jobs/bd-leads';
 import { config } from '../config';
 import { sendTestAlertEmail, sendScheduledJobFailureEmail, sendDailyDigestEmail, sendDeadlineDigestEmail } from './email';
 import { runCsvExport } from '../jobs/csv-export';
@@ -404,6 +405,20 @@ function createJobExecutor(schedule: ScheduleConfig) {
             console.log(`[Scheduler] Weekly issue: spine=${wk.spineCount}, alsoOpen=${wk.alsoOpenCount}, emailed=${wk.emailed}`);
           } catch (e) {
             console.error('[Scheduler] Weekly issue failed (non-fatal):', e instanceof Error ? e.message : e);
+          }
+        }
+
+        // Weekly BD leads — Wednesdays only, same daily run (no separate cron).
+        // Finds + qualifies + verifies BD opportunities from the past week's
+        // relationship signals and writes them to the Notion Paid Work Leads
+        // list as Status=Lead. Review-first: FIND + QUALIFY ONLY — never
+        // creates Opps, never contacts anyone, sends no email.
+        if (new Date().getDay() === 3) {
+          try {
+            const bd = await runBdLeads(pool, {});
+            console.log(`[Scheduler] BD leads: ${bd.message}`);
+          } catch (e) {
+            console.error('[Scheduler] BD leads failed (non-fatal):', e instanceof Error ? e.message : e);
           }
         }
 
