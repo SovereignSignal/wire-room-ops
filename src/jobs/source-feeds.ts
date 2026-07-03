@@ -68,6 +68,16 @@ export async function runSourceFeeds(
 
   const submissions: ScanSubmission[] = [];
   const perSource: SourceFeedsResult['perSource'] = [];
+  // Seen-URL watermarks are collected here and only persisted AFTER intake
+  // succeeds. Writing them earlier permanently discarded a run's discoveries
+  // whenever intake failed: items were marked seen but never reached the DB.
+  const pendingSeenStates: Array<{ stateKey: string; state: SeenState }> = [];
+  const flushSeenStates = async () => {
+    for (const p of pendingSeenStates) {
+      try { await setAppState(p.stateKey, p.state); }
+      catch (err) { console.warn(`[Feeds] Failed to persist seen-state ${p.stateKey}:`, err instanceof Error ? err.message : err); }
+    }
+  };
 
   for (let i = 0; i < sources.length; i++) {
     const source = sources[i];
@@ -125,12 +135,12 @@ export async function runSourceFeeds(
       }
 
       // Mark ALL fetched URLs seen (so old/recency-skipped items aren't reconsidered),
-      // newest first, capped.
+      // newest first, capped. Deferred to flushSeenStates() after intake succeeds.
       const mergedUrls = [...items.map(it => normalizeUrl(it.url)), ...(state?.urls || [])];
       const dedupedUrls: string[] = [];
       const s = new Set<string>();
       for (const u of mergedUrls) { if (!s.has(u)) { s.add(u); dedupedUrls.push(u); } if (dedupedUrls.length >= SEEN_CAP) break; }
-      await setAppState(stateKey, { urls: dedupedUrls, lastRun: nowIso });
+      pendingSeenStates.push({ stateKey, state: { urls: dedupedUrls, lastRun: nowIso } });
 
       perSource.push({ key: source.key, name: source.name, fetched: items.length, fresh: fresh.length, firstRun });
       console.log(`[Feeds] ${source.key}: ${items.length} fetched, ${fresh.length} fresh${capped ? ` (first-run capped to ${FIRST_RUN_LIMIT})` : ''}`);
@@ -144,6 +154,8 @@ export async function runSourceFeeds(
   const totalFresh = perSource.reduce((n, s) => n + s.fresh, 0);
 
   if (submissions.length === 0) {
+    // Nothing fresh anywhere — persisting the watermarks loses nothing.
+    await flushSeenStates();
     progress('No new feed items', 100);
     return {
       perSource, totalFresh: 0,
@@ -157,6 +169,11 @@ export async function runSourceFeeds(
     config: options.config,
     onProgress: (msg, p) => progress(msg, 60 + Math.round(p * 0.4)),
   });
+
+  // Intake persisted everything (per-item errors are handled inside runDailyIntake;
+  // a throw above means nothing was durably processed — watermarks stay unwritten
+  // so the next run retries the same items).
+  await flushSeenStates();
 
   progress(`Feeds complete: ${totalFresh} fresh, ${intakeSummary.newUnique} unique, ${intakeSummary.highQualityCount} high quality`, 100);
   return { perSource, totalFresh, intakeSummary, durationMs: Date.now() - startTime };

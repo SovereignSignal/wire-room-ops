@@ -14,10 +14,14 @@ export type PromptStrategy = 'Action' | 'Landscape' | 'Open Sweep';
 // Which provider/tool to use for scan execution
 export type ToolType = 'x_search' | 'web_search' | 'perplexity' | 'parallel';
 
-// Where the result came from
-export type ScanSource = 'x-scan' | 'web-search' | 'perplexity' | 'community' | 'telegram' | 'telegram-intake' | 'manual-intake' | 'email' | 'forum' | 'x-monitor' | 'feed' | 'claude-code' | 'claude-cohort-notion';
+// Where the result came from.
+// LOCKSTEP: this list must match the scan_entries.scan_source CHECK constraint
+// in src/db/index.ts (all writers). tests/enum-lockstep.test.js enforces it.
+export const SCAN_SOURCES = ['x-scan', 'web-search', 'perplexity', 'community', 'telegram', 'telegram-intake', 'manual-intake', 'email', 'forum', 'x-monitor', 'feed', 'claude-code', 'claude-cohort-notion'] as const;
+export type ScanSource = typeof SCAN_SOURCES[number];
 
-// Processing state for scan results as they move through the pipeline
+// Processing state for scan results as they move through the pipeline.
+// LOCKSTEP: must match the scan_entries.status CHECK constraint in src/db/index.ts.
 export type ScanStatus =
   | 'raw'           // Just ingested, no processing yet
   | 'deduped'       // Passed dedup check (unique)
@@ -28,7 +32,8 @@ export type ScanStatus =
   | 'archived'      // Below quality threshold, kept for reference
   | 'skipped'       // Manually skipped by user
   | 'approved'      // Approved for publication + distribution
-  | 'declined';     // Rejected by reviewer
+  | 'declined'      // Rejected by reviewer
+  | 'incomplete';   // Failed Gate 1 completeness (missing name/description/url)
 
 // Output format for scan prompts
 export type OutputFormat = 'text' | 'json';

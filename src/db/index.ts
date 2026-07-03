@@ -259,7 +259,10 @@ function parseScheduleRow(row: any): StoredScheduleConfig {
     row.schedule_type === 'daily-digest' ? 'daily-digest' :
     row.schedule_type === 'collect-engagement' ? 'collect-engagement' :
     row.schedule_type === 'experiment-loop' ? 'experiment-loop' :
-    row.schedule_type === 'drip-distribution' ? 'drip-distribution' : row.schedule_type === 'deadline-digest' ? 'deadline-digest' : row.schedule_type === 'account-monitor' ? 'account-monitor' : 'scan-execution';
+    row.schedule_type === 'drip-distribution' ? 'drip-distribution' :
+    row.schedule_type === 'deadline-digest' ? 'deadline-digest' :
+    row.schedule_type === 'account-monitor' ? 'account-monitor' :
+    row.schedule_type === 'source-feeds' ? 'source-feeds' : 'scan-execution';
 
   return {
     id: row.id,
@@ -1745,15 +1748,6 @@ export async function getDistributionStatusForEntries(
   }
 
   return statusMap;
-}
-
-export async function deleteFailedDistributionLogs(entryId: number): Promise<number> {
-  const pool = getPool();
-  const result = await pool.query(
-    `DELETE FROM distribution_logs WHERE entry_id = $1 AND status = 'failed'`,
-    [entryId]
-  );
-  return result.rowCount ?? 0;
 }
 
 // --- Distribution Channels (managed via dashboard UI) ---

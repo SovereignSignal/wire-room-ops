@@ -499,6 +499,7 @@ export async function startServer(): Promise<void> {
     stopAuthCleanup();
     jobQueue.stopPeriodicCleanup();
     clearInterval(processRawTimer);
+    clearInterval(contactsSyncTimer);
     clearInterval(digestOrgsSyncTimer);
     clearInterval(crmSyncTimer);
     clearInterval(enrichTimer);
