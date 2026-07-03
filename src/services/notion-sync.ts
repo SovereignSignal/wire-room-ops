@@ -294,6 +294,13 @@ export async function queryAllNotionPages(token: string, databaseId: string): Pr
 /**
  * Build Notion properties object for an org profile.
  * Mapped to match the actual "Sov's Orgs" Notion database properties.
+ *
+ * PRUNED 2026-07-03 (CRM simplification, Sov: "no more than 8-10 fields"):
+ * Notion carries only the 10-field human view (Name, Type, Wire, Relationship,
+ * Website, Action(s), Quality Score, Tier, Contacts, Last Checked). Twitter,
+ * GitHub, Tags, Source Type and Items Sourced live ONLY in Postgres
+ * (org_profiles) — the machine's full-fidelity store. Do not re-add fields
+ * here without adding them to the Notion schema in the same change.
  */
 export function buildOrgProperties(org: any): Record<string, any> {
   // Capitalize wire names for Notion multi_select: crypto→Crypto, ai→AI, oss→OSS
@@ -310,25 +317,8 @@ export function buildOrgProperties(org: any): Record<string, any> {
     props['Website'] = { url: org.website };
   }
 
-  if (org.twitter) {
-    props['Twitter'] = { url: org.twitter };
-  }
-
-  if (org.github_url) {
-    props['GitHub URL'] = { url: org.github_url };
-  }
-
   if (org.wires && org.wires.length > 0) {
     props['Wire'] = { multi_select: org.wires.map((w: string) => ({ name: capitalizeWire(w) })) };
-  }
-
-  if (org.tags && org.tags.length > 0) {
-    props['Tags'] = { multi_select: org.tags.map((t: string) => ({ name: t })) };
-  }
-
-  const itemsSourced = org.items_sourced ?? org.entry_count;
-  if (itemsSourced !== undefined && itemsSourced !== null) {
-    props['Items Sourced'] = { number: Number(itemsSourced) };
   }
 
   if (org.avg_quality_score !== null && org.avg_quality_score !== undefined) {
@@ -341,10 +331,6 @@ export function buildOrgProperties(org: any): Record<string, any> {
 
   if (org.org_type) {
     props['Type'] = { select: { name: org.org_type } };
-  }
-
-  if (org.source_type) {
-    props['Source Type'] = { multi_select: [{ name: org.source_type }] };
   }
 
   if (org.tier) {

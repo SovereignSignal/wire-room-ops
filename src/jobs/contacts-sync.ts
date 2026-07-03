@@ -65,19 +65,20 @@ export async function runContactsSync(pool: Pool): Promise<ContactsSyncResult> {
     return { ok: false, message: `Could not read Contacts DB (${msg}). Grant the "SimpleCRM - Notion" integration access to the Contacts database in Notion.` };
   }
 
-  const desired: Array<{ handle: string; name: string; wire: string | null; role: string; program: string; watched: boolean }> = [];
+  // Wire + Program were pruned from the Contacts schema 2026-07-03 (5% filled,
+  // wires describe content lanes, not people). Existing monitored_accounts
+  // wire/linked_program values are preserved (COALESCE keeps prior wire; the
+  // upsert no longer sets linked_program).
+  const desired: Array<{ handle: string; name: string; role: string; watched: boolean }> = [];
   for (const page of pages) {
     const props = page.properties || {};
     const handle = handleFromXUrl(readUrl(props['X']));
     if (!handle) continue;
     const status = readSelect(props['Status']);
-    const wireSel = readSelect(props['Wire']).toLowerCase();
     desired.push({
       handle,
       name: readTitle(props['Name']),
-      wire: ['crypto', 'ai', 'oss'].includes(wireSel) ? wireSel : null,
       role: readRichText(props['Role']),
-      program: readRichText(props['Program']),
       watched: shouldWatchContact(status),
     });
   }
@@ -85,17 +86,15 @@ export async function runContactsSync(pool: Pool): Promise<ContactsSyncResult> {
   let watched = 0, skipped = 0;
   for (const d of desired) {
     await pool.query(
-      `INSERT INTO monitored_accounts (handle, wire, kind, person_name, role, linked_program, source, enabled)
-       VALUES ($1, $2, 'person', $3, $4, $5, 'notion-contacts', $6)
+      `INSERT INTO monitored_accounts (handle, kind, person_name, role, source, enabled)
+       VALUES ($1, 'person', $2, $3, 'notion-contacts', $4)
        ON CONFLICT (handle) DO UPDATE SET
          kind = 'person',
          person_name = EXCLUDED.person_name,
          role = EXCLUDED.role,
-         linked_program = EXCLUDED.linked_program,
-         wire = COALESCE(EXCLUDED.wire, monitored_accounts.wire),
          enabled = EXCLUDED.enabled,
          updated_at = NOW()`,
-      [d.handle, d.wire, d.name || null, d.role || null, d.program || null, d.watched]
+      [d.handle, d.name || null, d.role || null, d.watched]
     );
     if (d.watched) watched++; else skipped++;
   }
