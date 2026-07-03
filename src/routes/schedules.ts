@@ -194,7 +194,7 @@ router.post('/digest/send-now', async (req: Request, res: Response) => {
     const sourceBreakdown = await getSourceBreakdown(pool).catch(() => undefined);
     const costRecap = await getCostRecap(pool).catch(() => undefined);
 
-    await sendDailyDigestEmail(digest, config.app.url, recipients, topFinds, undefined, undefined, undefined, sourceBreakdown, costRecap);
+    await sendDailyDigestEmail(digest, config.app.url, recipients, { topFinds, sourceBreakdown, costRecap });
     res.json({ success: true, message: `Digest sent to ${recipients?.join(', ') || 'default recipients'}`, stats: { wires: digest.wires.length, pendingReview: digest.totalPendingReview } });
   } catch (error) {
     console.error('[DigestNow] Failed:', error);

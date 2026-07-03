@@ -379,6 +379,11 @@ function createJobExecutor(schedule: ScheduleConfig) {
         const pool = getPool();
         console.log(`[Scheduler] Running daily digest...`);
 
+        // Operational anomalies collected across the cycle — the ONLY channel
+        // by which ops telemetry reaches the digest email (quiet = one ✓).
+        const anomalies: string[] = [];
+        let bdLeadsForEmail: import('../services/bd-leads-notion').LeadRecord[] | undefined;
+
         // Discovery lanes run as part of this one daily cycle — no separate cron to manage.
         // Each is isolated so a lane failure never blocks the digest.
         try {
@@ -388,13 +393,16 @@ function createJobExecutor(schedule: ScheduleConfig) {
           }
         } catch (e) {
           console.error('[Scheduler] Daily forum scan failed (non-fatal):', e instanceof Error ? e.message : e);
+          anomalies.push(`Forum lane failed: ${e instanceof Error ? e.message : String(e)}`);
         }
         try {
           const sf = await runSourceFeeds(pool, {});
           const failed = sf.perSource.filter(s => s.error).length;
           console.log(`[Scheduler] Daily source feeds: ${sf.totalFresh} fresh from ${sf.perSource.length} sources (${failed} errored), ${sf.intakeSummary.newUnique} unique`);
+          if (failed > 0) anomalies.push(`Source feeds: ${failed} of ${sf.perSource.length} sources errored`);
         } catch (e) {
           console.error('[Scheduler] Daily source feeds failed (non-fatal):', e instanceof Error ? e.message : e);
+          anomalies.push(`Source-feeds lane failed: ${e instanceof Error ? e.message : String(e)}`);
         }
 
         // Weekly Grant Wire draft — Fridays only, as part of the same daily run (no separate
@@ -405,6 +413,7 @@ function createJobExecutor(schedule: ScheduleConfig) {
             console.log(`[Scheduler] Weekly issue: spine=${wk.spineCount}, alsoOpen=${wk.alsoOpenCount}, emailed=${wk.emailed}`);
           } catch (e) {
             console.error('[Scheduler] Weekly issue failed (non-fatal):', e instanceof Error ? e.message : e);
+            anomalies.push(`Weekly issue failed: ${e instanceof Error ? e.message : String(e)}`);
           }
         }
 
@@ -417,8 +426,10 @@ function createJobExecutor(schedule: ScheduleConfig) {
           try {
             const bd = await runBdLeads(pool, {});
             console.log(`[Scheduler] BD leads: ${bd.message}`);
+            bdLeadsForEmail = bd.leads;
           } catch (e) {
             console.error('[Scheduler] BD leads failed (non-fatal):', e instanceof Error ? e.message : e);
+            anomalies.push(`BD leads failed: ${e instanceof Error ? e.message : String(e)}`);
           }
         }
 
@@ -480,7 +491,20 @@ function createJobExecutor(schedule: ScheduleConfig) {
 
           // Send single consolidated email
           try {
-            await sendDailyDigestEmail(digest, dashboardUrl, recipients, topFinds, csvResult, downloadUrls, agentBrief, sourceBreakdown, costRecap);
+            // Derive data anomalies (spikes only — normal telemetry stays out)
+            if (costRecap && costRecap.total > 5) {
+              anomalies.push(`API spend $${costRecap.total.toFixed(2)} in 24h (>$5)`);
+            }
+            for (const row of sourceBreakdown || []) {
+              if (row.total >= 10 && row.duplicates / row.total > 0.6) {
+                anomalies.push(`High dupe rate: ${row.wire}/${row.source} — ${Math.round((row.duplicates / row.total) * 100)}% of ${row.total}`);
+              }
+            }
+            await sendDailyDigestEmail(digest, dashboardUrl, recipients, {
+              topFinds, csvExport: csvResult, downloadUrls, agentBrief, sourceBreakdown, costRecap,
+              bdLeads: bdLeadsForEmail, bdLeadsUrl: 'https://app.notion.com/p/8b84ca08e4dd4396b49535936f823afd',
+              anomalies,
+            });
             console.log(`[Scheduler] Daily digest email sent (${digest.totalNewUnique} new, ${csvResult?.entryCount ?? 0} approved)`);
           } catch (emailErr) {
             console.error(`[Scheduler] Failed to send daily digest email:`, emailErr);

@@ -320,225 +320,192 @@ export interface StoredAgentBrief {
   runs: AgentBriefRun[];
 }
 
+export interface DigestBdLead {
+  lead: string;
+  source: string;
+  notes: string;
+}
+
+export interface DigestEmailExtras {
+  topFinds?: TopFindEntry[];
+  csvExport?: import('../jobs/csv-export').CsvExportResult;
+  downloadUrls?: { csv: string | null; md: string | null };
+  agentBrief?: StoredAgentBrief | null;
+  sourceBreakdown?: import('../jobs/daily-digest').SourceBreakdownRow[];
+  costRecap?: { rows: import('../jobs/daily-digest').CostRow[]; total: number };
+  /** Wednesday BD leads written to Paid Work Leads this run (Phase C surface) */
+  bdLeads?: DigestBdLead[];
+  bdLeadsUrl?: string;
+  /** Operational anomalies collected by the scheduler — the ONLY way ops
+   *  telemetry gets into the email. No anomalies = one quiet check mark. */
+  anomalies?: string[];
+}
+
+/**
+ * Render the daily digest email (2026-07-03 redesign).
+ *
+ * Design contract — the email answers "what needs me today?" in one glance:
+ *   1. one-line health strip (in / to-review / approved / $ / lanes)
+ *   2. NEEDS YOU — the queued items worth attention, one line each
+ *   3. BD LEADS — Wednesdays, the verified Paid Work Leads written this run
+ *   4. HEADS-UP — anomalies only (lane failures, dupe spikes, cost spikes)
+ *   5. one-line activity notes (agent scan, approved + export links)
+ * Ops telemetry tables (per-source matrix, cost table, wire table) live in
+ * the dashboard, not here. Quiet day = short email.
+ */
+export function renderDailyDigest(
+  digest: import('../jobs/daily-digest').DailyDigestResult,
+  dashboardUrl: string,
+  extras: DigestEmailExtras = {},
+): { subject: string; html: string; text: string } {
+  const brand = getBrand();
+  const base = dashboardUrl.replace(/\/$/, '');
+  const reviewUrl = `${base}/queue`;
+  const { topFinds, csvExport, downloadUrls, agentBrief, costRecap, bdLeads, bdLeadsUrl, anomalies } = extras;
+
+  const wireChip = (w: string) =>
+    `<span style="display:inline-block;padding:1px 6px;border:1px solid #ddd;border-radius:3px;font-size:10px;color:#666;text-transform:uppercase;${MONO}">${escapeHtml(w)}</span>`;
+
+  // ── 1. Health strip ────────────────────────────────────────────────────
+  const totalIn = digest.wires.reduce((n, w) => n + w.totalIngested, 0);
+  const approved24 = digest.wires.reduce((n, w) => n + w.recentlyApproved, 0);
+  const lanesOk = !anomalies || anomalies.length === 0;
+  const stripParts = [
+    `${totalIn} in`,
+    `<strong style="color:${digest.totalPendingReview > 0 ? '#0088cc' : '#1a8a5a'};">${digest.totalPendingReview} to review</strong>`,
+    `${approved24} approved`,
+    costRecap ? `$${costRecap.total.toFixed(2)} API` : null,
+    lanesOk ? `lanes <span style="color:#1a8a5a;">\u2713</span>` : `<strong style="color:#cc4400;">\u26a0 ${anomalies!.length} heads-up</strong>`,
+  ].filter(Boolean);
+  const stripHtml = `<p style="margin:0 0 18px;font-size:13px;color:#444;${MONO}">${stripParts.join(' &nbsp;\u00b7&nbsp; ')}</p>`;
+  const stripText = [
+    `${totalIn} in`, `${digest.totalPendingReview} to review`, `${approved24} approved`,
+    costRecap ? `$${costRecap.total.toFixed(2)} API` : null, lanesOk ? 'lanes OK' : `${anomalies!.length} HEADS-UP`,
+  ].filter(Boolean).join(' | ');
+
+  // ── 2. NEEDS YOU ───────────────────────────────────────────────────────
+  let needsHtml = '';
+  let needsText = '';
+  if (digest.totalPendingReview > 0 && topFinds && topFinds.length > 0) {
+    const shown = topFinds.slice(0, 8);
+    const lines = shown.map(e => {
+      const nameCell = e.source_url
+        ? `<a href="${escapeHtml(e.source_url)}" style="color:#0088cc;text-decoration:none;font-weight:600;">${escapeHtml(e.name)}</a>`
+        : `<span style="font-weight:600;color:#222;">${escapeHtml(e.name)}</span>`;
+      const meta = [e.amount, e.deadline ? `due ${e.deadline}` : null].filter(Boolean).map(x => escapeHtml(String(x))).join(' \u00b7 ');
+      return `<p style="margin:0 0 7px;font-size:13px;color:#222;line-height:1.5;">${wireChip(e.wire)} ${nameCell}${meta ? ` <span style="color:#888;">\u2014 ${meta}</span>` : ''}</p>`;
+    }).join('');
+    const more = digest.totalPendingReview - shown.length;
+    needsHtml = `
+      ${sectionLabel(`Needs you (${digest.totalPendingReview})`)}
+      ${lines}
+      ${more > 0 ? `<p style="margin:2px 0 8px;font-size:12px;color:#888;">\u2026and ${more} more in the queue</p>` : ''}
+      ${emailBtn(reviewUrl, 'Review queue')}`;
+    needsText = `\nNEEDS YOU (${digest.totalPendingReview})\n` + shown.map(e =>
+      `  [${e.wire}] ${e.name}${e.amount ? ` | ${e.amount}` : ''}${e.deadline ? ` | due ${e.deadline}` : ''}`
+    ).join('\n') + (more > 0 ? `\n  ...and ${more} more` : '') + `\n  Review: ${reviewUrl}\n`;
+  } else if (digest.totalPendingReview === 0) {
+    needsHtml = `<p style="margin:0 0 16px;font-size:13px;color:#1a8a5a;">Queue is clear \u2014 nothing needs you today.</p>`;
+    needsText = '\nQueue is clear - nothing needs you today.\n';
+  }
+
+  // ── 3. BD LEADS (Wednesdays) ───────────────────────────────────────────
+  let bdHtml = '';
+  let bdText = '';
+  if (bdLeads && bdLeads.length > 0) {
+    const lines = bdLeads.map(l => {
+      const title = l.source
+        ? `<a href="${escapeHtml(l.source)}" style="color:#7c4dcc;text-decoration:none;font-weight:600;">${escapeHtml(l.lead)}</a>`
+        : `<span style="font-weight:600;color:#222;">${escapeHtml(l.lead)}</span>`;
+      const note = l.notes ? `<span style="color:#888;"> \u2014 ${escapeHtml(l.notes.slice(0, 140))}</span>` : '';
+      return `<p style="margin:0 0 7px;font-size:13px;color:#222;line-height:1.5;">${title}${note}</p>`;
+    }).join('');
+    bdHtml = `
+      ${sectionLabel(`BD leads \u2014 verified, not contacted (${bdLeads.length})`)}
+      ${lines}
+      ${bdLeadsUrl ? emailBtn(bdLeadsUrl, 'Triage in Notion') : ''}`;
+    bdText = `\nBD LEADS - VERIFIED, NOT CONTACTED (${bdLeads.length})\n` + bdLeads.map(l =>
+      `  ${l.lead}${l.notes ? ` — ${l.notes.slice(0, 110)}` : ''}${l.source ? `\n    ${l.source}` : ''}`
+    ).join('\n') + (bdLeadsUrl ? `\n  Triage: ${bdLeadsUrl}` : '') + '\n';
+  }
+
+  // ── 4. HEADS-UP (anomalies only) ───────────────────────────────────────
+  let headsHtml = '';
+  let headsText = '';
+  if (anomalies && anomalies.length > 0) {
+    headsHtml = `
+      ${sectionLabel('Heads-up')}
+      ${anomalies.map(a => `<p style="margin:0 0 6px;font-size:12px;color:#cc4400;">\u26a0 ${escapeHtml(a)}</p>`).join('')}`;
+    headsText = '\nHEADS-UP\n' + anomalies.map(a => `  ! ${a}`).join('\n') + '\n';
+  }
+
+  // ── 5. Activity one-liners ─────────────────────────────────────────────
+  const notes: string[] = [];
+  const notesText: string[] = [];
+  if (agentBrief?.runs?.length) {
+    const runs = agentBrief.runs;
+    const searches = runs.reduce((n, r) => n + (r.searchesDone ?? 0), 0);
+    const submitted = runs.reduce((n, r) => n + (r.entries?.length ?? 0), 0);
+    const dupes = runs.reduce((n, r) => n + (r.skippedDuplicates ?? 0), 0);
+    notes.push(`Agent scan: ${runs.length} run${runs.length > 1 ? 's' : ''} \u00b7 ${searches} searches \u00b7 ${submitted} submitted \u00b7 ${dupes} dupes skipped`);
+    notesText.push(`Agent scan: ${runs.length} runs | ${searches} searches | ${submitted} submitted | ${dupes} dupes skipped`);
+  }
+  if (csvExport && csvExport.entryCount > 0) {
+    const links = [
+      downloadUrls?.csv ? `<a href="${escapeHtml(downloadUrls.csv)}" style="color:#0088cc;">CSV</a>` : null,
+      downloadUrls?.md ? `<a href="${escapeHtml(downloadUrls.md)}" style="color:#0088cc;">Markdown</a>` : null,
+    ].filter(Boolean).join(' \u00b7 ');
+    notes.push(`Approved last 24h: ${csvExport.entryCount}${links ? ` \u2014 ${links}` : ''}`);
+    notesText.push(`Approved last 24h: ${csvExport.entryCount}${downloadUrls?.csv ? ` | CSV: ${downloadUrls.csv}` : ''}${downloadUrls?.md ? ` | MD: ${downloadUrls.md}` : ''}`);
+  }
+  const notesHtml = notes.length
+    ? `${sectionLabel('Activity')}${notes.map(n => `<p style="margin:0 0 6px;font-size:12px;color:#666;">${n}</p>`).join('')}`
+    : '';
+
+  const body = `
+    ${stripHtml}
+    ${needsHtml}
+    ${bdHtml}
+    ${headsHtml}
+    ${notesHtml}
+    <p style="margin:22px 0 0;font-size:11px;color:#aaa;"><a href="${escapeHtml(base)}" style="color:#aaa;">Dashboard</a> \u00b7 per-source and cost detail lives there, not here.</p>`;
+
+  const html = emailShell(`WireOps \u2014 ${digest.date}`, body);
+
+  const text = `WIREOPS - ${digest.date}
+${stripText}
+${needsText}${bdText}${headsText}${notesText.length ? '\nACTIVITY\n' + notesText.map(n => '  ' + n).join('\n') + '\n' : ''}
+Dashboard: ${base}
+
+---
+${brand.name}`;
+
+  const subjectParts = [
+    `${digest.totalPendingReview} to review`,
+    bdLeads && bdLeads.length > 0 ? `${bdLeads.length} BD lead${bdLeads.length > 1 ? 's' : ''}` : null,
+    !lanesOk ? `\u26a0 ${anomalies!.length} heads-up` : null,
+  ].filter(Boolean);
+  const subject = `WireOps \u2014 ${digest.date} | ${subjectParts.join(' \u00b7 ')}`;
+
+  return { subject, html, text };
+}
+
 export async function sendDailyDigestEmail(
   digest: import('../jobs/daily-digest').DailyDigestResult,
   dashboardUrl: string,
   recipients?: string[],
-  topFinds?: TopFindEntry[],
-  csvExport?: import('../jobs/csv-export').CsvExportResult,
-  downloadUrls?: { csv: string | null; md: string | null },
-  agentBrief?: StoredAgentBrief | null,
-  sourceBreakdown?: import('../jobs/daily-digest').SourceBreakdownRow[],
-  costRecap?: { rows: import('../jobs/daily-digest').CostRow[]; total: number }
+  extras: DigestEmailExtras = {},
 ): Promise<void> {
   const brand = getBrand();
-  const reviewUrl = `${dashboardUrl.replace(/\/$/, '')}/queue`;
-
-  // Wire breakdown
-  const wireRows = digest.wires.map(w =>
-    `<tr>
-      <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:13px;color:#222;text-transform:uppercase;">${escapeHtml(w.wire)}</td>
-      <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:13px;color:#666;text-align:center;">${w.scansRun}</td>
-      <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:13px;color:#222;text-align:center;font-weight:600;">${w.newUnique}</td>
-      <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:13px;color:#666;text-align:center;">${w.recentlyApproved}</td>
-      <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:13px;color:${w.pendingReview > 0 ? '#0088cc' : '#999'};text-align:center;font-weight:${w.pendingReview > 0 ? '700' : '400'};">${w.pendingReview}</td>
-    </tr>`
-  ).join('');
-
-  const wireText = digest.wires.map(w =>
-    `  ${w.wire.padEnd(10)} scans:${w.scansRun}  new:${w.newUnique}  approved:${w.recentlyApproved}  pending:${w.pendingReview}`
-  ).join('\n');
-
-  // Agent scan brief (recorded by the daily-grant-scan agent)
-  let agentBriefHtml = '';
-  let agentBriefText = '';
-  if (agentBrief && agentBrief.runs && agentBrief.runs.length > 0) {
-    const runLines = agentBrief.runs.map(run => {
-      const submitted = (run.entries || []).map(e =>
-        `<li style="font-size:12px;color:#222;margin:2px 0;">${e.sourceUrl ? `<a href="${escapeHtml(e.sourceUrl)}" style="color:#0088cc;text-decoration:none;">${escapeHtml(e.name)}</a>` : escapeHtml(e.name)} <span style="color:#888;">(${escapeHtml(e.wire)})</span></li>`
-      ).join('');
-      return `<p style="margin:0 0 4px;font-size:12px;color:#555;">${run.searchesDone ?? 0} searches &middot; ${run.totalFound ?? 0} found &middot; ${(run.entries || []).length} submitted &middot; ${run.skippedDuplicates ?? 0} duplicates skipped</p>${submitted ? `<ul style="margin:0 0 8px;padding-left:18px;">${submitted}</ul>` : '<p style="margin:0 0 8px;font-size:12px;color:#999;">Nothing new submitted — quiet window.</p>'}`;
-    }).join('');
-    agentBriefHtml = `
-      ${sectionLabel('Agent Scan')}
-      ${runLines}`;
-    agentBriefText = '\nAGENT SCAN\n' + agentBrief.runs.map(run =>
-      `  ${run.searchesDone ?? 0} searches | ${run.totalFound ?? 0} found | ${(run.entries || []).length} submitted | ${run.skippedDuplicates ?? 0} dupes skipped` +
-      (run.entries || []).map(e => `\n    - [${e.wire}] ${e.name}`).join('')
-    ).join('\n') + '\n';
-  } else if (agentBrief !== undefined) {
-    agentBriefHtml = `
-      ${sectionLabel('Agent Scan')}
-      <p style="margin:0 0 16px;font-size:12px;color:#999;">No agent scan brief received today</p>`;
-    agentBriefText = '\nAGENT SCAN\nNo agent scan brief received today\n';
-  }
-
-  // Intake by source (last 24h)
-  let sourceHtml = '';
-  let sourceText = '';
-  if (sourceBreakdown && sourceBreakdown.length > 0) {
-    const srcRows = sourceBreakdown.map(s =>
-      `<tr>
-        <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#222;text-transform:uppercase;">${escapeHtml(s.wire)}</td>
-        <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#666;">${escapeHtml(s.source)}</td>
-        <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#222;text-align:center;">${s.total}</td>
-        <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#0088cc;text-align:center;font-weight:${s.queued > 0 ? '700' : '400'};">${s.queued}</td>
-        <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#666;text-align:center;">${s.approved}</td>
-        <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#999;text-align:center;">${s.duplicates}</td>
-        <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#999;text-align:center;">${s.parked}</td>
-        <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#1a8a5a;text-align:center;font-weight:${s.signals > 0 ? '700' : '400'};">${s.signals}</td>
-      </tr>`
-    ).join('');
-    sourceHtml = `
-      ${sectionLabel('Intake by Source (24h)')}
-      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-bottom:16px;">
-        <tr>
-          <th style="padding:4px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:left;">Wire</th>
-          <th style="padding:4px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:left;">Source</th>
-          <th style="padding:4px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:center;">In</th>
-          <th style="padding:4px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:center;">Queued</th>
-          <th style="padding:4px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:center;">Approved</th>
-          <th style="padding:4px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:center;">Dupes</th>
-          <th style="padding:4px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:center;">Parked</th>
-          <th style="padding:4px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:center;">Signals</th>
-        </tr>
-        ${srcRows}
-      </table>`;
-    sourceText = '\nINTAKE BY SOURCE (24H)\n' + sourceBreakdown.map(s =>
-      `  ${s.wire.padEnd(8)} ${s.source.padEnd(14)} in:${s.total} queued:${s.queued} approved:${s.approved} dupes:${s.duplicates} parked:${s.parked} signals:${s.signals}`
-    ).join('\n') + '\n';
-  }
-
-  // API cost recap (per-cost tools, last 24h)
-  let costHtml = '';
-  let costText = '';
-  if (costRecap && costRecap.rows.length > 0) {
-    const costRows = costRecap.rows.map(c =>
-      `<tr>
-        <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#222;">${escapeHtml(c.provider)}</td>
-        <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#666;text-align:center;">${c.calls}</td>
-        <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#222;text-align:right;font-weight:600;">$${c.cost_usd.toFixed(4)}</td>
-      </tr>`
-    ).join('');
-    costHtml = `
-      ${sectionLabel('API Costs (24h)')}
-      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-bottom:8px;">
-        <tr>
-          <th style="padding:4px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:left;">Provider</th>
-          <th style="padding:4px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:center;">Calls</th>
-          <th style="padding:4px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:right;">Cost</th>
-        </tr>
-        ${costRows}
-        <tr>
-          <td style="padding:6px 8px;font-size:12px;color:#222;font-weight:700;">Total</td>
-          <td></td>
-          <td style="padding:6px 8px;font-size:13px;color:#0088cc;text-align:right;font-weight:700;">$${costRecap.total.toFixed(4)}</td>
-        </tr>
-      </table>
-      <p style="margin:0 0 16px;color:#999;font-size:10px;">X (twitter) & Parallel approximated from per-request rates; full token costs for LLM providers.</p>`;
-    costText = '\nAPI COSTS (24H)\n' + costRecap.rows.map(c =>
-      `  ${c.provider.padEnd(12)} ${String(c.calls).padStart(4)} calls   $${c.cost_usd.toFixed(4)}`
-    ).join('\n') + `\n  ${'TOTAL'.padEnd(12)}        $${costRecap.total.toFixed(4)}\n`;
-  }
-
-  // Top pending
-  let topFindsHtml = '';
-  let topFindsText = '';
-  if (topFinds && topFinds.length > 0) {
-    const rows = topFinds.slice(0, 10).map(e => {
-      const nameCell = e.source_url
-        ? `<a href="${escapeHtml(e.source_url)}" style="color:#0088cc;text-decoration:none;">${escapeHtml(e.name)}</a>`
-        : escapeHtml(e.name);
-      return `<tr>
-        <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:12px;color:#444;text-align:center;${MONO}">${e.quality_score}</td>
-        <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:12px;color:#222;">${nameCell}</td>
-        <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:12px;color:#666;">${e.amount ? escapeHtml(e.amount) : '\u2014'}</td>
-        <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:12px;color:#666;text-transform:uppercase;">${escapeHtml(e.wire)}</td>
-      </tr>`;
-    }).join('');
-    topFindsHtml = `
-      ${sectionLabel('Top Pending')}
-      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-bottom:16px;">
-        <tr>
-          <th style="padding:6px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:center;">Score</th>
-          <th style="padding:6px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:left;">Name</th>
-          <th style="padding:6px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:left;">Amount</th>
-          <th style="padding:6px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:left;">Wire</th>
-        </tr>
-        ${rows}
-      </table>`;
-    topFindsText = '\nTOP PENDING\n' + topFinds.slice(0, 10).map(e =>
-      `  [${e.quality_score}] ${e.name} | ${e.amount || '\u2014'} | ${e.wire}`
-    ).join('\n');
-  }
-
-  // Approved entries section (from CSV export)
-  let approvedEntriesHtml = '';
-  let approvedEntriesText = '';
-  if (csvExport && csvExport.entryCount > 0) {
-    const buttons = [
-      downloadUrls?.csv ? emailBtn(downloadUrls.csv, 'Download CSV') : '',
-      downloadUrls?.md ? emailBtn(downloadUrls.md, 'Download Markdown') : '',
-    ].filter(Boolean).join('');
-    approvedEntriesHtml = `
-      ${sectionLabel('Approved Entries')}
-      ${csvExport.htmlTable}
-      ${buttons}
-      <p style="margin:0 0 16px;color:#999;font-size:11px;">Use this data as input for newsletter composition.</p>`;
-    approvedEntriesText = `\nAPPROVED ENTRIES (${csvExport.entryCount})\n` +
-      (downloadUrls?.csv ? `Download CSV: ${downloadUrls.csv}\n` : '') +
-      (downloadUrls?.md ? `Download Markdown: ${downloadUrls.md}\n` : '');
-  }
-
-  const summaryLine = `<strong>${digest.totalNewUnique}</strong> new finds today. ${digest.totalPendingReview > 0 ? `<strong style="color:#0088cc;">${digest.totalPendingReview} pending review.</strong>` : 'Queue is clear.'}`;
-
-  const body = `
-    <p style="margin:0 0 20px;font-size:14px;color:#222;">${summaryLine}</p>
-    ${agentBriefHtml}
-    ${sectionLabel('By Wire')}
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-bottom:20px;">
-      <tr>
-        <th style="padding:6px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:left;">Wire</th>
-        <th style="padding:6px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:center;">Scans</th>
-        <th style="padding:6px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:center;">New</th>
-        <th style="padding:6px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:center;">Approved</th>
-        <th style="padding:6px 8px;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;text-align:center;">Pending</th>
-      </tr>
-      ${wireRows}
-    </table>
-    ${sourceHtml}
-    ${costHtml}
-    ${topFindsHtml}
-    ${approvedEntriesHtml}
-    ${digest.totalPendingReview > 0
-      ? emailBtn(reviewUrl, `Review Queue (${digest.totalPendingReview})`)
-      : emailBtn(dashboardUrl, 'Open Dashboard')}`;
-
-  const htmlContent = emailShell(`WireOps \u2014 ${digest.date}`, body);
-
-  const textContent = `WIREOPS - ${digest.date}
-
-${digest.totalNewUnique} new finds. ${digest.totalPendingReview > 0 ? `${digest.totalPendingReview} pending review.` : 'Queue is clear.'}
-${agentBriefText}
-BY WIRE
-${wireText}
-${sourceText}${costText}${topFindsText}
-${approvedEntriesText}
-${digest.totalPendingReview > 0 ? `\nReview: ${reviewUrl}` : `\nDashboard: ${dashboardUrl}`}
-
----
-${brand.name}`.trim();
-
-  const approvedCount = csvExport?.entryCount ?? 0;
-  const approvedLabel = approvedCount > 0 ? ` | ${approvedCount} approved` : '';
+  const rendered = renderDailyDigest(digest, dashboardUrl, extras);
   const to = recipients && recipients.length > 0 ? recipients : config.email.notificationEmail;
 
   await sendWithTracking({
     from: `${brand.fromName} <${config.email.fromEmail}>`,
     to,
-    subject: `WireOps \u2014 ${digest.date} | ${digest.totalNewUnique} new${approvedLabel}`,
-    html: htmlContent,
-    text: textContent,
+    subject: rendered.subject,
+    html: rendered.html,
+    text: rendered.text,
   });
 
   console.log(`[Email] Daily digest sent to: ${Array.isArray(to) ? to.join(', ') : to}`);
