@@ -32,6 +32,8 @@ export interface RoleSource {
   slug?: string;               // greenhouse/ashby board slug
   url?: string;                // rss feed url
   enabled: boolean;
+  /** aggregate job board (not a single org's ATS): extract the hiring org from the posting title */
+  aggregate?: boolean;
   note?: string;
 }
 
@@ -62,7 +64,7 @@ export const ROLES_REGISTRY: RoleSource[] = [
   { key: 'ashby-perplexity', org: 'Perplexity', lane: 'ai', method: 'ashby', slug: 'perplexity', enabled: true },
   // ── OSS ─────────────────────────────────────────────────────────────
   { key: 'rss-linuxfoundation', org: 'Linux Foundation', lane: 'oss', method: 'rss', url: 'https://careers.linuxfoundation.org/jobs.rss', enabled: true, note: 'covers all LF orgs (CNCF, OpenSSF, OpenInfra) in one feed' },
-  { key: 'rss-fossjobs', org: 'FOSS Jobs board', lane: 'oss', method: 'rss', url: 'https://www.fossjobs.net/rss/all/', enabled: true },
+  { key: 'rss-fossjobs', org: 'FOSS Jobs board', lane: 'oss', method: 'rss', url: 'https://www.fossjobs.net/rss/all/', enabled: true, aggregate: true },
   { key: 'gh-mozilla', org: 'Mozilla', lane: 'oss', method: 'greenhouse', slug: 'mozilla', enabled: true },
   { key: 'gh-wikimedia', org: 'Wikimedia', lane: 'oss', method: 'greenhouse', slug: 'wikimedia', enabled: true },
   // ── Crypto ──────────────────────────────────────────────────────────
@@ -87,6 +89,21 @@ export function roleMatchesLane(title: string): boolean {
   const t = title.trim();
   if (!t) return false;
   return ROLE_KEYWORDS.test(t) && SENIORITY.test(t) && !EXCLUDE.test(t);
+}
+
+/**
+ * For aggregate boards, split a posting title like
+ * "[Full-time] Program Manager - Sovereign Tech Fund (all genders) at Sovereign Tech Agency"
+ * into { title, org } so the lead reads as the HIRING ORG, not the board.
+ * Falls back to the source org label when no " at " marker exists.
+ */
+export function splitAggregateTitle(raw: string, fallbackOrg: string): { title: string; org: string } {
+  const cleaned = raw.replace(/^\[[^\]]{1,30}\]\s*/, '').trim();  // strip "[Full-time] " style prefixes
+  const m = cleaned.match(/^(.*)\s+at\s+([^,]{2,80})$/i);
+  if (m && m[1].trim() && m[2].trim()) {
+    return { title: m[1].trim(), org: m[2].trim() };
+  }
+  return { title: cleaned || raw.trim(), org: fallbackOrg };
 }
 
 // ── Per-method parsers (pure — unit-tested against fixture JSON) ────────
@@ -124,16 +141,21 @@ function parseRssRoles(xml: string, src: RoleSource): RolePosting[] {
   const synthetic: FeedSource = {
     key: src.key, name: src.org, wire: src.lane, method: 'rss', endpoint: src.url || '', enabled: true,
   };
-  return parseFeed(xml, synthetic).map(it => ({
-    sourceKey: src.key,
-    lane: src.lane,
-    org: src.org,
-    title: it.name,
-    url: it.url,
-    location: null,
-    comp: null,
-    publishedAt: it.publishedAt,
-  })).filter(p => p.title && p.url);
+  return parseFeed(xml, synthetic).map(it => {
+    const { title, org } = src.aggregate
+      ? splitAggregateTitle(it.name, src.org)
+      : { title: it.name, org: src.org };
+    return {
+      sourceKey: src.key,
+      lane: src.lane,
+      org,
+      title,
+      url: it.url,
+      location: null,
+      comp: null,
+      publishedAt: it.publishedAt,
+    };
+  }).filter(p => p.title && p.url);
 }
 
 // ── Fetch ────────────────────────────────────────────────────────────────

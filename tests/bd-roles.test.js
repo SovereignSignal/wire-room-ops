@@ -87,6 +87,15 @@ test('pickFreshRoles: subsequent runs return only net-new and merge the seen set
   assert.ok(r.seenUrls.includes('https://x/2') && r.seenUrls.includes('https://x/0'));
 });
 
+test('aggregate boards: hiring org extracted from "Title at Org" titles (fossjobs shape)', () => {
+  const { splitAggregateTitle } = require('../src/services/bd-roles');
+  const a = splitAggregateTitle('[Full-time] Program Manager - Sovereign Tech Fund (all genders) at Sovereign Tech Agency', 'FOSS Jobs board');
+  assert.equal(a.org, 'Sovereign Tech Agency');
+  assert.equal(a.title, 'Program Manager - Sovereign Tech Fund (all genders)');
+  const b = splitAggregateTitle('Head of Grants', 'FOSS Jobs board');
+  assert.deepEqual(b, { title: 'Head of Grants', org: 'FOSS Jobs board' });
+});
+
 test('registry: every source carries a lane tag and the lanes are balanced by design', () => {
   const lanes = { crypto: 0, ai: 0, oss: 0 };
   for (const s of enabledRoleSources()) {
