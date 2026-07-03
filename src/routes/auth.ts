@@ -8,7 +8,6 @@
  * POST   /resend-link     — resend download link for latest file
  * GET    /download        — legacy email download link landing page
  * GET    /download/:token — legacy token-based file download
- * GET    /api/files       — list stored files
  */
 
 import path from 'path';
@@ -229,18 +228,6 @@ router.get('/download/:token', async (req: Request, res: Response) => {
   res.setHeader('Content-Type', contentType);
   res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.filename)}"`);
   res.send(file.content);
-});
-
-// API: List files
-router.get('/api/files', requireAuth, async (req: Request, res: Response) => {
-
-  const files = await listFiles();
-  res.json(files.map((f: StoredFile) => ({
-    id: f.id,
-    filename: f.filename,
-    createdAt: f.createdAt,
-    dateRange: f.dateRange,
-  })));
 });
 
 export { router as authRouter };

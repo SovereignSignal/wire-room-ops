@@ -58,30 +58,6 @@ router.get('/schedules', (req: Request, res: Response) => {
   res.json({ schedules });
 });
 
-// GET /schedule — get single schedule (legacy compatibility)
-router.get('/schedule', (req: Request, res: Response) => {
-  const id = req.query.id as string;
-  if (!id || !isValidUuid(id)) {
-    res.status(400).json({ error: 'Invalid schedule ID' });
-    return;
-  }
-
-  const schedule = getSchedule(id);
-  if (!schedule) {
-    res.status(404).json({ error: 'Schedule not found' });
-    return;
-  }
-
-  const nextRun = getNextRunTime(schedule.id);
-  const description = formatScheduleDescription(schedule);
-
-  res.json({
-    ...schedule,
-    description,
-    nextRun: nextRun?.toISOString() || null,
-  });
-});
-
 // POST /schedules — create new schedule
 router.post('/schedules', async (req: Request, res: Response) => {
   const validationError = validateScheduleParams(req.body);
@@ -195,60 +171,6 @@ router.delete('/schedules/:id', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Failed to delete schedule:', error);
     res.status(500).json({ error: 'Failed to delete schedule' });
-  }
-});
-
-// POST /schedule — update schedule (legacy POST compatibility)
-router.post('/schedule', async (req: Request, res: Response) => {
-  const validationError = validateScheduleParams(req.body);
-  if (validationError) {
-    res.status(400).json({ error: validationError });
-    return;
-  }
-
-  const id = req.body.id;
-
-  const { name, enabled, dayOfWeek, hour, minute, lookbackDays, grokModel, anthropicModel, timezone, wire, scheduleType } = req.body;
-
-  const updates: Partial<Omit<ScheduleConfig, 'id'>> = {};
-
-  if (name !== undefined) updates.name = name;
-  if (scheduleType !== undefined) updates.scheduleType = scheduleType;
-  if (typeof enabled === 'boolean') updates.enabled = enabled;
-  if (typeof dayOfWeek === 'number') updates.dayOfWeek = dayOfWeek;
-  if (typeof hour === 'number') updates.hour = hour;
-  if (typeof minute === 'number') updates.minute = minute;
-  if (typeof lookbackDays === 'number') updates.lookbackDays = lookbackDays;
-  if (grokModel !== undefined) updates.grokModel = grokModel || undefined;
-  if (anthropicModel !== undefined) updates.anthropicModel = anthropicModel || undefined;
-  if (timezone) updates.timezone = timezone;
-  if (wire !== undefined) updates.wire = wire || undefined;
-
-  try {
-    // If no ID provided, get the first schedule
-    const targetId = id || getSchedule()?.id;
-    if (!targetId) {
-      res.status(404).json({ error: 'No schedule found' });
-      return;
-    }
-
-    const updatedSchedule = await setSchedule(targetId, updates);
-    if (!updatedSchedule) {
-      res.status(404).json({ error: 'Schedule not found' });
-      return;
-    }
-
-    const nextRun = getNextRunTime(updatedSchedule.id);
-    const description = formatScheduleDescription(updatedSchedule);
-
-    res.json({
-      ...updatedSchedule,
-      description,
-      nextRun: nextRun?.toISOString() || null,
-    });
-  } catch (error) {
-    console.error('Failed to update schedule:', error);
-    res.status(500).json({ error: 'Failed to update schedule' });
   }
 });
 
