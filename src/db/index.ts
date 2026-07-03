@@ -1,4 +1,5 @@
 import { Pool } from 'pg';
+import { SCAN_SOURCES, SCAN_STATUSES, SCHEDULE_TYPES, TOOL_TYPES_DB, ScheduleType, sqlEnumList } from '../types/intake';
 import { config } from '../config';
 import { DatabaseEntry } from '../types';
 import type { ToolType, DistributionChannel, DistributionStatus, DistributionConfig, DistributionLog } from '../types/intake';
@@ -168,7 +169,7 @@ export interface StoredScheduleConfig {
   anthropicModel?: string;
   timezone: string;
   wire?: string;
-  scheduleType?: 'scan-execution' | 'forum-scan' | 'daily-digest' | 'deadline-digest' | 'account-monitor' | 'source-feeds';
+  scheduleType?: ScheduleType;
   frequencyHours?: number;
   notifyEmails?: string;
   createdAt?: Date;
@@ -212,13 +213,13 @@ export async function ensureScheduleTable(): Promise<void> {
     UPDATE schedules
     SET schedule_type = 'scan-execution'
     WHERE schedule_type IS NULL
-      OR schedule_type NOT IN ('scan-execution', 'forum-scan', 'daily-digest', 'deadline-digest', 'account-monitor', 'source-feeds')
+      OR schedule_type NOT IN (${sqlEnumList(SCHEDULE_TYPES)})
   `);
   await pool.query(`ALTER TABLE schedules DROP CONSTRAINT IF EXISTS schedules_schedule_type_check`);
   await pool.query(`
     ALTER TABLE schedules
     ADD CONSTRAINT schedules_schedule_type_check
-    CHECK (schedule_type IN ('scan-execution', 'forum-scan', 'daily-digest', 'deadline-digest', 'account-monitor', 'source-feeds'))
+    CHECK (schedule_type IN (${sqlEnumList(SCHEDULE_TYPES)}))
   `);
 
   // Migrate data from old schedule_config table if it exists
@@ -258,12 +259,10 @@ export async function ensureScheduleTable(): Promise<void> {
 }
 
 function parseScheduleRow(row: any): StoredScheduleConfig {
-  const normalizedScheduleType: StoredScheduleConfig['scheduleType'] =
-    row.schedule_type === 'forum-scan' ? 'forum-scan' :
-    row.schedule_type === 'daily-digest' ? 'daily-digest' :
-    row.schedule_type === 'deadline-digest' ? 'deadline-digest' :
-    row.schedule_type === 'account-monitor' ? 'account-monitor' :
-    row.schedule_type === 'source-feeds' ? 'source-feeds' : 'scan-execution';
+  const normalizedScheduleType: ScheduleType =
+    (SCHEDULE_TYPES as readonly string[]).includes(row.schedule_type)
+      ? row.schedule_type as ScheduleType
+      : 'scan-execution';
 
   return {
     id: row.id,
@@ -667,7 +666,7 @@ export async function ensureScanTables(): Promise<void> {
     scan_source TEXT NOT NULL DEFAULT 'x-scan',
     scan_date DATE NOT NULL,
     status TEXT NOT NULL DEFAULT 'raw'
-      CHECK (status IN ('raw','deduped','duplicate','queued','enriched','published','archived','skipped','approved','declined','incomplete')),
+      CHECK (status IN (${sqlEnumList(SCAN_STATUSES)})),
     quality_score INTEGER,
     quality_breakdown JSONB,
     duplicate_of_id INTEGER REFERENCES scan_entries(id),
@@ -762,7 +761,7 @@ export async function ensureScanTables(): Promise<void> {
   `);
   await client.query(`
     ALTER TABLE scan_entries ADD CONSTRAINT scan_entries_scan_source_check
-      CHECK (scan_source IN ('x-scan', 'web-search', 'perplexity', 'community', 'telegram', 'telegram-intake', 'manual-intake', 'email', 'forum', 'x-monitor', 'feed', 'claude-code', 'claude-cohort-notion'))
+      CHECK (scan_source IN (${sqlEnumList(SCAN_SOURCES)}))
   `);
   await client.query(`
     ALTER TABLE scan_entries DROP CONSTRAINT IF EXISTS scan_entries_prompt_variant_check
@@ -818,7 +817,7 @@ export async function ensureClassificationColumns(): Promise<void> {
   await pool.query(`ALTER TABLE scan_entries DROP CONSTRAINT IF EXISTS scan_entries_status_check`);
   await pool.query(`
     ALTER TABLE scan_entries ADD CONSTRAINT scan_entries_status_check
-      CHECK (status IN ('raw','deduped','duplicate','queued','enriched','published','archived','skipped','approved','declined','incomplete'))
+      CHECK (status IN (${sqlEnumList(SCAN_STATUSES)}))
   `);
 
   // Indexes for classification queries
@@ -895,20 +894,20 @@ export async function ensureScanPromptsTable(): Promise<void> {
   `);
   await pool.query(`
     ALTER TABLE scan_entries ADD CONSTRAINT scan_entries_status_check
-      CHECK (status IN ('raw','deduped','duplicate','queued','enriched','published','archived','skipped','approved','declined','incomplete'))
+      CHECK (status IN (${sqlEnumList(SCAN_STATUSES)}))
   `);
 
   // Phase 3 migration: tool_type column for x_search vs web_search
   await pool.query(`
     ALTER TABLE scan_prompts ADD COLUMN IF NOT EXISTS tool_type TEXT DEFAULT 'x_search'
-      CHECK (tool_type IN ('x_search', 'web_search'))
+      CHECK (tool_type IN (${sqlEnumList(TOOL_TYPES_DB)}))
   `);
 
   // Phase 3b migration: expand tool_type to include perplexity
   await pool.query(`ALTER TABLE scan_prompts DROP CONSTRAINT IF EXISTS scan_prompts_tool_type_check`);
   await pool.query(`
     ALTER TABLE scan_prompts ADD CONSTRAINT scan_prompts_tool_type_check
-      CHECK (tool_type IN ('x_search', 'web_search', 'perplexity', 'community', 'parallel'))
+      CHECK (tool_type IN (${sqlEnumList(TOOL_TYPES_DB)}))
   `);
 
   // Phase 4 migration: expand variant constraint to include 'S' (signal), 'W' (web), 'P' (perplexity), 'N' (neutral)

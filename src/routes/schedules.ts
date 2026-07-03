@@ -13,6 +13,7 @@
  */
 
 import { Router, Request, Response } from 'express';
+import { SCHEDULE_TYPES } from '../types/intake';
 import { getPool } from '../db';
 import { config } from '../config';
 import { isValidUuid } from '../utils/validation';
@@ -23,8 +24,8 @@ const router = Router();
 /** Validate schedule numeric parameters. Returns error string or null. */
 function validateScheduleParams(body: Record<string, any>): string | null {
   const { dayOfWeek, hour, minute, lookbackDays, scheduleType, frequencyHours, notifyEmails } = body;
-  if (scheduleType && !['scan-execution', 'forum-scan', 'daily-digest', 'deadline-digest', 'account-monitor', 'source-feeds'].includes(scheduleType)) {
-    return 'scheduleType must be one of: scan-execution, forum-scan, daily-digest, deadline-digest, account-monitor, source-feeds';
+  if (scheduleType && !(SCHEDULE_TYPES as readonly string[]).includes(scheduleType)) {
+    return `scheduleType must be one of: ${SCHEDULE_TYPES.join(', ')}`;
   }
   if (typeof dayOfWeek === 'number' && (dayOfWeek < 0 || dayOfWeek > 7)) {
     return 'dayOfWeek must be between 0 (Sunday) and 6 (Saturday), or 7 for daily';

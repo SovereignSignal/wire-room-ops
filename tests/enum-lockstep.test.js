@@ -1,8 +1,9 @@
 // Pins the enum/CHECK-constraint drift class that crash-looped production
-// three times in June 2026: multiple ensure* functions DROP+ADD the same CHECK
-// constraint, and the allowed values drifted apart from each other and from
-// the TypeScript unions / route validators that write those columns.
-// This test fails the moment any writer of an enum falls out of lockstep.
+// three times in June 2026. Since Phase 5, drift is impossible BY CONSTRUCTION:
+// every CHECK constraint, TS union, and route validator derives from the
+// canonical consts in src/types/intake.ts, and all DDL runs through the one
+// ordered list in src/db/startup-migrations.ts. This test pins that wiring —
+// it fails if anyone reintroduces a hand-maintained literal list.
 require('ts-node/register/transpile-only');
 
 const test = require('node:test');
@@ -11,83 +12,69 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const read = (rel) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+const {
+  SCAN_SOURCES, SCAN_STATUSES, SCHEDULE_TYPES, TOOL_TYPES, TOOL_TYPES_DB, sqlEnumList,
+} = require('../src/types/intake');
 
-/** Extract the quoted values of every `CHECK (<col> IN ('a','b',...))` DDL
- *  occurrence — anchored on CHECK so query-time `IN (...)` filters don't match. */
-function checkConstraintSets(source, col) {
-  const sets = [];
-  const re = new RegExp(`CHECK\\s*\\(\\s*${col}\\s+IN\\s*\\(([^)]+)\\)`, 'g');
-  let m;
-  while ((m = re.exec(source))) {
-    sets.push(m[1].split(',').map(s => s.trim().replace(/^'|'$/g, '')).filter(Boolean));
-  }
-  return sets;
-}
-
-const dbSource = read('src/db/index.ts');
-
-test('scan_entries.status: every CHECK writer is identical and matches the ScanStatus union', () => {
-  const sets = checkConstraintSets(dbSource, 'status').filter(s => s.includes('raw')); // scan_entries only
-  assert.ok(sets.length >= 2, `expected multiple scan_entries status CHECK writers, found ${sets.length}`);
-  const canonical = [...sets[0]].sort();
-  for (const s of sets) {
-    assert.deepEqual([...s].sort(), canonical, 'a status CHECK writer diverged from the others');
-  }
-  // The TS union in types/intake.ts must list exactly the same values
-  const typesSource = read('src/types/intake.ts');
-  const unionBlock = typesSource.match(/export type ScanStatus =([\s\S]*?);/);
-  assert.ok(unionBlock, 'ScanStatus union not found');
-  const unionValues = [...unionBlock[1].matchAll(/'([a-z-]+)'/g)].map(m => m[1]).sort();
-  assert.deepEqual(unionValues, canonical, 'ScanStatus union out of lockstep with the DB CHECK constraint');
+test('canonical consts have the expected shape', () => {
+  assert.equal(SCAN_SOURCES.length, 13);
+  assert.equal(SCAN_STATUSES.length, 11);
+  assert.ok(SCAN_STATUSES.includes('incomplete'), 'the June drift value must stay in the list');
+  assert.equal(SCHEDULE_TYPES.length, 6);
+  for (const t of TOOL_TYPES) assert.ok(TOOL_TYPES_DB.includes(t), `TOOL_TYPES_DB must contain '${t}'`);
+  assert.ok(TOOL_TYPES_DB.includes('community'), 'legacy community rows must stay DB-valid');
+  assert.equal(sqlEnumList(['a', 'b']), "'a', 'b'");
 });
 
-test('scan_entries.scan_source: SCAN_SOURCES matches every CHECK writer', () => {
-  const { SCAN_SOURCES } = require('../src/types/intake');
-  const sets = checkConstraintSets(dbSource, 'scan_source');
-  assert.ok(sets.length >= 1, 'no scan_source CHECK found');
-  for (const s of sets) {
-    assert.deepEqual([...s].sort(), [...SCAN_SOURCES].sort(), 'SCAN_SOURCES out of lockstep with a scan_source CHECK writer');
-  }
+test('db/index.ts builds every CHECK constraint from the canonical consts (no literal lists)', () => {
+  const db = read('src/db/index.ts');
+  // Interpolations present, with the right multiplicity per column
+  assert.ok((db.match(/sqlEnumList\(SCAN_STATUSES\)/g) || []).length >= 3, 'all 3 status CHECK writers must interpolate SCAN_STATUSES');
+  assert.ok((db.match(/sqlEnumList\(SCAN_SOURCES\)/g) || []).length >= 1, 'scan_source CHECK must interpolate SCAN_SOURCES');
+  assert.ok((db.match(/sqlEnumList\(SCHEDULE_TYPES\)/g) || []).length >= 2, 'schedule_type normalizer + CHECK must interpolate SCHEDULE_TYPES');
+  assert.ok((db.match(/sqlEnumList\(TOOL_TYPES_DB\)/g) || []).length >= 2, 'both tool_type CHECK writers must interpolate TOOL_TYPES_DB');
+  // No hand-maintained literal CHECK lists may remain for these columns
+  assert.ok(!/CHECK \(status IN \('raw'/.test(db), 'literal status CHECK list reintroduced');
+  assert.ok(!/CHECK \(scan_source IN \('x-scan'/.test(db), 'literal scan_source CHECK list reintroduced');
+  assert.ok(!/CHECK \(schedule_type IN \('scan-execution'/.test(db), 'literal schedule_type CHECK list reintroduced');
+  assert.ok(!/CHECK \(tool_type IN \('x_search'/.test(db), 'literal tool_type CHECK list reintroduced');
+  // parseScheduleRow validates via the const, not a branch chain
+  assert.ok(/SCHEDULE_TYPES as readonly string\[\]\)\.includes\(row\.schedule_type\)/.test(db), 'parseScheduleRow must validate via SCHEDULE_TYPES');
 });
 
-test('schedules.schedule_type: TS unions, route validator, and parseScheduleRow agree', () => {
-  const schedulerSource = read('src/services/scheduler.ts');
-  const routeSource = read('src/routes/schedules.ts');
-
-  const unionOf = (src) => {
-    const m = src.match(/scheduleType\?: ([^;]+);/);
-    assert.ok(m, 'scheduleType union not found');
-    return [...m[1].matchAll(/'([a-z-]+)'/g)].map(x => x[1]).sort();
-  };
-  const dbUnion = unionOf(dbSource);
-  const schedUnion = unionOf(schedulerSource);
-  assert.deepEqual(schedUnion, dbUnion, 'db/index.ts and scheduler.ts ScheduleType unions diverged');
-
-  const validator = routeSource.match(/!\[([^\]]+)\]\.includes\(scheduleType\)/);
-  assert.ok(validator, 'route validator list not found');
-  const routeValues = [...validator[1].matchAll(/'([a-z-]+)'/g)].map(x => x[1]).sort();
-  assert.deepEqual(routeValues, dbUnion, 'routes/schedules.ts validator diverged from the ScheduleType union');
-
-  // parseScheduleRow must have an explicit branch for every non-default type
-  // (a missing branch silently coerces that type to 'scan-execution' — the
-  // exact bug that would have run a source-feeds schedule as a paid scan).
-  const parseFn = dbSource.match(/function parseScheduleRow[\s\S]*?return \{/);
-  assert.ok(parseFn, 'parseScheduleRow not found');
-  for (const t of dbUnion.filter(t => t !== 'scan-execution')) {
-    assert.ok(parseFn[0].includes(`'${t}'`), `parseScheduleRow has no branch for schedule_type '${t}'`);
-  }
+test('route validators use the canonical consts', () => {
+  const sched = read('src/routes/schedules.ts');
+  assert.ok(sched.includes('SCHEDULE_TYPES as readonly string[]).includes(scheduleType)'), 'schedules route must validate via SCHEDULE_TYPES');
+  assert.ok(!/\[\s*'scan-execution',\s*'forum-scan'/.test(sched), 'literal schedule-type list reintroduced in schedules route');
+  const prompts = read('src/routes/scan-prompts.ts');
+  assert.ok(prompts.includes('TOOL_TYPES as readonly string[]).includes(toolType)'), 'scan-prompts route must validate via TOOL_TYPES');
+  assert.ok(!/\[\s*'x_search',\s*'web_search',\s*'perplexity'/.test(prompts), 'literal tool-type list reintroduced in scan-prompts route');
 });
 
-test('scan_prompts.tool_type: route validators are within the final CHECK writer', () => {
-  const sets = checkConstraintSets(dbSource, 'tool_type').filter(s => s.length >= 2);
-  assert.ok(sets.length >= 1, 'no tool_type CHECK found');
-  const finalSet = new Set(sets[sets.length - 1]); // last writer wins at boot
-  const promptRoute = read('src/routes/scan-prompts.ts');
-  const lists = [...promptRoute.matchAll(/\[\s*'x_search'[^\]]*\]/g)];
-  assert.ok(lists.length >= 1, 'tool_type validator lists not found in scan-prompts route');
-  for (const l of lists) {
-    for (const v of [...l[0].matchAll(/'([a-z_]+)'/g)].map(x => x[1])) {
-      assert.ok(finalSet.has(v), `route accepts tool_type '${v}' that the DB CHECK constraint rejects`);
-    }
+test('TS unions derive from the consts (typeof X[number])', () => {
+  const t = read('src/types/intake.ts');
+  for (const name of ['SCAN_SOURCES', 'SCAN_STATUSES', 'SCHEDULE_TYPES', 'TOOL_TYPES']) {
+    assert.ok(t.includes(`typeof ${name}[number]`), `union for ${name} must derive from the const`);
   }
+  const db = read('src/db/index.ts');
+  assert.ok(db.includes('scheduleType?: ScheduleType;'), 'StoredScheduleConfig must use the shared ScheduleType');
+  const sched = read('src/services/scheduler.ts');
+  assert.ok(sched.includes('scheduleType?: ScheduleType;'), 'ScheduleConfig must use the shared ScheduleType');
+});
+
+test('the startup-migration list is the only schema path (no ad-hoc ensures in boot code)', () => {
+  const mig = read('src/db/startup-migrations.ts');
+  const listed = [...mig.matchAll(/\{ name: '([a-z-]+)', run: (ensure\w+) \}/g)];
+  assert.ok(listed.length >= 16, `expected >=16 migrations, found ${listed.length}`);
+
+  const server = read('src/server.ts');
+  assert.ok(server.includes('runStartupMigrations()'), 'server boot must run the canonical list');
+  assert.ok(!/await ensure\w+\(\)/.test(server), 'server.ts must not call ensure* directly');
+
+  const ci = read('scripts/ci-db-setup.ts');
+  assert.ok(ci.includes('runStartupMigrations({ fatal: true })'), 'CI must run the canonical list fatally');
+  assert.ok(!/await ensure\w+\(\)/.test(ci), 'ci-db-setup must not call ensure* directly');
+
+  const sched = read('src/services/scheduler.ts');
+  assert.ok(!/await ensure(ScheduleTable|FeedsTable|ScanTables|ScanPromptsTable|DistributionTables)\(\)/.test(sched), 'initScheduler must not run its own ensures');
 });

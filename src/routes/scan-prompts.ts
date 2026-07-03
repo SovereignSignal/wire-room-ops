@@ -12,6 +12,7 @@
  */
 
 import { Router, Request, Response } from 'express';
+import { TOOL_TYPES } from '../types/intake';
 import { getPool, getAllScanPrompts, getScanPromptById, createScanPrompt, updateScanPrompt, deleteScanPrompt, getAllFeeds } from '../db';
 import { rateLimit } from '../middleware/rate-limit';
 import { isValidUuid } from '../utils/validation';
@@ -144,8 +145,8 @@ router.post('/', async (req: Request, res: Response) => {
     res.status(400).json({ error: 'promptText is required and must be non-empty' });
     return;
   }
-  if (toolType && !['x_search', 'web_search', 'perplexity', 'parallel'].includes(toolType)) {
-    res.status(400).json({ error: 'toolType must be "x_search", "web_search", "perplexity", or "parallel"' });
+  if (toolType && !(TOOL_TYPES as readonly string[]).includes(toolType)) {
+    res.status(400).json({ error: `toolType must be one of: ${TOOL_TYPES.join(', ')}` });
     return;
   }
   if (outputFormat && !['text', 'json'].includes(outputFormat)) {
@@ -215,8 +216,8 @@ router.put('/:id', async (req: Request, res: Response) => {
   if (sortOrder !== undefined) updates.sortOrder = sortOrder;
   if (variant !== undefined) updates.variant = variant;
   if (toolType !== undefined) {
-    if (!['x_search', 'web_search', 'perplexity', 'parallel'].includes(toolType)) {
-      res.status(400).json({ error: 'toolType must be "x_search", "web_search", "perplexity", or "parallel"' });
+    if (!(TOOL_TYPES as readonly string[]).includes(toolType)) {
+      res.status(400).json({ error: `toolType must be one of: ${TOOL_TYPES.join(', ')}` });
       return;
     }
     updates.toolType = toolType;

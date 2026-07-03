@@ -2,22 +2,19 @@ import path from 'path';
 import express, { Request, Response } from 'express';
 import cookieParser from 'cookie-parser';
 import { config } from './config';
-import { stopAuthCleanup, ensureSessionsTable } from './services/auth';
+import { stopAuthCleanup } from './services/auth';
 import { requireAuth } from './middleware/auth';
 import { requireAuthOrInternalKey } from './middleware/internal-auth';
-import { closePool, ensureFeedsTable, ensureClassificationColumns, ensureAutoSummarizeFailedColumn, ensureOperatorNotesColumn, ensureAppStateTable, ensureMonitoredAccountsTable, getPool } from './db';
+import { closePool, getPool } from './db';
 import { jobQueue } from './services/job-queue';
 import { getSchedules, addSchedule, initScheduler, stopScheduler, getSchedulerStatus } from './services/scheduler';
-import { ensureOrgProfilesTable } from './services/org-extractor';
-import { ensureEntryActionColumns } from './services/entry-actions';
 import { computeDerivedFields } from './services/org-enricher';
-import { ensureIntegrationConfigTable } from './services/notion-sync';
 import { startSummarySync, stopSummarySync } from './jobs/summary-sync';
 import { registerIntakeWebhook } from './services/telegram-adapter';
 import { processRawEntries } from './jobs/process-raw';
 import { runDecidedRecheck } from './jobs/decided-recheck';
-import { ensureApiProviderTables, refreshProviderCache, getCachedProvider } from './services/api-provider';
-import { ensureApiUsageTables } from './services/api-usage';
+import { refreshProviderCache, getCachedProvider } from './services/api-provider';
+import { runStartupMigrations } from './db/startup-migrations';
 
 // Route modules
 import { authRouter } from './routes/auth';
@@ -219,88 +216,22 @@ app.use((err: Error, _req: Request, res: Response, _next: express.NextFunction) 
 });
 
 export async function startServer(): Promise<void> {
-  // Ensure sessions table exists (DB-backed sessions survive deploys)
-  try {
-    await ensureSessionsTable();
-  } catch (error) {
-    console.error('Sessions table initialization failed (non-fatal):', error);
-  }
+  // Run THE canonical, ordered startup-migration list (shared with CI via
+  // scripts/ci-db-setup.ts — see src/db/startup-migrations.ts). Each step is
+  // non-fatal in production so one bad migration can't take the app down.
+  await runStartupMigrations();
 
-  // Ensure feeds table exists and is seeded with known wires
-  try {
-    await ensureFeedsTable();
-  } catch (error) {
-    console.error('Feeds table initialization failed (non-fatal):', error);
-  }
+  // Fire-and-forget: recompute org derived fields (avg_quality_score, tier)
+  computeDerivedFields().catch(err =>
+    console.error('[Startup] computeDerivedFields failed (non-fatal):', err)
+  );
 
-  // Add classification columns to scan_entries (Gate 1 + Gate 2 support)
+  // Warm the API provider cache (DB-backed keys with env fallback)
   try {
-    await ensureClassificationColumns();
-  } catch (error) {
-    console.error('Classification columns migration failed (non-fatal):', error);
-  }
-
-  // Ensure org_profiles table exists (Gate 2.5)
-  try {
-    await ensureOrgProfilesTable();
-    // Fire-and-forget: recompute derived fields (avg_quality_score, tier) on startup
-    computeDerivedFields().catch(err =>
-      console.error('[Startup] computeDerivedFields failed (non-fatal):', err)
-    );
-  } catch (error) {
-    console.error('Org profiles table migration failed (non-fatal):', error);
-  }
-
-  // Ensure integration_config table exists (Notion CRM Sync)
-  try {
-    await ensureIntegrationConfigTable();
-  } catch (error) {
-    console.error('Integration config table migration failed (non-fatal):', error);
-  }
-
-  // Ensure entry action audit columns exist (actioned_by, action_reason)
-  try {
-    await ensureEntryActionColumns();
-  } catch (error) {
-    console.error('Entry action columns migration failed (non-fatal):', error);
-  }
-
-  // Ensure auto_summarize_failed column exists
-  try {
-    await ensureAutoSummarizeFailedColumn();
-  } catch (error) {
-    console.error('auto_summarize_failed column migration failed (non-fatal):', error);
-  }
-
-  // Ensure operator_notes column exists
-  try {
-    await ensureOperatorNotesColumn();
-  } catch (error) {
-    console.error('operator_notes column migration failed (non-fatal):', error);
-  }
-
-  // Ensure app_state KV table exists (summary-sync watermark, agent briefs)
-  try {
-    await ensureAppStateTable();
-  } catch (error) {
-    console.error('app_state table migration failed (non-fatal):', error);
-  }
-
-  // Ensure monitored_accounts table exists
-  try {
-    await ensureMonitoredAccountsTable();
-  } catch (error) {
-    console.error('monitored_accounts table migration failed (non-fatal):', error);
-  }
-
-  // Ensure API provider + usage tables exist
-  try {
-    await ensureApiProviderTables();
-    await ensureApiUsageTables();
     await refreshProviderCache();
-    console.log('[Startup] API provider & usage tables ready');
+    console.log('[Startup] API provider cache ready');
   } catch (error) {
-    console.error('API provider/usage table initialization failed (non-fatal):', error);
+    console.error('API provider cache init failed (non-fatal):', error);
   }
 
   // Initialize the scheduler (loads config from database)
@@ -418,44 +349,9 @@ export async function startServer(): Promise<void> {
   contactsSyncTimer.unref();
   setTimeout(contactsSync, 25_000); // once shortly after startup
 
-  // Digest-org sourcing every 30 min: extract + link orgs from AI summaries → org_profiles.
-  // DISABLED by default — the digest wires (repos/models/claw) are Sov's content channels,
-  // not grant funders, so this was polluting the grants CRM with GitHub handles/projects.
-
-  // CRM sync every hour at :15 offset (so sourcing runs first): org_profiles → SimpleCRM Notion DB
-  const crmSync = async () => {
-    try {
-      const { getIntegrationConfigs, syncOrgsToNotion } = await import('./services/notion-sync');
-      const crm = (await getIntegrationConfigs('notion')).find(
-        (i) => i.name === 'SimpleCRM - Notion' && i.enabled
-      );
-      if (crm) await syncOrgsToNotion(crm.id);
-    } catch (error) {
-      console.error('[CRMSync] Scheduled run failed:', error);
-    }
-  };
-  const crmSyncTimer = setInterval(crmSync, 60 * 60 * 1000);
-  crmSyncTimer.unref();
-
-  // Org enrichment every 6 hours: fetch web data + compute derived fields
-  const orgEnrichSync = async () => {
-    try {
-      const { enrichBatch, computeDerivedFields } = await import('./services/org-enricher');
-      await enrichBatch({ limit: 40 });
-      await computeDerivedFields();
-    } catch (e) { console.error('[OrgEnrich] scheduled run failed:', e); }
-  };
-  const enrichTimer = setInterval(orgEnrichSync, 6 * 60 * 60 * 1000);
-  enrichTimer.unref();
-
-  // Contact discovery every 12 hours: org-anchored + content-anchored via Grok web_search
-  const contactDiscoveryTimer = setInterval(async () => {
-    try {
-      const { runContactDiscovery } = await import('./services/contact-discovery');
-      await runContactDiscovery(getPool(), { limit: 20 });
-    } catch (e) { console.error('[ContactDiscovery] scheduled run failed:', e); }
-  }, 12 * 60 * 60 * 1000);
-  contactDiscoveryTimer.unref();
+  // CRM work (org enrichment, contact discovery, Notion CRM sync) is folded
+  // into the daily-digest cycle (scheduler.ts) — no standalone timers. The
+  // digest-orgs lane was retired 2026-07-03.
 
   const server = app.listen(config.app.port, () => {
     console.log(`Server running on port ${config.app.port}`);
@@ -470,9 +366,6 @@ export async function startServer(): Promise<void> {
     jobQueue.stopPeriodicCleanup();
     clearInterval(processRawTimer);
     clearInterval(contactsSyncTimer);
-    clearInterval(crmSyncTimer);
-    clearInterval(enrichTimer);
-    clearInterval(contactDiscoveryTimer);
     server.close(async () => {
       await closePool();
       console.log('[Server] Shutdown complete');

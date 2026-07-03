@@ -1,4 +1,5 @@
 import cron, { ScheduledTask } from 'node-cron';
+import { ScheduleType } from '../types/intake';
 import { runScanExecution } from '../jobs/scan-execution';
 import { runForumScan } from '../jobs/forum-scan';
 import { runSourceFeeds } from '../jobs/source-feeds';
@@ -25,7 +26,7 @@ export interface ScheduleConfig {
   anthropicModel?: string;
   timezone: string;
   wire?: string; // Optional wire/feed filter
-  scheduleType?: 'scan-execution' | 'forum-scan' | 'daily-digest' | 'deadline-digest' | 'account-monitor' | 'source-feeds';
+  scheduleType?: ScheduleType;
   frequencyHours?: number; // Sub-daily interval (1-23) for scan-execution
   notifyEmails?: string; // Comma-separated email recipients
 }
@@ -482,6 +483,35 @@ function createJobExecutor(schedule: ScheduleConfig) {
           console.log(`[Scheduler] Daily digest completed`);
         }
 
+        // ---- Daily CRM cycle (folded — no standalone timers) ----
+        // Runs AFTER the digest email so CRM latency can never delay the
+        // operator's morning touchpoint. Each step isolated + non-fatal.
+        try {
+          const { enrichBatch, computeDerivedFields } = await import('./org-enricher');
+          await enrichBatch({ limit: 40 });
+          await computeDerivedFields();
+          console.log('[Scheduler] Daily CRM: org enrichment + derived fields done');
+        } catch (e) {
+          console.error('[Scheduler] Daily CRM enrichment failed (non-fatal):', e);
+        }
+        try {
+          const { runContactDiscovery } = await import('./contact-discovery');
+          const cd = await runContactDiscovery(pool, { limit: 20 });
+          console.log(`[Scheduler] Daily CRM: contact discovery — ${cd?.contactsCreated ?? 0} created, ${cd?.orgsProcessed ?? 0} orgs`);
+        } catch (e) {
+          console.error('[Scheduler] Daily CRM contact discovery failed (non-fatal):', e);
+        }
+        try {
+          const { getIntegrationConfigs, syncOrgsToNotion } = await import('./notion-sync');
+          const crm = (await getIntegrationConfigs('notion')).find(i => i.name === 'SimpleCRM - Notion' && i.enabled);
+          if (crm) {
+            await syncOrgsToNotion(crm.id);
+            console.log('[Scheduler] Daily CRM: Notion sync done');
+          }
+        } catch (e) {
+          console.error('[Scheduler] Daily CRM Notion sync failed (non-fatal):', e);
+        }
+
       } else if (currentScheduleData.scheduleType === 'account-monitor') {
         // ---- Account Monitor Job ----
         const pool = getPool();
@@ -783,17 +813,8 @@ export async function initScheduler(): Promise<void> {
   }
 
   try {
-    // Ensure tables exist
-    await ensureScheduleTable();
-    console.log('[Scheduler] Schedule table ready');
-    await ensureFeedsTable();
-    console.log('[Scheduler] Feeds table ready');
-    await ensureScanTables();
-    console.log('[Scheduler] Scan pipeline tables ready');
-    await ensureScanPromptsTable();
-    console.log('[Scheduler] Scan prompts table ready');
-    await ensureDistributionTables();
-    console.log('[Scheduler] Distribution tables ready');
+    // Schema is guaranteed by runStartupMigrations() (the one canonical list,
+    // run by server boot and CI before this) — no ad-hoc ensures here.
     // Load all schedules from database
     const savedSchedules = await getAllSchedules();
 
