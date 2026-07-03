@@ -2091,4 +2091,5 @@ export async function ensureWatchSurfacesTable(): Promise<void> {
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_watch_surfaces_wire_type ON watch_surfaces(wire, surface_type)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_watch_surfaces_org ON watch_surfaces(org_name)`);
+  console.log('[DB] Watch surfaces table ready');
 }
