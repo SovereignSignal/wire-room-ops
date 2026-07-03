@@ -35,6 +35,13 @@ export const config = {
     },
   },
 
+  watchtower: {
+    budgetMonthlyUsd: Number(process.env.WATCHTOWER_BUDGET_MONTHLY_USD || '20'),
+    xListsEnabled: process.env.X_LISTS_ENABLED === 'true',
+    xListsDryRun: process.env.X_LISTS_DRY_RUN !== 'false', // dry-run unless explicitly disabled
+    xListIds: process.env.X_LIST_IDS || '',                // "crypto:123,ai:456,oss:789"
+  },
+
   summarize: {
     provider: (process.env.SUMMARIZE_PROVIDER || 'auto') as 'auto' | 'ollama' | 'grok',
   },
