@@ -182,6 +182,11 @@ const GOVERNANCE_ALLOWLIST: Record<string, string[]> = {
     // Big-DAO early-signal — program creation/renewal surfaces on-forum as governance
     // even when the apply step is off-forum
     'arbitrum', 'zksync era', 'polygon', 'polkadot', 'cosmos hub', 'sui',
+    // Re-added 2026-07-03 (recall re-measure): the v2 trim assumed ENS intake had
+    // fully migrated to the grants portal, but SPP Season 3's application thread
+    // ran ON discuss.ens.domains (ratified via Snapshot 2026-05-10, $2.89M cohort)
+    // and the lane missed it. ENS carries real on-forum program signal.
+    'ens',
     // NOTE: 'uniswap governance' is deliberately EXCLUDED — operator works for the
     // Uniswap Foundation, so UF opportunities are never surfaced (see skip below).
   ],
