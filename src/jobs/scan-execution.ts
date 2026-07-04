@@ -25,6 +25,7 @@ import { executeParallelScan } from '../services/parallel';
 import { parseStructuredOutput } from '../services/intake';
 import { withRetry } from '../services/processor';
 import { runDailyIntake } from './daily-intake';
+import { checkBudget } from '../services/budget-guard';
 
 // ============================================================
 // Types
@@ -99,6 +100,34 @@ export async function runScanExecution(
   }
 
   progress(`Found ${prompts.length} active prompts`, 2);
+
+  // Tier 2 discovery spend guard. Every prompt below routes to a paid
+  // provider (Grok x_search via executeScanPrompt logging purpose 'scan',
+  // Perplexity, or Parallel) — consulting the budget here, before the
+  // execution loop starts, brakes ALL of those lanes at once instead of
+  // gating them individually. Same shape as x-lists' budget skip.
+  const budget = await checkBudget(pool);
+  if (!budget.allowed) {
+    console.warn(`[ScanExec] SKIPPED — monthly watchtower budget reached ($${budget.spentUsd} of $${budget.capUsd})`);
+    return {
+      promptsExecuted: 0,
+      promptsFailed: 0,
+      totalResults: 0,
+      intakeSummary: {
+        runDate: today,
+        wire: options.wire || 'all',
+        totalIngested: 0,
+        duplicatesFound: 0,
+        newUnique: 0,
+        averageQualityScore: 0,
+        highQualityCount: 0,
+        byPrompt: {},
+        topFinds: [],
+      },
+      perPrompt: [],
+      totalDurationMs: Date.now() - startTime,
+    };
+  }
 
   // 2. Execute each prompt sequentially
   const submissions: ScanSubmission[] = [];

@@ -377,7 +377,8 @@ function createJobExecutor(schedule: ScheduleConfig) {
 
         if (config.watchtower.xListsEnabled) {
           try {
-            await runXLists(pool);
+            const xl = await runXLists(pool);
+            if (xl.ran) console.log(`[Scheduler] X Lists: ${xl.perList.map(l => `${l.wire}:${l.fetched}/${l.submitted}`).join(' ')}`);
           } catch (err) {
             console.error('[Scheduler] X Lists run failed:', err instanceof Error ? err.message : err);
           }
@@ -415,7 +416,8 @@ function createJobExecutor(schedule: ScheduleConfig) {
         }
         if (config.watchtower.xListsEnabled) {
           try {
-            await runXLists(pool);
+            const xl = await runXLists(pool);
+            if (xl.ran) console.log(`[Scheduler] X Lists: ${xl.perList.map(l => `${l.wire}:${l.fetched}/${l.submitted}`).join(' ')}`);
           } catch (err) {
             console.error('[Scheduler] X Lists run failed:', err instanceof Error ? err.message : err);
           }

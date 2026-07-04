@@ -1,7 +1,11 @@
 // runXLists reads config.watchtower.xListIds (from X_LIST_IDS) once, at
-// module load — set it (and a fake bearer token) before requiring the job.
-process.env.X_LIST_IDS = process.env.X_LIST_IDS || 'wire1:111,wire2:222';
-process.env.X_BEARER_TOKEN = process.env.X_BEARER_TOKEN || 'test-bearer-token';
+// module load — pin it (and a fake bearer token) unconditionally, before
+// requiring the job, so the suite is deterministic regardless of ambient
+// env (also kills the real DATABASE_URL, which was causing ambient DB
+// connection attempts and [ApiUsage] TLS noise in test output).
+process.env.DATABASE_URL = 'postgres://invalid:invalid@127.0.0.1:1/invalid'; // kill ambient DB writes + noise
+process.env.X_LIST_IDS = 'crypto:111,ai:222';
+process.env.X_BEARER_TOKEN = 'test-bearer-token';
 
 require('ts-node/register/transpile-only');
 
