@@ -16,5 +16,5 @@ test('computeMonthSpend treats missing inputs as zero', () => {
 });
 
 test('grok purpose patterns cover watchtower lanes and Tier 2 scan, nothing broader', () => {
-  assert.deepEqual(WATCHTOWER_GROK_PURPOSE_PATTERNS, ['watchtower%', 'scan']);
+  assert.deepEqual(WATCHTOWER_GROK_PURPOSE_PATTERNS, ['watchtower%', 'scan', 'parallel-%']);
 });

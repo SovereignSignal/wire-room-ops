@@ -236,10 +236,7 @@ export async function runRegistryWatch(
         const budget = await budgetImpl(pool);
         budgetAllowed = budget.allowed;
       } catch (err) {
-        // This is a cost brake under an explicit owner cap: if the probe
-        // itself breaks, fail CLOSED — never spend on a guess. Changes are
-        // still recorded (hash + markChecked), so extraction just waits for
-        // a run where the budget answer is actually known.
+        // Fail CLOSED: no extraction this run. Note the hash has already advanced, so this change is forfeited (not deferred) — the page must change again to be extracted. Deliberate: misses opportunities rather than risking unmetered spend.
         budgetAllowed = false;
         console.warn(`[RegistryWatch] budget check failed — failing closed, no extraction this run: ${err instanceof Error ? err.message : String(err)}`);
       }

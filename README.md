@@ -308,10 +308,12 @@ Watchtower Discovery Layer (Phase 0) -- all default-safe:
 Watchtower Registry Watch (Phase 1) -- all default-safe:
 
 - `REGISTRY_WATCH_ENABLED` -- enable the registry watch lane (default: false). Before enabling in a new environment, seed baselines first: `railway run -- npx ts-node src/scripts/registry-watch-dryrun.ts` writes hashes/watermarks (state-writing, intake-free) so the first real pass doesn't treat an org's whole existing backlog as "fresh"
-- `REGISTRY_WATCH_DRY_RUN` -- log without submitting to intake (default: true)
+- `REGISTRY_WATCH_DRY_RUN` -- log without submitting to intake (default: true). Note: dry-run withholds intake only; a changed page still triggers paid extraction (first-pass baselines never extract).
 - `REGISTRY_WATCH_RSS_CAP` -- max rss-lane surfaces polled per run (default: 60)
 - `REGISTRY_WATCH_DIFF_CAP` -- max html_diff-lane surfaces polled per run (default: 80). Tier-1/2 diff-eligible surfaces can exceed one run's cap; the scheduler calls this job from both the `source-feeds` and `daily-digest` branches, so a normal day's two runs still clear the backlog. Dead/blocked source URLs increment a surface's `failure_streak` instead of erroring out the run -- that's the registry's health signal working as designed, not a bug to chase
 - `REGISTRY_WATCH_EXTRACT_CAP` -- max LLM extractions per run, budget-gated (default: 10)
+
+The budget meter covers Grok discovery purposes and X reads; Firecrawl and Perplexity spend are outside it.
 
 ## Multi-Channel Ingestion
 

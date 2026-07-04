@@ -32,7 +32,8 @@ export async function recordTwitterReads(count: number): Promise<void> {
 
 // 'scan' = scan-execution's grok purpose (Tier 2 x_search prompts). 'summarize'
 // and classification purposes are deliberately excluded — they predate the Watchtower.
-export const WATCHTOWER_GROK_PURPOSE_PATTERNS = ['watchtower%', 'scan'];
+// 'parallel-%' = the Parallel lane's grok planning/extraction inside scan-execution.
+export const WATCHTOWER_GROK_PURPOSE_PATTERNS = ['watchtower%', 'scan', 'parallel-%'];
 
 export async function checkBudget(pool: Pool): Promise<{ allowed: boolean; spentUsd: number; capUsd: number }> {
   const capUsd = config.watchtower.budgetMonthlyUsd;
