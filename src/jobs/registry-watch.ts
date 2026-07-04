@@ -20,10 +20,6 @@
  * scheduler also guards this; double gate is deliberate) and default dry-run
  * (registryWatchDryRun). Watermarks/hashes/checked-state advance in BOTH
  * modes — dry-run only withholds the intake call, mirroring x-lists.
- *
- * config.watchtower.registry* fields land in Task 4; until then this file
- * reads them defensively (`(config.watchtower as any).field ?? default`) so
- * it's safe to land ahead of that config.
  */
 import type { Pool } from 'pg';
 import type { ScanSubmission, RawScanResult } from '../types/intake';
@@ -143,12 +139,10 @@ export async function runRegistryWatch(
   const setStateImpl = deps.setState ?? setAppState;
   const budgetImpl = deps.budget ?? checkBudget;
 
-  // config.watchtower.registry* land in Task 4 — read defensively until then.
-  const cw = (config.watchtower as any) ?? {};
-  const rssCap = cw.registryRssCap ?? 60;
-  const diffCap = cw.registryDiffCap ?? 60;
-  const extractCap = cw.registryExtractCap ?? 10;
-  const dryRun = opts.dryRun ?? (cw.registryWatchDryRun ?? true);
+  const rssCap = config.watchtower.registryRssCap;
+  const diffCap = config.watchtower.registryDiffCap;
+  const extractCap = config.watchtower.registryExtractCap;
+  const dryRun = opts.dryRun ?? config.watchtower.registryWatchDryRun;
 
   const start = Date.now();
   const today = new Date().toISOString().split('T')[0];

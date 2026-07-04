@@ -305,6 +305,14 @@ Watchtower Discovery Layer (Phase 0) -- all default-safe:
 - `X_LISTS_DRY_RUN` -- log without submitting to intake (default: true)
 - `X_LIST_IDS` -- comma-separated wire:listId pairs, e.g. "crypto:123,ai:456,oss:789"
 
+Watchtower Registry Watch (Phase 1) -- all default-safe:
+
+- `REGISTRY_WATCH_ENABLED` -- enable the registry watch lane (default: false)
+- `REGISTRY_WATCH_DRY_RUN` -- log without submitting to intake (default: true)
+- `REGISTRY_WATCH_RSS_CAP` -- max rss-lane surfaces polled per run (default: 60)
+- `REGISTRY_WATCH_DIFF_CAP` -- max html_diff-lane surfaces polled per run (default: 80)
+- `REGISTRY_WATCH_EXTRACT_CAP` -- max LLM extractions per run, budget-gated (default: 10)
+
 ## Multi-Channel Ingestion
 
 Entries can be submitted through multiple channels using the adapter pattern:

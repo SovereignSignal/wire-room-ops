@@ -40,6 +40,11 @@ export const config = {
     xListsEnabled: process.env.X_LISTS_ENABLED === 'true',
     xListsDryRun: process.env.X_LISTS_DRY_RUN !== 'false', // dry-run unless explicitly disabled
     xListIds: process.env.X_LIST_IDS || '',                // "crypto:123,ai:456,oss:789"
+    registryWatchEnabled: process.env.REGISTRY_WATCH_ENABLED === 'true',
+    registryWatchDryRun: process.env.REGISTRY_WATCH_DRY_RUN !== 'false',
+    registryRssCap: Number(process.env.REGISTRY_WATCH_RSS_CAP || '60'),
+    registryDiffCap: Number(process.env.REGISTRY_WATCH_DIFF_CAP || '80'),
+    registryExtractCap: Number(process.env.REGISTRY_WATCH_EXTRACT_CAP || '10'),
   },
 
   summarize: {
