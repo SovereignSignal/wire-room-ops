@@ -57,6 +57,8 @@ export interface FeedSource {
   // funding calls reach intake (the classifier alone lets NEWS-tagged announcements queue).
   titleAllow?: RegExp;
   titleBlock?: RegExp;
+  // api_usage purpose override for scrape extraction (cost attribution)
+  usagePurpose?: string;
 }
 
 export interface FeedItem {
@@ -348,11 +350,11 @@ async function llmExtractOpportunities(markdown: string, source: FeedSource): Pr
       body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], max_tokens: 1500, temperature: 0.1 }),
     });
     if (!r.ok) {
-      logApiUsage({ provider: 'grok', model, purpose: 'feed-scrape-extract', wire: source.wire, duration_ms: Date.now() - start, success: false, error_message: String(r.status) });
+      logApiUsage({ provider: 'grok', model, purpose: source.usagePurpose || 'feed-scrape-extract', wire: source.wire, duration_ms: Date.now() - start, success: false, error_message: String(r.status) });
       throw new Error(`extract HTTP ${r.status}`);
     }
     const data = await r.json() as { choices?: Array<{ message?: { content?: string } }>; usage?: { prompt_tokens?: number; completion_tokens?: number } };
-    logApiUsage({ provider: 'grok', model, purpose: 'feed-scrape-extract', wire: source.wire, duration_ms: Date.now() - start, tokens_in: data.usage?.prompt_tokens, tokens_out: data.usage?.completion_tokens });
+    logApiUsage({ provider: 'grok', model, purpose: source.usagePurpose || 'feed-scrape-extract', wire: source.wire, duration_ms: Date.now() - start, tokens_in: data.usage?.prompt_tokens, tokens_out: data.usage?.completion_tokens });
     const content = data.choices?.[0]?.message?.content || '';
     const cleaned = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
     const s = cleaned.indexOf('['), e = cleaned.lastIndexOf(']');
