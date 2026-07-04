@@ -36,6 +36,7 @@ import {
 import { checkDuplicate, findRelatedOpportunity, registerSeen, annotateAlternateSource } from '../services/dedup';
 // quality-scorer.ts replaced by LLM scoring in classifier.ts
 import { seedSeenUrlsFromMessages } from '../db';
+import type { Classification } from '../services/classifier';
 
 // ============================================================
 // Default Configuration
@@ -47,6 +48,101 @@ const DEFAULT_CONFIG: IntakeJobConfig = {
   sendBriefing: false,
   briefingMinScore: 60,
 };
+
+const STALE_GRANTS_GOV_SOURCE_DAYS = 30;
+const URGENT_DEADLINE_DAYS = 30;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+type EntryStatusAfterFreshnessGate = 'queued' | 'archived';
+
+export interface SourceFreshnessGateInput {
+  sourceUrl?: string | null;
+  sourcePublishedAt?: string | Date | null;
+  deadlineParsed?: string | Date | null;
+  classification: Classification;
+}
+
+export interface SourceFreshnessGateDecision {
+  status: EntryStatusAfterFreshnessGate;
+  metadata: Record<string, unknown>;
+}
+
+function parseOptionalDate(value?: string | Date | null): Date | null {
+  if (!value) return null;
+  const parsed = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function isGrantsGovOpportunityUrl(sourceUrl?: string | null): boolean {
+  if (!sourceUrl) return false;
+  try {
+    const url = new URL(sourceUrl);
+    const host = url.hostname.replace(/^www\./, '');
+    return host === 'grants.gov' || host.endsWith('.grants.gov');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Keep old Grants.gov listings out of the active queue unless they are urgent.
+ * These are still real opportunities, but a 30+ day old federal listing should
+ * not appear as a fresh publish candidate months before its close date.
+ */
+export function applySourceFreshnessGate(
+  input: SourceFreshnessGateInput,
+  now = new Date(),
+): SourceFreshnessGateDecision {
+  const baseStatus: EntryStatusAfterFreshnessGate = input.classification === 'NOISE' ? 'archived' : 'queued';
+  const metadata: Record<string, unknown> = {};
+
+  const sourcePublishedAt = parseOptionalDate(input.sourcePublishedAt);
+  if (!isGrantsGovOpportunityUrl(input.sourceUrl) || !sourcePublishedAt) {
+    return { status: baseStatus, metadata };
+  }
+
+  const ageDays = Math.floor((now.getTime() - sourcePublishedAt.getTime()) / DAY_MS);
+  if (ageDays <= STALE_GRANTS_GOV_SOURCE_DAYS) {
+    return { status: baseStatus, metadata };
+  }
+
+  const deadline = parseOptionalDate(input.deadlineParsed);
+  const daysToDeadline = deadline ? Math.ceil((deadline.getTime() - now.getTime()) / DAY_MS) : null;
+  const freshnessGate = {
+    source: 'grants.gov',
+    source_published_at: sourcePublishedAt.toISOString(),
+    age_days: ageDays,
+    days_to_deadline: daysToDeadline,
+  };
+
+  if (daysToDeadline !== null && daysToDeadline >= 0 && daysToDeadline <= URGENT_DEADLINE_DAYS) {
+    return {
+      status: baseStatus,
+      metadata: {
+        freshness_label: 'current_open_listing',
+        freshness_gate: {
+          ...freshnessGate,
+          action: 'kept_due_to_near_deadline',
+          reason: 'Older Grants.gov listing kept visible because the deadline is near.',
+        },
+      },
+    };
+  }
+
+  return {
+    status: 'archived',
+    metadata: {
+      operator_route: 'park',
+      archived_reason: 'stale_grants_gov_current_listing',
+      freshness_label: 'current_open_listing_old_source',
+      freshness_gate: {
+        ...freshnessGate,
+        action: 'archived_from_active_queue',
+        reason: 'Grants.gov listing is older than 30 days and not deadline-urgent; keep it out of the fresh review queue.',
+      },
+    },
+  };
+}
 
 // ============================================================
 // Main Job Function
@@ -351,7 +447,8 @@ export async function runDailyIntake(
   for (const entryId of uniqueEntryIds) {
     // Fetch the entry for classification + scoring (join prompt intent)
     const entryRes = await pool.query(
-      `SELECT se.name, se.description, se.amount, se.deadline, se.scan_date, se.source_url, se.wire,
+      `SELECT se.name, se.description, se.amount, se.deadline, se.deadline_parsed, se.scan_date,
+              se.source_url, se.source_published_at, se.wire,
               sp.intent AS prompt_intent
        FROM scan_entries se
        LEFT JOIN scan_prompts sp ON se.prompt_id = sp.id
@@ -371,10 +468,21 @@ export async function runDailyIntake(
         intent: entry.prompt_intent || undefined,
       });
       qualityScore = classResult.qualityScore;
-      const classStatus = classResult.classification === 'NOISE' ? 'archived' : 'queued';
+      const freshnessDecision = applySourceFreshnessGate({
+        sourceUrl: entry.source_url,
+        sourcePublishedAt: entry.source_published_at,
+        deadlineParsed: entry.deadline_parsed,
+        classification: classResult.classification,
+      });
+      const classStatus = freshnessDecision.status;
       const correctedWire = (classResult.inScope && classResult.detectedWire
         && ['crypto', 'ai', 'oss'].includes(classResult.detectedWire) && classResult.detectedWire !== entry.wire)
         ? classResult.detectedWire : null;
+      const mergedMetadata = {
+        ...classResult.extracted,
+        operator_route: classResult.operatorRoute,
+        ...freshnessDecision.metadata,
+      };
 
       await pool.query(
         `UPDATE scan_entries
@@ -389,7 +497,7 @@ export async function runDailyIntake(
           JSON.stringify({ scoreReason: classResult.scoreReason, in_scope: classResult.inScope, detected_wire: classResult.detectedWire }),
           classResult.classification,
           classResult.reason,
-          JSON.stringify(classResult.extracted),
+          JSON.stringify(mergedMetadata),
           classResult.tags,
           entryId,
           classStatus,
@@ -420,7 +528,8 @@ export async function runDailyIntake(
         await new Promise(resolve => setTimeout(resolve, 2000));
 
         const entryRes = await pool.query(
-          `SELECT se.name, se.description, se.source_url, se.wire, sp.intent AS prompt_intent
+          `SELECT se.name, se.description, se.source_url, se.source_published_at,
+                  se.deadline_parsed, se.wire, sp.intent AS prompt_intent
            FROM scan_entries se
            LEFT JOIN scan_prompts sp ON se.prompt_id = sp.id
            WHERE se.id = $1`,
@@ -436,7 +545,18 @@ export async function runDailyIntake(
           wire: entry.wire,
           intent: entry.prompt_intent || undefined,
         });
-        const retryStatus = classResult.classification === 'NOISE' ? 'archived' : 'queued';
+        const freshnessDecision = applySourceFreshnessGate({
+          sourceUrl: entry.source_url,
+          sourcePublishedAt: entry.source_published_at,
+          deadlineParsed: entry.deadline_parsed,
+          classification: classResult.classification,
+        });
+        const retryStatus = freshnessDecision.status;
+        const mergedMetadata = {
+          ...classResult.extracted,
+          operator_route: classResult.operatorRoute,
+          ...freshnessDecision.metadata,
+        };
 
         await pool.query(
           `UPDATE scan_entries
@@ -450,7 +570,7 @@ export async function runDailyIntake(
             JSON.stringify({ scoreReason: classResult.scoreReason }),
             classResult.classification,
             classResult.reason,
-            JSON.stringify(classResult.extracted),
+            JSON.stringify(mergedMetadata),
             classResult.tags,
             entryId,
             retryStatus,
