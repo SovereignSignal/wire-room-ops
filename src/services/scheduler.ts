@@ -4,6 +4,7 @@ import { runScanExecution } from '../jobs/scan-execution';
 import { runForumScan } from '../jobs/forum-scan';
 import { runSourceFeeds } from '../jobs/source-feeds';
 import { runXLists } from '../jobs/x-lists';
+import { runRegistryWatch } from '../jobs/registry-watch';
 import { runWeeklyIssue } from '../jobs/weekly-issue';
 import { runBdLeads } from '../jobs/bd-leads';
 import { config } from '../config';
@@ -377,9 +378,19 @@ function createJobExecutor(schedule: ScheduleConfig) {
 
         if (config.watchtower.xListsEnabled) {
           try {
-            await runXLists(pool);
+            const xl = await runXLists(pool);
+            if (xl.ran) console.log(`[Scheduler] X Lists: ${xl.perList.map(l => `${l.wire}:${l.fetched}/${l.submitted}`).join(' ')}`);
           } catch (err) {
             console.error('[Scheduler] X Lists run failed:', err instanceof Error ? err.message : err);
+          }
+        }
+
+        if (config.watchtower.registryWatchEnabled) {
+          try {
+            const rw = await runRegistryWatch(pool);
+            if (rw.ran) console.log(`[Scheduler] Registry watch: rss ${rw.rss.surfaces}/${rw.rss.fresh} fresh, diff ${rw.diff.surfaces}/${rw.diff.changed ?? 0} changed, ${rw.diff.extracted ?? 0} extracted`);
+          } catch (err) {
+            console.error('[Scheduler] Registry watch failed:', err instanceof Error ? err.message : err);
           }
         }
 
@@ -415,9 +426,19 @@ function createJobExecutor(schedule: ScheduleConfig) {
         }
         if (config.watchtower.xListsEnabled) {
           try {
-            await runXLists(pool);
+            const xl = await runXLists(pool);
+            if (xl.ran) console.log(`[Scheduler] X Lists: ${xl.perList.map(l => `${l.wire}:${l.fetched}/${l.submitted}`).join(' ')}`);
           } catch (err) {
             console.error('[Scheduler] X Lists run failed:', err instanceof Error ? err.message : err);
+          }
+        }
+
+        if (config.watchtower.registryWatchEnabled) {
+          try {
+            const rw = await runRegistryWatch(pool);
+            if (rw.ran) console.log(`[Scheduler] Registry watch: rss ${rw.rss.surfaces}/${rw.rss.fresh} fresh, diff ${rw.diff.surfaces}/${rw.diff.changed ?? 0} changed, ${rw.diff.extracted ?? 0} extracted`);
+          } catch (err) {
+            console.error('[Scheduler] Registry watch failed:', err instanceof Error ? err.message : err);
           }
         }
 

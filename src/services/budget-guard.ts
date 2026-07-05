@@ -30,11 +30,10 @@ export async function recordTwitterReads(count: number): Promise<void> {
   await setAppState(key, current + count);
 }
 
-// Grok purposes that count as Watchtower discovery spend. 'watchtower%' covers
-// everything this plan adds. When Tier 2 (x-scan revival) activates, verify the
-// purpose string scan-execution passes to logApiUsage and add its pattern here —
-// classification/summary Grok spend must NOT count (it predates the Watchtower).
-export const WATCHTOWER_GROK_PURPOSE_PATTERNS = ['watchtower%'];
+// 'scan' = scan-execution's grok purpose (Tier 2 x_search prompts). 'summarize'
+// and classification purposes are deliberately excluded — they predate the Watchtower.
+// 'parallel-%' = the Parallel lane's grok planning/extraction inside scan-execution.
+export const WATCHTOWER_GROK_PURPOSE_PATTERNS = ['watchtower%', 'scan', 'parallel-%'];
 
 export async function checkBudget(pool: Pool): Promise<{ allowed: boolean; spentUsd: number; capUsd: number }> {
   const capUsd = config.watchtower.budgetMonthlyUsd;

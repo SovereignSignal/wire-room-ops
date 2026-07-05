@@ -28,7 +28,7 @@ export function parseExportPage(md: string): { name: string | null; fields: Reco
   const name = lines[0]?.startsWith('# ') ? lines[0].slice(2).trim() : null;
   const fields: Record<string, string> = {};
   for (const line of lines.slice(1)) {
-    const m = line.match(/^([A-Za-z()/'' -]+?):\s+(.+)$/);
+    const m = line.match(/^([A-Za-z()/'’ -]+?):\s+(.+)$/);
     if (m) fields[m[1].trim()] = m[2].trim();
   }
   return { name, fields };
