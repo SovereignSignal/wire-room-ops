@@ -281,7 +281,7 @@ export function DatabaseTab() {
             <div className="w-8 h-8 rounded bg-status-success/10 border border-status-success/20 flex items-center justify-center text-lg">
               <span>✅</span>
             </div>
-            <h3 className="font-display font-semibold text-xs tracking-wider uppercase">PUBLISHED</h3>
+            <h3 className="font-display font-semibold text-xs tracking-wider uppercase">PUBLISHED SUMMARIES</h3>
           </div>
           <div className="text-3xl font-mono font-semibold text-foreground">
             {(stats as any)?.summaries?.total?.toLocaleString() ?? '—'}
