@@ -16,6 +16,7 @@ const {
 } = require('../src/services/intake-core');
 const { checkDuplicate, findRelatedOpportunity } = require('../src/services/dedup');
 const { buildClassificationPrompt } = require('../src/services/classifier');
+const { applySourceFreshnessGate } = require('../src/jobs/daily-intake');
 
 test('parseAmount supports major fiat symbols and codes', () => {
   const eur = parseAmount('\u20AC125M');
@@ -254,6 +255,41 @@ test('post-classification queues every operator_route for manual paste intake to
   assert.equal(determinePostClassificationStatus({ classification: 'NEWS', qualityScore: 68, operatorRoute: 'relationship_signal' }, 'manual-intake'), 'queued');
   assert.equal(determinePostClassificationStatus({ classification: 'GRANT', qualityScore: 52, operatorRoute: 'park' }, 'manual-intake'), 'queued');
   assert.equal(determinePostClassificationStatus({ classification: 'NOISE', qualityScore: 18, operatorRoute: 'decline' }, 'manual-intake'), 'queued');
+});
+
+test('source freshness gate parks old non-urgent Grants.gov listings', () => {
+  const decision = applySourceFreshnessGate({
+    sourceUrl: 'https://www.grants.gov/search-results-detail/359853',
+    sourcePublishedAt: '2026-05-21T00:00:00.000Z',
+    deadlineParsed: '2026-10-19T00:00:00.000Z',
+    classification: 'GRANT',
+  }, new Date('2026-07-04T00:00:00.000Z'));
+
+  assert.equal(decision.status, 'archived');
+  assert.equal(decision.metadata.archived_reason, 'stale_grants_gov_current_listing');
+  assert.equal(decision.metadata.operator_route, 'park');
+  assert.equal(decision.metadata.freshness_label, 'current_open_listing_old_source');
+});
+
+test('source freshness gate keeps recent or urgent Grants.gov listings visible', () => {
+  const recent = applySourceFreshnessGate({
+    sourceUrl: 'https://simpler.grants.gov/opportunity/d07ebcd7-96cf-40cb-8ae3-f401b6274080',
+    sourcePublishedAt: '2026-06-30T00:00:00.000Z',
+    deadlineParsed: '2026-10-19T00:00:00.000Z',
+    classification: 'GRANT',
+  }, new Date('2026-07-04T00:00:00.000Z'));
+
+  const urgent = applySourceFreshnessGate({
+    sourceUrl: 'https://www.grants.gov/search-results-detail/123456',
+    sourcePublishedAt: '2026-05-21T00:00:00.000Z',
+    deadlineParsed: '2026-07-20T00:00:00.000Z',
+    classification: 'GRANT',
+  }, new Date('2026-07-04T00:00:00.000Z'));
+
+  assert.equal(recent.status, 'queued');
+  assert.deepEqual(recent.metadata, {});
+  assert.equal(urgent.status, 'queued');
+  assert.equal(urgent.metadata.freshness_label, 'current_open_listing');
 });
 
 test('normalizeDeadlineForDb extracts parseable dates and ignores rolling placeholders', () => {

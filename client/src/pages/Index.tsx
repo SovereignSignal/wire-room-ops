@@ -106,18 +106,14 @@ const Index = () => {
 
   useEffect(() => { loadData(); }, [loadData]);
 
-  // Auto-refresh queue count every 60 seconds
+  // Auto-refresh the WHOLE dashboard every 60 seconds (not just the queue) so the
+  // Approved / Ingested / Avg-Quality cards don't sit stale between manual reloads.
   useEffect(() => {
     const interval = setInterval(() => {
-      fetchEntries({ status: 'queued' })
-        .then(entries => {
-          setQueueEntries(entries);
-          setLastUpdated(new Date());
-        })
-        .catch(() => {/* silent — stale data is fine */});
+      loadData().catch(() => {/* silent — stale data is fine */});
     }, 60_000);
     return () => clearInterval(interval);
-  }, []);
+  }, [loadData]);
 
   const handleUpdateStatus = async (ids: string[], newStatus: ScanEntry['status']) => {
     try {
@@ -191,6 +187,9 @@ const Index = () => {
           <OverviewTab
             queueEntries={queueEntries}
             publishedEntries={approvedEntries}
+            queuedCount={wireCounts.reduce((sum, wc) => sum + wc.queued, 0)}
+            approvedCount={wireCounts.reduce((sum, wc) => sum + wc.approved, 0)}
+            totalWires={wireCounts.length}
             rawCount={wireCounts.reduce((sum, wc) => sum + wc.raw, 0)}
             stats={stats}
           />

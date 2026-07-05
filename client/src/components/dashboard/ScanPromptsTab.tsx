@@ -369,6 +369,7 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
           <span className="text-muted-foreground tracking-widest font-display">30-DAY COSTS</span>
           <span className="text-muted-foreground">Scan: <span className="text-foreground">${costStats.summary.scanCost30d.toFixed(2)}</span></span>
           <span className="text-muted-foreground">Classify: <span className="text-foreground">${costStats.summary.classifyCost30d.toFixed(2)}</span></span>
+          <span className="text-muted-foreground">Other: <span className="text-foreground">${Math.max(0, costStats.summary.totalCost30d - costStats.summary.scanCost30d - costStats.summary.classifyCost30d).toFixed(2)}</span></span>
           <span className="text-muted-foreground">Total: <span className="text-cyan-400">${costStats.summary.totalCost30d.toFixed(2)}</span></span>
           {costStats.summary.costPerApproved !== null && (
             <span className="text-muted-foreground">Per approved entry: <span className="text-green-400">${costStats.summary.costPerApproved.toFixed(4)}</span></span>

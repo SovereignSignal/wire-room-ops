@@ -6,15 +6,22 @@ import { formatDistanceToNow } from 'date-fns';
 interface OverviewTabProps {
   queueEntries: ScanEntry[];
   publishedEntries: ScanEntry[];
+  queuedCount: number;
+  approvedCount: number;
+  totalWires: number;
   rawCount: number;
   stats: VerticalStats[];
 }
 
-export function OverviewTab({ queueEntries, publishedEntries, rawCount, stats }: OverviewTabProps) {
+export function OverviewTab({ queueEntries, publishedEntries, queuedCount, approvedCount, totalWires, rawCount, stats }: OverviewTabProps) {
   const totalItemsThisWeek = stats.reduce((acc, curr) => acc + curr.items_this_week, 0);
-  const avgQuality = stats.length > 0 
-    ? stats.reduce((acc, curr) => acc + curr.avg_quality_score, 0) / stats.length 
-    : 0;
+  // Volume-weighted average across wires — a near-empty wire shouldn't swing the
+  // number as much as a busy one. Falls back to a simple mean when there's no volume.
+  const avgQuality = totalItemsThisWeek > 0
+    ? stats.reduce((acc, curr) => acc + curr.avg_quality_score * curr.items_this_week, 0) / totalItemsThisWeek
+    : stats.length > 0
+      ? stats.reduce((acc, curr) => acc + curr.avg_quality_score, 0) / stats.length
+      : 0;
 
   // Get most recent items across all categories
   const recentItems = [...queueEntries, ...publishedEntries]
@@ -49,7 +56,7 @@ export function OverviewTab({ queueEntries, publishedEntries, rawCount, stats }:
             <h3 className="font-display font-semibold text-sm tracking-wider uppercase">IN QUEUE</h3>
           </div>
           <div className="text-3xl font-mono font-semibold text-foreground">
-            {queueEntries.length}
+            {queuedCount}
           </div>
         </div>
 
@@ -72,10 +79,10 @@ export function OverviewTab({ queueEntries, publishedEntries, rawCount, stats }:
             <div className="w-8 h-8 rounded bg-status-success/10 border border-status-success/20 flex items-center justify-center text-lg">
               ✅
             </div>
-            <h3 className="font-display font-semibold text-sm tracking-wider uppercase">PUBLISHED</h3>
+            <h3 className="font-display font-semibold text-sm tracking-wider uppercase">APPROVED</h3>
           </div>
           <div className="text-3xl font-mono font-semibold text-foreground">
-            {publishedEntries.length}
+            {approvedCount}
           </div>
         </div>
       </div>
@@ -94,8 +101,8 @@ export function OverviewTab({ queueEntries, publishedEntries, rawCount, stats }:
               <ScoreBadge score={Math.round(avgQuality)} />
             </div>
             <div className="flex justify-between items-center">
-              <span className="text-sm font-mono text-muted-foreground">Active Sources</span>
-              <span className="font-mono">{stats.length} Wires</span>
+              <span className="text-sm font-mono text-muted-foreground">Wires active this week</span>
+              <span className="font-mono">{stats.length} / {totalWires}</span>
             </div>
           </div>
         </div>
