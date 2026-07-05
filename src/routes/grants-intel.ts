@@ -84,10 +84,10 @@ router.get('/summary', async (_req: Request, res: Response) => {
       `),
       pool.query(`
         SELECT
-          COUNT(*) FILTER (WHERE observed_at >= NOW() - INTERVAL '24 hours')::int AS landscape_observations,
-          COUNT(*) FILTER (WHERE observed_at >= NOW() - INTERVAL '24 hours' AND routing IN ('wire_queue_candidate','daily_brief','opportunity_signal'))::int AS opportunity_candidates,
-          COUNT(*) FILTER (WHERE observed_at >= NOW() - INTERVAL '24 hours' AND routing = 'wire_queue_candidate')::int AS wire_candidates,
-          COUNT(*) FILTER (WHERE observed_at >= NOW() - INTERVAL '24 hours' AND routing IN ('daily_brief','opportunity_signal'))::int AS writing_inputs
+          COUNT(DISTINCT dedupe_key)::int AS landscape_observations,
+          COUNT(DISTINCT dedupe_key) FILTER (WHERE routing IN ('wire_queue_candidate','daily_brief','opportunity_signal'))::int AS opportunity_candidates,
+          COUNT(DISTINCT dedupe_key) FILTER (WHERE routing = 'wire_queue_candidate')::int AS wire_candidates,
+          COUNT(DISTINCT dedupe_key) FILTER (WHERE routing IN ('daily_brief','opportunity_signal'))::int AS writing_inputs
         FROM opportunity_observations
       `),
       pool.query(`

@@ -207,6 +207,40 @@ export function SourcesTab({ stats, wireCounts, onNavigateToQueue }: SourcesTabP
           );
         })}
 
+        {/* Quiet wires — configured but with no scans this week (e.g. OSS). Show
+            them so a whole wire doesn't vanish from the operator view when idle. */}
+        {wireCounts
+          .filter(wc => wc.wire && !stats.some(st => st.wire === wc.wire))
+          .map((counts) => (
+            <div key={counts.wire} className="stat-card group flex flex-col">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded bg-muted/40 border border-border flex items-center justify-center">
+                    <Wifi className="w-4 h-4 text-muted-foreground" />
+                  </div>
+                  <div>
+                    <h3 className="font-display font-semibold text-sm tracking-wider uppercase">{counts.wire}</h3>
+                    <p className="text-[10px] text-muted-foreground font-mono">no scans this week</p>
+                  </div>
+                </div>
+                <span className="text-[10px] text-muted-foreground font-mono px-2 py-1 rounded bg-muted/50 border border-border">idle</span>
+              </div>
+              <div className="mt-auto pt-3 border-t border-border/50 grid grid-cols-3 gap-2 text-center">
+                <div>
+                  <div className="text-[10px] text-muted-foreground uppercase tracking-wider">Queued</div>
+                  <div className={`text-sm font-mono font-semibold ${counts.queued > 0 ? 'text-primary' : 'text-muted-foreground'}`}>{counts.queued}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-muted-foreground uppercase tracking-wider">Approved</div>
+                  <div className="text-sm font-mono font-semibold text-status-success">{counts.approved}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-muted-foreground uppercase tracking-wider">Archived</div>
+                  <div className="text-sm font-mono font-semibold text-muted-foreground">{counts.archived}</div>
+                </div>
+              </div>
+            </div>
+          ))}
 
       </div>
 
@@ -252,7 +286,7 @@ export function SourcesTab({ stats, wireCounts, onNavigateToQueue }: SourcesTabP
         )}
       </div>
 
-      {stats.length === 0 && (
+      {stats.length === 0 && wireCounts.length === 0 && (
         <div className="glow-card p-12 text-center">
           <span className="text-5xl mx-auto mb-4 block w-fit opacity-50">🛰️</span>
           <p className="text-muted-foreground font-display text-sm tracking-wider">NO SOURCES CONFIGURED</p>
