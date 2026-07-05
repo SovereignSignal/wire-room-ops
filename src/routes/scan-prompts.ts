@@ -17,6 +17,7 @@ import { getPool, getAllScanPrompts, getScanPromptById, createScanPrompt, update
 import { rateLimit } from '../middleware/rate-limit';
 import { isValidUuid } from '../utils/validation';
 import { executeScanPrompt } from '../services/grok';
+import { checkBudget } from '../services/budget-guard';
 import { executePerplexityScan } from '../services/perplexity';
 import { executeParallelScan } from '../services/parallel';
 import { parseStructuredOutput } from '../services/intake';
@@ -61,6 +62,14 @@ async function executePromptLabTest(input: {
   outputFormat?: 'text' | 'json';
   wire?: string;
 }) {
+  // Cost brake (Sov's hard rule): the grok x_search path spends xAI and is what
+  // this budget tracks. Consult BEFORE spending; fail closed at the monthly cap.
+  if (input.toolType !== 'perplexity' && input.toolType !== 'parallel') {
+    const budget = await checkBudget(getPool());
+    if (!budget.allowed) {
+      throw new Error(`Discovery budget reached ($${budget.spentUsd} of $${budget.capUsd}) — run blocked`);
+    }
+  }
   const result = await withRetry(() => {
     if (input.toolType === 'perplexity') {
       return executePerplexityScan(input.promptText, {
@@ -367,6 +376,16 @@ router.post('/:id/run', async (req: Request, res: Response) => {
     if (!prompt) {
       res.status(404).json({ error: 'Prompt not found' });
       return;
+    }
+
+    // Cost brake (Sov's hard rule): consult the discovery budget BEFORE spending
+    // on the grok x_search path; fail closed at the monthly cap.
+    if (prompt.toolType !== 'perplexity' && prompt.toolType !== 'parallel') {
+      const budget = await checkBudget(getPool());
+      if (!budget.allowed) {
+        res.status(402).json({ error: `Discovery budget reached ($${budget.spentUsd} of $${budget.capUsd}) — run blocked` });
+        return;
+      }
     }
 
     // Execute the prompt
