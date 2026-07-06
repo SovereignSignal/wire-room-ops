@@ -206,6 +206,141 @@ const FORUM_SKIP_PATTERNS: RegExp[] = [
 
 const JUDGE_BATCH_SIZE = 12;
 
+// =====================================================================
+// discuss.watch pre-classified grants feed (lane v3, 2026-07-06)
+// =====================================================================
+//
+// discuss.watch now runs its own classification pipeline server-side:
+// full first-post bodies (via Discourse RSS + dedicated grants categories
+// on 10 DAO forums + the EA Forum funding tag) -> Haiku classification in
+// THIS system's vocabulary (GRANT/NEWS/NOISE) + field extraction
+// (program, amounts, deadline, status). GET /api/v1/grants serves items
+// pre-judged with confidence scores.
+//
+// This pull complements (not replaces) the allowlist+judge path: the feed
+// covers 196 forums with body-level classification, while the judge path
+// still uniquely catches governance proposals that create/renew programs
+// (classified NEWS server-side) on the curated allowlist. URLs surfaced
+// by the feed are excluded from the judge batch — pre-judged items should
+// not re-spend Grok. Kill switch: FORUM_GRANTS_FEED_ENABLED=false.
+
+interface GrantsFeedItem {
+  name?: string;
+  title?: string;
+  url?: string;
+  wire?: string;
+  protocol?: string | null;
+  classification?: string;
+  kind?: string | null;
+  confidence?: number;
+  program?: string | null;
+  amountMin?: number | null;
+  amountMax?: number | null;
+  currency?: string | null;
+  deadline?: string | null;
+  status?: string | null;
+  excerpt?: string | null;
+  topicCreatedAt?: string | null;
+  firstSeenAt?: string;
+}
+
+interface GrantsFeedResponse {
+  items?: GrantsFeedItem[];
+  meta?: { count?: number; nextCursor?: number | null; configured?: boolean };
+  error?: string;
+}
+
+/** Compose a human-readable amount string from extracted numeric fields. */
+function formatFeedAmount(item: GrantsFeedItem): string | null {
+  const max = item.amountMax ?? item.amountMin;
+  if (max == null || !Number.isFinite(max)) return null;
+  const min = item.amountMin;
+  const fmt = (n: number) => n.toLocaleString('en-US');
+  const range = min != null && Number.isFinite(min) && min !== max ? `${fmt(min)}–${fmt(max)}` : fmt(max);
+  const currency = (item.currency || '').trim().toUpperCase();
+  const composed = !currency || currency === 'USD' ? `$${range}` : `${range} ${currency}`;
+  return composed.slice(0, 60);
+}
+
+/** Map a pre-classified discuss.watch grants item to a RawScanResult. */
+export function grantsFeedItemToRaw(item: GrantsFeedItem): RawScanResult {
+  const title = (item.title || item.name || '').trim();
+  const name = (item.program || title).trim().slice(0, 200);
+  const forumLabel = item.protocol ? `${item.protocol} forum` : 'Governance forum';
+
+  const parts: string[] = [];
+  parts.push(item.excerpt?.trim() ? item.excerpt.trim().slice(0, 280) : title);
+  if (item.status?.trim()) parts.push(`Signal: ${item.status.trim()}`);
+  parts.push(`Source: ${forumLabel} (discuss.watch grants feed, ${item.confidence ?? 0}% ${item.kind || 'grant'})`);
+
+  return {
+    name,
+    description: parts.join(' — '),
+    sourceUrl: item.url || '',
+    amount: formatFeedAmount(item),
+    deadline: item.deadline ? String(item.deadline).slice(0, 10) : null,
+    sourcePublishedAt: item.topicCreatedAt || item.firstSeenAt || null,
+  };
+}
+
+/**
+ * Pull pre-classified GRANT items for one wire from discuss.watch.
+ * Age-gated on topicCreatedAt (the feed's `since` filters firstSeenAt, and
+ * its first sweeps surface old threads from dedicated grants categories).
+ * Fails soft: returns empty on any error — the judge path still runs.
+ */
+export async function fetchGrantsFeedResults(
+  wire: string,
+  since: string,
+): Promise<{ results: RawScanResult[]; urls: Set<string> }> {
+  const empty = { results: [] as RawScanResult[], urls: new Set<string>() };
+  const baseUrl = config.forum.discussWatchBaseUrl;
+  const params = new URLSearchParams({
+    wire,
+    since,
+    min_confidence: String(config.forum.grantsMinConfidence),
+    limit: '100',
+  });
+  try {
+    const response = await fetch(`${baseUrl}/grants?${params}`, {
+      headers: { 'Accept': 'application/json' },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok) {
+      console.warn(`[Forum] /grants returned ${response.status} (${params.toString()})`);
+      return empty;
+    }
+    const data = await response.json() as GrantsFeedResponse;
+    if (data.error || !Array.isArray(data.items)) {
+      if (data.error) console.warn(`[Forum] /grants API error: ${data.error}`);
+      return empty;
+    }
+
+    const ageCutoff = Date.now() - MAX_DISCUSSION_AGE_DAYS * 86400000;
+    const results: RawScanResult[] = [];
+    const urls = new Set<string>();
+    for (const item of data.items) {
+      if (!item.url || !(item.title || item.name)) continue;
+      // Same operator-conflict skip as the judge path (matches protocol AND url)
+      const skipHaystack = `${item.protocol || ''} ${item.url}`;
+      if (FORUM_SKIP_PATTERNS.some(p => p.test(skipHaystack))) continue;
+      // Age gate on the thread's original post date
+      const created = item.topicCreatedAt ? new Date(item.topicCreatedAt).getTime() : NaN;
+      if (!Number.isNaN(created) && created < ageCutoff) continue;
+      const raw = grantsFeedItemToRaw(item);
+      if (!raw.sourceUrl) continue;
+      results.push(raw);
+      urls.add(normalizeUrl(raw.sourceUrl));
+    }
+    console.log(`[Forum] ${wire} grants feed: ${results.length} pre-classified items (of ${data.items.length} returned)`);
+    return { results, urls };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[Forum] /grants fetch failed: ${msg}`);
+    return empty;
+  }
+}
+
 export interface ForumCandidate {
   title: string;
   url: string;
@@ -527,11 +662,27 @@ export async function runGovernanceForumScan(
     const wp = (p: number, label?: string) => progress(label || `Forum ${wire}`, Math.round(base + span * p / 100));
 
     wp(0);
-    const candidates = await fetchGovernanceForumCandidates(wire, since, (_m, p) => wp(p * 0.35));
-    candidateCount += candidates.length;
-    if (candidates.length === 0) continue;
 
-    const opportunities = await judgeForumCandidates(candidates, wire, (_m, p) => wp(35 + p * 0.6));
+    // Pull 0: pre-classified grants feed (body-level judgment done server-side;
+    // these skip the Grok judge entirely).
+    let feedResults: RawScanResult[] = [];
+    let feedUrls = new Set<string>();
+    if (config.forum.grantsFeedEnabled) {
+      ({ results: feedResults, urls: feedUrls } = await fetchGrantsFeedResults(wire, since));
+      candidateCount += feedResults.length;
+      await sleep(REQUEST_DELAY_MS);
+    }
+
+    const fetched = await fetchGovernanceForumCandidates(wire, since, (_m, p) => wp(10 + p * 0.25));
+    // Items the grants feed already judged should not re-spend the Grok judge.
+    const candidates = fetched.filter(c => !feedUrls.has(normalizeUrl(c.url)));
+    candidateCount += candidates.length;
+
+    const judged = candidates.length > 0
+      ? await judgeForumCandidates(candidates, wire, (_m, p) => wp(35 + p * 0.6))
+      : [];
+
+    const opportunities = [...feedResults, ...judged];
     if (opportunities.length > 0) {
       byWire.push({ wire, results: opportunities });
       opportunityCount += opportunities.length;

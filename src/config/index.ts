@@ -84,6 +84,10 @@ export const config = {
     discussWatchBaseUrl: process.env.DISCUSS_WATCH_API_URL || 'https://discuss-dot-watch-production.up.railway.app/api/v1',
     enabled: process.env.FORUM_SCAN_ENABLED === 'true',
     defaultLookbackDays: parseInt(process.env.FORUM_LOOKBACK_DAYS || '2', 10) || 2,
+    // Pre-classified /api/v1/grants pull (lane v3). Default ON — it reduces
+    // Grok judge spend; set FORUM_GRANTS_FEED_ENABLED=false to kill-switch.
+    grantsFeedEnabled: process.env.FORUM_GRANTS_FEED_ENABLED !== 'false',
+    grantsMinConfidence: parseInt(process.env.FORUM_GRANTS_MIN_CONFIDENCE || '60', 10) || 60,
   },
 
   telegram: {

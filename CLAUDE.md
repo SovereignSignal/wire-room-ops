@@ -142,7 +142,7 @@ src/
 │   ├── distribution.ts   # Distribution orchestrator: send entries to channels, retry, newsletter
 │   ├── email.ts          # Resend email templates (digest, weekly draft, deadline digest, CSV, alerts, login)
 │   ├── entry-actions.ts  # Approve/decline/restore business logic + approve side-effects (audit: actor/reason/dryRun)
-│   ├── forum.ts          # discuss.watch client: governance allowlist, age gate, LLM thread judge
+│   ├── forum.ts          # discuss.watch client: pre-classified /grants feed pull + governance allowlist, age gate, LLM thread judge
 │   ├── grok.ts           # Grok Chat + Responses API for X.com content and scans (uses getBrand())
 │   ├── intake.ts         # Scan result parser (4 strategies) + sanitizeResult()
 │   ├── intake-core.ts    # Channel-agnostic intake (URL extraction, wire detection, dumb-pipe insert)
