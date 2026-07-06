@@ -266,6 +266,8 @@ Optional:
 - `TELEGRAM_BOT_TOKEN` -- bot token for channel distribution posting
 - `DB_SSL_REJECT_UNAUTHORIZED`
 - `FORUM_SCAN_ENABLED`
+- `FORUM_GRANTS_FEED_ENABLED` -- pre-classified discuss.watch /grants pull in the forum lane (default true)
+- `FORUM_GRANTS_MIN_CONFIDENCE` -- min classifier confidence for grants-feed items (default 60)
 - `BD_LEADS_DATABASE_ID` -- Notion Paid Work Leads db for the Wednesday BD loop
 - `DISCUSS_WATCH_API_URL`
 - `PERPLEXITY_API_KEY` -- for deep web research scans (variant P prompts)
