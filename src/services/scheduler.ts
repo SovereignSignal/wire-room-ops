@@ -8,10 +8,9 @@ import { runRegistryWatch } from '../jobs/registry-watch';
 import { runWeeklyIssue } from '../jobs/weekly-issue';
 import { runBdLeads } from '../jobs/bd-leads';
 import { config } from '../config';
-import { sendTestAlertEmail, sendScheduledJobFailureEmail, sendDeadlineDigestEmail } from './email';
+import { sendTestAlertEmail, sendScheduledJobFailureEmail } from './email';
 import { runCsvExport } from '../jobs/csv-export';
 import { assembleAndSendDailyDigest } from '../jobs/daily-digest';
-import { runDeadlineDigest } from '../jobs/deadline-digest';
 import { runAccountMonitor } from '../jobs/account-monitor';
 import { ensureScheduleTable, getAllSchedules, getScheduleById, createSchedule, updateSchedule, deleteSchedule as dbDeleteSchedule, StoredScheduleConfig, ensureFeedsTable, ensureScanTables, ensureScanPromptsTable, ensureDistributionTables, getPool } from '../db';
 import { getActiveWires } from './intake-core';
@@ -260,7 +259,6 @@ export function formatScheduleDescription(schedule: ScheduleConfig): string {
   const typeLabel =
     schedule.scheduleType === 'forum-scan' ? 'Forum Scan' :
     schedule.scheduleType === 'daily-digest' ? 'Daily Digest' :
-    schedule.scheduleType === 'deadline-digest' ? 'Deadline Digest' :
     schedule.scheduleType === 'account-monitor' ? 'Account Monitor' :
     schedule.scheduleType === 'source-feeds' ? 'Source Feeds' :
     'Scan Execution';
@@ -554,34 +552,6 @@ function createJobExecutor(schedule: ScheduleConfig) {
         status.status = 'success';
         status.error = null;
         console.log(`[Scheduler] Account monitor: ${monitorResult.processed} checked, ${monitorResult.submitted} submitted`);
-
-      } else if (currentScheduleData.scheduleType === 'deadline-digest') {
-        // ---- Deadline Digest Job ----
-        const pool = getPool();
-        const wire = currentScheduleData.wire || undefined;
-        console.log(`[Scheduler] Running deadline digest for ${wire || 'all wires'}...`);
-        const results = await runDeadlineDigest(pool, wire);
-        const total = results.reduce((sum, r) => sum + r.entries.length, 0);
-        console.log(`[Scheduler] Deadline digest: ${total} entries closing soon across ${results.length} wires`);
-        if (total > 0) {
-          const recipients = currentScheduleData.notifyEmails
-            ? currentScheduleData.notifyEmails.split(',').map(e => e.trim()).filter(Boolean)
-            : undefined;
-          try {
-            await sendDeadlineDigestEmail(results, config.app.url, recipients);
-            status.status = 'success';
-            status.error = null;
-            console.log(`[Scheduler] Deadline digest email sent (${total} closing)`);
-          } catch (emailErr) {
-            status.status = 'failed';
-            status.error = `Deadline digest email failed: ${emailErr instanceof Error ? emailErr.message : String(emailErr)}`;
-            console.error(`[Scheduler] Deadline digest email failed:`, emailErr);
-          }
-        } else {
-          status.status = 'success';
-          status.error = null;
-          console.log(`[Scheduler] Deadline digest: nothing closing — no email sent`);
-        }
 
       } else {
         console.warn(`[Scheduler] Unsupported schedule type "${currentScheduleData.scheduleType}" — skipping`);

@@ -206,9 +206,10 @@ export async function ensureScheduleTable(): Promise<void> {
   await pool.query(`ALTER TABLE schedules ADD COLUMN IF NOT EXISTS frequency_hours INTEGER`);
   await pool.query(`ALTER TABLE schedules ADD COLUMN IF NOT EXISTS notify_emails TEXT`);
   // Phase 4 (2026-07-03): drip-distribution, experiment-loop and collect-engagement
-  // are retired. Their schedule rows are DELETED (not normalized) — normalizing
-  // them would silently turn a retired lane into a paid scan-execution cron.
-  await pool.query(`DELETE FROM schedules WHERE schedule_type IN ('collect-engagement', 'experiment-loop', 'drip-distribution')`);
+  // are retired. 2026-07-09: deadline-digest folded into the daily digest.
+  // Rows are DELETED (not normalized) — normalizing would silently turn a
+  // retired lane into a paid scan-execution cron.
+  await pool.query(`DELETE FROM schedules WHERE schedule_type IN ('collect-engagement', 'experiment-loop', 'drip-distribution', 'deadline-digest')`);
   await pool.query(`
     UPDATE schedules
     SET schedule_type = 'scan-execution'
