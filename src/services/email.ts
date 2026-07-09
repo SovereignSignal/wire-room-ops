@@ -376,26 +376,51 @@ export interface DigestBdLead {
   notes: string;
 }
 
+export interface ClosingSoonRow {
+  name: string;
+  wire: string;
+  deadline: string;
+  daysUntil: number;
+  amount: string | null;
+  sourceUrl: string;
+}
+
 export interface DigestEmailExtras {
-  topFinds?: TopFindEntry[];
-  csvExport?: import('../jobs/csv-export').CsvExportResult;
-  downloadUrls?: { csv: string | null; md: string | null };
-  agentBrief?: StoredAgentBrief | null;
-  sourceBreakdown?: import('../jobs/daily-digest').SourceBreakdownRow[];
+  /** Never-before-emailed queue items (watermarked) — the "New for review" cards */
+  freshFinds?: TopFindEntry[];
+  /** Total eligible new items behind freshFinds (drives the "+N more new" line) */
+  totalNewEligible?: number;
+  /** Evidence the machine ran — rendered inside the status band */
+  runLedger?: RunLedger;
+  /** Approved entries closing within 7 days (folds the retired deadline email) */
+  closingSoon?: ClosingSoonRow[];
   costRecap?: { rows: import('../jobs/daily-digest').CostRow[]; total: number };
-  /** Wednesday BD leads written to Paid Work Leads this run (Phase C surface) */
+  /** Wednesday BD leads written to Paid Work Leads this run */
   bdLeads?: DigestBdLead[];
   bdLeadsUrl?: string;
-  /** Operational anomalies collected by the scheduler — the ONLY way ops
-   *  telemetry gets into the email. No anomalies = one quiet check mark. */
+  /** Operational anomalies — the ONLY way ops telemetry gets into the email. */
   anomalies?: string[];
+  /** @deprecated ignored by the renderer — removed once callers migrate (Task 4) */
+  topFinds?: TopFindEntry[];
+  /** @deprecated ignored */
+  csvExport?: import('../jobs/csv-export').CsvExportResult;
+  /** @deprecated ignored */
+  downloadUrls?: { csv: string | null; md: string | null };
+  /** @deprecated ignored */
+  agentBrief?: StoredAgentBrief | null;
+  /** @deprecated ignored */
+  sourceBreakdown?: import('../jobs/daily-digest').SourceBreakdownRow[];
 }
 
 /**
- * Render the daily digest email.
+ * Render the daily digest email (2026-07-09 "Run Ledger" redesign).
  *
- * Contract: show fresh high-signal items and production issues only.
- * Backlog and routine activity telemetry stay in the dashboard.
+ * The operator's cockpit — three jobs, in order:
+ *   1. Status band: prove the machine ran (RUN CLEAN / ⚠ N ISSUES + lane ledger).
+ *   2. New for review: never-before-emailed queue items, curator-stamped,
+ *      deep-linked into the dashboard queue (?entry=<id>).
+ *   3. Closing soon: approved entries with deadlines ≤7d.
+ * Backlog appears only on the queue button. Quiet day = short email.
  */
 export function renderDailyDigest(
   digest: import('../jobs/daily-digest').DailyDigestResult,
@@ -404,71 +429,125 @@ export function renderDailyDigest(
 ): { subject: string; html: string; text: string } {
   const brand = getBrand();
   const base = dashboardUrl.replace(/\/$/, '');
-  const reviewUrl = `${base}/queue`;
-  const { topFinds, costRecap, bdLeads, bdLeadsUrl, anomalies } = extras;
-  const freshFinds = topFinds ?? [];
-  const freshCount = freshFinds.length;
+  const queueUrl = `${base}/queue`;
+  const { freshFinds, totalNewEligible, runLedger, closingSoon, costRecap, bdLeads, bdLeadsUrl, anomalies } = extras;
+
+  const finds = freshFinds ?? [];
+  const freshCount = finds.length;
+  const totalNew = Math.max(totalNewEligible ?? freshCount, freshCount);
   const issueCount = anomalies?.length ?? 0;
-  const spendText = costRecap ? `$${costRecap.total.toFixed(2)} API` : '$0.00 API';
+  const totalIn = digest.wires.reduce((n, w) => n + w.totalIngested, 0);
+  const waiting = digest.totalPendingReview;
 
-  const wireChip = (w: string) =>
-    `<span style="display:inline-block;padding:2px 7px;border:1px solid #cad4dc;border-radius:4px;font-size:10px;color:#64717b;text-transform:uppercase;${MONO}">${escapeHtml(w)}</span>`;
+  const day = new Date(`${digest.date}T00:00:00Z`);
+  const subjDate = day.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+  const slugDate = day.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).replace(/,/g, '').toUpperCase();
 
-  const metricCell = (label: string, value: string, color = '#172026') => `
-    <td width="33.33%" align="center" style="padding:14px 8px;border-right:1px solid #dfe6eb;">
-      <div style="font-size:23px;line-height:1;font-weight:800;color:${color};${FONT}">${escapeHtml(value)}</div>
-      <div style="margin-top:5px;font-size:10px;color:#64717b;text-transform:uppercase;letter-spacing:0.7px;">${escapeHtml(label)}</div>
-    </td>`;
+  // ── 1. Status band ───────────────────────────────────────────────────
+  const ledgerParts = [
+    ...(runLedger?.lanes ?? []).map(l => l.detail),
+    `${totalIn} in`,
+    costRecap ? `$${costRecap.total.toFixed(2)}` : null,
+  ].filter((p): p is string => Boolean(p));
+  const clean = issueCount === 0;
+  const verdict = clean ? 'RUN CLEAN' : `⚠ ${issueCount} ISSUE${issueCount === 1 ? '' : 'S'}`;
+  const bandHtml = `
+    <div style="padding:9px 24px;background-color:${clean ? '#e6f6ee' : '#fdeee4'};border-bottom:1px solid ${clean ? '#bfe4d0' : '#f0c4a4'};">
+      <p style="margin:0;font-size:11px;color:${clean ? '#116b45' : '#a23b00'};${MONO}"><strong style="letter-spacing:1px;">${escapeHtml(verdict)}</strong> &nbsp; ${ledgerParts.map(p => escapeHtml(p)).join(' &middot; ')}</p>
+    </div>`;
+  const bandText = `${verdict} | ${ledgerParts.join(' · ')}`;
 
-  const metricHtml = `
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-bottom:1px solid #dfe6eb;">
-      <tr>
-        ${metricCell('Fresh', String(freshCount))}
-        ${metricCell('Issues', String(issueCount), issueCount > 0 ? '#cc4400' : '#1a8a5a')}
-        <td width="33.33%" align="center" style="padding:14px 8px;">
-          <div style="font-size:20px;line-height:1;font-weight:800;color:#172026;${FONT}">${escapeHtml(spendText.replace(' API', ''))}</div>
-          <div style="margin-top:5px;font-size:10px;color:#64717b;text-transform:uppercase;letter-spacing:0.7px;">Spend</div>
-        </td>
-      </tr>
-    </table>`;
-
-  let openFirstHtml = '';
-  let openFirstText = '';
-  if (freshCount > 0) {
-    const shown = freshFinds.slice(0, 8);
-    const lines = shown.map(e => {
-      const nameCell = e.source_url
-        ? `<a href="${escapeHtml(e.source_url)}" style="color:#0b86d1;text-decoration:none;font-weight:700;">${escapeHtml(e.name)}</a>`
-        : `<span style="font-weight:700;color:#172026;">${escapeHtml(e.name)}</span>`;
-      const meta = [e.amount, e.deadline ? `due ${e.deadline}` : null].filter(Boolean).map(x => escapeHtml(String(x))).join(' &middot; ');
-      return `<div style="background:#f7fafc;border:1px solid #dfe6eb;border-radius:5px;padding:11px 12px;margin:0 0 8px;">
-        <div style="font-size:13px;line-height:1.35;color:#172026;">${wireChip(e.wire)} <span style="vertical-align:middle;">${nameCell}</span></div>
-        ${meta ? `<div style="margin-top:5px;font-size:12px;color:#64717b;">${meta}</div>` : ''}
-      </div>`;
-    }).join('');
-    const more = freshCount - shown.length;
-    openFirstHtml = `
-      ${sectionLabel(`Open first (${freshCount})`)}
-      ${lines}
-      ${more > 0 ? `<p style="margin:4px 0 8px;font-size:12px;color:#64717b;">${more} more fresh item${more === 1 ? '' : 's'} in the queue</p>` : ''}
-      ${emailBtn(reviewUrl, 'Open queue')}`;
-    openFirstText = `\nOPEN FIRST (${freshCount})\n` + shown.map(e =>
-      `  [${e.wire}] ${e.name}${e.amount ? ` | ${e.amount}` : ''}${e.deadline ? ` | due ${e.deadline}` : ''}`
-    ).join('\n') + (more > 0 ? `\n  ${more} more fresh item${more === 1 ? '' : 's'}` : '') + `\n  Queue: ${reviewUrl}\n`;
-  } else {
-    openFirstHtml = `<p style="margin:18px 0 0;font-size:13px;color:#1a8a5a;">No fresh high-signal items in the last 24h.</p>`;
-    openFirstText = '\nNo fresh high-signal items in the last 24h.\n';
+  // ── 2. Production issues (bad day only) ──────────────────────────────
+  let issuesHtml = '';
+  let issuesText = '';
+  if (issueCount > 0 && anomalies) {
+    issuesHtml = `
+      ${sectionLabel(`Production issues (${issueCount})`)}
+      ${anomalies.map(a => `<div style="background:#fff7ed;border:1px solid #f0b38a;border-radius:5px;padding:10px 12px;margin:0 0 8px;color:#a23b00;font-size:12px;line-height:1.45;">${escapeHtml(a)}</div>`).join('')}`;
+    issuesText = `\nPRODUCTION ISSUES (${issueCount})\n` + anomalies.map(a => `  ! ${a}`).join('\n') + '\n';
   }
 
+  // ── 3. New for review ────────────────────────────────────────────────
+  const routeLabel: Record<string, string> = {
+    publish: 'PUBLISH', source_check: 'CHECK', relationship_signal: 'SIGNAL', park: 'PARK', decline: 'DECLINE',
+  };
+  const queueBtn = `<table role="presentation" cellspacing="0" cellpadding="0" style="margin:16px 0 4px;">
+    <tr><td style="background-color:#14181c;padding:10px 24px;">
+      <a href="${escapeHtml(queueUrl)}" target="_blank" style="color:#ffffff;font-size:13px;font-weight:600;text-decoration:none;${FONT}">Open queue → ${waiting} waiting</a>
+    </td></tr>
+  </table>`;
+
+  let reviewHtml = '';
+  let reviewText = '';
+  if (freshCount > 0) {
+    const cards = finds.map(e => {
+      const entryUrl = `${queueUrl}?entry=${e.id}`;
+      const route = e.curator_route ? routeLabel[e.curator_route] ?? null : null;
+      const stamp = route ? `${route}${e.curator_confidence ? `·${e.curator_confidence.toUpperCase()}` : ''}` : null;
+      const isPublish = e.curator_route === 'publish';
+      const metaParts = [
+        escapeHtml(e.wire.toUpperCase()),
+        stamp ? `<span style="color:${isPublish ? '#116b45' : '#8a6d1f'};font-weight:700;">${escapeHtml(stamp)}</span>` : null,
+        e.amount ? escapeHtml(e.amount) : null,
+        e.deadline ? `due ${escapeHtml(e.deadline)}` : null,
+        e.source_url ? `<a href="${escapeHtml(e.source_url)}" style="color:#93a2ac;text-decoration:none;">source &#8599;</a>` : null,
+      ].filter(Boolean);
+      return `<div style="border:1px solid #e2e8ed;border-left:3px solid ${isPublish ? '#1a8a5a' : '#d0d9df'};padding:10px 12px;margin:0 0 8px;">
+        <p style="margin:0;font-size:13px;line-height:1.4;"><a href="${escapeHtml(entryUrl)}" style="color:#14181c;font-weight:700;text-decoration:none;border-bottom:1px solid #9fd4f5;">${escapeHtml(e.name)}</a></p>
+        <p style="margin:5px 0 0;font-size:10.5px;color:#64717b;${MONO}">${metaParts.join(' &middot; ')}</p>
+      </div>`;
+    }).join('');
+    const more = totalNew - freshCount;
+    reviewHtml = `
+      ${sectionLabel(`New for review (${freshCount})`)}
+      ${cards}
+      ${more > 0 ? `<p style="margin:4px 0 0;font-size:12px;color:#64717b;">${more} more new in the queue</p>` : ''}
+      ${queueBtn}`;
+    reviewText = `\nNEW FOR REVIEW (${freshCount})\n` + finds.map(e => {
+      const route = e.curator_route ? routeLabel[e.curator_route] ?? '' : '';
+      const stamp = route ? ` [${route}${e.curator_confidence ? `·${e.curator_confidence.toUpperCase()}` : ''}]` : '';
+      return `  [${e.wire}]${stamp} ${e.name}${e.amount ? ` | ${e.amount}` : ''}${e.deadline ? ` | due ${e.deadline}` : ''}\n    ${queueUrl}?entry=${e.id}`;
+    }).join('\n') + (more > 0 ? `\n  ${more} more new in the queue` : '') + `\n  Open queue (${waiting} waiting): ${queueUrl}\n`;
+  } else {
+    reviewHtml = `
+      <p style="margin:18px 0 0;font-size:13px;color:#444;">Nothing new for review. Everything ingested overnight was duplicate or off-scope &mdash; the machine ran, filtered, and left you alone.</p>
+      ${waiting > 0 ? `<p style="margin:10px 0 0;font-size:12px;color:#64717b;"><a href="${escapeHtml(queueUrl)}" style="color:#64717b;">${waiting} older item${waiting === 1 ? '' : 's'} still queued</a></p>` : ''}`;
+    reviewText = `\nNothing new for review.${waiting > 0 ? ` ${waiting} older item${waiting === 1 ? '' : 's'} still queued: ${queueUrl}` : ''}\n`;
+  }
+
+  // ── 4. Closing soon ──────────────────────────────────────────────────
+  let closingHtml = '';
+  let closingText = '';
+  if (closingSoon && closingSoon.length > 0) {
+    const rows = closingSoon.map(c => {
+      const days = c.daysUntil <= 0 ? 'today' : c.daysUntil === 1 ? '1 day' : `${c.daysUntil} days`;
+      const name = c.sourceUrl
+        ? `<a href="${escapeHtml(c.sourceUrl)}" style="color:#14181c;font-weight:600;text-decoration:none;">${escapeHtml(c.name)}</a>`
+        : `<span style="font-weight:600;color:#14181c;">${escapeHtml(c.name)}</span>`;
+      return `<tr>
+        <td style="padding:6px 0;border-bottom:1px solid #eef2f5;font-size:12px;">${name}</td>
+        <td style="padding:6px 0;border-bottom:1px solid #eef2f5;font-size:12px;color:#64717b;text-align:right;${MONO}">${escapeHtml(c.amount || '')}</td>
+        <td style="padding:6px 0 6px 14px;border-bottom:1px solid #eef2f5;font-size:12px;color:#b45309;font-weight:800;text-align:right;white-space:nowrap;${MONO}">${days}</td>
+      </tr>`;
+    }).join('');
+    closingHtml = `
+      ${sectionLabel(`Closing soon · approved (${closingSoon.length})`)}
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0">${rows}</table>`;
+    closingText = `\nCLOSING SOON (${closingSoon.length})\n` + closingSoon.map(c =>
+      `  [${c.wire}] ${c.name} — ${c.deadline} (in ${c.daysUntil}d)${c.amount ? ` | ${c.amount}` : ''}`
+    ).join('\n') + '\n';
+  }
+
+  // ── 5. BD leads (Wednesdays) ─────────────────────────────────────────
   let bdHtml = '';
   let bdText = '';
   if (bdLeads && bdLeads.length > 0) {
     const lines = bdLeads.map(l => {
       const title = l.source
         ? `<a href="${escapeHtml(l.source)}" style="color:#0b86d1;text-decoration:none;font-weight:700;">${escapeHtml(l.lead)}</a>`
-        : `<span style="font-weight:700;color:#172026;">${escapeHtml(l.lead)}</span>`;
+        : `<span style="font-weight:700;color:#14181c;">${escapeHtml(l.lead)}</span>`;
       const note = l.notes ? `<div style="margin-top:5px;color:#64717b;font-size:12px;">${escapeHtml(l.notes.slice(0, 140))}</div>` : '';
-      return `<div style="background:#f7fafc;border:1px solid #dfe6eb;border-radius:5px;padding:11px 12px;margin:0 0 8px;">${title}${note}</div>`;
+      return `<div style="border:1px solid #e2e8ed;border-radius:5px;padding:11px 12px;margin:0 0 8px;">${title}${note}</div>`;
     }).join('');
     bdHtml = `
       ${sectionLabel(`BD leads (${bdLeads.length})`)}
@@ -479,35 +558,30 @@ export function renderDailyDigest(
     ).join('\n') + (bdLeadsUrl ? `\n  Triage: ${bdLeadsUrl}` : '') + '\n';
   }
 
-  let issuesHtml = '';
-  let issuesText = '';
-  if (issueCount > 0 && anomalies) {
-    issuesHtml = `
-      ${sectionLabel(`Production issues (${issueCount})`)}
-      ${anomalies.map(a => `<div style="background:#fff7ed;border:1px solid #f0b38a;border-radius:5px;padding:10px 12px;margin:0 0 8px;color:#a23b00;font-size:12px;line-height:1.45;">${escapeHtml(a)}</div>`).join('')}`;
-    issuesText = '\nPRODUCTION ISSUES\n' + anomalies.map(a => `  ! ${a}`).join('\n') + '\n';
-  }
-
   const body = `
-    ${metricHtml}
-    <div style="padding:0 20px 20px;">
-      ${openFirstHtml}
-      ${bdHtml}
+    ${bandHtml}
+    <div style="padding:0 24px 20px;">
       ${issuesHtml}
-      <p style="margin:20px 0 0;font-size:11px;color:#8b969e;"><a href="${escapeHtml(base)}" style="color:#8b969e;">Dashboard</a> has backlog, source, and cost detail.</p>
+      ${reviewHtml}
+      ${closingHtml}
+      ${bdHtml}
+      <p style="margin:20px 0 0;font-size:11px;color:#a6b1b9;"><a href="${escapeHtml(base)}" style="color:#a6b1b9;">Dashboard</a> &middot; backlog, sources, and cost detail live there.</p>
     </div>`;
 
-  const html = dailyDigestShell(`WireOps - ${digest.date}`, digest.date, body);
+  const html = dailyDigestShell(`WireOps - ${digest.date}`, slugDate, body);
+
+  const newPart = freshCount > 0 ? `${freshCount} new for review` : 'nothing new';
+  const subject = issueCount > 0
+    ? `⚠ ${subjDate} — ${issueCount} issue${issueCount === 1 ? '' : 's'} · ${freshCount > 0 ? `${freshCount} new` : 'nothing new'}`
+    : `${subjDate} — ${newPart} · run clean`;
 
   const text = `WIREOPS - ${digest.date}
-Fresh: ${freshCount} | Issues: ${issueCount} | Spend: ${spendText}
-${openFirstText}${bdText}${issuesText}
+${bandText}
+${issuesText}${reviewText}${closingText}${bdText}
 Dashboard: ${base}
 
 ---
 ${brand.name}`;
-
-  const subject = `WireOps - ${digest.date} | ${freshCount} fresh | ${issueCount} issue${issueCount === 1 ? '' : 's'}`;
 
   return { subject, html, text };
 }
