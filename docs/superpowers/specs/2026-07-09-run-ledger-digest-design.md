@@ -94,7 +94,7 @@ Both paths advance the watermark after their send succeeds (an item emailed via 
 
 ## 6. Dashboard deep link
 
-`client/src/components/dashboard/QueueTab.tsx`: on mount, read `?entry=<id>` from the URL; if present, fetch that entry and open `EntryDetailsSheet` with it; clear the param when the sheet closes. No single-entry endpoint exists today, so add `GET /api/scan/entries/:id` to `src/routes/scan-entries.ts` (validated integer id, 404 when missing; lands on the existing `/api/scan` mount, so session and internal-key auth behave like the other read endpoints). The SPA is already served for `/queue`; no other server change.
+The dashboard has no client router — `client/src/pages/Index.tsx` owns tab state and the `selectedEntry` state that controls `EntryDetailsSheet`, so the deep link lands there: on mount, read `?entry=<id>` from the URL; if present, switch to the queue tab, fetch that entry, and open the sheet; clear the param when the sheet closes. No single-entry endpoint exists today, so add `GET /api/scan/entries/:id` to `src/routes/scan-entries.ts` (validated integer id, 404 when missing; lands on the existing `/api/scan` mount, so session and internal-key auth behave like the other read endpoints). The SPA is already served for `/queue`; no other server change.
 
 ## 7. Testing
 
