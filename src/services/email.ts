@@ -342,6 +342,11 @@ export interface TopFindEntry {
   curator_confidence: string | null;
 }
 
+export type LaneState = 'ok' | 'warn' | 'fail';
+export interface RunLedgerLane { key: string; state: LaneState; detail: string; }
+/** Evidence that the machine ran — rendered inside the digest status band. */
+export interface RunLedger { lanes: RunLedgerLane[]; }
+
 export interface AgentBriefEntry {
   name: string;
   wire: string;

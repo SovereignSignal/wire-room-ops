@@ -118,7 +118,7 @@ export async function runDailyDigest(pool: Pool): Promise<DailyDigestResult> {
   }
 }
 
-import type { TopFindEntry } from '../services/email';
+import type { TopFindEntry, RunLedger, RunLedgerLane } from '../services/email';
 
 export interface SourceBreakdownRow {
   wire: string;
@@ -339,4 +339,81 @@ export async function advanceDigestWatermark(ids: number[], deps: WatermarkDeps 
   const iso = now.toISOString();
   for (const id of ids) map[String(id)] = iso;
   await deps.setAppState(DIGEST_WATERMARK_KEY, pruneEmailedIds(map, now));
+}
+
+export interface RunLedgerInputs {
+  date: string;                                  // digest date — the agent-brief app_state key
+  feeds?: { ok: number; total: number } | null;  // just-ran fold result; omit on send-now
+  forum?: 'ok' | 'fail' | null;                  // null/undefined = lane disabled → omitted
+}
+
+/**
+ * Assemble the run ledger from durable evidence, never scheduler bookkeeping
+ * (in-memory JobStatus resets on restart). Every probe is isolated: a failed
+ * probe renders "?" and can never block the digest email.
+ */
+export async function buildRunLedger(
+  pool: Pool,
+  inputs: RunLedgerInputs,
+  deps: WatermarkDeps = defaultWatermarkDeps,
+): Promise<{ ledger: RunLedger; anomalies: string[] }> {
+  const lanes: RunLedgerLane[] = [];
+  const anomalies: string[] = [];
+
+  // scans — api_usage_log purpose='scan' over 24h (grok/perplexity/parallel all log it)
+  try {
+    const { rows } = await pool.query<{ ok: string; failed: string }>(`
+      SELECT COUNT(*) FILTER (WHERE success) AS ok,
+             COUNT(*) FILTER (WHERE NOT success) AS failed
+      FROM api_usage_log
+      WHERE purpose = 'scan' AND created_at >= NOW() - INTERVAL '24 hours'`);
+    const ok = parseInt(rows[0]?.ok ?? '0', 10);
+    const failed = parseInt(rows[0]?.failed ?? '0', 10);
+    if (failed > 0) {
+      lanes.push({ key: 'scans', state: 'fail', detail: `scans ${ok}✓ ${failed}✗` });
+      anomalies.push(`Scan calls: ${failed} failed in 24h`);
+    } else if (ok === 0) {
+      lanes.push({ key: 'scans', state: 'warn', detail: 'scans 0' });
+    } else {
+      lanes.push({ key: 'scans', state: 'ok', detail: `scans ${ok}✓` });
+    }
+  } catch {
+    lanes.push({ key: 'scans', state: 'warn', detail: 'scans ?' });
+  }
+
+  if (inputs.feeds) {
+    const { ok, total } = inputs.feeds;
+    // feed-source failures already push their own anomaly in the scheduler fold
+    lanes.push({ key: 'feeds', state: ok === total ? 'ok' : 'fail', detail: `feeds ${ok}/${total}` });
+  }
+  if (inputs.forum) {
+    lanes.push({ key: 'forum', state: inputs.forum === 'ok' ? 'ok' : 'fail', detail: inputs.forum === 'ok' ? 'forum ✓' : 'forum ✗' });
+  }
+
+  // bridge — tele-sum summary-sync watermark age (15-min cycle; >6h = stale)
+  try {
+    const wm = await deps.getAppState<string>('summary-sync:watermark');
+    if (wm) {
+      const age = Date.now() - Date.parse(wm);
+      if (Number.isNaN(age) || age > 6 * 60 * 60 * 1000) {
+        lanes.push({ key: 'bridge', state: 'warn', detail: 'bridge stale' });
+        anomalies.push('Bridge: summary-sync watermark stale (>6h)');
+      } else {
+        lanes.push({ key: 'bridge', state: 'ok', detail: 'bridge ✓' });
+      }
+    }
+  } catch {
+    lanes.push({ key: 'bridge', state: 'warn', detail: 'bridge ?' });
+  }
+
+  // agent — today's brief presence; omitted when no agent ran (that is normal)
+  try {
+    const brief = await deps.getAppState<{ runs?: unknown[] }>(`agent-brief:${inputs.date}`);
+    const runs = brief?.runs?.length ?? 0;
+    if (runs > 0) lanes.push({ key: 'agent', state: 'ok', detail: `agent ${runs} run${runs === 1 ? '' : 's'}` });
+  } catch {
+    // omit — agent lane is optional evidence
+  }
+
+  return { ledger: { lanes }, anomalies };
 }

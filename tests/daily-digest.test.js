@@ -104,3 +104,52 @@ test('advanceDigestWatermark merges shown ids, prunes old ones, and no-ops on em
   await advanceDigestWatermark([], deps, now);
   assert.equal(store.size, 0, 'empty ids must not touch app_state');
 });
+
+const { buildRunLedger } = require('../src/jobs/daily-digest');
+
+test('buildRunLedger: clean day — scans ok, bridge fresh, agent present, no anomalies', async () => {
+  const pool = fakePool();
+  pool.queueResponse([{ ok: '41', failed: '0' }]);
+  const { deps } = fakeState({
+    'summary-sync:watermark': new Date().toISOString(),
+    'agent-brief:2026-07-09': { runs: [{}, {}] },
+  });
+
+  const { ledger, anomalies } = await buildRunLedger(pool, { date: '2026-07-09', feeds: { ok: 19, total: 19 }, forum: 'ok' }, deps);
+
+  const details = ledger.lanes.map(l => l.detail);
+  assert.deepEqual(details, ['scans 41✓', 'feeds 19/19', 'forum ✓', 'bridge ✓', 'agent 2 runs']);
+  assert.ok(ledger.lanes.every(l => l.state === 'ok'));
+  assert.deepEqual(anomalies, []);
+});
+
+test('buildRunLedger: failed scans and stale bridge produce anomalies', async () => {
+  const pool = fakePool();
+  pool.queueResponse([{ ok: '39', failed: '2' }]);
+  const { deps } = fakeState({
+    'summary-sync:watermark': new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString(),
+  });
+
+  const { ledger, anomalies } = await buildRunLedger(pool, { date: '2026-07-09' }, deps);
+
+  const scans = ledger.lanes.find(l => l.key === 'scans');
+  assert.equal(scans.state, 'fail');
+  assert.equal(scans.detail, 'scans 39✓ 2✗');
+  const bridge = ledger.lanes.find(l => l.key === 'bridge');
+  assert.equal(bridge.state, 'warn');
+  assert.equal(anomalies.length, 2);
+  assert.match(anomalies[0], /2 failed/);
+  assert.match(anomalies[1], /stale/);
+});
+
+test('buildRunLedger: probe failures degrade to "?" lanes and never throw', async () => {
+  const pool = { async query() { throw new Error('db down'); } };
+  const deps = { async getAppState() { throw new Error('db down'); }, async setAppState() {} };
+
+  const { ledger, anomalies } = await buildRunLedger(pool, { date: '2026-07-09', feeds: { ok: 17, total: 19 } }, deps);
+
+  assert.equal(ledger.lanes.find(l => l.key === 'scans').detail, 'scans ?');
+  assert.equal(ledger.lanes.find(l => l.key === 'feeds').state, 'fail');
+  assert.equal(ledger.lanes.find(l => l.key === 'bridge').detail, 'bridge ?');
+  assert.deepEqual(anomalies, []);
+});
