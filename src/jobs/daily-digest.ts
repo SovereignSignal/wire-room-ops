@@ -8,6 +8,7 @@
  */
 
 import type { Pool } from 'pg';
+import { getAppState, setAppState } from '../db';
 
 export interface WireDigestStats {
   wire: string;
@@ -189,10 +190,13 @@ export async function getTopPendingFinds(pool: Pool, limit = 5): Promise<TopFind
   const client = await pool.connect();
   try {
     const result = await client.query<{
-      name: string; wire: string; quality_score: number;
+      id: number; name: string; wire: string; quality_score: number | null;
       amount: string | null; deadline: string | null; source_url: string | null;
+      curator_route: string | null; curator_confidence: string | null;
     }>(`
-      SELECT name, wire, quality_score, amount, deadline, source_url
+      SELECT id, name, wire, quality_score, amount, deadline, source_url,
+             metadata->'curator'->>'route' AS curator_route,
+             metadata->'curator'->>'confidence' AS curator_confidence
       FROM scan_entries
       WHERE status = 'queued'
         AND created_at >= NOW() - INTERVAL '24 hours'
@@ -221,4 +225,118 @@ export async function getTopPendingFinds(pool: Pool, limit = 5): Promise<TopFind
   } finally {
     client.release();
   }
+}
+
+// ── Digest email watermark ─────────────────────────────────────────────────
+// An entry is emailed by the digest AT MOST ONCE, ever. The watermark is a
+// forward-only map in app_state; it advances only after a successful send
+// (same pattern as the BD roles lane), so a failed email never swallows items.
+
+export const DIGEST_WATERMARK_KEY = 'digest:emailed-ids';
+const WATERMARK_MAX_AGE_DAYS = 60;
+
+/** entryId -> ISO timestamp of the digest that emailed it */
+export type EmailedIdsMap = Record<string, string>;
+
+export interface WatermarkDeps {
+  getAppState: typeof getAppState;
+  setAppState: typeof setAppState;
+}
+const defaultWatermarkDeps: WatermarkDeps = { getAppState, setAppState };
+
+export function pruneEmailedIds(map: EmailedIdsMap, now = new Date(), maxAgeDays = WATERMARK_MAX_AGE_DAYS): EmailedIdsMap {
+  const cutoff = now.getTime() - maxAgeDays * 24 * 60 * 60 * 1000;
+  const out: EmailedIdsMap = {};
+  for (const [id, iso] of Object.entries(map)) {
+    const t = Date.parse(iso);
+    if (!Number.isNaN(t) && t >= cutoff) out[id] = iso;
+  }
+  return out;
+}
+
+export interface FreshFindsResult {
+  finds: TopFindEntry[];
+  totalNew: number;   // all eligible never-emailed items (finds is the top slice)
+  seeded: boolean;    // first run: watermark initialized, nothing surfaced
+  fallback: boolean;  // watermark unreadable: 24h window used instead
+}
+
+const FRESH_FINDS_SELECT = `
+  SELECT id, name, wire, quality_score, amount, deadline, source_url,
+         metadata->'curator'->>'route' AS curator_route,
+         metadata->'curator'->>'confidence' AS curator_confidence
+  FROM scan_entries
+  WHERE status = 'queued'
+    AND (deadline_parsed IS NULL OR deadline_parsed >= CURRENT_DATE)`;
+
+const CURATOR_ORDER = `
+  ORDER BY
+    CASE metadata->'curator'->>'route'
+      WHEN 'publish' THEN 0
+      WHEN 'source_check' THEN 1
+      WHEN 'relationship_signal' THEN 2
+      WHEN 'park' THEN 3
+      WHEN 'decline' THEN 4
+      ELSE 5
+    END,
+    CASE metadata->'curator'->>'confidence'
+      WHEN 'high' THEN 0
+      WHEN 'med' THEN 1
+      WHEN 'low' THEN 2
+      ELSE 3
+    END,
+    quality_score DESC NULLS LAST,
+    deadline_parsed ASC NULLS LAST,
+    created_at DESC`;
+
+export async function getFreshFinds(pool: Pool, limit = 8, deps: WatermarkDeps = defaultWatermarkDeps): Promise<FreshFindsResult> {
+  let map: EmailedIdsMap | null;
+  try {
+    map = await deps.getAppState<EmailedIdsMap>(DIGEST_WATERMARK_KEY);
+  } catch (err) {
+    console.error('[DailyDigest] Watermark read failed — falling back to 24h window:', err instanceof Error ? err.message : err);
+    const { rows } = await pool.query<TopFindEntry>(
+      `${FRESH_FINDS_SELECT}
+        AND created_at >= NOW() - INTERVAL '24 hours'
+      ${CURATOR_ORDER}
+      LIMIT $1`, [limit]);
+    return { finds: rows, totalNew: rows.length, seeded: false, fallback: true };
+  }
+
+  if (map === null) {
+    const { rows } = await pool.query<{ id: number }>(`SELECT id FROM scan_entries WHERE status = 'queued'`);
+    const nowIso = new Date().toISOString();
+    const seeded: EmailedIdsMap = {};
+    for (const r of rows) seeded[String(r.id)] = nowIso;
+    await deps.setAppState(DIGEST_WATERMARK_KEY, seeded);
+    console.log(`[DailyDigest] Watermark seeded with ${rows.length} queued entries (forward-only start)`);
+    return { finds: [], totalNew: 0, seeded: true, fallback: false };
+  }
+
+  const excluded = Object.keys(map).map(Number).filter(Number.isInteger);
+  const { rows } = await pool.query<TopFindEntry>(
+    `${FRESH_FINDS_SELECT}
+      AND NOT (id = ANY($2::int[]))
+    ${CURATOR_ORDER}
+    LIMIT $1`, [limit, excluded]);
+  const count = await pool.query<{ total_new: string }>(
+    `SELECT COUNT(*) AS total_new
+     FROM scan_entries
+     WHERE status = 'queued'
+       AND (deadline_parsed IS NULL OR deadline_parsed >= CURRENT_DATE)
+       AND NOT (id = ANY($1::int[]))`, [excluded]);
+  return { finds: rows, totalNew: parseInt(count.rows[0]?.total_new ?? '0', 10), seeded: false, fallback: false };
+}
+
+export async function advanceDigestWatermark(ids: number[], deps: WatermarkDeps = defaultWatermarkDeps, now = new Date()): Promise<void> {
+  if (ids.length === 0) return;
+  let map: EmailedIdsMap = {};
+  try {
+    map = (await deps.getAppState<EmailedIdsMap>(DIGEST_WATERMARK_KEY)) ?? {};
+  } catch {
+    // Unreadable map: start fresh — worst case an old item repeats once.
+  }
+  const iso = now.toISOString();
+  for (const id of ids) map[String(id)] = iso;
+  await deps.setAppState(DIGEST_WATERMARK_KEY, pruneEmailedIds(map, now));
 }

@@ -331,12 +331,15 @@ Review: ${reviewUrl}`.trim();
 }
 
 export interface TopFindEntry {
+  id: number;
   name: string;
   wire: string;
-  quality_score: number;
+  quality_score: number | null;
   amount: string | null;
   deadline: string | null;
   source_url: string | null;
+  curator_route: string | null;
+  curator_confidence: string | null;
 }
 
 export interface AgentBriefEntry {
