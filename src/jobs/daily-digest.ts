@@ -183,7 +183,7 @@ export async function getSourceBreakdown(pool: Pool): Promise<SourceBreakdownRow
 }
 
 /**
- * Fetch the top N pending entries by quality score for inclusion in the digest email.
+ * Fetch fresh pending entries for inclusion in the digest email.
  */
 export async function getTopPendingFinds(pool: Pool, limit = 5): Promise<TopFindEntry[]> {
   const client = await pool.connect();
@@ -195,8 +195,26 @@ export async function getTopPendingFinds(pool: Pool, limit = 5): Promise<TopFind
       SELECT name, wire, quality_score, amount, deadline, source_url
       FROM scan_entries
       WHERE status = 'queued'
+        AND created_at >= NOW() - INTERVAL '24 hours'
         AND (deadline_parsed IS NULL OR deadline_parsed >= CURRENT_DATE)
-      ORDER BY quality_score DESC, created_at DESC
+      ORDER BY
+        CASE metadata->'curator'->>'route'
+          WHEN 'publish' THEN 0
+          WHEN 'source_check' THEN 1
+          WHEN 'relationship_signal' THEN 2
+          WHEN 'park' THEN 3
+          WHEN 'decline' THEN 4
+          ELSE 5
+        END,
+        CASE metadata->'curator'->>'confidence'
+          WHEN 'high' THEN 0
+          WHEN 'med' THEN 1
+          WHEN 'low' THEN 2
+          ELSE 3
+        END,
+        quality_score DESC NULLS LAST,
+        deadline_parsed ASC NULLS LAST,
+        created_at DESC
       LIMIT $1
     `, [limit]);
     return result.rows;

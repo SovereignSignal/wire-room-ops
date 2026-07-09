@@ -78,6 +78,48 @@ function emailShell(title: string, bodyHtml: string): string {
 </html>`.trim();
 }
 
+function dailyDigestShell(title: string, date: string, bodyHtml: string): string {
+  const brand = getBrand();
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtml(title)}</title>
+</head>
+<body style="margin:0;padding:0;background-color:#eef3f5;${FONT}">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:#eef3f5;">
+    <tr>
+      <td align="center" style="padding:28px 14px;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:560px;background-color:#ffffff;border:1px solid #cad4dc;border-radius:6px;overflow:hidden;">
+          <tr>
+            <td style="padding:16px 20px;background-color:#172026;color:#ffffff;">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                <tr>
+                  <td style="font-size:14px;font-weight:800;letter-spacing:3px;color:#ffffff;">WIRE<span style="color:#8fd3ff;">OPS</span></td>
+                  <td align="right" style="font-size:11px;color:#9cc9e8;${MONO}">${escapeHtml(date)}</td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0;">
+              ${bodyHtml}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:14px 20px;border-top:1px solid #dfe6eb;">
+              <p style="margin:0;color:#8b969e;font-size:11px;">${escapeHtml(brand.name)}</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`.trim();
+}
+
 function emailBtn(href: string, label: string): string {
   return `<table role="presentation" cellspacing="0" cellpadding="0" style="margin:20px 0;">
   <tr>
@@ -342,16 +384,10 @@ export interface DigestEmailExtras {
 }
 
 /**
- * Render the daily digest email (2026-07-03 redesign).
+ * Render the daily digest email.
  *
- * Design contract — the email answers "what needs me today?" in one glance:
- *   1. one-line health strip (in / to-review / approved / $ / lanes)
- *   2. NEEDS YOU — the queued items worth attention, one line each
- *   3. BD LEADS — Wednesdays, the verified Paid Work Leads written this run
- *   4. HEADS-UP — anomalies only (lane failures, dupe spikes, cost spikes)
- *   5. one-line activity notes (agent scan, approved + export links)
- * Ops telemetry tables (per-source matrix, cost table, wire table) live in
- * the dashboard, not here. Quiet day = short email.
+ * Contract: show fresh high-signal items and production issues only.
+ * Backlog and routine activity telemetry stay in the dashboard.
  */
 export function renderDailyDigest(
   digest: import('../jobs/daily-digest').DailyDigestResult,
@@ -361,131 +397,109 @@ export function renderDailyDigest(
   const brand = getBrand();
   const base = dashboardUrl.replace(/\/$/, '');
   const reviewUrl = `${base}/queue`;
-  const { topFinds, csvExport, downloadUrls, agentBrief, costRecap, bdLeads, bdLeadsUrl, anomalies } = extras;
+  const { topFinds, costRecap, bdLeads, bdLeadsUrl, anomalies } = extras;
+  const freshFinds = topFinds ?? [];
+  const freshCount = freshFinds.length;
+  const issueCount = anomalies?.length ?? 0;
+  const spendText = costRecap ? `$${costRecap.total.toFixed(2)} API` : '$0.00 API';
 
   const wireChip = (w: string) =>
-    `<span style="display:inline-block;padding:1px 6px;border:1px solid #ddd;border-radius:3px;font-size:10px;color:#666;text-transform:uppercase;${MONO}">${escapeHtml(w)}</span>`;
+    `<span style="display:inline-block;padding:2px 7px;border:1px solid #cad4dc;border-radius:4px;font-size:10px;color:#64717b;text-transform:uppercase;${MONO}">${escapeHtml(w)}</span>`;
 
-  // ── 1. Health strip ────────────────────────────────────────────────────
-  const totalIn = digest.wires.reduce((n, w) => n + w.totalIngested, 0);
-  const approved24 = digest.wires.reduce((n, w) => n + w.recentlyApproved, 0);
-  const lanesOk = !anomalies || anomalies.length === 0;
-  const stripParts = [
-    `${totalIn} in`,
-    `<strong style="color:${digest.totalPendingReview > 0 ? '#0088cc' : '#1a8a5a'};">${digest.totalPendingReview} to review</strong>`,
-    `${approved24} approved`,
-    costRecap ? `$${costRecap.total.toFixed(2)} API` : null,
-    lanesOk ? `lanes <span style="color:#1a8a5a;">\u2713</span>` : `<strong style="color:#cc4400;">\u26a0 ${anomalies!.length} heads-up</strong>`,
-  ].filter(Boolean);
-  const stripHtml = `<p style="margin:0 0 18px;font-size:13px;color:#444;${MONO}">${stripParts.join(' &nbsp;\u00b7&nbsp; ')}</p>`;
-  const stripText = [
-    `${totalIn} in`, `${digest.totalPendingReview} to review`, `${approved24} approved`,
-    costRecap ? `$${costRecap.total.toFixed(2)} API` : null, lanesOk ? 'lanes OK' : `${anomalies!.length} HEADS-UP`,
-  ].filter(Boolean).join(' | ');
+  const metricCell = (label: string, value: string, color = '#172026') => `
+    <td width="33.33%" align="center" style="padding:14px 8px;border-right:1px solid #dfe6eb;">
+      <div style="font-size:23px;line-height:1;font-weight:800;color:${color};${FONT}">${escapeHtml(value)}</div>
+      <div style="margin-top:5px;font-size:10px;color:#64717b;text-transform:uppercase;letter-spacing:0.7px;">${escapeHtml(label)}</div>
+    </td>`;
 
-  // ── 2. NEEDS YOU ───────────────────────────────────────────────────────
-  let needsHtml = '';
-  let needsText = '';
-  if (digest.totalPendingReview > 0 && topFinds && topFinds.length > 0) {
-    const shown = topFinds.slice(0, 8);
+  const metricHtml = `
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-bottom:1px solid #dfe6eb;">
+      <tr>
+        ${metricCell('Fresh', String(freshCount))}
+        ${metricCell('Issues', String(issueCount), issueCount > 0 ? '#cc4400' : '#1a8a5a')}
+        <td width="33.33%" align="center" style="padding:14px 8px;">
+          <div style="font-size:20px;line-height:1;font-weight:800;color:#172026;${FONT}">${escapeHtml(spendText.replace(' API', ''))}</div>
+          <div style="margin-top:5px;font-size:10px;color:#64717b;text-transform:uppercase;letter-spacing:0.7px;">Spend</div>
+        </td>
+      </tr>
+    </table>`;
+
+  let openFirstHtml = '';
+  let openFirstText = '';
+  if (freshCount > 0) {
+    const shown = freshFinds.slice(0, 8);
     const lines = shown.map(e => {
       const nameCell = e.source_url
-        ? `<a href="${escapeHtml(e.source_url)}" style="color:#0088cc;text-decoration:none;font-weight:600;">${escapeHtml(e.name)}</a>`
-        : `<span style="font-weight:600;color:#222;">${escapeHtml(e.name)}</span>`;
-      const meta = [e.amount, e.deadline ? `due ${e.deadline}` : null].filter(Boolean).map(x => escapeHtml(String(x))).join(' \u00b7 ');
-      return `<p style="margin:0 0 7px;font-size:13px;color:#222;line-height:1.5;">${wireChip(e.wire)} ${nameCell}${meta ? ` <span style="color:#888;">\u2014 ${meta}</span>` : ''}</p>`;
+        ? `<a href="${escapeHtml(e.source_url)}" style="color:#0b86d1;text-decoration:none;font-weight:700;">${escapeHtml(e.name)}</a>`
+        : `<span style="font-weight:700;color:#172026;">${escapeHtml(e.name)}</span>`;
+      const meta = [e.amount, e.deadline ? `due ${e.deadline}` : null].filter(Boolean).map(x => escapeHtml(String(x))).join(' &middot; ');
+      return `<div style="background:#f7fafc;border:1px solid #dfe6eb;border-radius:5px;padding:11px 12px;margin:0 0 8px;">
+        <div style="font-size:13px;line-height:1.35;color:#172026;">${wireChip(e.wire)} <span style="vertical-align:middle;">${nameCell}</span></div>
+        ${meta ? `<div style="margin-top:5px;font-size:12px;color:#64717b;">${meta}</div>` : ''}
+      </div>`;
     }).join('');
-    const more = digest.totalPendingReview - shown.length;
-    needsHtml = `
-      ${sectionLabel(`Needs you (${digest.totalPendingReview})`)}
+    const more = freshCount - shown.length;
+    openFirstHtml = `
+      ${sectionLabel(`Open first (${freshCount})`)}
       ${lines}
-      ${more > 0 ? `<p style="margin:2px 0 8px;font-size:12px;color:#888;">\u2026and ${more} more in the queue</p>` : ''}
-      ${emailBtn(reviewUrl, 'Review queue')}`;
-    needsText = `\nNEEDS YOU (${digest.totalPendingReview})\n` + shown.map(e =>
+      ${more > 0 ? `<p style="margin:4px 0 8px;font-size:12px;color:#64717b;">${more} more fresh item${more === 1 ? '' : 's'} in the queue</p>` : ''}
+      ${emailBtn(reviewUrl, 'Open queue')}`;
+    openFirstText = `\nOPEN FIRST (${freshCount})\n` + shown.map(e =>
       `  [${e.wire}] ${e.name}${e.amount ? ` | ${e.amount}` : ''}${e.deadline ? ` | due ${e.deadline}` : ''}`
-    ).join('\n') + (more > 0 ? `\n  ...and ${more} more` : '') + `\n  Review: ${reviewUrl}\n`;
-  } else if (digest.totalPendingReview === 0) {
-    needsHtml = `<p style="margin:0 0 16px;font-size:13px;color:#1a8a5a;">Queue is clear \u2014 nothing needs you today.</p>`;
-    needsText = '\nQueue is clear - nothing needs you today.\n';
+    ).join('\n') + (more > 0 ? `\n  ${more} more fresh item${more === 1 ? '' : 's'}` : '') + `\n  Queue: ${reviewUrl}\n`;
+  } else {
+    openFirstHtml = `<p style="margin:18px 0 0;font-size:13px;color:#1a8a5a;">No fresh high-signal items in the last 24h.</p>`;
+    openFirstText = '\nNo fresh high-signal items in the last 24h.\n';
   }
 
-  // ── 3. BD LEADS (Wednesdays) ───────────────────────────────────────────
   let bdHtml = '';
   let bdText = '';
   if (bdLeads && bdLeads.length > 0) {
     const lines = bdLeads.map(l => {
       const title = l.source
-        ? `<a href="${escapeHtml(l.source)}" style="color:#7c4dcc;text-decoration:none;font-weight:600;">${escapeHtml(l.lead)}</a>`
-        : `<span style="font-weight:600;color:#222;">${escapeHtml(l.lead)}</span>`;
-      const note = l.notes ? `<span style="color:#888;"> \u2014 ${escapeHtml(l.notes.slice(0, 140))}</span>` : '';
-      return `<p style="margin:0 0 7px;font-size:13px;color:#222;line-height:1.5;">${title}${note}</p>`;
+        ? `<a href="${escapeHtml(l.source)}" style="color:#0b86d1;text-decoration:none;font-weight:700;">${escapeHtml(l.lead)}</a>`
+        : `<span style="font-weight:700;color:#172026;">${escapeHtml(l.lead)}</span>`;
+      const note = l.notes ? `<div style="margin-top:5px;color:#64717b;font-size:12px;">${escapeHtml(l.notes.slice(0, 140))}</div>` : '';
+      return `<div style="background:#f7fafc;border:1px solid #dfe6eb;border-radius:5px;padding:11px 12px;margin:0 0 8px;">${title}${note}</div>`;
     }).join('');
     bdHtml = `
-      ${sectionLabel(`BD leads \u2014 verified, not contacted (${bdLeads.length})`)}
+      ${sectionLabel(`BD leads (${bdLeads.length})`)}
       ${lines}
       ${bdLeadsUrl ? emailBtn(bdLeadsUrl, 'Triage in Notion') : ''}`;
     bdText = `\nBD LEADS - VERIFIED, NOT CONTACTED (${bdLeads.length})\n` + bdLeads.map(l =>
-      `  ${l.lead}${l.notes ? ` — ${l.notes.slice(0, 110)}` : ''}${l.source ? `\n    ${l.source}` : ''}`
+      `  ${l.lead}${l.notes ? ` | ${l.notes.slice(0, 110)}` : ''}${l.source ? `\n    ${l.source}` : ''}`
     ).join('\n') + (bdLeadsUrl ? `\n  Triage: ${bdLeadsUrl}` : '') + '\n';
   }
 
-  // ── 4. HEADS-UP (anomalies only) ───────────────────────────────────────
-  let headsHtml = '';
-  let headsText = '';
-  if (anomalies && anomalies.length > 0) {
-    headsHtml = `
-      ${sectionLabel('Heads-up')}
-      ${anomalies.map(a => `<p style="margin:0 0 6px;font-size:12px;color:#cc4400;">\u26a0 ${escapeHtml(a)}</p>`).join('')}`;
-    headsText = '\nHEADS-UP\n' + anomalies.map(a => `  ! ${a}`).join('\n') + '\n';
+  let issuesHtml = '';
+  let issuesText = '';
+  if (issueCount > 0 && anomalies) {
+    issuesHtml = `
+      ${sectionLabel(`Production issues (${issueCount})`)}
+      ${anomalies.map(a => `<div style="background:#fff7ed;border:1px solid #f0b38a;border-radius:5px;padding:10px 12px;margin:0 0 8px;color:#a23b00;font-size:12px;line-height:1.45;">${escapeHtml(a)}</div>`).join('')}`;
+    issuesText = '\nPRODUCTION ISSUES\n' + anomalies.map(a => `  ! ${a}`).join('\n') + '\n';
   }
-
-  // ── 5. Activity one-liners ─────────────────────────────────────────────
-  const notes: string[] = [];
-  const notesText: string[] = [];
-  if (agentBrief?.runs?.length) {
-    const runs = agentBrief.runs;
-    const searches = runs.reduce((n, r) => n + (r.searchesDone ?? 0), 0);
-    const submitted = runs.reduce((n, r) => n + (r.entries?.length ?? 0), 0);
-    const dupes = runs.reduce((n, r) => n + (r.skippedDuplicates ?? 0), 0);
-    notes.push(`Agent scan: ${runs.length} run${runs.length > 1 ? 's' : ''} \u00b7 ${searches} searches \u00b7 ${submitted} submitted \u00b7 ${dupes} dupes skipped`);
-    notesText.push(`Agent scan: ${runs.length} runs | ${searches} searches | ${submitted} submitted | ${dupes} dupes skipped`);
-  }
-  if (csvExport && csvExport.entryCount > 0) {
-    const links = [
-      downloadUrls?.csv ? `<a href="${escapeHtml(downloadUrls.csv)}" style="color:#0088cc;">CSV</a>` : null,
-      downloadUrls?.md ? `<a href="${escapeHtml(downloadUrls.md)}" style="color:#0088cc;">Markdown</a>` : null,
-    ].filter(Boolean).join(' \u00b7 ');
-    notes.push(`Approved last 24h: ${csvExport.entryCount}${links ? ` \u2014 ${links}` : ''}`);
-    notesText.push(`Approved last 24h: ${csvExport.entryCount}${downloadUrls?.csv ? ` | CSV: ${downloadUrls.csv}` : ''}${downloadUrls?.md ? ` | MD: ${downloadUrls.md}` : ''}`);
-  }
-  const notesHtml = notes.length
-    ? `${sectionLabel('Activity')}${notes.map(n => `<p style="margin:0 0 6px;font-size:12px;color:#666;">${n}</p>`).join('')}`
-    : '';
 
   const body = `
-    ${stripHtml}
-    ${needsHtml}
-    ${bdHtml}
-    ${headsHtml}
-    ${notesHtml}
-    <p style="margin:22px 0 0;font-size:11px;color:#aaa;"><a href="${escapeHtml(base)}" style="color:#aaa;">Dashboard</a> \u00b7 per-source and cost detail lives there, not here.</p>`;
+    ${metricHtml}
+    <div style="padding:0 20px 20px;">
+      ${openFirstHtml}
+      ${bdHtml}
+      ${issuesHtml}
+      <p style="margin:20px 0 0;font-size:11px;color:#8b969e;"><a href="${escapeHtml(base)}" style="color:#8b969e;">Dashboard</a> has backlog, source, and cost detail.</p>
+    </div>`;
 
-  const html = emailShell(`WireOps \u2014 ${digest.date}`, body);
+  const html = dailyDigestShell(`WireOps - ${digest.date}`, digest.date, body);
 
   const text = `WIREOPS - ${digest.date}
-${stripText}
-${needsText}${bdText}${headsText}${notesText.length ? '\nACTIVITY\n' + notesText.map(n => '  ' + n).join('\n') + '\n' : ''}
+Fresh: ${freshCount} | Issues: ${issueCount} | Spend: ${spendText}
+${openFirstText}${bdText}${issuesText}
 Dashboard: ${base}
 
 ---
 ${brand.name}`;
 
-  const subjectParts = [
-    `${digest.totalPendingReview} to review`,
-    bdLeads && bdLeads.length > 0 ? `${bdLeads.length} BD lead${bdLeads.length > 1 ? 's' : ''}` : null,
-    !lanesOk ? `\u26a0 ${anomalies!.length} heads-up` : null,
-  ].filter(Boolean);
-  const subject = `WireOps \u2014 ${digest.date} | ${subjectParts.join(' \u00b7 ')}`;
+  const subject = `WireOps - ${digest.date} | ${freshCount} fresh | ${issueCount} issue${issueCount === 1 ? '' : 's'}`;
 
   return { subject, html, text };
 }
