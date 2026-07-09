@@ -9,6 +9,10 @@
 
 import type { Pool } from 'pg';
 import { getAppState, setAppState } from '../db';
+import { config } from '../config';
+import { sendDailyDigestEmail } from '../services/email';
+import type { DigestBdLead, ClosingSoonRow } from '../services/email';
+import { runDeadlineDigest } from './deadline-digest';
 
 export interface WireDigestStats {
   wire: string;
@@ -181,50 +185,6 @@ export async function getSourceBreakdown(pool: Pool): Promise<SourceBreakdownRow
     ORDER BY wire, total DESC
   `);
   return rows;
-}
-
-/**
- * Fetch fresh pending entries for inclusion in the digest email.
- */
-export async function getTopPendingFinds(pool: Pool, limit = 5): Promise<TopFindEntry[]> {
-  const client = await pool.connect();
-  try {
-    const result = await client.query<{
-      id: number; name: string; wire: string; quality_score: number | null;
-      amount: string | null; deadline: string | null; source_url: string | null;
-      curator_route: string | null; curator_confidence: string | null;
-    }>(`
-      SELECT id, name, wire, quality_score, amount, deadline, source_url,
-             metadata->'curator'->>'route' AS curator_route,
-             metadata->'curator'->>'confidence' AS curator_confidence
-      FROM scan_entries
-      WHERE status = 'queued'
-        AND created_at >= NOW() - INTERVAL '24 hours'
-        AND (deadline_parsed IS NULL OR deadline_parsed >= CURRENT_DATE)
-      ORDER BY
-        CASE metadata->'curator'->>'route'
-          WHEN 'publish' THEN 0
-          WHEN 'source_check' THEN 1
-          WHEN 'relationship_signal' THEN 2
-          WHEN 'park' THEN 3
-          WHEN 'decline' THEN 4
-          ELSE 5
-        END,
-        CASE metadata->'curator'->>'confidence'
-          WHEN 'high' THEN 0
-          WHEN 'med' THEN 1
-          WHEN 'low' THEN 2
-          ELSE 3
-        END,
-        quality_score DESC NULLS LAST,
-        deadline_parsed ASC NULLS LAST,
-        created_at DESC
-      LIMIT $1
-    `, [limit]);
-    return result.rows;
-  } finally {
-    client.release();
-  }
 }
 
 // ── Digest email watermark ─────────────────────────────────────────────────
@@ -416,4 +376,118 @@ export async function buildRunLedger(
   }
 
   return { ledger: { lanes }, anomalies };
+}
+
+export interface AssembleDigestOptions {
+  recipients?: string[];
+  /** In-fold lane failures collected by the scheduler (forum/feeds/weekly/BD) */
+  laneAnomalies?: string[];
+  feeds?: { ok: number; total: number } | null;
+  forum?: 'ok' | 'fail' | null;
+  bdLeads?: DigestBdLead[];
+  bdLeadsUrl?: string;
+}
+
+export interface DigestSendSummary {
+  date: string;
+  freshCount: number;
+  totalNew: number;
+  issueCount: number;
+  seeded: boolean;
+}
+
+export interface AssembleDigestDeps {
+  digest: typeof runDailyDigest;
+  fresh: typeof getFreshFinds;
+  ledger: typeof buildRunLedger;
+  deadlines: typeof runDeadlineDigest;
+  cost: typeof getCostRecap;
+  sources: typeof getSourceBreakdown;
+  send: typeof sendDailyDigestEmail;
+  advance: (ids: number[]) => Promise<void>;
+}
+
+const defaultAssembleDeps: AssembleDigestDeps = {
+  digest: runDailyDigest,
+  fresh: getFreshFinds,
+  ledger: buildRunLedger,
+  deadlines: runDeadlineDigest,
+  cost: getCostRecap,
+  sources: getSourceBreakdown,
+  send: sendDailyDigestEmail,
+  advance: (ids) => advanceDigestWatermark(ids),
+};
+
+/**
+ * ONE code path for the digest email — used by both the scheduler's daily
+ * fold and the dashboard send-now button, so the two can never diverge.
+ * The watermark advances only after the send succeeds.
+ */
+export async function assembleAndSendDailyDigest(
+  pool: Pool,
+  opts: AssembleDigestOptions = {},
+  deps: AssembleDigestDeps = defaultAssembleDeps,
+): Promise<DigestSendSummary> {
+  const digest = await deps.digest(pool);
+  const freshRes = await deps.fresh(pool, 8);
+
+  let ledger: import('../services/email').RunLedger = { lanes: [] };
+  const anomalies = [...(opts.laneAnomalies ?? [])];
+  try {
+    const built = await deps.ledger(pool, { date: digest.date, feeds: opts.feeds ?? null, forum: opts.forum ?? null });
+    ledger = built.ledger;
+    anomalies.push(...built.anomalies);
+  } catch (e) {
+    console.error('[DailyDigest] Run ledger failed (non-fatal):', e instanceof Error ? e.message : e);
+  }
+
+  let closingSoon: ClosingSoonRow[] = [];
+  try {
+    const results = await deps.deadlines(pool);
+    closingSoon = results.flatMap(r => r.entries.map(e => ({
+      name: e.name, wire: r.wire, deadline: e.deadline, daysUntil: e.daysUntil,
+      amount: e.amount, sourceUrl: e.sourceUrl,
+    })));
+  } catch (e) {
+    console.error('[DailyDigest] Closing-soon fold failed (non-fatal):', e instanceof Error ? e.message : e);
+  }
+
+  let costRecap: { rows: CostRow[]; total: number } | undefined;
+  try {
+    costRecap = await deps.cost(pool);
+    if (costRecap.total > 5) anomalies.push(`API spend $${costRecap.total.toFixed(2)} in 24h (>$5)`);
+  } catch (e) {
+    console.error('[DailyDigest] Cost recap failed (non-fatal):', e instanceof Error ? e.message : e);
+  }
+
+  try {
+    const breakdown = await deps.sources(pool);
+    for (const row of breakdown) {
+      if (row.total >= 10 && row.duplicates / row.total > 0.6) {
+        anomalies.push(`High dupe rate: ${row.wire}/${row.source} — ${Math.round((row.duplicates / row.total) * 100)}% of ${row.total}`);
+      }
+    }
+  } catch (e) {
+    console.error('[DailyDigest] Source breakdown failed (non-fatal):', e instanceof Error ? e.message : e);
+  }
+
+  await deps.send(digest, config.app.url, opts.recipients, {
+    freshFinds: freshRes.finds,
+    totalNewEligible: freshRes.totalNew,
+    runLedger: ledger,
+    closingSoon,
+    costRecap,
+    bdLeads: opts.bdLeads,
+    bdLeadsUrl: opts.bdLeadsUrl,
+    anomalies,
+  });
+  await deps.advance(freshRes.finds.map(f => f.id));
+
+  return {
+    date: digest.date,
+    freshCount: freshRes.finds.length,
+    totalNew: freshRes.totalNew,
+    issueCount: anomalies.length,
+    seeded: freshRes.seeded,
+  };
 }

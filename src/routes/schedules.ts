@@ -15,7 +15,6 @@
 import { Router, Request, Response } from 'express';
 import { SCHEDULE_TYPES } from '../types/intake';
 import { getPool } from '../db';
-import { config } from '../config';
 import { isValidUuid } from '../utils/validation';
 import { getSchedule, getSchedules, setSchedule, addSchedule, removeSchedule, formatScheduleDescription, getNextRunTime, sendTestAlert, getSchedulerStatus, ScheduleConfig } from '../services/scheduler';
 
@@ -179,8 +178,7 @@ router.delete('/schedules/:id', async (req: Request, res: Response) => {
 router.post('/digest/send-now', async (req: Request, res: Response) => {
   try {
     const pool = getPool();
-    const { runDailyDigest, getTopPendingFinds, getSourceBreakdown, getCostRecap } = await import('../jobs/daily-digest');
-    const { sendDailyDigestEmail } = await import('../services/email');
+    const { assembleAndSendDailyDigest } = await import('../jobs/daily-digest');
 
     // Get configured recipients from the daily-digest schedule
     const allSchedules = getSchedules();
@@ -189,13 +187,12 @@ router.post('/digest/send-now', async (req: Request, res: Response) => {
       ? digestSchedule.notifyEmails.split(',').map(e => e.trim()).filter(Boolean)
       : undefined;
 
-    const digest = await runDailyDigest(pool);
-    const topFinds = digest.totalPendingReview > 0 ? await getTopPendingFinds(pool, 5) : [];
-    const sourceBreakdown = await getSourceBreakdown(pool).catch(() => undefined);
-    const costRecap = await getCostRecap(pool).catch(() => undefined);
-
-    await sendDailyDigestEmail(digest, config.app.url, recipients, { topFinds, sourceBreakdown, costRecap });
-    res.json({ success: true, message: `Digest sent to ${recipients?.join(', ') || 'default recipients'}`, stats: { wires: digest.wires.length, pendingReview: digest.totalPendingReview } });
+    const summary = await assembleAndSendDailyDigest(pool, { recipients });
+    res.json({
+      success: true,
+      message: `Digest sent to ${recipients?.join(', ') || 'default recipients'}`,
+      stats: { date: summary.date, fresh: summary.freshCount, totalNew: summary.totalNew, issues: summary.issueCount },
+    });
   } catch (error) {
     console.error('[DigestNow] Failed:', error);
     res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Failed to send digest' });

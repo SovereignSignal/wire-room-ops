@@ -8,13 +8,12 @@ import { runRegistryWatch } from '../jobs/registry-watch';
 import { runWeeklyIssue } from '../jobs/weekly-issue';
 import { runBdLeads } from '../jobs/bd-leads';
 import { config } from '../config';
-import { sendTestAlertEmail, sendScheduledJobFailureEmail, sendDailyDigestEmail, sendDeadlineDigestEmail } from './email';
+import { sendTestAlertEmail, sendScheduledJobFailureEmail, sendDeadlineDigestEmail } from './email';
 import { runCsvExport } from '../jobs/csv-export';
-import { createMagicLink } from './auth';
-import { runDailyDigest, getTopPendingFinds, getSourceBreakdown, SourceBreakdownRow, getCostRecap, CostRow } from '../jobs/daily-digest';
+import { assembleAndSendDailyDigest } from '../jobs/daily-digest';
 import { runDeadlineDigest } from '../jobs/deadline-digest';
 import { runAccountMonitor } from '../jobs/account-monitor';
-import { ensureScheduleTable, getAllSchedules, getScheduleById, createSchedule, updateSchedule, deleteSchedule as dbDeleteSchedule, StoredScheduleConfig, ensureFeedsTable, ensureScanTables, ensureScanPromptsTable, ensureDistributionTables, getPool, getAppState } from '../db';
+import { ensureScheduleTable, getAllSchedules, getScheduleById, createSchedule, updateSchedule, deleteSchedule as dbDeleteSchedule, StoredScheduleConfig, ensureFeedsTable, ensureScanTables, ensureScanPromptsTable, ensureDistributionTables, getPool } from '../db';
 import { getActiveWires } from './intake-core';
 
 export interface ScheduleConfig {
@@ -403,6 +402,8 @@ function createJobExecutor(schedule: ScheduleConfig) {
         // by which ops telemetry reaches the digest email (quiet = one ✓).
         const anomalies: string[] = [];
         let bdLeadsForEmail: import('../services/bd-leads-notion').LeadRecord[] | undefined;
+        let feedsLane: { ok: number; total: number } | null = null;
+        let forumLane: 'ok' | 'fail' | null = null;
 
         // Discovery lanes run as part of this one daily cycle — no separate cron to manage.
         // Each is isolated so a lane failure never blocks the digest.
@@ -410,16 +411,19 @@ function createJobExecutor(schedule: ScheduleConfig) {
           if (config.forum.enabled) {
             const fr = await runForumScan(pool, {});
             console.log(`[Scheduler] Daily forum scan: ${fr.opportunityCount} opps from ${fr.candidateCount} candidates, ${fr.intakeSummary.newUnique} unique`);
+            forumLane = 'ok';
           }
         } catch (e) {
           console.error('[Scheduler] Daily forum scan failed (non-fatal):', e instanceof Error ? e.message : e);
           anomalies.push(`Forum lane failed: ${e instanceof Error ? e.message : String(e)}`);
+          if (config.forum.enabled) forumLane = 'fail';
         }
         try {
           const sf = await runSourceFeeds(pool, {});
           const failed = sf.perSource.filter(s => s.error).length;
           console.log(`[Scheduler] Daily source feeds: ${sf.totalFresh} fresh from ${sf.perSource.length} sources (${failed} errored), ${sf.intakeSummary.newUnique} unique`);
           if (failed > 0) anomalies.push(`Source feeds: ${failed} of ${sf.perSource.length} sources errored`);
+          feedsLane = { ok: sf.perSource.length - failed, total: sf.perSource.length };
         } catch (e) {
           console.error('[Scheduler] Daily source feeds failed (non-fatal):', e instanceof Error ? e.message : e);
           anomalies.push(`Source-feeds lane failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -470,83 +474,24 @@ function createJobExecutor(schedule: ScheduleConfig) {
           }
         }
 
-        const digest = await runDailyDigest(pool);
-        const topFinds = digest.totalPendingReview > 0 ? await getTopPendingFinds(pool, 10) : [];
-        console.log(`[Scheduler] Daily digest: hasActivity=${digest.hasActivity}, newUnique=${digest.totalNewUnique}, pending=${digest.totalPendingReview}`);
-
-        // Agent scan brief stored by POST /api/scan/agent/send-brief (if any ran today)
-        let agentBrief: import('./email').StoredAgentBrief | null = null;
-        try {
-          agentBrief = await getAppState<import('./email').StoredAgentBrief>(`agent-brief:${digest.date}`);
-        } catch (briefErr) {
-          console.error(`[Scheduler] Failed to load agent brief:`, briefErr);
-        }
-
-        // Per-source intake breakdown for the last 24h
-        let sourceBreakdown: SourceBreakdownRow[] = [];
-        try {
-          sourceBreakdown = await getSourceBreakdown(pool);
-        } catch (sbErr) {
-          console.error(`[Scheduler] Failed to compute source breakdown:`, sbErr);
-        }
-
-        // Per-provider API cost recap for the last 24h
-        let costRecap: { rows: CostRow[]; total: number } | undefined;
-        try {
-          costRecap = await getCostRecap(pool);
-        } catch (costErr) {
-          console.error(`[Scheduler] Failed to compute cost recap:`, costErr);
-        }
-
         let digestEmailError: string | null = null;
+        const recipients = currentScheduleData.notifyEmails
+          ? currentScheduleData.notifyEmails.split(',').map(e => e.trim()).filter(Boolean)
+          : undefined;
 
-        // Always send the daily digest email — quiet days still report queue state
-        {
-          const dashboardUrl = config.app.url;
-          const recipients = currentScheduleData.notifyEmails
-            ? currentScheduleData.notifyEmails.split(',').map(e => e.trim()).filter(Boolean)
-            : undefined;
-
-          // Run CSV export first
-          let csvResult: import('../jobs/csv-export').CsvExportResult | undefined;
-          let downloadUrls: { csv: string | null; md: string | null } | undefined;
-          try {
-            csvResult = await runCsvExport(pool, 24);
-            if (csvResult.entryCount > 0) {
-              const email = config.email.notificationEmail;
-              downloadUrls = {
-                csv: csvResult.csvFileId ? createMagicLink(email, csvResult.csvFileId) : null,
-                md: csvResult.mdFileId ? createMagicLink(email, csvResult.mdFileId) : null,
-              };
-              console.log(`[Scheduler] CSV export ready (${csvResult.entryCount} entries)`);
-            } else {
-              console.log(`[Scheduler] CSV export: no approved entries in last 24h`);
-            }
-          } catch (csvErr) {
-            console.error(`[Scheduler] Failed to run CSV export:`, csvErr);
-          }
-
-          // Send single consolidated email
-          try {
-            // Derive data anomalies (spikes only — normal telemetry stays out)
-            if (costRecap && costRecap.total > 5) {
-              anomalies.push(`API spend $${costRecap.total.toFixed(2)} in 24h (>$5)`);
-            }
-            for (const row of sourceBreakdown || []) {
-              if (row.total >= 10 && row.duplicates / row.total > 0.6) {
-                anomalies.push(`High dupe rate: ${row.wire}/${row.source} — ${Math.round((row.duplicates / row.total) * 100)}% of ${row.total}`);
-              }
-            }
-            await sendDailyDigestEmail(digest, dashboardUrl, recipients, {
-              topFinds, csvExport: csvResult, downloadUrls, agentBrief, sourceBreakdown, costRecap,
-              bdLeads: bdLeadsForEmail, bdLeadsUrl: 'https://app.notion.com/p/8b84ca08e4dd4396b49535936f823afd',
-              anomalies,
-            });
-            console.log(`[Scheduler] Daily digest email sent (${digest.totalNewUnique} new, ${csvResult?.entryCount ?? 0} approved)`);
-          } catch (emailErr) {
-            console.error(`[Scheduler] Failed to send daily digest email:`, emailErr);
-            digestEmailError = emailErr instanceof Error ? emailErr.message : String(emailErr);
-          }
+        try {
+          const summary = await assembleAndSendDailyDigest(pool, {
+            recipients,
+            laneAnomalies: anomalies,
+            feeds: feedsLane,
+            forum: forumLane,
+            bdLeads: bdLeadsForEmail,
+            bdLeadsUrl: 'https://app.notion.com/p/8b84ca08e4dd4396b49535936f823afd',
+          });
+          console.log(`[Scheduler] Daily digest email sent (${summary.freshCount} new of ${summary.totalNew}, ${summary.issueCount} issues${summary.seeded ? ', watermark seeded' : ''})`);
+        } catch (emailErr) {
+          console.error(`[Scheduler] Failed to send daily digest email:`, emailErr);
+          digestEmailError = emailErr instanceof Error ? emailErr.message : String(emailErr);
         }
 
         if (digestEmailError) {
@@ -557,6 +502,19 @@ function createJobExecutor(schedule: ScheduleConfig) {
           status.status = 'success';
           status.error = null;
           console.log(`[Scheduler] Daily digest completed`);
+        }
+
+        // CSV export of the last 24h's approvals — files stay dashboard-downloadable,
+        // no links feed the email.
+        try {
+          const csvResult = await runCsvExport(pool, 24);
+          if (csvResult.entryCount > 0) {
+            console.log(`[Scheduler] CSV export ready (${csvResult.entryCount} entries)`);
+          } else {
+            console.log(`[Scheduler] CSV export: no approved entries in last 24h`);
+          }
+        } catch (csvErr) {
+          console.error(`[Scheduler] Failed to run CSV export:`, csvErr);
         }
 
         // ---- Daily CRM cycle (folded — no standalone timers) ----

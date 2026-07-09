@@ -400,16 +400,6 @@ export interface DigestEmailExtras {
   bdLeadsUrl?: string;
   /** Operational anomalies — the ONLY way ops telemetry gets into the email. */
   anomalies?: string[];
-  /** @deprecated ignored by the renderer — removed once callers migrate (Task 4) */
-  topFinds?: TopFindEntry[];
-  /** @deprecated ignored */
-  csvExport?: import('../jobs/csv-export').CsvExportResult;
-  /** @deprecated ignored */
-  downloadUrls?: { csv: string | null; md: string | null };
-  /** @deprecated ignored */
-  agentBrief?: StoredAgentBrief | null;
-  /** @deprecated ignored */
-  sourceBreakdown?: import('../jobs/daily-digest').SourceBreakdownRow[];
 }
 
 /**

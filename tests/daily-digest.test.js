@@ -153,3 +153,59 @@ test('buildRunLedger: probe failures degrade to "?" lanes and never throw', asyn
   assert.equal(ledger.lanes.find(l => l.key === 'bridge').detail, 'bridge ?');
   assert.deepEqual(anomalies, []);
 });
+
+const { assembleAndSendDailyDigest } = require('../src/jobs/daily-digest');
+
+function assemblyDeps(overrides = {}) {
+  const sent = [];
+  const advanced = [];
+  return {
+    sent, advanced,
+    deps: {
+      digest: async () => ({ date: '2026-07-09', wires: [], totalPendingReview: 3, totalNewUnique: 5, hasActivity: true }),
+      fresh: async () => ({ finds: [{ id: 7, name: 'A', wire: 'ai', quality_score: 90, amount: null, deadline: null, source_url: null, curator_route: 'publish', curator_confidence: 'high' }], totalNew: 4, seeded: false, fallback: false }),
+      ledger: async () => ({ ledger: { lanes: [{ key: 'scans', state: 'ok', detail: 'scans 5✓' }] }, anomalies: [] }),
+      deadlines: async () => ([{ wire: 'ai', entries: [{ id: 9, name: 'EF', wire: 'ai', deadline: '2026-07-12', deadlineParsed: null, amount: null, sourceUrl: 'https://x.org/ef', daysUntil: 3 }], generatedAt: new Date() }]),
+      cost: async () => ({ rows: [], total: 1.5 }),
+      sources: async () => ([{ wire: 'ai', source: 'feed', total: 20, queued: 2, approved: 1, archived: 3, duplicates: 14, parked: 0, signals: 0 }]),
+      send: async (...args) => { sent.push(args); },
+      advance: async (ids) => { advanced.push(ids); },
+      ...overrides,
+    },
+  };
+}
+
+test('assembleAndSendDailyDigest: sends one email and advances the watermark with shown ids', async () => {
+  const { deps, sent, advanced } = assemblyDeps();
+  const summary = await assembleAndSendDailyDigest({}, { laneAnomalies: [] }, deps);
+
+  assert.equal(sent.length, 1);
+  const extras = sent[0][3];
+  assert.equal(extras.freshFinds.length, 1);
+  assert.equal(extras.totalNewEligible, 4);
+  assert.equal(extras.closingSoon.length, 1);
+  assert.equal(extras.closingSoon[0].daysUntil, 3);
+  assert.deepEqual(advanced, [[7]]);
+  assert.equal(summary.freshCount, 1);
+  assert.equal(summary.totalNew, 4);
+});
+
+test('assembleAndSendDailyDigest: derives dupe-rate anomaly (>60% of >=10) and merges lane anomalies', async () => {
+  const { deps, sent } = assemblyDeps();
+  await assembleAndSendDailyDigest({}, { laneAnomalies: ['Forum lane failed: x'] }, deps);
+  const extras = sent[0][3];
+  assert.ok(extras.anomalies.some(a => a.includes('Forum lane failed')));
+  assert.ok(extras.anomalies.some(a => a.includes('High dupe rate')), 'ai/feed is 70% dupes of 20');
+});
+
+test('assembleAndSendDailyDigest: a failed send never advances the watermark', async () => {
+  const { deps, advanced } = assemblyDeps({ send: async () => { throw new Error('resend down'); } });
+  await assert.rejects(() => assembleAndSendDailyDigest({}, {}, deps));
+  assert.deepEqual(advanced, []);
+});
+
+test('assembleAndSendDailyDigest: cost spike >$5 becomes an anomaly', async () => {
+  const { deps, sent } = assemblyDeps({ cost: async () => ({ rows: [], total: 6.4 }) });
+  await assembleAndSendDailyDigest({}, {}, deps);
+  assert.ok(sent[0][3].anomalies.some(a => a.includes('$6.40')));
+});
