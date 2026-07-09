@@ -45,6 +45,15 @@ export async function fetchEntries(params: { status?: string; wire?: string; lim
   }));
 }
 
+export async function fetchEntry(id: string): Promise<ScanEntry | null> {
+  const res = await authFetch(`${BASE}/scan/entries/${encodeURIComponent(id)}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Failed to fetch entry: ${res.status}`);
+  const data = await res.json();
+  const e = data.entry;
+  return { ...e, id: String(e.id), wire: e.wire || '', quality_score: Number(e.quality_score) || 0 };
+}
+
 // Map our status names to the existing action endpoint verbs
 const STATUS_TO_ACTION: Record<string, string> = {
   approved: 'approve',
