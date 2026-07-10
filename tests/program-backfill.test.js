@@ -1,7 +1,7 @@
 require('ts-node/register/transpile-only');
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { clusterByKey, resolveChainSafe } = require('../src/scripts/program-backfill');
+const { clusterByKey, resolveChainSafe, chainActionFor } = require('../src/scripts/program-backfill');
 
 test('clusterByKey groups by normalized program key and skips empty keys', () => {
   const rows = [
@@ -27,4 +27,13 @@ test('resolveChainSafe: flat chains, deep chains, cycles (real corpus fixture 88
   assert.equal(resolveChainSafe(ptr, 8804), 8771, 'cycle resolves to smallest member');
   assert.equal(resolveChainSafe(ptr, 8771), 8771);
   assert.equal(resolveChainSafe(ptr, 99), 100, 'dangling pointer resolves to its target');
+});
+
+test('chainActionFor: cycle canonical gets cleared, partner repointed, healthy chains untouched', () => {
+  const ptr = new Map([[8804, 8771], [8771, 8804], [10, null], [11, 10], [12, 11]]);
+  assert.deepEqual(chainActionFor(ptr, { id: 8771, duplicate_of_id: 8804 }), { action: 'clear' });
+  assert.deepEqual(chainActionFor(ptr, { id: 8804, duplicate_of_id: 8771 }), { action: 'none' }, '8804 already points at the resolved canonical 8771');
+  assert.deepEqual(chainActionFor(ptr, { id: 12, duplicate_of_id: 11 }), { action: 'repoint', to: 10 });
+  assert.deepEqual(chainActionFor(ptr, { id: 11, duplicate_of_id: 10 }), { action: 'none' });
+  assert.deepEqual(chainActionFor(ptr, { id: 77, duplicate_of_id: null }), { action: 'orphan' });
 });
