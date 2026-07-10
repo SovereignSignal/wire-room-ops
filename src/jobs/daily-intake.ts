@@ -36,6 +36,7 @@ import {
 import { checkDuplicate, findRelatedOpportunity, registerSeen, annotateAlternateSource } from '../services/dedup';
 // quality-scorer.ts replaced by LLM scoring in classifier.ts
 import { seedSeenUrlsFromMessages } from '../db';
+import { finalizeProgramForEntry } from '../services/program-identity';
 import type { Classification } from '../services/classifier';
 
 // ============================================================
@@ -361,7 +362,8 @@ export async function runDailyIntake(
         // matches the entry against itself.
         excludeEntryId: entryId,
       },
-      config.dedupeWindow
+      config.dedupeWindow,
+      { programGate: true }
     );
 
     if (dedupResult.isDuplicate) {
@@ -370,9 +372,11 @@ export async function runDailyIntake(
         `UPDATE scan_entries
          SET status = 'duplicate',
              duplicate_of_id = $1,
-             duplicate_reason = $2
+             duplicate_reason = $2,
+             actioned_by = COALESCE($4, actioned_by)
          WHERE id = $3`,
-        [dedupResult.matchedEntryId, dedupResult.reason, entryId]
+        [dedupResult.matchedEntryId, dedupResult.reason, entryId,
+         dedupResult.matchType === 'program' ? 'program-gate' : null]
       );
       duplicatesFound++;
     } else {
@@ -421,6 +425,11 @@ export async function runDailyIntake(
         );
       }
       uniqueEntryIds.push(entryId);
+      await finalizeProgramForEntry(pool, {
+        id: entryId, name: item.result.name, sourceUrl: item.result.sourceUrl,
+        wire: item.wire, deadline: item.result.deadline ?? null,
+        description: item.result.description ?? null,
+      }, dedupResult.programResolution ?? null);
       seenUrlsInBatch.add(normalizedBatchUrl);
     }
 

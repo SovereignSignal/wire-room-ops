@@ -16,6 +16,7 @@ import type { Pool } from 'pg';
 import { checkDuplicate, registerSeen } from '../services/dedup';
 // quality-scorer.ts replaced by LLM scoring in classifier.ts
 import { classifyEntry } from '../services/classifier';
+import { finalizeProgramForEntry } from '../services/program-identity';
 
 const BATCH_SIZE = 50;
 
@@ -163,7 +164,8 @@ export async function processRawEntries(pool?: Pool): Promise<{
               // matches the row against itself (self-duplicate).
               excludeEntryId: row.id,
             },
-            14 // lookback days
+            14, // lookback days
+            { programGate: true }
           );
 
           if (dedupResult.isDuplicate) {
@@ -171,9 +173,11 @@ export async function processRawEntries(pool?: Pool): Promise<{
               `UPDATE scan_entries
                SET status = 'duplicate',
                    duplicate_of_id = $1,
-                   duplicate_reason = $2
+                   duplicate_reason = $2,
+                   actioned_by = COALESCE($4, actioned_by)
                WHERE id = $3 AND status = 'raw'`,
-              [dedupResult.matchedEntryId, dedupResult.reason, row.id]
+              [dedupResult.matchedEntryId, dedupResult.reason, row.id,
+               dedupResult.matchType === 'program' ? 'program-gate' : null]
             );
             stats.duplicates++;
           } else {
@@ -264,6 +268,13 @@ export async function processRawEntries(pool?: Pool): Promise<{
             } catch (classError) {
               console.error(`[ProcessRaw] Classification failed for entry ${row.id}, leaving as UNCHECKED:`, classError);
             }
+
+            // Program identity: record the sighting / create the program and
+            // stamp metadata.program. Fail-open inside; never blocks the cycle.
+            await finalizeProgramForEntry(db, {
+              id: row.id, name: row.name, sourceUrl: row.source_url, wire: row.wire,
+              description: row.description ?? null,
+            }, dedupResult.programResolution ?? null);
           }
 
           stats.processed++;
