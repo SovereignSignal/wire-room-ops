@@ -248,7 +248,11 @@ export async function recordSighting(
        url_domains = CASE WHEN $3::text IS NULL OR $3 = ANY(url_domains) THEN url_domains ELSE url_domains || ARRAY[$3]::text[] END,
        entry_count = entry_count + 1,
        latest_round_label = COALESCE($4, latest_round_label),
-       latest_deadline = GREATEST(COALESCE(latest_deadline, '1970-01-01'::date), COALESCE(NULLIF($5, '')::date, '1970-01-01'::date)),
+       latest_deadline = CASE
+         WHEN NULLIF($5, '') IS NULL THEN latest_deadline
+         WHEN latest_deadline IS NULL THEN NULLIF($5, '')::date
+         ELSE GREATEST(latest_deadline, NULLIF($5, '')::date)
+       END,
        last_seen = CURRENT_DATE, updated_at = NOW()
      WHERE id = $1`,
     [programId, entry.name, dom, entry.roundLabel ?? null, entry.deadline ?? null],

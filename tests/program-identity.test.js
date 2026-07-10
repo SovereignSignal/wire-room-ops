@@ -182,3 +182,11 @@ test('finalizeProgramForEntry: fail-open — a throwing pool never propagates', 
   const pool = { async query() { throw new Error('db down'); } };
   await finalizeProgramForEntry(pool, { id: 1, name: 'x' }, null); // must not throw
 });
+
+test('recordSighting never writes an epoch sentinel into latest_deadline', async () => {
+  const pool = programPool([]);
+  await recordSighting(pool, 5, { name: 'X', sourceUrl: null, deadline: null, roundLabel: null });
+  const sql = pool.calls[0].sql;
+  assert.ok(!sql.includes("'1970-01-01'"), 'no epoch sentinel — NULLs must stay NULL');
+  assert.match(sql, /latest_deadline = CASE/);
+});
