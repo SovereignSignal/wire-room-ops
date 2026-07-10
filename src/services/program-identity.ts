@@ -9,7 +9,11 @@
  * program-identity-design.md. Table DDL lives here (same pattern as
  * org_profiles living in org-extractor.ts).
  */
+import { config } from '../config';
 import { getPool } from '../db';
+import { logApiUsage } from './api-usage';
+import { extractOrgFromName } from './org-extractor';
+import { normalizeUrl } from '../utils/url';
 
 // ── Key normalization ───────────────────────────────────────────────────
 // The primary identity key: lowercase alnum with round/cohort/date noise
@@ -24,7 +28,6 @@ const NOISE_PATTERNS: RegExp[] = [
   /\bbatch(?:es)?\s*\d*\b/gi,
   /\bwaves?\s*\d*\b/gi,
   /\bseasons?\s*\d*\b/gi,
-  /\bfund\s*(\d+)\b/gi,                           // Fund14 → fund (number dropped below)
   /\bq[1-4]\b/gi,
   /\bh[12]\b/gi,
   /\b\d+(?:st|nd|rd|th)\b/gi,                     // ordinals
@@ -99,7 +102,7 @@ const domainOf = (url: string | null | undefined): string | null => {
   return m ? m[1].toLowerCase() : null;
 };
 
-type QueryPool = { query: (sql: string, params?: unknown[]) => Promise<{ rows: any[] }> };
+export type QueryPool = { query: (sql: string, params?: unknown[]) => Promise<{ rows: any[] }> };
 
 export async function resolveProgram(
   pool: QueryPool,
@@ -199,4 +202,147 @@ export function historyLine(p: ProgramRow): string {
   if (p.declined_count > 0) parts.push(`declined ${p.declined_count}×`);
   if (p.last_decision) parts.push(`last ${p.last_decision}`);
   return parts.join(' · ');
+}
+
+// ── Creation & sighting ─────────────────────────────────────────────────
+export async function createProgram(
+  pool: QueryPool,
+  data: { name: string; canonicalName?: string | null; orgName?: string | null; wire?: string | null; sourceUrl?: string | null; roundLabel?: string | null },
+): Promise<number> {
+  const canonical = (data.canonicalName || data.name).trim();
+  let key = normalizeProgramKey(canonical) || normalizeProgramKey(data.name);
+  // Collision guard (Task-1 review finding): noise-stripping can collapse two
+  // genuinely different programs to one key ("Round Table Grants" class).
+  // When the existing key-holder belongs to a DIFFERENT org, disambiguate the
+  // key with the org instead of merging identities.
+  const orgNorm = data.orgName ? norm(data.orgName) : null;
+  if (orgNorm) {
+    const existing = await pool.query(`SELECT org_name FROM programs WHERE normalized_key = $1`, [key]) as { rows: Array<{ org_name: string | null }> };
+    const other = existing.rows[0]?.org_name ? norm(existing.rows[0].org_name) : null;
+    if (other && other !== orgNorm && !other.includes(orgNorm) && !orgNorm.includes(other)) {
+      key = `${key}--${orgNorm}`;
+    }
+  }
+  const dom = domainOf(data.sourceUrl);
+  const { rows } = await pool.query(
+    `INSERT INTO programs (canonical_name, normalized_key, org_name, wire, aliases, canonical_url, url_domains, latest_round_label, entry_count, first_seen, last_seen)
+     VALUES ($1, $2, $3, $4, ARRAY[$5]::text[], $6, CASE WHEN $7::text IS NULL THEN '{}'::text[] ELSE ARRAY[$7]::text[] END, $8, 0, CURRENT_DATE, CURRENT_DATE)
+     ON CONFLICT (normalized_key) DO UPDATE SET
+       aliases = (SELECT ARRAY(SELECT DISTINCT unnest(programs.aliases || ARRAY[$5]::text[]))),
+       last_seen = CURRENT_DATE, updated_at = NOW()
+     RETURNING id`,
+    [canonical, key, data.orgName ?? null, data.wire ?? null, data.name, data.sourceUrl ? normalizeUrl(data.sourceUrl) : null, dom, data.roundLabel ?? null],
+  );
+  return rows[0].id;
+}
+
+export async function recordSighting(
+  pool: QueryPool,
+  programId: number,
+  entry: { name: string; sourceUrl?: string | null; deadline?: string | null; roundLabel?: string | null },
+): Promise<void> {
+  const dom = domainOf(entry.sourceUrl);
+  await pool.query(
+    `UPDATE programs SET
+       aliases = (SELECT ARRAY(SELECT DISTINCT unnest(aliases || ARRAY[$2]::text[]))),
+       url_domains = CASE WHEN $3::text IS NULL OR $3 = ANY(url_domains) THEN url_domains ELSE url_domains || ARRAY[$3]::text[] END,
+       entry_count = entry_count + 1,
+       latest_round_label = COALESCE($4, latest_round_label),
+       latest_deadline = GREATEST(COALESCE(latest_deadline, '1970-01-01'::date), COALESCE(NULLIF($5, '')::date, '1970-01-01'::date)),
+       last_seen = CURRENT_DATE, updated_at = NOW()
+     WHERE id = $1`,
+    [programId, entry.name, dom, entry.roundLabel ?? null, entry.deadline ?? null],
+  );
+}
+
+// ── LLM canonicalization (mirrors org-extractor's extractOrgsWithGrok) ──
+export async function canonicalizeBatch(
+  entries: Array<{ id: number; name: string; description: string }>,
+  fetchImpl: typeof fetch = fetch,
+): Promise<Array<{ id: number; org: string | null; program: string | null; round_label: string | null }>> {
+  if (entries.length === 0) return [];
+  const start = Date.now();
+  const entriesText = entries.map(e => `[ID:${e.id}] "${e.name}" — ${(e.description || '').substring(0, 100)}`).join('\n');
+  const prompt = `For each grant/funding entry below, name the FUNDING PROGRAM canonically. Return ONLY a JSON array of {"id", "org", "program", "round_label"}.
+
+Rules:
+- "program" = funder + program name, WITHOUT cohort/round/dates (e.g. "Anthropic Fellows Program", not "Anthropic Fellows Program (Sept 2026 cohort)")
+- "round_label" = the cohort/round/cycle phrase if present (e.g. "sept 2026 cohort", "fund14"), else null
+- "org" = the funding organization (canonical name), or null if unclear
+- If the entry names no identifiable program, "program": null
+
+Entries:
+${entriesText}
+
+Return ONLY valid JSON array, no explanation.`;
+  try {
+    const response = await fetchImpl(`${config.apis.grok.baseUrl}/chat/completions`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(120_000),
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.apis.grok.apiKey}` },
+      body: JSON.stringify({ model: 'grok-4.20-beta-0309-non-reasoning', messages: [{ role: 'user', content: prompt }], temperature: 0 }),
+    });
+    if (!response.ok) throw new Error(`grok ${((response as Response).status)}`);
+    const data = await (response as Response).json() as { choices?: Array<{ message?: { content?: string } }> };
+    const content = data.choices?.[0]?.message?.content || '[]';
+    const cleaned = content.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '').trim();
+    const parsed = JSON.parse(cleaned);
+    logApiUsage({ provider: 'grok', model: 'grok-4.20-beta-0309-non-reasoning', purpose: 'program-identity', duration_ms: Date.now() - start });
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((r: any) => r && typeof r.id === 'number')
+      .map((r: any) => ({ id: r.id, org: r.org ?? null, program: r.program ?? null, round_label: r.round_label ?? null }));
+  } catch (err) {
+    logApiUsage({ provider: 'grok', model: 'grok-4.20-beta-0309-non-reasoning', purpose: 'program-identity', duration_ms: Date.now() - start, success: false, error_message: err instanceof Error ? err.message : String(err) });
+    return [];
+  }
+}
+
+// ── The one post-dedup hook callers use ─────────────────────────────────
+export type ProgramResolutionStamp = {
+  programId: number; confidence: number;
+  verdict: 'same_round' | 'new_round'; roundLabel: string | null; historyLine: string;
+};
+
+/**
+ * Called by process-raw / daily-intake AFTER an entry survives dedup.
+ * resolution present → record the sighting + stamp metadata.program.
+ * resolution null → canonicalize (LLM, 1 entry) → create/attach a program.
+ * Fail-open: every failure logs and returns; intake never blocks on identity.
+ */
+export async function finalizeProgramForEntry(
+  pool: QueryPool,
+  entry: { id: number; name: string; sourceUrl?: string | null; wire?: string | null; deadline?: string | null; description?: string | null },
+  resolution: ProgramResolutionStamp | null,
+): Promise<void> {
+  try {
+    if (resolution) {
+      await recordSighting(pool, resolution.programId, { name: entry.name, sourceUrl: entry.sourceUrl, deadline: entry.deadline, roundLabel: resolution.roundLabel });
+      const verdict = resolution.confidence >= 0.85 ? resolution.verdict : 'tentative';
+      await pool.query(
+        `UPDATE scan_entries SET program_id = $2,
+           metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('program', $3::jsonb)
+         WHERE id = $1`,
+        [entry.id, resolution.programId, JSON.stringify({ id: resolution.programId, verdict, confidence: resolution.confidence, round_label: resolution.roundLabel, history: resolution.historyLine })],
+      );
+      return;
+    }
+    // New program: one small LLM call; deterministic fallback on failure
+    const [canon] = await canonicalizeBatch([{ id: entry.id, name: entry.name, description: '' }]);
+    const orgName = canon?.org ?? extractOrgFromName(entry.name);
+    const programId = await createProgram(pool, {
+      name: entry.name,
+      canonicalName: canon?.program ?? null,
+      orgName, wire: entry.wire ?? null, sourceUrl: entry.sourceUrl ?? null,
+      roundLabel: canon?.round_label ?? extractRoundLabel(entry.name),
+    });
+    await pool.query(
+      `UPDATE scan_entries SET program_id = $2,
+         metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('program', $3::jsonb)
+       WHERE id = $1`,
+      [entry.id, programId, JSON.stringify({ id: programId, verdict: 'new_program' })],
+    );
+  } catch (err) {
+    console.error(`[ProgramIdentity] finalize failed for entry ${entry.id} (fail-open):`, err instanceof Error ? err.message : err);
+  }
 }

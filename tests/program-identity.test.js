@@ -126,3 +126,59 @@ test('historyLine composes the display string', () => {
   assert.equal(historyLine(fakeProgram()), 'seen 60× · approved 1× · declined 12× · last declined 2026-07-07');
   assert.equal(historyLine(fakeProgram({ approved_count: 0, declined_count: 0, last_decision: null, entry_count: 3 })), 'seen 3×');
 });
+
+// ── Task 3: Creation, sighting, canonicalization, finalize ────────────
+
+const { createProgram, recordSighting, canonicalizeBatch, finalizeProgramForEntry } = require('../src/services/program-identity');
+
+test('createProgram upserts by normalized_key and returns id', async () => {
+  const pool = programPool([{ id: 42 }]);
+  const id = await createProgram(pool, { name: 'Brand New Grants Round 2', canonicalName: 'Brand New Grants', orgName: 'BrandCo', wire: 'oss', sourceUrl: 'https://brand.co/grants', roundLabel: 'round 2' });
+  assert.equal(id, 42);
+  const insert = pool.calls.find(c => /INSERT INTO programs/.test(c.sql));
+  assert.ok(insert);
+  assert.match(insert.sql, /ON CONFLICT \(normalized_key\)/);
+});
+
+test('createProgram disambiguates the key when the same key belongs to a different org', async () => {
+  // First call answers the org lookup with an existing DIFFERENT-org holder; second answers the insert.
+  const calls = [];
+  const pool = {
+    calls,
+    async query(sql, params) {
+      calls.push({ sql, params });
+      if (/SELECT org_name FROM programs/.test(sql)) return { rows: [{ org_name: 'Totally Other Org' }] };
+      return { rows: [{ id: 77 }] };
+    },
+  };
+  const id = await createProgram(pool, { name: 'Fellowship Grants', orgName: 'BrandCo' });
+  assert.equal(id, 77);
+  const insert = calls.find(c => /INSERT INTO programs/.test(c.sql));
+  assert.match(insert.params[1], /--brandco$/, 'key must carry the org disambiguator');
+});
+
+test('canonicalizeBatch parses the LLM JSON and survives junk', async () => {
+  const fetchImpl = async () => ({
+    ok: true,
+    json: async () => ({ choices: [{ message: { content: '[{"id": 7, "org": "Anthropic", "program": "Anthropic Fellows Program", "round_label": "sept 2026 cohort"}]' } }] }),
+  });
+  const out = await canonicalizeBatch([{ id: 7, name: 'Anthropic Fellows (Sept 2026)', description: 'x' }], fetchImpl);
+  assert.deepEqual(out, [{ id: 7, org: 'Anthropic', program: 'Anthropic Fellows Program', round_label: 'sept 2026 cohort' }]);
+  const bad = await canonicalizeBatch([{ id: 8, name: 'y', description: '' }], async () => ({ ok: false, status: 500, json: async () => ({}) }));
+  assert.deepEqual(bad, [], 'LLM failure returns empty, never throws');
+});
+
+test('finalizeProgramForEntry: resolution present → sighting recorded + metadata.program stamped', async () => {
+  const pool = programPool([]);
+  await finalizeProgramForEntry(pool, { id: 500, name: 'X Round 3', wire: 'ai' },
+    { programId: 1, confidence: 0.95, verdict: 'same_round', roundLabel: null, historyLine: 'seen 60× · approved 1×' });
+  const sqls = pool.calls.map(c => c.sql).join('\n');
+  assert.match(sqls, /UPDATE programs/);
+  assert.match(sqls, /program_id = /);
+  assert.match(sqls, /'program'/); // metadata stamp
+});
+
+test('finalizeProgramForEntry: fail-open — a throwing pool never propagates', async () => {
+  const pool = { async query() { throw new Error('db down'); } };
+  await finalizeProgramForEntry(pool, { id: 1, name: 'x' }, null); // must not throw
+});
