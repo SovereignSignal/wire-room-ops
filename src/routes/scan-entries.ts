@@ -11,8 +11,6 @@
  * GET    /seen-urls              — URL dedup stats
  * GET    /prompt-stats           — prompt effectiveness
  * PATCH  /entries/:id/wire       — reassign wire
- * PATCH  /entries/:id/source     — guarded canonical source rewrite
- * POST   /entries/:id/link-duplicate — guarded explicit duplicate link
  * POST   /entries/bulk-action    — bulk approve/decline/reviewlater/restore
  * POST   /entries/:id/action     — single entry action
  * GET    /entries/:id/distribution — distribution logs for single entry
@@ -27,22 +25,11 @@ import { buildSubmission, buildBatchSubmission } from '../services/intake';
 import { runDailyIntake, getDailyQueue, getIntakeStats } from '../jobs/daily-intake';
 import { getPromptEffectivenessStats } from '../services/scan-stats';
 import { singleEntryAction, bulkEntryAction, ApprovalBlockedError, BulkApprovalBlockedError } from '../services/entry-actions';
-import { rewriteEntrySource, linkEntryDuplicate, EntryMaintenanceError } from '../services/entry-maintenance';
 import { buildCuratorStamp } from '../services/curator';
 import { retryDistribution } from '../services/distribution';
 import { SCAN_SOURCES } from '../types/intake';
 
 const router = Router();
-
-function sendMaintenanceError(res: Response, error: unknown, label: string): void {
-  if (error instanceof EntryMaintenanceError) {
-    res.status(error.statusCode).json({ error: error.message });
-    return;
-  }
-  const message = error instanceof Error ? error.message : 'Unknown error';
-  console.error(`[${label}] Failed:`, error);
-  res.status(500).json({ error: message });
-}
 
 // POST /submit — single entry submission
 router.post('/submit', async (req: Request, res: Response) => {
@@ -535,50 +522,6 @@ router.patch('/entries/:id/wire', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Failed to update entry wire:', error);
     res.status(500).json({ error: 'Failed to update wire' });
-  }
-});
-
-// PATCH /entries/:id/source — guarded canonical source rewrite with registry synchronization
-router.patch('/entries/:id/source', async (req: Request, res: Response) => {
-  const entryId = parseInt(req.params.id, 10);
-  if (!Number.isSafeInteger(entryId) || entryId <= 0) {
-    res.status(400).json({ error: 'Invalid entry ID' });
-    return;
-  }
-  try {
-    const result = await rewriteEntrySource(getPool(), entryId, {
-      expectedStatus: req.body.expectedStatus,
-      expectedSourceUrl: req.body.expectedSourceUrl,
-      newSourceUrl: req.body.newSourceUrl,
-      actor: req.body.actor,
-      reason: req.body.reason,
-      dryRun: req.body.dryRun === true,
-    });
-    res.json({ success: true, ...result });
-  } catch (error) {
-    sendMaintenanceError(res, error, 'SourceRewrite');
-  }
-});
-
-// POST /entries/:id/link-duplicate — guarded link to a recursively resolved canonical parent
-router.post('/entries/:id/link-duplicate', async (req: Request, res: Response) => {
-  const entryId = parseInt(req.params.id, 10);
-  if (!Number.isSafeInteger(entryId) || entryId <= 0) {
-    res.status(400).json({ error: 'Invalid entry ID' });
-    return;
-  }
-  try {
-    const result = await linkEntryDuplicate(getPool(), entryId, {
-      expectedStatus: req.body.expectedStatus,
-      expectedSourceUrl: req.body.expectedSourceUrl,
-      duplicateOfId: Number(req.body.duplicateOfId),
-      actor: req.body.actor,
-      reason: req.body.reason,
-      dryRun: req.body.dryRun === true,
-    });
-    res.json({ success: true, ...result });
-  } catch (error) {
-    sendMaintenanceError(res, error, 'DuplicateLink');
   }
 });
 

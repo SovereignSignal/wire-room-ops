@@ -15,7 +15,6 @@ import type {
   RawScanResult,
   ScanSubmission,
 } from '../types/intake';
-import { classifySourceLink } from './source-filter';
 
 /**
  * Strip markdown artifacts that Grok injects into output.
@@ -27,7 +26,6 @@ import { classifySourceLink } from './source-filter';
  * Web URLs require a meaningful path (depth >= 2 segments after domain).
  */
 export function isUsefulUrl(url: string): boolean {
-  if (classifySourceLink(url) === 'placeholder') return false;
   try {
     const u = new URL(url);
     const host = u.hostname.replace(/^www\./, '');

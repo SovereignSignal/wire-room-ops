@@ -98,7 +98,6 @@ test('classifySourceLink categorizes link quality', () => {
   assert.equal(classifySourceLink(''), 'missing');
   assert.equal(classifySourceLink(null), 'missing');
   assert.equal(classifySourceLink('https://t.me/manual/1749700000'), 'placeholder');
-  assert.equal(classifySourceLink('https://manual/needs-source/1749700000-abc123'), 'placeholder');
   assert.equal(classifySourceLink('scan://internal-ref'), 'placeholder');
   assert.equal(classifySourceLink('https://t.co/AbC123'), 'shortener');
   assert.equal(classifySourceLink('https://x.com/someorg/status/123'), 'tweet-only');

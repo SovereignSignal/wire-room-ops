@@ -16,7 +16,6 @@ import type { Pool } from 'pg';
 import { checkDuplicate, registerSeen } from '../services/dedup';
 // quality-scorer.ts replaced by LLM scoring in classifier.ts
 import { classifyEntry } from '../services/classifier';
-import { classifySourceLink } from '../services/source-filter';
 
 const BATCH_SIZE = 50;
 
@@ -67,12 +66,8 @@ export function isCompletionSufficient(entry: {
 
   // Check source_url
   const sourceUrl = entry.source_url?.trim() ?? '';
-  const sourceClass = classifySourceLink(sourceUrl);
-  if (sourceClass === 'missing' || sourceClass === 'placeholder') {
-    return {
-      passes: false,
-      reason: sourceClass === 'missing' ? 'Missing source URL' : 'Internal source placeholder',
-    };
+  if (!sourceUrl || sourceUrl.startsWith('scan://')) {
+    return { passes: false, reason: sourceUrl ? 'Internal scan:// URL' : 'Missing source URL' };
   }
 
   return { passes: true };

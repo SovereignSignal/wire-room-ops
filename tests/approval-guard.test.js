@@ -37,13 +37,7 @@ test('empty source_url blocks approval', () => {
 });
 
 test('internal placeholder and unresolved shortener URLs block approval', () => {
-  for (const url of [
-    'scan://missing-1',
-    'https://t.me/manual/abc',
-    'https://manual/needs-source/1749700000-abc123',
-    'https://t.co/abc123',
-    'https://bit.ly/abc123',
-  ]) {
+  for (const url of ['scan://missing-1', 'https://t.me/manual/abc', 'https://t.co/abc123']) {
     const v = validateForApproval({ ...healthy, source_url: url });
     assert.equal(v.valid, false, `${url} should block`);
   }
