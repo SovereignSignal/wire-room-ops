@@ -13,6 +13,7 @@
 import type { Pool } from 'pg';
 import type { DedupResult, RelatedOpportunityResult, ScanEntry } from '../types/intake';
 import { normalizeUrl, normalizeName, extractNameTokens } from './intake';
+import { resolveProgram, assessRound, historyLine, ProgramResolutionStamp } from './program-identity';
 
 /**
  * "Semi-generic" tokens: these pass the main stopword filter in intake.ts
@@ -67,7 +68,7 @@ export async function checkDuplicate(
     excludeEntryId?: number;
   },
   lookbackDays: number = 180,
-  options?: { urlOnly?: boolean }
+  options?: { urlOnly?: boolean; programGate?: boolean }
 ): Promise<DedupResult> {
   // Layer 1: URL exact match (fastest)
   // Pass entry name so we can distinguish aggregate URLs (one tweet listing multiple grants)
@@ -88,10 +89,44 @@ export async function checkDuplicate(
   // programs may collide on an identical name (a false positive that would
   // silently drop a real grant). "Same program, different link" is the
   // downstream filter's job, not the pipe's.
+  let programResolution: DedupResult['programResolution'] = null;
   if (!options?.urlOnly) {
     const nameResult = await checkExactNameMatch(pool, entry.name, entry.wire, lookbackDays, entry.excludeEntryId);
     if (nameResult.isDuplicate) {
       return nameResult;
+    }
+  }
+
+  // Layer 1.75: program identity (opt-in; act-and-report gate).
+  // Same program + same round + high confidence = duplicate with history.
+  // New round resolves but never blocks — callers stamp metadata.program.
+  if (options?.programGate && !options?.urlOnly) {
+    try {
+      const match = await resolveProgram(pool, { name: entry.name, sourceUrl: entry.sourceUrl, wire: entry.wire });
+      if (match) {
+        const round = assessRound(match.program, { name: entry.name });
+        programResolution = {
+          programId: match.program.id,
+          confidence: match.confidence,
+          verdict: round.verdict,
+          roundLabel: round.roundLabel,
+          historyLine: historyLine(match.program),
+        };
+        if (round.verdict === 'same_round' && match.confidence >= 0.85
+            && match.program.entry_count > 0 && match.program.canonical_entry_id) {
+          return {
+            isDuplicate: true,
+            matchType: 'program',
+            matchedEntryId: match.program.canonical_entry_id,
+            matchedEntryName: match.program.canonical_name,
+            confidence: match.confidence,
+            reason: `Program "${match.program.canonical_name}" — ${historyLine(match.program)}`,
+            programResolution,
+          };
+        }
+      }
+    } catch (err) {
+      console.error('[Dedup] Program gate failed (fail-open):', err instanceof Error ? err.message : err);
     }
   }
 
@@ -107,6 +142,7 @@ export async function checkDuplicate(
     matchedEntryName: null,
     confidence: 0,
     reason: 'No duplicate found',
+    programResolution,
   };
 }
 

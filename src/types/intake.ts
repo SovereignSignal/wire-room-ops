@@ -121,11 +121,13 @@ export interface ScanEntry {
  */
 export interface DedupResult {
   isDuplicate: boolean;
-  matchType: 'url_exact' | 'name_exact' | 'name_fuzzy' | 'url_and_name' | null;
+  matchType: 'url_exact' | 'name_exact' | 'name_fuzzy' | 'program' | null;
   matchedEntryId: number | null;
   matchedEntryName: string | null;
   confidence: number;               // 0-1 confidence in the match
   reason: string;
+  /** Program-identity resolution (Layer 1.75) — present when the gate ran and matched, even on non-duplicate outcomes. */
+  programResolution?: any | null;
 }
 
 /**
