@@ -113,3 +113,29 @@ test('ops telemetry stays out: no CSV links, no agent activity, no source/cost t
   assert.ok(!r.html.includes('Intake by Source'));
   assert.ok(!r.html.includes('API Costs'));
 });
+
+test('cards render the summary line and flag recheck updates against prior entries', () => {
+  const finds = [{
+    id: 201, name: 'Anthropic Fellows Program (Sept 2026 cohort)', wire: 'ai', quality_score: 88,
+    amount: null, deadline: null, source_url: 'https://x.org/a', curator_route: null, curator_confidence: null,
+    summary: '4-month fully funded research fellowship at Anthropic focused on frontier AI-safety research.',
+    recheck_verdict: 'update', recheck_matched_name: 'Anthropic Fellows Program', recheck_matched_status: 'approved',
+  }];
+  const r = renderDailyDigest(DIGEST, 'https://app.example', { freshFinds: finds, totalNewEligible: 1, runLedger: LEDGER });
+  assert.match(r.html, /4-month fully funded research fellowship/);
+  assert.match(r.html, /Update of a prior entry/);
+  assert.match(r.html, /Anthropic Fellows Program.*\(approved\)/);
+  assert.match(r.text, /4-month fully funded research fellowship/);
+});
+
+test('render defenses: deadline label prefix stripped, bare-duration amounts hidden', () => {
+  const finds = [{
+    id: 202, name: 'Tarbell Grants', wire: 'ai', quality_score: 70,
+    amount: '3 m', deadline: 'deadline 2026-07-12', source_url: null, curator_route: null, curator_confidence: null,
+    summary: null, recheck_verdict: null, recheck_matched_name: null, recheck_matched_status: null,
+  }];
+  const r = renderDailyDigest(DIGEST, 'https://app.example', { freshFinds: finds, totalNewEligible: 1, runLedger: LEDGER });
+  assert.match(r.html, /due 2026-07-12/);
+  assert.ok(!r.html.includes('due deadline'), 'deadline label must not repeat');
+  assert.ok(!r.html.includes('3 m'), 'bare duration is not an amount');
+});

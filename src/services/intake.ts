@@ -81,7 +81,7 @@ function cleanUrl(raw: string): string {
  * Post-parse sanitization: clean up fields that parsers may have mangled.
  * Applied uniformly to all parser strategy outputs.
  */
-function sanitizeResult(result: RawScanResult): RawScanResult {
+export function sanitizeResult(result: RawScanResult): RawScanResult {
   let { name, description, amount, deadline, sourceUrl } = result;
 
   // 0. Name: strip leading/trailing brackets and "Source:" prefix (citation artifacts)
@@ -100,10 +100,13 @@ function sanitizeResult(result: RawScanResult): RawScanResult {
   // 2. Name: strip trailing junk after semicolons/closing parens that indicate parser leakage
   name = name.replace(/[;)]\s*.{10,}$/, '').trim();
 
-  // 3. Deadline: reject if it looks like junk (contains URLs, semicolons, or is too long)
+  // 3. Deadline: reject if it looks like junk (contains URLs, semicolons, or is too long),
+  //    and strip a leaked label prefix ("deadline 2026-07-12" → "2026-07-12")
   if (deadline) {
     if (deadline.length > 50 || /[;)(]/.test(deadline) || /https?:\/\//.test(deadline)) {
       deadline = null;
+    } else {
+      deadline = deadline.replace(/^(?:deadline|due|closes)[:\s]+/i, '').trim() || null;
     }
   }
 
@@ -116,6 +119,10 @@ function sanitizeResult(result: RawScanResult): RawScanResult {
       if (num < 100) {
         amount = null; // Likely a misparse
       }
+    }
+    // A bare duration is not an amount ("3 m", "4 months" — program length leakage)
+    if (amount && /^\d+(?:\.\d+)?\s*m(?:o|os|onths?)?$/i.test(amount.trim())) {
+      amount = null;
     }
   }
 

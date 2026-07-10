@@ -52,8 +52,8 @@ test('getFreshFinds excludes watermarked ids, keeps curator ordering, and has NO
 
   const findsSql = pool.calls[0].sql;
   assert.match(findsSql, /status = 'queued'/);
-  assert.match(findsSql, /NOT \(id = ANY\(\$2::int\[\]\)\)/);
-  assert.match(findsSql, /deadline_parsed IS NULL OR deadline_parsed >= CURRENT_DATE/);
+  assert.match(findsSql, /NOT \(q\.id = ANY\(\$2::int\[\]\)\)/);
+  assert.match(findsSql, /deadline_parsed IS NULL OR q\.deadline_parsed >= CURRENT_DATE/);
   assert.match(findsSql, /metadata->'curator'->>'route'/);
   assert.match(findsSql, /quality_score DESC NULLS LAST/);
   assert.match(findsSql, /created_at >= NOW\(\) - INTERVAL '60 days'/, 'candidate window must match watermark retention');
@@ -248,4 +248,21 @@ test('assembleAndSendDailyDigest: cost spike >$5 becomes an anomaly', async () =
   const { deps, sent } = assemblyDeps({ cost: async () => ({ rows: [], total: 6.4 }) });
   await assembleAndSendDailyDigest({}, {}, deps);
   assert.ok(sent[0][3].anomalies.some(a => a.includes('$6.40')));
+});
+
+test('getFreshFinds excludes recheck-flagged duplicates and selects the card summary', async () => {
+  const pool = fakePool();
+  pool.queueResponse([]);
+  pool.queueResponse([{ total_new: '0' }]);
+  const { deps } = fakeState({ [DIGEST_WATERMARK_KEY]: { '7': '2026-07-01T00:00:00Z' } });
+
+  await getFreshFinds(pool, 8, deps);
+
+  const findsSql = pool.calls[0].sql;
+  assert.match(findsSql, /decided_recheck/, 'stamped recheck verdicts must be consulted');
+  assert.match(findsSql, /<> 'same_listing'/, 'flagged same_listing entries must never reach the email');
+  assert.match(findsSql, /AS summary/, 'cards need the classifier summary');
+  assert.match(findsSql, /recheck_matched_name/, 'update notes need the matched entry name');
+  const countSql = pool.calls[1].sql;
+  assert.match(countSql, /<> 'same_listing'/, 'the totalNew count must apply the same exclusion');
 });

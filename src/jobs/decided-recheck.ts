@@ -175,13 +175,18 @@ export async function applyVerdict(pool: Pool, target: RecheckTarget, candidates
   const stamp = { at: new Date().toISOString(), verdict: verdict.verdict, matched_id: verdict.matched_id, confidence: verdict.confidence };
 
   if (verdict.verdict === 'same_listing' && matched && verdict.confidence >= 0.8
-      && ['approved', 'declined', 'queued'].includes(matched.status)) {
+      && ['approved', 'declined', 'queued', 'duplicate'].includes(matched.status)) {
+    // Matching a row that is ITSELF a duplicate is the same evidence — resolve
+    // through its duplicate_of_id chain instead of stalling (a stalled verdict
+    // left flagged dupes queued and let one reach the digest, 2026-07-09).
+    const resolvedId = matched.status === 'duplicate' ? (matched.resolve_to ?? matched.id) : matched.id;
+    const chainNote = resolvedId !== matched.id ? `, resolved to canonical #${resolvedId}` : '';
     await pool.query(
       `UPDATE scan_entries SET status = 'duplicate', duplicate_of_id = $2,
          duplicate_reason = $3::text, actioned_by = 'decided-recheck',
          metadata = metadata || jsonb_build_object('decided_recheck', $4::jsonb)
        WHERE id = $1 AND status = 'queued'`,
-      [target.id, matched.id, `Same listing as #${matched.id} "${matched.name.slice(0, 80)}" (${matched.status} ${matched.decided_date}): ${verdict.reason}`.slice(0, 400), JSON.stringify(stamp)]
+      [target.id, resolvedId, `Same listing as #${matched.id} "${matched.name.slice(0, 80)}" (${matched.status} ${matched.decided_date})${chainNote}: ${verdict.reason}`.slice(0, 400), JSON.stringify(stamp)]
     );
     return 'duplicate';
   }

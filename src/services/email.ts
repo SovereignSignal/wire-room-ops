@@ -340,6 +340,12 @@ export interface TopFindEntry {
   source_url: string | null;
   curator_route: string | null;
   curator_confidence: string | null;
+  /** Classifier one-liner (metadata.summary, description fallback) — the card's "what is this" */
+  summary: string | null;
+  /** decided-recheck stamp: 'update' renders a prior-entry note on the card */
+  recheck_verdict: string | null;
+  recheck_matched_name: string | null;
+  recheck_matched_status: string | null;
 }
 
 export type LaneState = 'ok' | 'warn' | 'fail';
@@ -470,21 +476,36 @@ export function renderDailyDigest(
   let reviewHtml = '';
   let reviewText = '';
   if (freshCount > 0) {
+    // Render defenses against known data warts: a leaked "deadline"/"due"
+    // label inside the deadline value, and bare durations posing as amounts.
+    const cleanDeadline = (d: string | null) => d ? (d.replace(/^(?:deadline|due|closes)[:\s]+/i, '').trim() || null) : null;
+    const cleanAmount = (a: string | null) => a && !/^\d+(?:\.\d+)?\s*m(?:o|os|onths?)?$/i.test(a.trim()) ? a : null;
+
     const cards = finds.map(e => {
       const entryUrl = `${queueUrl}?entry=${e.id}`;
       const route = e.curator_route ? routeLabel[e.curator_route] ?? null : null;
       const stamp = route ? `${route}${e.curator_confidence ? `·${e.curator_confidence.toUpperCase()}` : ''}` : null;
       const isPublish = e.curator_route === 'publish';
+      const amount = cleanAmount(e.amount);
+      const deadline = cleanDeadline(e.deadline);
       const metaParts = [
         escapeHtml(e.wire.toUpperCase()),
         stamp ? `<span style="color:${isPublish ? '#116b45' : '#8a6d1f'};font-weight:700;">${escapeHtml(stamp)}</span>` : null,
-        e.amount ? escapeHtml(e.amount) : null,
-        e.deadline ? `due ${escapeHtml(e.deadline)}` : null,
+        amount ? escapeHtml(amount) : null,
+        deadline ? `due ${escapeHtml(deadline)}` : null,
         e.source_url ? `<a href="${escapeHtml(e.source_url)}" style="color:#93a2ac;text-decoration:none;">source &#8599;</a>` : null,
       ].filter(Boolean);
+      const summaryHtml = e.summary
+        ? `<p style="margin:5px 0 0;font-size:12px;color:#4a565f;line-height:1.45;">${escapeHtml(e.summary.slice(0, 220))}</p>`
+        : '';
+      const updateHtml = e.recheck_verdict === 'update' && e.recheck_matched_name
+        ? `<p style="margin:5px 0 0;font-size:10.5px;color:#8a6d1f;${MONO}">&#8635; Update of a prior entry: &ldquo;${escapeHtml(e.recheck_matched_name)}&rdquo; (${escapeHtml(e.recheck_matched_status || 'seen')})</p>`
+        : '';
       return `<div style="border:1px solid #e2e8ed;border-left:3px solid ${isPublish ? '#1a8a5a' : '#d0d9df'};padding:10px 12px;margin:0 0 8px;">
         <p style="margin:0;font-size:13px;line-height:1.4;"><a href="${escapeHtml(entryUrl)}" style="color:#14181c;font-weight:700;text-decoration:none;border-bottom:1px solid #9fd4f5;">${escapeHtml(e.name)}</a></p>
+        ${summaryHtml}
         <p style="margin:5px 0 0;font-size:10.5px;color:#64717b;${MONO}">${metaParts.join(' &middot; ')}</p>
+        ${updateHtml}
       </div>`;
     }).join('');
     const more = totalNew - freshCount;
@@ -496,7 +517,12 @@ export function renderDailyDigest(
     reviewText = `\nNEW FOR REVIEW (${freshCount})\n` + finds.map(e => {
       const route = e.curator_route ? routeLabel[e.curator_route] ?? '' : '';
       const stamp = route ? ` [${route}${e.curator_confidence ? `·${e.curator_confidence.toUpperCase()}` : ''}]` : '';
-      return `  [${e.wire}]${stamp} ${e.name}${e.amount ? ` | ${e.amount}` : ''}${e.deadline ? ` | due ${e.deadline}` : ''}\n    ${queueUrl}?entry=${e.id}`;
+      const amount = cleanAmount(e.amount);
+      const deadline = cleanDeadline(e.deadline);
+      const summaryLine = e.summary ? `\n    ${e.summary.slice(0, 220)}` : '';
+      const updateLine = e.recheck_verdict === 'update' && e.recheck_matched_name
+        ? `\n    ↻ Update of a prior entry: "${e.recheck_matched_name}" (${e.recheck_matched_status || 'seen'})` : '';
+      return `  [${e.wire}]${stamp} ${e.name}${amount ? ` | ${amount}` : ''}${deadline ? ` | due ${deadline}` : ''}${summaryLine}${updateLine}\n    ${queueUrl}?entry=${e.id}`;
     }).join('\n') + (more > 0 ? `\n  ${more} more new in the queue` : '') + `\n  Open queue (${waiting} waiting): ${queueUrl}\n`;
   } else {
     reviewHtml = `
