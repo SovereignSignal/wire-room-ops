@@ -152,7 +152,6 @@ src/
 │   ├── notion-sync.ts    # Notion CRM sync (org_profiles -> Notion database, DB-backed config)
 │   ├── ollama.ts         # Ollama client (auto-summarize provider)
 │   ├── operator-signals.ts # Feedback loop: mines approve/decline decisions to calibrate classifier
-│   ├── program-identity.ts # Program canonicalization: resolve URLs to canonical programs + detect duplicates (Layer 1.75 dedup gate)
 │   ├── org-enricher.ts   # LLM + web org profile enrichment (6h timer) with url-verify guard
 │   ├── org-extractor.ts  # Canonical org name extraction + fuzzy org dedup + entry linking on approve
 │   ├── org-merge.ts      # Org profile merge (source -> target), relink entries
@@ -161,6 +160,7 @@ src/
 │   ├── perplexity.ts     # Perplexity sonar-pro scans
 │   ├── post-generator.ts # claude-sonnet-4-6 generates tweet + Telegram HTML per entry (template fallback)
 │   ├── processor.ts      # Entry processing with retry logic
+│   ├── program-identity.ts # Program canonicalization: resolve entries to canonical programs + the Layer 1.75 dedup gate
 │   ├── scan-stats.ts     # Prompt effectiveness and overlap metrics
 │   ├── scheduler.ts      # node-cron scheduling, DB-driven; daily-digest branch runs the daily fold
 │   ├── scraper.ts        # Firecrawl integration, URL resolution (SSRF-hardened shortener resolution)
@@ -283,7 +283,7 @@ INGESTION (raw data)                    THE REFINERY (processing)               
 
 - **`seen_urls`**: Exact URL match. Composite unique on `(normalized_url, wire)`. Handles aggregate URLs (same URL, different entries) via name similarity check.
 - **`seen_names`**: Stores normalized names and tokens for review intelligence and alternate-source detection. Hard duplicate blocking currently relies on URL exact match; fuzzy name blocking is intentionally disabled after false positives.
-- **Program gate (Layer 1.75)**: The `programs` table canonicalizes opportunities by funder (one program per funder with aliases and url_domains); duplicate entries for the same program are demoted (`actioned_by='program-gate'`, act-and-report) in process-raw and daily-intake, but not in the Telegram dumb pipe (see `src/services/program-identity.ts`).
+- **Program gate (Layer 1.75)**: The `programs` table canonicalizes opportunities by normalized program name (funder is a matching/veto signal, not a uniqueness key; a funder can have many programs), with aliases and url_domains feeding the matcher; same-round duplicates of a known program are demoted (`actioned_by='program-gate'`, act-and-report) in process-raw and daily-intake, but not in the Telegram dumb pipe (see `src/services/program-identity.ts`).
 
 ### Approval Validation Guard
 
