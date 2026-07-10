@@ -2,6 +2,7 @@
  * Scan Entry Routes
  *
  * GET    /entries                — query entries with filters (status, wire, date, etc.)
+ * GET    /entries/:id            — single entry (dashboard deep link from digest email)
  * POST   /submit                — single entry submission
  * POST   /submit-batch          — batch submission
  * GET    /queue                  — list queued entries
@@ -296,6 +297,27 @@ router.get('/entries', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Failed to fetch scan entries:', error);
     res.status(500).json({ error: 'Failed to fetch scan entries' });
+  }
+});
+
+// GET /entries/:id — single entry (dashboard deep links from the digest email)
+router.get('/entries/:id', async (req: Request, res: Response) => {
+  const entryId = parseInt(req.params.id, 10);
+  if (isNaN(entryId) || String(entryId) !== req.params.id) {
+    res.status(400).json({ error: 'Invalid entry ID' });
+    return;
+  }
+  try {
+    const pool = getPool();
+    const { rows } = await pool.query(`SELECT * FROM scan_entries WHERE id = $1`, [entryId]);
+    if (rows.length === 0) {
+      res.status(404).json({ error: 'Entry not found' });
+      return;
+    }
+    res.json({ entry: rows[0] });
+  } catch (error) {
+    console.error('Failed to fetch scan entry:', error);
+    res.status(500).json({ error: 'Failed to fetch scan entry' });
   }
 });
 

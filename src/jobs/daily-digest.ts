@@ -8,6 +8,11 @@
  */
 
 import type { Pool } from 'pg';
+import { getAppState, setAppState } from '../db';
+import { config } from '../config';
+import { sendDailyDigestEmail } from '../services/email';
+import type { DigestBdLead, ClosingSoonRow } from '../services/email';
+import { runDeadlineDigest } from './deadline-digest';
 
 export interface WireDigestStats {
   wire: string;
@@ -117,7 +122,7 @@ export async function runDailyDigest(pool: Pool): Promise<DailyDigestResult> {
   }
 }
 
-import type { TopFindEntry } from '../services/email';
+import type { TopFindEntry, RunLedger, RunLedgerLane } from '../services/email';
 
 export interface SourceBreakdownRow {
   wire: string;
@@ -182,25 +187,335 @@ export async function getSourceBreakdown(pool: Pool): Promise<SourceBreakdownRow
   return rows;
 }
 
-/**
- * Fetch the top N pending entries by quality score for inclusion in the digest email.
- */
-export async function getTopPendingFinds(pool: Pool, limit = 5): Promise<TopFindEntry[]> {
-  const client = await pool.connect();
-  try {
-    const result = await client.query<{
-      name: string; wire: string; quality_score: number;
-      amount: string | null; deadline: string | null; source_url: string | null;
-    }>(`
-      SELECT name, wire, quality_score, amount, deadline, source_url
-      FROM scan_entries
-      WHERE status = 'queued'
-        AND (deadline_parsed IS NULL OR deadline_parsed >= CURRENT_DATE)
-      ORDER BY quality_score DESC, created_at DESC
-      LIMIT $1
-    `, [limit]);
-    return result.rows;
-  } finally {
-    client.release();
+// ── Digest email watermark ─────────────────────────────────────────────────
+// An entry is emailed by the digest at most once (best-effort: no
+// cross-process lock, so concurrent cron + send-now can in rare cases repeat
+// an item). The watermark is a forward-only map in app_state; it advances
+// only after a successful send (same pattern as the BD roles lane), so a
+// failed email never swallows items.
+
+export const DIGEST_WATERMARK_KEY = 'digest:emailed-ids';
+const WATERMARK_MAX_AGE_DAYS = 60;
+
+/** entryId -> ISO timestamp of the digest that emailed it */
+export type EmailedIdsMap = Record<string, string>;
+
+export interface WatermarkDeps {
+  getAppState: typeof getAppState;
+  setAppState: typeof setAppState;
+}
+const defaultWatermarkDeps: WatermarkDeps = { getAppState, setAppState };
+
+export function pruneEmailedIds(map: EmailedIdsMap, now = new Date(), maxAgeDays = WATERMARK_MAX_AGE_DAYS): EmailedIdsMap {
+  const cutoff = now.getTime() - maxAgeDays * 24 * 60 * 60 * 1000;
+  const out: EmailedIdsMap = {};
+  for (const [id, iso] of Object.entries(map)) {
+    const t = Date.parse(iso);
+    if (!Number.isNaN(t) && t >= cutoff) out[id] = iso;
   }
+  return out;
+}
+
+export interface FreshFindsResult {
+  finds: TopFindEntry[];
+  totalNew: number;   // all eligible never-emailed items (finds is the top slice)
+  seeded: boolean;    // first run: watermark initialized, nothing surfaced
+  fallback: boolean;  // watermark unreadable: 24h window used instead
+}
+
+const FRESH_FINDS_SELECT = `
+  SELECT id, name, wire, quality_score, amount, deadline, source_url,
+         metadata->'curator'->>'route' AS curator_route,
+         metadata->'curator'->>'confidence' AS curator_confidence
+  FROM scan_entries
+  WHERE status = 'queued'
+    AND (deadline_parsed IS NULL OR deadline_parsed >= CURRENT_DATE)
+    -- candidate window matches watermark retention (60d) so an entry can
+    -- never outlive its watermark entry and reappear as "new"
+    AND created_at >= NOW() - INTERVAL '60 days'`;
+
+const CURATOR_ORDER = `
+  ORDER BY
+    CASE metadata->'curator'->>'route'
+      WHEN 'publish' THEN 0
+      WHEN 'source_check' THEN 1
+      WHEN 'relationship_signal' THEN 2
+      WHEN 'park' THEN 3
+      WHEN 'decline' THEN 4
+      ELSE 5
+    END,
+    CASE metadata->'curator'->>'confidence'
+      WHEN 'high' THEN 0
+      WHEN 'med' THEN 1
+      WHEN 'low' THEN 2
+      ELSE 3
+    END,
+    quality_score DESC NULLS LAST,
+    deadline_parsed ASC NULLS LAST,
+    created_at DESC`;
+
+/** 24h-window fallback used whenever the watermark can't be trusted (unreadable, or a seed write failed). */
+async function fetch24hFallbackFinds(pool: Pool, limit: number): Promise<FreshFindsResult> {
+  const { rows } = await pool.query<TopFindEntry>(
+    `${FRESH_FINDS_SELECT}
+      AND created_at >= NOW() - INTERVAL '24 hours'
+    ${CURATOR_ORDER}
+    LIMIT $1`, [limit]);
+  return { finds: rows, totalNew: rows.length, seeded: false, fallback: true };
+}
+
+export async function getFreshFinds(pool: Pool, limit = 8, deps: WatermarkDeps = defaultWatermarkDeps): Promise<FreshFindsResult> {
+  let map: EmailedIdsMap | null;
+  try {
+    map = await deps.getAppState<EmailedIdsMap>(DIGEST_WATERMARK_KEY);
+  } catch (err) {
+    console.error('[DailyDigest] Watermark read failed — falling back to 24h window:', err instanceof Error ? err.message : err);
+    return fetch24hFallbackFinds(pool, limit);
+  }
+
+  if (map === null) {
+    const { rows } = await pool.query<{ id: number }>(`SELECT id FROM scan_entries WHERE status = 'queued'`);
+    const nowIso = new Date().toISOString();
+    const seeded: EmailedIdsMap = {};
+    for (const r of rows) seeded[String(r.id)] = nowIso;
+    try {
+      await deps.setAppState(DIGEST_WATERMARK_KEY, seeded);
+    } catch (err) {
+      console.error('[DailyDigest] Watermark seeding write failed — degrading to 24h window for today:', err instanceof Error ? err.message : err);
+      return fetch24hFallbackFinds(pool, limit);
+    }
+    console.log(`[DailyDigest] Watermark seeded with ${rows.length} queued entries (forward-only start)`);
+    return { finds: [], totalNew: 0, seeded: true, fallback: false };
+  }
+
+  const excluded = Object.keys(map).map(Number).filter(Number.isInteger);
+  const { rows } = await pool.query<TopFindEntry>(
+    `${FRESH_FINDS_SELECT}
+      AND NOT (id = ANY($2::int[]))
+    ${CURATOR_ORDER}
+    LIMIT $1`, [limit, excluded]);
+  const count = await pool.query<{ total_new: string }>(
+    `SELECT COUNT(*) AS total_new
+     FROM scan_entries
+     WHERE status = 'queued'
+       AND (deadline_parsed IS NULL OR deadline_parsed >= CURRENT_DATE)
+       AND created_at >= NOW() - INTERVAL '60 days'
+       AND NOT (id = ANY($1::int[]))`, [excluded]);
+  return { finds: rows, totalNew: parseInt(count.rows[0]?.total_new ?? '0', 10), seeded: false, fallback: false };
+}
+
+export async function advanceDigestWatermark(ids: number[], deps: WatermarkDeps = defaultWatermarkDeps, now = new Date()): Promise<void> {
+  if (ids.length === 0) return;
+  let map: EmailedIdsMap;
+  try {
+    map = (await deps.getAppState<EmailedIdsMap>(DIGEST_WATERMARK_KEY)) ?? {};
+  } catch (err) {
+    // Unreadable map: skip the advance entirely rather than writing a fresh
+    // map — that would silently wipe up to 60 days of watermark history and
+    // flood every already-emailed item back as "new". Worst case here is
+    // strictly safer: today's shown items may repeat once tomorrow.
+    console.error('[DailyDigest] Watermark advance read failed — skipping advance (no write):', err instanceof Error ? err.message : err);
+    return;
+  }
+  const iso = now.toISOString();
+  for (const id of ids) map[String(id)] = iso;
+  await deps.setAppState(DIGEST_WATERMARK_KEY, pruneEmailedIds(map, now));
+}
+
+export interface RunLedgerInputs {
+  date: string;                                  // digest date — the agent-brief app_state key
+  feeds?: { ok: number; total: number } | null;  // just-ran fold result; omit on send-now
+  forum?: 'ok' | 'fail' | null;                  // null/undefined = lane disabled → omitted
+}
+
+/**
+ * Assemble the run ledger from durable evidence, never scheduler bookkeeping
+ * (in-memory JobStatus resets on restart). Every probe is isolated: a failed
+ * probe renders "?" and can never block the digest email.
+ */
+export async function buildRunLedger(
+  pool: Pool,
+  inputs: RunLedgerInputs,
+  deps: WatermarkDeps = defaultWatermarkDeps,
+): Promise<{ ledger: RunLedger; anomalies: string[] }> {
+  const lanes: RunLedgerLane[] = [];
+  const anomalies: string[] = [];
+
+  // scans — api_usage_log purpose='scan' over 24h (grok/perplexity/parallel all log it)
+  try {
+    const { rows } = await pool.query<{ ok: string; failed: string }>(`
+      SELECT COUNT(*) FILTER (WHERE success) AS ok,
+             COUNT(*) FILTER (WHERE NOT success) AS failed
+      FROM api_usage_log
+      WHERE purpose = 'scan' AND created_at >= NOW() - INTERVAL '24 hours'`);
+    const ok = parseInt(rows[0]?.ok ?? '0', 10);
+    const failed = parseInt(rows[0]?.failed ?? '0', 10);
+    if (failed > 0) {
+      lanes.push({ key: 'scans', state: 'fail', detail: `scans ${ok}✓ ${failed}✗` });
+      anomalies.push(`Scan calls: ${failed} failed in 24h`);
+    } else if (ok === 0) {
+      lanes.push({ key: 'scans', state: 'warn', detail: 'scans 0' });
+    } else {
+      lanes.push({ key: 'scans', state: 'ok', detail: `scans ${ok}✓` });
+    }
+  } catch {
+    lanes.push({ key: 'scans', state: 'warn', detail: 'scans ?' });
+  }
+
+  if (inputs.feeds) {
+    const { ok, total } = inputs.feeds;
+    // feed-source failures already push their own anomaly in the scheduler fold
+    lanes.push({ key: 'feeds', state: ok === total ? 'ok' : 'fail', detail: `feeds ${ok}/${total}` });
+  }
+  if (inputs.forum) {
+    lanes.push({ key: 'forum', state: inputs.forum === 'ok' ? 'ok' : 'fail', detail: inputs.forum === 'ok' ? 'forum ✓' : 'forum ✗' });
+  }
+
+  // bridge — tele-sum summary-sync watermark age (15-min cycle; >6h = stale).
+  // The watermark only advances when tele-sum processed new summaries, so it
+  // measures content arrival, not bridge health — a quiet Telegram night is
+  // indistinguishable from a broken bridge. Warn glyph only; never flips the
+  // digest's overall verdict. A proper heartbeat probe is a follow-up.
+  try {
+    const wm = await deps.getAppState<string>('summary-sync:watermark');
+    if (wm) {
+      const age = Date.now() - Date.parse(wm);
+      if (Number.isNaN(age) || age > 6 * 60 * 60 * 1000) {
+        lanes.push({ key: 'bridge', state: 'warn', detail: 'bridge stale' });
+      } else {
+        lanes.push({ key: 'bridge', state: 'ok', detail: 'bridge ✓' });
+      }
+    }
+  } catch {
+    lanes.push({ key: 'bridge', state: 'warn', detail: 'bridge ?' });
+  }
+
+  // agent — today's brief presence; omitted when no agent ran (that is normal)
+  try {
+    const brief = await deps.getAppState<{ runs?: unknown[] }>(`agent-brief:${inputs.date}`);
+    const runs = brief?.runs?.length ?? 0;
+    if (runs > 0) lanes.push({ key: 'agent', state: 'ok', detail: `agent ${runs} run${runs === 1 ? '' : 's'}` });
+  } catch {
+    // omit — agent lane is optional evidence
+  }
+
+  return { ledger: { lanes }, anomalies };
+}
+
+export interface AssembleDigestOptions {
+  recipients?: string[];
+  /** In-fold lane failures collected by the scheduler (forum/feeds/weekly/BD) */
+  laneAnomalies?: string[];
+  feeds?: { ok: number; total: number } | null;
+  forum?: 'ok' | 'fail' | null;
+  bdLeads?: DigestBdLead[];
+  bdLeadsUrl?: string;
+}
+
+export interface DigestSendSummary {
+  date: string;
+  freshCount: number;
+  totalNew: number;
+  issueCount: number;
+  seeded: boolean;
+}
+
+export interface AssembleDigestDeps {
+  digest: typeof runDailyDigest;
+  fresh: typeof getFreshFinds;
+  ledger: typeof buildRunLedger;
+  deadlines: typeof runDeadlineDigest;
+  cost: typeof getCostRecap;
+  sources: typeof getSourceBreakdown;
+  send: typeof sendDailyDigestEmail;
+  advance: (ids: number[]) => Promise<void>;
+}
+
+const defaultAssembleDeps: AssembleDigestDeps = {
+  digest: runDailyDigest,
+  fresh: getFreshFinds,
+  ledger: buildRunLedger,
+  deadlines: runDeadlineDigest,
+  cost: getCostRecap,
+  sources: getSourceBreakdown,
+  send: sendDailyDigestEmail,
+  advance: (ids) => advanceDigestWatermark(ids),
+};
+
+/**
+ * ONE code path for the digest email — used by both the scheduler's daily
+ * fold and the dashboard send-now button, so the two can never diverge.
+ * The watermark advances only after the send succeeds.
+ */
+export async function assembleAndSendDailyDigest(
+  pool: Pool,
+  opts: AssembleDigestOptions = {},
+  deps: AssembleDigestDeps = defaultAssembleDeps,
+): Promise<DigestSendSummary> {
+  const digest = await deps.digest(pool);
+  const freshRes = await deps.fresh(pool, 8);
+
+  let ledger: import('../services/email').RunLedger = { lanes: [] };
+  const anomalies = [...(opts.laneAnomalies ?? [])];
+  try {
+    const built = await deps.ledger(pool, { date: digest.date, feeds: opts.feeds ?? null, forum: opts.forum ?? null });
+    ledger = built.ledger;
+    anomalies.push(...built.anomalies);
+  } catch (e) {
+    console.error('[DailyDigest] Run ledger failed (non-fatal):', e instanceof Error ? e.message : e);
+  }
+
+  let closingSoon: ClosingSoonRow[] = [];
+  try {
+    const results = await deps.deadlines(pool);
+    closingSoon = results.flatMap(r => r.entries.map(e => ({
+      name: e.name, wire: r.wire, deadline: e.deadline, daysUntil: e.daysUntil,
+      amount: e.amount, sourceUrl: e.sourceUrl,
+    })));
+  } catch (e) {
+    console.error('[DailyDigest] Closing-soon fold failed (non-fatal):', e instanceof Error ? e.message : e);
+  }
+
+  let costRecap: { rows: CostRow[]; total: number } | undefined;
+  try {
+    costRecap = await deps.cost(pool);
+    if (costRecap.total > 5) anomalies.push(`API spend $${costRecap.total.toFixed(2)} in 24h (>$5)`);
+  } catch (e) {
+    console.error('[DailyDigest] Cost recap failed (non-fatal):', e instanceof Error ? e.message : e);
+  }
+
+  try {
+    const breakdown = await deps.sources(pool);
+    for (const row of breakdown) {
+      if (row.total >= 10 && row.duplicates / row.total > 0.6) {
+        anomalies.push(`High dupe rate: ${row.wire}/${row.source} — ${Math.round((row.duplicates / row.total) * 100)}% of ${row.total}`);
+      }
+    }
+  } catch (e) {
+    console.error('[DailyDigest] Source breakdown failed (non-fatal):', e instanceof Error ? e.message : e);
+  }
+
+  await deps.send(digest, config.app.url, opts.recipients, {
+    freshFinds: freshRes.finds,
+    totalNewEligible: freshRes.totalNew,
+    runLedger: ledger,
+    closingSoon,
+    costRecap,
+    bdLeads: opts.bdLeads,
+    bdLeadsUrl: opts.bdLeadsUrl,
+    anomalies,
+  });
+  try {
+    await deps.advance(freshRes.finds.map(f => f.id));
+  } catch (e) {
+    console.error('[DailyDigest] Watermark advance failed after send — shown items may repeat once:', e instanceof Error ? e.message : e);
+  }
+
+  return {
+    date: digest.date,
+    freshCount: freshRes.finds.length,
+    totalNew: freshRes.totalNew,
+    issueCount: anomalies.length,
+    seeded: freshRes.seeded,
+  };
 }

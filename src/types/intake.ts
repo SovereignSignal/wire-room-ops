@@ -49,7 +49,8 @@ export const SURFACE_TYPES = ['grants_page', 'blog', 'forum', 'rss', 'applicatio
 export type SurfaceType = typeof SURFACE_TYPES[number];
 
 // node-cron schedule types the scheduler dispatches (see scheduler.ts).
-export const SCHEDULE_TYPES = ['scan-execution', 'forum-scan', 'daily-digest', 'deadline-digest', 'account-monitor', 'source-feeds'] as const;
+// deadline-digest retired 2026-07-09 — closing-soon now folds into the daily digest.
+export const SCHEDULE_TYPES = ['scan-execution', 'forum-scan', 'daily-digest', 'account-monitor', 'source-feeds'] as const;
 export type ScheduleType = typeof SCHEDULE_TYPES[number];
 
 // Output format for scan prompts

@@ -78,6 +78,48 @@ function emailShell(title: string, bodyHtml: string): string {
 </html>`.trim();
 }
 
+function dailyDigestShell(title: string, date: string, bodyHtml: string): string {
+  const brand = getBrand();
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtml(title)}</title>
+</head>
+<body style="margin:0;padding:0;background-color:#eef3f5;${FONT}">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:#eef3f5;">
+    <tr>
+      <td align="center" style="padding:28px 14px;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:560px;background-color:#ffffff;border:1px solid #cad4dc;border-radius:6px;overflow:hidden;">
+          <tr>
+            <td style="padding:16px 20px;background-color:#172026;color:#ffffff;">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                <tr>
+                  <td style="font-size:14px;font-weight:800;letter-spacing:3px;color:#ffffff;">WIRE<span style="color:#8fd3ff;">OPS</span></td>
+                  <td align="right" style="font-size:11px;color:#9cc9e8;${MONO}">${escapeHtml(date)}</td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0;">
+              ${bodyHtml}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:14px 20px;border-top:1px solid #dfe6eb;">
+              <p style="margin:0;color:#8b969e;font-size:11px;">${escapeHtml(brand.name)}</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`.trim();
+}
+
 function emailBtn(href: string, label: string): string {
   return `<table role="presentation" cellspacing="0" cellpadding="0" style="margin:20px 0;">
   <tr>
@@ -289,13 +331,21 @@ Review: ${reviewUrl}`.trim();
 }
 
 export interface TopFindEntry {
+  id: number;
   name: string;
   wire: string;
-  quality_score: number;
+  quality_score: number | null;
   amount: string | null;
   deadline: string | null;
   source_url: string | null;
+  curator_route: string | null;
+  curator_confidence: string | null;
 }
+
+export type LaneState = 'ok' | 'warn' | 'fail';
+export interface RunLedgerLane { key: string; state: LaneState; detail: string; }
+/** Evidence that the machine ran — rendered inside the digest status band. */
+export interface RunLedger { lanes: RunLedgerLane[]; }
 
 export interface AgentBriefEntry {
   name: string;
@@ -326,32 +376,41 @@ export interface DigestBdLead {
   notes: string;
 }
 
+export interface ClosingSoonRow {
+  name: string;
+  wire: string;
+  deadline: string;
+  daysUntil: number;
+  amount: string | null;
+  sourceUrl: string;
+}
+
 export interface DigestEmailExtras {
-  topFinds?: TopFindEntry[];
-  csvExport?: import('../jobs/csv-export').CsvExportResult;
-  downloadUrls?: { csv: string | null; md: string | null };
-  agentBrief?: StoredAgentBrief | null;
-  sourceBreakdown?: import('../jobs/daily-digest').SourceBreakdownRow[];
+  /** Never-before-emailed queue items (watermarked) — the "New for review" cards */
+  freshFinds?: TopFindEntry[];
+  /** Total eligible new items behind freshFinds (drives the "+N more new" line) */
+  totalNewEligible?: number;
+  /** Evidence the machine ran — rendered inside the status band */
+  runLedger?: RunLedger;
+  /** Approved entries closing within 7 days (folds the retired deadline email) */
+  closingSoon?: ClosingSoonRow[];
   costRecap?: { rows: import('../jobs/daily-digest').CostRow[]; total: number };
-  /** Wednesday BD leads written to Paid Work Leads this run (Phase C surface) */
+  /** Wednesday BD leads written to Paid Work Leads this run */
   bdLeads?: DigestBdLead[];
   bdLeadsUrl?: string;
-  /** Operational anomalies collected by the scheduler — the ONLY way ops
-   *  telemetry gets into the email. No anomalies = one quiet check mark. */
+  /** Operational anomalies — the ONLY way ops telemetry gets into the email. */
   anomalies?: string[];
 }
 
 /**
- * Render the daily digest email (2026-07-03 redesign).
+ * Render the daily digest email (2026-07-09 "Run Ledger" redesign).
  *
- * Design contract — the email answers "what needs me today?" in one glance:
- *   1. one-line health strip (in / to-review / approved / $ / lanes)
- *   2. NEEDS YOU — the queued items worth attention, one line each
- *   3. BD LEADS — Wednesdays, the verified Paid Work Leads written this run
- *   4. HEADS-UP — anomalies only (lane failures, dupe spikes, cost spikes)
- *   5. one-line activity notes (agent scan, approved + export links)
- * Ops telemetry tables (per-source matrix, cost table, wire table) live in
- * the dashboard, not here. Quiet day = short email.
+ * The operator's cockpit — three jobs, in order:
+ *   1. Status band: prove the machine ran (RUN CLEAN / ⚠ N ISSUES + lane ledger).
+ *   2. New for review: never-before-emailed queue items, curator-stamped,
+ *      deep-linked into the dashboard queue (?entry=<id>).
+ *   3. Closing soon: approved entries with deadlines ≤7d.
+ * Backlog appears only on the queue button. Quiet day = short email.
  */
 export function renderDailyDigest(
   digest: import('../jobs/daily-digest').DailyDigestResult,
@@ -360,132 +419,159 @@ export function renderDailyDigest(
 ): { subject: string; html: string; text: string } {
   const brand = getBrand();
   const base = dashboardUrl.replace(/\/$/, '');
-  const reviewUrl = `${base}/queue`;
-  const { topFinds, csvExport, downloadUrls, agentBrief, costRecap, bdLeads, bdLeadsUrl, anomalies } = extras;
+  const queueUrl = `${base}/queue`;
+  const { freshFinds, totalNewEligible, runLedger, closingSoon, costRecap, bdLeads, bdLeadsUrl, anomalies } = extras;
 
-  const wireChip = (w: string) =>
-    `<span style="display:inline-block;padding:1px 6px;border:1px solid #ddd;border-radius:3px;font-size:10px;color:#666;text-transform:uppercase;${MONO}">${escapeHtml(w)}</span>`;
-
-  // ── 1. Health strip ────────────────────────────────────────────────────
+  const finds = freshFinds ?? [];
+  const freshCount = finds.length;
+  const totalNew = Math.max(totalNewEligible ?? freshCount, freshCount);
+  const issueCount = anomalies?.length ?? 0;
   const totalIn = digest.wires.reduce((n, w) => n + w.totalIngested, 0);
-  const approved24 = digest.wires.reduce((n, w) => n + w.recentlyApproved, 0);
-  const lanesOk = !anomalies || anomalies.length === 0;
-  const stripParts = [
-    `${totalIn} in`,
-    `<strong style="color:${digest.totalPendingReview > 0 ? '#0088cc' : '#1a8a5a'};">${digest.totalPendingReview} to review</strong>`,
-    `${approved24} approved`,
-    costRecap ? `$${costRecap.total.toFixed(2)} API` : null,
-    lanesOk ? `lanes <span style="color:#1a8a5a;">\u2713</span>` : `<strong style="color:#cc4400;">\u26a0 ${anomalies!.length} heads-up</strong>`,
-  ].filter(Boolean);
-  const stripHtml = `<p style="margin:0 0 18px;font-size:13px;color:#444;${MONO}">${stripParts.join(' &nbsp;\u00b7&nbsp; ')}</p>`;
-  const stripText = [
-    `${totalIn} in`, `${digest.totalPendingReview} to review`, `${approved24} approved`,
-    costRecap ? `$${costRecap.total.toFixed(2)} API` : null, lanesOk ? 'lanes OK' : `${anomalies!.length} HEADS-UP`,
-  ].filter(Boolean).join(' | ');
+  const waiting = digest.totalPendingReview;
 
-  // ── 2. NEEDS YOU ───────────────────────────────────────────────────────
-  let needsHtml = '';
-  let needsText = '';
-  if (digest.totalPendingReview > 0 && topFinds && topFinds.length > 0) {
-    const shown = topFinds.slice(0, 8);
-    const lines = shown.map(e => {
-      const nameCell = e.source_url
-        ? `<a href="${escapeHtml(e.source_url)}" style="color:#0088cc;text-decoration:none;font-weight:600;">${escapeHtml(e.name)}</a>`
-        : `<span style="font-weight:600;color:#222;">${escapeHtml(e.name)}</span>`;
-      const meta = [e.amount, e.deadline ? `due ${e.deadline}` : null].filter(Boolean).map(x => escapeHtml(String(x))).join(' \u00b7 ');
-      return `<p style="margin:0 0 7px;font-size:13px;color:#222;line-height:1.5;">${wireChip(e.wire)} ${nameCell}${meta ? ` <span style="color:#888;">\u2014 ${meta}</span>` : ''}</p>`;
-    }).join('');
-    const more = digest.totalPendingReview - shown.length;
-    needsHtml = `
-      ${sectionLabel(`Needs you (${digest.totalPendingReview})`)}
-      ${lines}
-      ${more > 0 ? `<p style="margin:2px 0 8px;font-size:12px;color:#888;">\u2026and ${more} more in the queue</p>` : ''}
-      ${emailBtn(reviewUrl, 'Review queue')}`;
-    needsText = `\nNEEDS YOU (${digest.totalPendingReview})\n` + shown.map(e =>
-      `  [${e.wire}] ${e.name}${e.amount ? ` | ${e.amount}` : ''}${e.deadline ? ` | due ${e.deadline}` : ''}`
-    ).join('\n') + (more > 0 ? `\n  ...and ${more} more` : '') + `\n  Review: ${reviewUrl}\n`;
-  } else if (digest.totalPendingReview === 0) {
-    needsHtml = `<p style="margin:0 0 16px;font-size:13px;color:#1a8a5a;">Queue is clear \u2014 nothing needs you today.</p>`;
-    needsText = '\nQueue is clear - nothing needs you today.\n';
+  const day = new Date(`${digest.date}T00:00:00Z`);
+  const subjDate = day.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+  const slugDate = day.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).replace(/,/g, '').toUpperCase();
+
+  // ── 1. Status band ───────────────────────────────────────────────────
+  const ledgerParts = [
+    ...(runLedger?.lanes ?? []).map(l => l.detail),
+    `${totalIn} in`,
+    costRecap ? `$${costRecap.total.toFixed(2)}` : null,
+  ].filter((p): p is string => Boolean(p));
+  const clean = issueCount === 0;
+  const verdict = clean ? 'RUN CLEAN' : `⚠ ${issueCount} ISSUE${issueCount === 1 ? '' : 'S'}`;
+  const bandHtml = `
+    <div style="padding:9px 24px;background-color:${clean ? '#e6f6ee' : '#fdeee4'};border-bottom:1px solid ${clean ? '#bfe4d0' : '#f0c4a4'};">
+      <p style="margin:0;font-size:11px;color:${clean ? '#116b45' : '#a23b00'};${MONO}"><strong style="letter-spacing:1px;">${escapeHtml(verdict)}</strong> &nbsp; ${ledgerParts.map(p => escapeHtml(p)).join(' &middot; ')}</p>
+    </div>`;
+  const bandText = `${verdict} | ${ledgerParts.join(' · ')}`;
+
+  // ── 2. Production issues (bad day only) ──────────────────────────────
+  let issuesHtml = '';
+  let issuesText = '';
+  if (issueCount > 0 && anomalies) {
+    issuesHtml = `
+      ${sectionLabel(`Production issues (${issueCount})`)}
+      ${anomalies.map(a => `<div style="background:#fff7ed;border:1px solid #f0b38a;border-radius:5px;padding:10px 12px;margin:0 0 8px;color:#a23b00;font-size:12px;line-height:1.45;">${escapeHtml(a)}</div>`).join('')}`;
+    issuesText = `\nPRODUCTION ISSUES (${issueCount})\n` + anomalies.map(a => `  ! ${a}`).join('\n') + '\n';
   }
 
-  // ── 3. BD LEADS (Wednesdays) ───────────────────────────────────────────
+  // ── 3. New for review ────────────────────────────────────────────────
+  const routeLabel: Record<string, string> = {
+    publish: 'PUBLISH', source_check: 'CHECK', relationship_signal: 'SIGNAL', park: 'PARK', decline: 'DECLINE',
+  };
+  const queueBtn = `<table role="presentation" cellspacing="0" cellpadding="0" style="margin:16px 0 4px;">
+    <tr><td style="background-color:#14181c;padding:10px 24px;">
+      <a href="${escapeHtml(queueUrl)}" target="_blank" style="color:#ffffff;font-size:13px;font-weight:600;text-decoration:none;${FONT}">Open queue → ${waiting} waiting</a>
+    </td></tr>
+  </table>`;
+
+  let reviewHtml = '';
+  let reviewText = '';
+  if (freshCount > 0) {
+    const cards = finds.map(e => {
+      const entryUrl = `${queueUrl}?entry=${e.id}`;
+      const route = e.curator_route ? routeLabel[e.curator_route] ?? null : null;
+      const stamp = route ? `${route}${e.curator_confidence ? `·${e.curator_confidence.toUpperCase()}` : ''}` : null;
+      const isPublish = e.curator_route === 'publish';
+      const metaParts = [
+        escapeHtml(e.wire.toUpperCase()),
+        stamp ? `<span style="color:${isPublish ? '#116b45' : '#8a6d1f'};font-weight:700;">${escapeHtml(stamp)}</span>` : null,
+        e.amount ? escapeHtml(e.amount) : null,
+        e.deadline ? `due ${escapeHtml(e.deadline)}` : null,
+        e.source_url ? `<a href="${escapeHtml(e.source_url)}" style="color:#93a2ac;text-decoration:none;">source &#8599;</a>` : null,
+      ].filter(Boolean);
+      return `<div style="border:1px solid #e2e8ed;border-left:3px solid ${isPublish ? '#1a8a5a' : '#d0d9df'};padding:10px 12px;margin:0 0 8px;">
+        <p style="margin:0;font-size:13px;line-height:1.4;"><a href="${escapeHtml(entryUrl)}" style="color:#14181c;font-weight:700;text-decoration:none;border-bottom:1px solid #9fd4f5;">${escapeHtml(e.name)}</a></p>
+        <p style="margin:5px 0 0;font-size:10.5px;color:#64717b;${MONO}">${metaParts.join(' &middot; ')}</p>
+      </div>`;
+    }).join('');
+    const more = totalNew - freshCount;
+    reviewHtml = `
+      ${sectionLabel(`New for review (${freshCount})`)}
+      ${cards}
+      ${more > 0 ? `<p style="margin:4px 0 0;font-size:12px;color:#64717b;">${more} more new in the queue</p>` : ''}
+      ${queueBtn}`;
+    reviewText = `\nNEW FOR REVIEW (${freshCount})\n` + finds.map(e => {
+      const route = e.curator_route ? routeLabel[e.curator_route] ?? '' : '';
+      const stamp = route ? ` [${route}${e.curator_confidence ? `·${e.curator_confidence.toUpperCase()}` : ''}]` : '';
+      return `  [${e.wire}]${stamp} ${e.name}${e.amount ? ` | ${e.amount}` : ''}${e.deadline ? ` | due ${e.deadline}` : ''}\n    ${queueUrl}?entry=${e.id}`;
+    }).join('\n') + (more > 0 ? `\n  ${more} more new in the queue` : '') + `\n  Open queue (${waiting} waiting): ${queueUrl}\n`;
+  } else {
+    reviewHtml = `
+      <p style="margin:18px 0 0;font-size:13px;color:#444;">Nothing new for review. Everything ingested overnight was duplicate or off-scope &mdash; the machine ran, filtered, and left you alone.</p>
+      ${waiting > 0 ? `<p style="margin:10px 0 0;font-size:12px;color:#64717b;"><a href="${escapeHtml(queueUrl)}" style="color:#64717b;">${waiting} older item${waiting === 1 ? '' : 's'} still queued</a></p>` : ''}`;
+    reviewText = `\nNothing new for review.${waiting > 0 ? ` ${waiting} older item${waiting === 1 ? '' : 's'} still queued: ${queueUrl}` : ''}\n`;
+  }
+
+  // ── 4. Closing soon ──────────────────────────────────────────────────
+  let closingHtml = '';
+  let closingText = '';
+  if (closingSoon && closingSoon.length > 0) {
+    const rows = closingSoon.map(c => {
+      const days = c.daysUntil <= 0 ? 'today' : c.daysUntil === 1 ? '1 day' : `${c.daysUntil} days`;
+      const name = c.sourceUrl
+        ? `<a href="${escapeHtml(c.sourceUrl)}" style="color:#14181c;font-weight:600;text-decoration:none;">${escapeHtml(c.name)}</a>`
+        : `<span style="font-weight:600;color:#14181c;">${escapeHtml(c.name)}</span>`;
+      return `<tr>
+        <td style="padding:6px 0;border-bottom:1px solid #eef2f5;font-size:12px;">${name}</td>
+        <td style="padding:6px 0;border-bottom:1px solid #eef2f5;font-size:12px;color:#64717b;text-align:right;${MONO}">${escapeHtml(c.amount || '')}</td>
+        <td style="padding:6px 0 6px 14px;border-bottom:1px solid #eef2f5;font-size:12px;color:#b45309;font-weight:800;text-align:right;white-space:nowrap;${MONO}">${days}</td>
+      </tr>`;
+    }).join('');
+    closingHtml = `
+      ${sectionLabel(`Closing soon · approved (${closingSoon.length})`)}
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0">${rows}</table>`;
+    closingText = `\nCLOSING SOON (${closingSoon.length})\n` + closingSoon.map(c =>
+      `  [${c.wire}] ${c.name} — ${c.deadline} (in ${c.daysUntil}d)${c.amount ? ` | ${c.amount}` : ''}`
+    ).join('\n') + '\n';
+  }
+
+  // ── 5. BD leads (Wednesdays) ─────────────────────────────────────────
   let bdHtml = '';
   let bdText = '';
   if (bdLeads && bdLeads.length > 0) {
     const lines = bdLeads.map(l => {
       const title = l.source
-        ? `<a href="${escapeHtml(l.source)}" style="color:#7c4dcc;text-decoration:none;font-weight:600;">${escapeHtml(l.lead)}</a>`
-        : `<span style="font-weight:600;color:#222;">${escapeHtml(l.lead)}</span>`;
-      const note = l.notes ? `<span style="color:#888;"> \u2014 ${escapeHtml(l.notes.slice(0, 140))}</span>` : '';
-      return `<p style="margin:0 0 7px;font-size:13px;color:#222;line-height:1.5;">${title}${note}</p>`;
+        ? `<a href="${escapeHtml(l.source)}" style="color:#0b86d1;text-decoration:none;font-weight:700;">${escapeHtml(l.lead)}</a>`
+        : `<span style="font-weight:700;color:#14181c;">${escapeHtml(l.lead)}</span>`;
+      const note = l.notes ? `<div style="margin-top:5px;color:#64717b;font-size:12px;">${escapeHtml(l.notes.slice(0, 140))}</div>` : '';
+      return `<div style="border:1px solid #e2e8ed;border-radius:5px;padding:11px 12px;margin:0 0 8px;">${title}${note}</div>`;
     }).join('');
     bdHtml = `
-      ${sectionLabel(`BD leads \u2014 verified, not contacted (${bdLeads.length})`)}
+      ${sectionLabel(`BD leads (${bdLeads.length})`)}
       ${lines}
       ${bdLeadsUrl ? emailBtn(bdLeadsUrl, 'Triage in Notion') : ''}`;
     bdText = `\nBD LEADS - VERIFIED, NOT CONTACTED (${bdLeads.length})\n` + bdLeads.map(l =>
-      `  ${l.lead}${l.notes ? ` — ${l.notes.slice(0, 110)}` : ''}${l.source ? `\n    ${l.source}` : ''}`
+      `  ${l.lead}${l.notes ? ` | ${l.notes.slice(0, 110)}` : ''}${l.source ? `\n    ${l.source}` : ''}`
     ).join('\n') + (bdLeadsUrl ? `\n  Triage: ${bdLeadsUrl}` : '') + '\n';
   }
 
-  // ── 4. HEADS-UP (anomalies only) ───────────────────────────────────────
-  let headsHtml = '';
-  let headsText = '';
-  if (anomalies && anomalies.length > 0) {
-    headsHtml = `
-      ${sectionLabel('Heads-up')}
-      ${anomalies.map(a => `<p style="margin:0 0 6px;font-size:12px;color:#cc4400;">\u26a0 ${escapeHtml(a)}</p>`).join('')}`;
-    headsText = '\nHEADS-UP\n' + anomalies.map(a => `  ! ${a}`).join('\n') + '\n';
-  }
-
-  // ── 5. Activity one-liners ─────────────────────────────────────────────
-  const notes: string[] = [];
-  const notesText: string[] = [];
-  if (agentBrief?.runs?.length) {
-    const runs = agentBrief.runs;
-    const searches = runs.reduce((n, r) => n + (r.searchesDone ?? 0), 0);
-    const submitted = runs.reduce((n, r) => n + (r.entries?.length ?? 0), 0);
-    const dupes = runs.reduce((n, r) => n + (r.skippedDuplicates ?? 0), 0);
-    notes.push(`Agent scan: ${runs.length} run${runs.length > 1 ? 's' : ''} \u00b7 ${searches} searches \u00b7 ${submitted} submitted \u00b7 ${dupes} dupes skipped`);
-    notesText.push(`Agent scan: ${runs.length} runs | ${searches} searches | ${submitted} submitted | ${dupes} dupes skipped`);
-  }
-  if (csvExport && csvExport.entryCount > 0) {
-    const links = [
-      downloadUrls?.csv ? `<a href="${escapeHtml(downloadUrls.csv)}" style="color:#0088cc;">CSV</a>` : null,
-      downloadUrls?.md ? `<a href="${escapeHtml(downloadUrls.md)}" style="color:#0088cc;">Markdown</a>` : null,
-    ].filter(Boolean).join(' \u00b7 ');
-    notes.push(`Approved last 24h: ${csvExport.entryCount}${links ? ` \u2014 ${links}` : ''}`);
-    notesText.push(`Approved last 24h: ${csvExport.entryCount}${downloadUrls?.csv ? ` | CSV: ${downloadUrls.csv}` : ''}${downloadUrls?.md ? ` | MD: ${downloadUrls.md}` : ''}`);
-  }
-  const notesHtml = notes.length
-    ? `${sectionLabel('Activity')}${notes.map(n => `<p style="margin:0 0 6px;font-size:12px;color:#666;">${n}</p>`).join('')}`
-    : '';
-
   const body = `
-    ${stripHtml}
-    ${needsHtml}
-    ${bdHtml}
-    ${headsHtml}
-    ${notesHtml}
-    <p style="margin:22px 0 0;font-size:11px;color:#aaa;"><a href="${escapeHtml(base)}" style="color:#aaa;">Dashboard</a> \u00b7 per-source and cost detail lives there, not here.</p>`;
+    ${bandHtml}
+    <div style="padding:0 24px 20px;">
+      ${issuesHtml}
+      ${reviewHtml}
+      ${closingHtml}
+      ${bdHtml}
+      <p style="margin:20px 0 0;font-size:11px;color:#a6b1b9;"><a href="${escapeHtml(base)}" style="color:#a6b1b9;">Dashboard</a> &middot; backlog, sources, and cost detail live there.</p>
+    </div>`;
 
-  const html = emailShell(`WireOps \u2014 ${digest.date}`, body);
+  const html = dailyDigestShell(`WireOps - ${digest.date}`, slugDate, body);
+
+  const newPart = freshCount > 0 ? `${freshCount} new for review` : 'nothing new';
+  const subject = issueCount > 0
+    ? `⚠ ${subjDate} — ${issueCount} issue${issueCount === 1 ? '' : 's'} · ${freshCount > 0 ? `${freshCount} new` : 'nothing new'}`
+    : `${subjDate} — ${newPart} · run clean`;
 
   const text = `WIREOPS - ${digest.date}
-${stripText}
-${needsText}${bdText}${headsText}${notesText.length ? '\nACTIVITY\n' + notesText.map(n => '  ' + n).join('\n') + '\n' : ''}
+${bandText}
+${issuesText}${reviewText}${closingText}${bdText}
 Dashboard: ${base}
 
 ---
 ${brand.name}`;
-
-  const subjectParts = [
-    `${digest.totalPendingReview} to review`,
-    bdLeads && bdLeads.length > 0 ? `${bdLeads.length} BD lead${bdLeads.length > 1 ? 's' : ''}` : null,
-    !lanesOk ? `\u26a0 ${anomalies!.length} heads-up` : null,
-  ].filter(Boolean);
-  const subject = `WireOps \u2014 ${digest.date} | ${subjectParts.join(' \u00b7 ')}`;
 
   return { subject, html, text };
 }
@@ -553,72 +639,6 @@ ${brand.name}`.trim();
   });
 
   console.log(`[Email] CSV export email sent to: ${Array.isArray(to) ? to.join(', ') : to}`);
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// Agent scan brief
-// ────────────────────────────────────────────────────────────────────────────
-
-export async function sendDeadlineDigestEmail(
-  results: { wire: string; entries: { name: string; deadline: string; daysUntil: number; amount: string | null; sourceUrl: string }[] }[],
-  dashboardUrl: string,
-  recipients?: string[]
-): Promise<void> {
-  const brand = getBrand();
-  const total = results.reduce((n, r) => n + r.entries.length, 0);
-
-  type DE = { name: string; deadline: string; daysUntil: number; amount: string | null; sourceUrl: string };
-  function row(e: DE): string {
-    const name = e.sourceUrl
-      ? `<a href="${escapeHtml(e.sourceUrl)}" style="color:#0088cc;text-decoration:none;">${escapeHtml(e.name)}</a>`
-      : escapeHtml(e.name);
-    const days = e.daysUntil <= 0 ? 'today' : e.daysUntil === 1 ? '1 day' : `${e.daysUntil} days`;
-    return `<tr>
-      <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#222;">${name}</td>
-      <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#444;${MONO}">${escapeHtml(e.deadline || '')}</td>
-      <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#cc6600;text-align:center;">${days}</td>
-      <td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;color:#666;">${escapeHtml(e.amount || '')}</td>
-    </tr>`;
-  }
-
-  const sections = results.filter(r => r.entries.length > 0).map(r => `${sectionLabel(`${r.wire} — ${r.entries.length} closing`)}
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #eee;">
-      <tr>
-        <th style="padding:6px 8px;text-align:left;font-size:11px;color:#666;border-bottom:2px solid #ddd;">Name</th>
-        <th style="padding:6px 8px;text-align:left;font-size:11px;color:#666;border-bottom:2px solid #ddd;">Deadline</th>
-        <th style="padding:6px 8px;text-align:center;font-size:11px;color:#666;border-bottom:2px solid #ddd;">Closes in</th>
-        <th style="padding:6px 8px;text-align:left;font-size:11px;color:#666;border-bottom:2px solid #ddd;">Amount</th>
-      </tr>
-      ${r.entries.map(row).join('')}
-    </table>`).join('');
-
-  const body = `
-    <p style="margin:0 0 16px;font-size:14px;color:#222;"><strong>${total}</strong> approved ${total === 1 ? 'entry is' : 'entries are'} closing in the next 7 days.</p>
-    ${sections}
-    ${emailBtn(dashboardUrl, 'View in Dashboard')}`;
-
-  const htmlContent = emailShell('Closing Soon', body);
-  const textContent = `${brand.name.toUpperCase()} — CLOSING SOON (next 7 days)
-
-${total} approved ${total === 1 ? 'entry' : 'entries'} closing:
-${results.flatMap(r => r.entries.map(e => `  - [${r.wire}] ${e.name} — ${e.deadline} (in ${e.daysUntil}d)`)).join('\n')}
-
-Dashboard: ${dashboardUrl}
-
----
-${brand.name}`.trim();
-
-  const to = recipients && recipients.length > 0 ? recipients : config.email.notificationEmail;
-
-  await sendWithTracking({
-    from: `${brand.fromName} <${config.email.fromEmail}>`,
-    to,
-    subject: `${brand.name} — ${total} closing in 7 days`,
-    html: htmlContent,
-    text: textContent,
-  });
-
-  console.log(`[Email] Deadline digest sent to: ${Array.isArray(to) ? to.join(', ') : to}`);
 }
 
 // --- Newsletter rendering: markdown issue -> professional HTML email ---

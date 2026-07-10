@@ -10,7 +10,7 @@ import { GrantsIntelTab } from '@/components/dashboard/GrantsIntelTab';
 // ReviewTab removed — approve/decline now inline in QueueTab
 import { Starfield } from '@/components/dashboard/Starfield';
 import { EntryDetailsSheet } from '@/components/dashboard/EntryDetailsSheet';
-import { fetchEntries, updateEntryStatus, bulkUpdateEntryStatus, quietApproveEntry, bulkQuietApprove, fetchStats, fetchFeeds, fetchWireCounts } from '@/api';
+import { fetchEntries, fetchEntry, updateEntryStatus, bulkUpdateEntryStatus, quietApproveEntry, bulkQuietApprove, fetchStats, fetchFeeds, fetchWireCounts } from '@/api';
 import { ScanEntry, VerticalStats, WireCounts } from '@/types';
 import { useToast } from '@/hooks/use-toast';
 
@@ -26,6 +26,17 @@ const Index = () => {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const { toast } = useToast();
+
+  // Digest-email deep link: /queue?entry=<id> opens the entry's details sheet.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const entryId = params.get('entry');
+    if (!entryId) return;
+    setActiveTab('queue');
+    fetchEntry(entryId)
+      .then(entry => { if (entry) setSelectedEntry(entry); })
+      .catch(() => { /* deep link is best-effort; the queue still shows */ });
+  }, []);
 
   const loadData = useCallback(async () => {
     try {
@@ -228,7 +239,12 @@ const Index = () => {
 
       <EntryDetailsSheet
         entry={selectedEntry}
-        onClose={() => setSelectedEntry(null)}
+        onClose={() => {
+          setSelectedEntry(null);
+          if (window.location.search.includes('entry=')) {
+            window.history.replaceState(null, '', window.location.pathname);
+          }
+        }}
       />
     </>
   );

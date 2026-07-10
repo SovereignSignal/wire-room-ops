@@ -113,7 +113,7 @@ src/
 │   ├── csv-export.ts       # Approved entries CSV export (runs inside daily-digest; also on-demand)
 │   ├── daily-digest.ts     # Daily digest aggregation + cost recap (see "the daily fold" below)
 │   ├── daily-intake.ts     # Scan intake pipeline orchestrator (parse -> dedup -> classify -> queue)
-│   ├── deadline-digest.ts  # Weekly "Closing Soon (7d)" email of approved entries with deadlines
+│   ├── deadline-digest.ts  # data provider for the daily digest's Closing-soon fold — no standalone email
 │   ├── decided-recheck.ts  # LLM semantic dedup of queued entries vs 365d decided corpus (5-min cycle)
 │   ├── enrichment.ts       # Thin-entry scrape + re-summarize — MANUAL ONLY (POST /api/enrich)
 │   ├── forum-scan.ts       # Governance-forum lane: discuss.watch allowlist + LLM judge -> intake
@@ -140,7 +140,7 @@ src/
 │   ├── dedup.ts          # URL exact-match + exact-name dedup (fuzzy layer disabled) + alternate-source annotation
 │   ├── discord-channel.ts # Discord channel posting via REST API (built, unused in prod)
 │   ├── distribution.ts   # Distribution orchestrator: send entries to channels, retry, newsletter
-│   ├── email.ts          # Resend email templates (digest, weekly draft, deadline digest, CSV, alerts, login)
+│   ├── email.ts          # Resend email templates (digest, weekly draft, CSV, alerts, login)
 │   ├── entry-actions.ts  # Approve/decline/restore business logic + approve side-effects (audit: actor/reason/dryRun)
 │   ├── forum.ts          # discuss.watch client: pre-classified /grants feed pull + governance allowlist, age gate, LLM thread judge
 │   ├── grok.ts           # Grok Chat + Responses API for X.com content and scans (uses getBrand())
@@ -304,7 +304,7 @@ All `POST /api/admin/*` — rate-limited maintenance operations: `run-migration`
 
 ### Other Tables
 
-Schedule configuration uses a `schedules` table with UUID primary keys, supporting multiple named schedules with a `schedule_type` field (9 types — see Schedule Types below). Cron expressions are computed dynamically from `hour`/`minute`/`frequencyHours` columns via `buildCronExpression()`. Saving a daily-digest schedule auto-derives per-wire AM/PM scan-execution schedules (`syncScanSchedulesFromDigest`).
+Schedule configuration uses a `schedules` table with UUID primary keys, supporting multiple named schedules with a `schedule_type` field (5 types — see Schedule Types below). Cron expressions are computed dynamically from `hour`/`minute`/`frequencyHours` columns via `buildCronExpression()`. Saving a daily-digest schedule auto-derives per-wire AM/PM scan-execution schedules (`syncScanSchedulesFromDigest`).
 
 The `feeds` table manages dynamic wire/feed types, seeded from `SEED_FEEDS` and auto-discovered from `channel_configs`. Scan prompts are stored in `scan_prompts` with CRUD support.
 
@@ -318,7 +318,7 @@ All providers support DB-backed credentials (`api_providers` table) with env var
 - **Claude** (`src/services/anthropic.ts`): Summarization (Opus) + post generation (Sonnet for cost efficiency). Uses `@anthropic-ai/sdk`.
 - **Perplexity** (`src/services/perplexity.ts`): `sonar-pro` model, natively searches web with citations. For `tool_type: 'perplexity'` prompts.
 - **Firecrawl** (`src/services/scraper.ts`): Web scraping for non-X.com URLs.
-- **Resend** (`src/services/email.ts`): all outbound email — daily digest, weekly draft, deadline digest, CSV export, scan digest, login/magic link, test alert, scheduled-job failure alert, download-link resend.
+- **Resend** (`src/services/email.ts`): all outbound email — daily digest, weekly draft, CSV export, scan digest, login/magic link, test alert, scheduled-job failure alert, download-link resend.
 
 ## Error Handling & Security
 
@@ -406,12 +406,11 @@ Automated discovery of grant opportunities via X.com scanning, web search, and f
 8. **Queue/archive**: Source-specific behavior: scan execution archives `NOISE`; raw background processing queues complete non-duplicates; Telegram/manual intake uses `operator_route`.
 9. **Approve Guard**: Pre-approval validation blocks entries with empty descriptions or empty URLs from being published; warns on EXPIRED classification
 
-### Schedule Types (6)
-- **`daily-digest`** — **the anchor cron: one daily cycle runs the whole discovery fold** (`scheduler.ts` daily-digest branch): (1) forum scan (if `FORUM_SCAN_ENABLED`), (2) source feeds, (3) **Fridays only** the weekly Grant Wire issue, then (4) `runDailyDigest()` aggregation — 24h scan activity, the agent scan brief (recorded via `POST /api/scan/agent/send-brief` into `app_state`), per-source intake breakdown (incl. parked counts), API cost recap, top-10 queue snapshot — (5) CSV export of 24h approvals, (6) one consolidated email (quiet days still report queue state), then (7) the daily CRM cycle — org enrichment (40), contact discovery (20, 90-day revisit), Notion CRM sync — after the email so it can never delay it. Each lane is isolated in try/catch so a lane failure never blocks the digest. Saving this schedule auto-derives per-wire AM/PM scan-execution schedules. **Do not add new standalone crons for periodic work — fold it into this cycle** (owner rule). **The digest email is decisions-first (2026-07-03 redesign):** health strip → "Needs you" (top queued, linked) → BD leads (Wednesdays) → Heads-up (anomalies only: lane failures, >60% dupe spikes, >$5 API days) → one-line activity notes. Ops telemetry tables (per-source matrix, cost table, wire table) live in the dashboard only — `renderDailyDigest()` in email.ts is the pure renderer, pinned by tests/digest-email.test.js
+### Schedule Types (5)
+- **`daily-digest`** — **the anchor cron: one daily cycle runs the whole discovery fold** (`scheduler.ts` daily-digest branch): (1) forum scan (if `FORUM_SCAN_ENABLED`), (2) source feeds, (3) **Fridays only** the weekly Grant Wire issue, (4) **Wednesdays only** the BD leads run, then (5) the digest email — assembled by `assembleAndSendDailyDigest()` (fresh watermarked finds + run ledger + closing soon fold + Wednesday BD leads + anomalies; the cost recap and per-source breakdown feed anomaly derivation only, they don't get their own email sections) — then (6) CSV export of 24h approvals (files persisted for the dashboard; links no longer in the email), then (7) the daily CRM cycle — org enrichment (40), contact discovery (20, 90-day revisit), Notion CRM sync — after the email so it can never delay it. Each lane is isolated in try/catch so a lane failure never blocks the digest. Saving this schedule auto-derives per-wire AM/PM scan-execution schedules. **Do not add new standalone crons for periodic work — fold it into this cycle** (owner rule). **The digest email is decisions-first (2026-07-09 "Run Ledger" redesign):** status band (RUN CLEAN/⚠ N issues + lane ledger) → production issues → "New for review" (watermarked, never repeats, curator-stamped, queue deep links) → closing soon fold (data from `runDeadlineDigest`, renders only when non-empty — replaces the retired standalone deadline-digest email) → Wednesday BD leads. Ops telemetry tables (per-source matrix, cost table, wire table) live in the dashboard only — `renderDailyDigest()` in email.ts is the pure renderer, pinned by tests/digest-email.test.js
 - **`scan-execution`**: Runs `runScanExecution()` — executes all active prompts for a wire
 - **`forum-scan`**: Runs `runForumScan()` — standalone/extra forum runs (the daily fold already covers one/day)
 - **`source-feeds`**: Runs `runSourceFeeds()` — standalone/extra feed runs (the daily fold already covers one/day)
-- **`deadline-digest`**: Runs `runDeadlineDigest()` — finds approved entries with deadlines within 7 days and emails a "Closing Soon" digest (grouped by wire; sends only when there are entries, quiet otherwise)
 - **`account-monitor`**: Runs `runAccountMonitor()` — polls monitored X accounts for new URLs
 
 Besides node-cron schedules, `src/server.ts` starts plain interval timers at boot: process-raw + decided-recheck cycle (5 min), summary-sync bridge (15 min), contacts-sync (30 min). **CRM work (org enrichment, contact discovery, Notion CRM sync) is folded into the daily-digest cycle** — it runs AFTER the digest email sends, so CRM latency can never delay the morning touchpoint. (Retired 2026-07-03: drip-distribution, experiment-loop, collect-engagement schedule types and the digest-orgs timer — their `schedules` rows are deleted at boot.)
