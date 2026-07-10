@@ -118,6 +118,8 @@ test('explicit duplicate link resolves the requested parent to its terminal cano
   const update = pool.calls.find(call => /^\s*UPDATE scan_entries SET[\s\S]*status = 'duplicate'/.test(call.sql));
   assert.equal(update.params[1], 10355);
   assert.match(update.sql, /explicit_duplicate_links/);
+  const registryUpdate = pool.calls.find(call => /UPDATE seen_urls/.test(call.sql));
+  assert.deepEqual(registryUpdate.params, [11106, 10355]);
   assert.ok(pool.calls.some(call => call.sql === 'COMMIT'));
 });
 

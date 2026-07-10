@@ -27,7 +27,7 @@ import { isBlockedHost, isSafeHttpUrl } from '../utils/ssrf';
 import { getCachedProvider } from '../services/api-provider';
 import { logApiUsage } from '../services/api-usage';
 import { classifySourceLink, type SourceLinkClass } from '../services/source-filter';
-import { resolveDuplicateChain } from '../services/duplicate-chain';
+import { reassignSeenUrlOwnership, resolveDuplicateChain } from '../services/duplicate-chain';
 import { config } from '../config';
 
 let isRunning = false;
@@ -182,20 +182,40 @@ export async function applyVerdict(pool: Pool, target: RecheckTarget, candidates
     reason: verdict.reason,
   };
 
-  if (verdict.verdict === 'same_listing' && matched && verdict.confidence >= 0.8
-      && ['approved', 'declined', 'queued', 'duplicate'].includes(matched.status)) {
-    let resolvedId = matched.id;
-    let chainDepth = 0;
-    if (matched.status === 'duplicate') {
-      const resolution = await resolveDuplicateChain(pool, matched.id);
-      if (resolution.error || resolution.id === null) {
-        const chainError = {
+  if (verdict.verdict === 'same_listing' && matched && verdict.confidence >= 0.8) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const locked = await client.query(
+        `SELECT id, status, duplicate_of_id
+         FROM scan_entries
+         WHERE id = ANY($1::bigint[])
+         ORDER BY id
+         FOR UPDATE`,
+        [[target.id, matched.id]],
+      );
+      const currentTarget = locked.rows.find(row => Number(row.id) === target.id);
+      if (!currentTarget || currentTarget.status !== 'queued') {
+        await client.query('ROLLBACK');
+        return 'stale';
+      }
+
+      // Resolve from current database state after the external verdict call.
+      // The candidate snapshot captured before Grok is only display context.
+      const resolution = await resolveDuplicateChain(client, matched.id);
+      const chainError = resolution.error || resolution.id === null
+        ? resolution.error || 'missing'
+        : resolution.id === target.id
+          ? 'cycle-to-target'
+          : null;
+      if (chainError) {
+        const errorStamp = {
           matched_id: matched.id,
-          error: resolution.error,
+          error: chainError,
           depth: resolution.depth,
           at: stamp.at,
         };
-        const stalled = await pool.query(
+        const stalled = await client.query(
           `UPDATE scan_entries SET
              operator_notes = CONCAT_WS(E'\n', NULLIF(operator_notes, ''), $2::text),
              metadata = COALESCE(metadata, '{}'::jsonb)
@@ -205,32 +225,88 @@ export async function applyVerdict(pool: Pool, target: RecheckTarget, candidates
            RETURNING id`,
           [
             target.id,
-            `Automatic duplicate action blocked: matched #${matched.id} has an invalid duplicate chain (${resolution.error}).`,
+            `Automatic duplicate action blocked: matched #${matched.id} has an invalid duplicate chain (${chainError}).`,
             JSON.stringify(stamp),
-            JSON.stringify(chainError),
+            JSON.stringify(errorStamp),
           ],
         );
+        await client.query('COMMIT');
         return stalled.rowCount === 1 ? 'chain-unresolved' : 'stale';
       }
-      resolvedId = resolution.id;
-      chainDepth = resolution.depth;
-    }
 
-    const chainNote = resolvedId !== matched.id
-      ? `, resolved ${chainDepth} hop${chainDepth === 1 ? '' : 's'} to canonical #${resolvedId}`
-      : '';
-    const reason = `Same listing as #${matched.id} "${matched.name.slice(0, 80)}" (${matched.status} ${matched.decided_date})${chainNote}: ${verdict.reason}`.slice(0, 400);
-    const result = await pool.query(
-      `UPDATE scan_entries SET status = 'duplicate', duplicate_of_id = $2,
-         duplicate_reason = $3::text, distributable = false,
-         actioned_by = 'decided-recheck', action_reason = $3::text,
-         metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('decided_recheck', $4::jsonb),
-         updated_at = NOW()
-       WHERE id = $1 AND status = 'queued'
-       RETURNING id`,
-      [target.id, resolvedId, reason, JSON.stringify(stamp)]
-    );
-    return result.rowCount === 1 ? 'duplicate' : 'stale';
+      const resolvedId = resolution.id!;
+
+      // Hold the terminal parent stable through the target mutation and registry move.
+      const parentResult = await client.query(
+        `SELECT id, status, duplicate_of_id
+         FROM scan_entries
+         WHERE id = $1
+         FOR UPDATE`,
+        [resolvedId],
+      );
+      const parent = parentResult.rows[0];
+      if (!parent
+          || !['approved', 'declined', 'queued'].includes(parent.status)
+          || parent.duplicate_of_id !== null) {
+        const errorStamp = {
+          matched_id: matched.id,
+          error: 'parent-changed',
+          depth: resolution.depth,
+          at: stamp.at,
+        };
+        const stalled = await client.query(
+          `UPDATE scan_entries SET
+             operator_notes = CONCAT_WS(E'\n', NULLIF(operator_notes, ''), $2::text),
+             metadata = COALESCE(metadata, '{}'::jsonb)
+               || jsonb_build_object('decided_recheck', $3::jsonb, 'duplicate_chain_error', $4::jsonb),
+             updated_at = NOW()
+           WHERE id = $1 AND status = 'queued'
+           RETURNING id`,
+          [
+            target.id,
+            `Automatic duplicate action blocked: canonical parent #${resolvedId} changed before mutation.`,
+            JSON.stringify(stamp),
+            JSON.stringify(errorStamp),
+          ],
+        );
+        await client.query('COMMIT');
+        return stalled.rowCount === 1 ? 'chain-unresolved' : 'stale';
+      }
+
+      const chainNote = resolvedId !== matched.id
+        ? `, resolved ${resolution.depth} hop${resolution.depth === 1 ? '' : 's'} to canonical #${resolvedId}`
+        : '';
+      const reason = `Same listing as #${matched.id} "${matched.name.slice(0, 80)}" (${parent.status} ${matched.decided_date})${chainNote}: ${verdict.reason}`.slice(0, 400);
+      const result = await client.query(
+        `UPDATE scan_entries AS target SET status = 'duplicate', duplicate_of_id = $2,
+           duplicate_reason = $3::text, distributable = false,
+           actioned_by = 'decided-recheck', action_reason = $3::text,
+           metadata = COALESCE(target.metadata, '{}'::jsonb) || jsonb_build_object('decided_recheck', $4::jsonb),
+           updated_at = NOW()
+         WHERE target.id = $1 AND target.status = 'queued'
+           AND EXISTS (
+             SELECT 1 FROM scan_entries AS parent
+             WHERE parent.id = $2
+               AND parent.status IN ('approved', 'declined', 'queued')
+               AND parent.duplicate_of_id IS NULL
+           )
+         RETURNING target.id`,
+        [target.id, resolvedId, reason, JSON.stringify(stamp)],
+      );
+      if (result.rowCount !== 1) {
+        await client.query('ROLLBACK');
+        return 'stale';
+      }
+
+      await reassignSeenUrlOwnership(client, target.id, resolvedId);
+      await client.query('COMMIT');
+      return 'duplicate';
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   if (verdict.verdict === 'update' && matched) {
@@ -351,6 +427,7 @@ async function sweepSourceLinks(pool: Pool): Promise<number> {
 
     const note =
       cls === 'missing' || cls === 'placeholder' ? '⚠ No real source link — a primary URL is required before this can publish' :
+      cls === 'invalid' ? '⚠ Source URL is invalid — replace it with an HTTP or HTTPS primary source' :
       cls === 'shortener' ? '⚠ Source is an unresolved shortener (resolution failed) — fix before publish' :
       cls === 'tweet-only' ? '⚠ Source is a tweet link only — find the primary program page before publishing' : null;
 

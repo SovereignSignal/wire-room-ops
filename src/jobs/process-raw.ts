@@ -68,10 +68,14 @@ export function isCompletionSufficient(entry: {
   // Check source_url
   const sourceUrl = entry.source_url?.trim() ?? '';
   const sourceClass = classifySourceLink(sourceUrl);
-  if (sourceClass === 'missing' || sourceClass === 'placeholder') {
+  if (sourceClass === 'missing' || sourceClass === 'placeholder' || sourceClass === 'invalid') {
     return {
       passes: false,
-      reason: sourceClass === 'missing' ? 'Missing source URL' : 'Internal source placeholder',
+      reason: sourceClass === 'missing'
+        ? 'Missing source URL'
+        : sourceClass === 'placeholder'
+          ? 'Internal source placeholder'
+          : 'Invalid source URL',
     };
   }
 

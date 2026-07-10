@@ -36,6 +36,8 @@ export function validateForApproval(entry: {
     const sourceClass = classifySourceLink(url);
     if (sourceClass === 'placeholder') {
       errors.push('Source URL is an internal placeholder — no real source link was submitted');
+    } else if (sourceClass === 'invalid') {
+      errors.push('Source URL is invalid — use an HTTP or HTTPS source');
     } else if (sourceClass === 'shortener') {
       errors.push('Source URL is an unresolved shortener — resolve to the real page first');
     } else if (sourceClass === 'tweet-only') {

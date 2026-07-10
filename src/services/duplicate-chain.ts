@@ -50,3 +50,17 @@ export async function resolveDuplicateChain(
   }
   return { id: terminal.id, status: terminal.status, depth: terminal.depth, error: null };
 }
+
+/** Keep exact URL dedup ownership pointed at the terminal canonical entry. */
+export async function reassignSeenUrlOwnership(
+  db: Queryable,
+  duplicateEntryId: number,
+  canonicalEntryId: number,
+): Promise<void> {
+  await db.query(
+    `UPDATE seen_urls
+     SET first_seen_entry_id = $2
+     WHERE first_seen_entry_id = $1`,
+    [duplicateEntryId, canonicalEntryId],
+  );
+}

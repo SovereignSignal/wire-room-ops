@@ -27,7 +27,8 @@ import { classifySourceLink } from './source-filter';
  * Web URLs require a meaningful path (depth >= 2 segments after domain).
  */
 export function isUsefulUrl(url: string): boolean {
-  if (classifySourceLink(url) === 'placeholder') return false;
+  const sourceClass = classifySourceLink(url);
+  if (sourceClass === 'missing' || sourceClass === 'placeholder' || sourceClass === 'invalid') return false;
   try {
     const u = new URL(url);
     const host = u.hostname.replace(/^www\./, '');

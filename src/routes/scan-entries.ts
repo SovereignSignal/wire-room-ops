@@ -34,6 +34,11 @@ import { SCAN_SOURCES } from '../types/intake';
 
 const router = Router();
 
+/** Bind maintenance audit attribution to the authenticated agent principal. */
+export function resolveMaintenanceActor(req: Request): string {
+  return (req as any).agentSession?.userId || req.body?.actor || '';
+}
+
 function sendMaintenanceError(res: Response, error: unknown, label: string): void {
   if (error instanceof EntryMaintenanceError) {
     res.status(error.statusCode).json({ error: error.message });
@@ -550,7 +555,7 @@ router.patch('/entries/:id/source', async (req: Request, res: Response) => {
       expectedStatus: req.body.expectedStatus,
       expectedSourceUrl: req.body.expectedSourceUrl,
       newSourceUrl: req.body.newSourceUrl,
-      actor: req.body.actor,
+      actor: resolveMaintenanceActor(req),
       reason: req.body.reason,
       dryRun: req.body.dryRun === true,
     });
@@ -572,7 +577,7 @@ router.post('/entries/:id/link-duplicate', async (req: Request, res: Response) =
       expectedStatus: req.body.expectedStatus,
       expectedSourceUrl: req.body.expectedSourceUrl,
       duplicateOfId: Number(req.body.duplicateOfId),
-      actor: req.body.actor,
+      actor: resolveMaintenanceActor(req),
       reason: req.body.reason,
       dryRun: req.body.dryRun === true,
     });

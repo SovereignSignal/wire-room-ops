@@ -1,7 +1,7 @@
 import { Pool } from 'pg';
 import { normalizeUrl } from './intake';
 import { classifySourceLink } from './source-filter';
-import { resolveDuplicateChain } from './duplicate-chain';
+import { reassignSeenUrlOwnership, resolveDuplicateChain } from './duplicate-chain';
 
 export class EntryMaintenanceError extends Error {
   constructor(
@@ -237,6 +237,8 @@ export async function linkEntryDuplicate(
       params,
     );
     if (updated.rowCount !== 1) throw new EntryMaintenanceError('Entry changed before write', 409);
+
+    await reassignSeenUrlOwnership(client, entryId, resolution.id);
 
     await client.query('COMMIT');
     return { entryId, duplicateOfId: resolution.id, requestedParentId: opts.duplicateOfId, dryRun: false };

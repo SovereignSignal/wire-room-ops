@@ -16,6 +16,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { app } = require('../src/server');
+const { resolveMaintenanceActor } = require('../src/routes/scan-entries');
 
 const KEY = process.env.INTERNAL_API_KEY;
 let server;
@@ -62,6 +63,14 @@ test('internal key reaches guarded scan maintenance routes', async () => {
   assert.ok(source.status !== 401 && source.status !== 403, `source rewrite auth rejected: ${source.status}`);
   const duplicate = await call('POST', '/api/scan/entries/1/link-duplicate', { key: KEY, body: {} });
   assert.ok(duplicate.status !== 401 && duplicate.status !== 403, `duplicate link auth rejected: ${duplicate.status}`);
+});
+
+test('maintenance actor is bound to the authenticated agent principal', () => {
+  const actor = resolveMaintenanceActor({
+    agentSession: { userId: 'agent:daily-scan', isAgent: true },
+    body: { actor: 'sov' },
+  });
+  assert.equal(actor, 'agent:daily-scan');
 });
 
 test('a WRONG internal key is rejected on internal-key routes', async () => {

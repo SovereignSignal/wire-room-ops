@@ -71,7 +71,7 @@ export function blockedSourceDomain(url: string | null | undefined): string | nu
   return null;
 }
 
-export type SourceLinkClass = 'missing' | 'placeholder' | 'shortener' | 'tweet-only' | 'ok';
+export type SourceLinkClass = 'missing' | 'invalid' | 'placeholder' | 'shortener' | 'tweet-only' | 'ok';
 
 /**
  * Classify whether a source URL is publishable evidence or an intake marker.
@@ -81,15 +81,17 @@ export type SourceLinkClass = 'missing' | 'placeholder' | 'shortener' | 'tweet-o
 export function classifySourceLink(url: string | null | undefined): SourceLinkClass {
   const value = (url || '').trim();
   if (!value) return 'missing';
-  if (value.startsWith('scan://')) return 'placeholder';
+  if (/^scan:\/\//i.test(value)) return 'placeholder';
 
   let parsed: URL;
   try {
     parsed = new URL(value);
   } catch {
-    return 'ok';
+    return 'invalid';
   }
+  if (!['http:', 'https:'].includes(parsed.protocol)) return 'invalid';
   const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
+  if (!host) return 'invalid';
   if (host === 'manual' && /^\/needs-source(?:\/|$)/i.test(parsed.pathname)) return 'placeholder';
   if (host === 't.me' && /^\/manual(?:\/|$)/i.test(parsed.pathname)) return 'placeholder';
   if (['t.co', 'bit.ly', 'tinyurl.com', 'buff.ly', 'ow.ly'].includes(host)) return 'shortener';

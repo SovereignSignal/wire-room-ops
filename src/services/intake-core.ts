@@ -824,7 +824,7 @@ export async function processBatchMessage(
     const resolvedWire = (entry as typeof entry & { _resolvedWire?: string })._resolvedWire || wire!;
 
     const sourceClass = classifySourceLink(entry.sourceUrl);
-    if (sourceClass === 'missing' || sourceClass === 'placeholder') {
+    if (sourceClass === 'missing' || sourceClass === 'placeholder' || sourceClass === 'invalid') {
       result.errors++;
       result.failed++;
       result.entries.push({ name: entry.name, wire: resolvedWire, error: 'Missing verifiable source URL' });
