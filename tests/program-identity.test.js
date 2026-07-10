@@ -224,3 +224,27 @@ test('maybeScrapeAggregator: cap enforced, non-aggregators skipped, failures nul
   store.set(key, 10);
   assert.equal(await maybeScrapeAggregator({ sourceUrl: 'https://opportunitiesforyouth.org/2026/05/other' }, deps), null, 'cap enforced');
 });
+
+test('introspectEntryUrl strips markdown poisoning from unwrapped URLs', () => {
+  const md = introspectEntryUrl({
+    sourceUrl: 'https://x.com/u/status/1',
+    description: 'Apply at **https://real-funder.org/grants** today or <https://other.org/x>',
+  });
+  assert.equal(md.canonicalUrl, 'https://real-funder.org/grants');
+});
+
+test('maybeScrapeAggregator skips self-links for env-extended aggregator domains', async () => {
+  process.env.PROGRAM_AGGREGATOR_DOMAINS = 'customagg.example';
+  try {
+    const store = new Map();
+    const deps = {
+      async getAppState(k) { return store.has(k) ? store.get(k) : null; },
+      async setAppState(k, v) { store.set(k, v); },
+      async scrape() { return { success: true, content: 'see https://customagg.example/self and https://true-funder.org/apply' }; },
+    };
+    const hit = await maybeScrapeAggregator({ sourceUrl: 'https://customagg.example/post/1' }, deps);
+    assert.equal(hit, 'https://true-funder.org/apply', 'self-link on the env-extended aggregator must be skipped');
+  } finally {
+    delete process.env.PROGRAM_AGGREGATOR_DOMAINS;
+  }
+});

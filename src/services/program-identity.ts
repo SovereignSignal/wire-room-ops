@@ -113,8 +113,8 @@ const ATS_PATTERNS: Array<{ re: RegExp }> = [
 export function introspectEntryUrl(entry: { sourceUrl?: string | null; description?: string | null }): { canonicalUrl: string | null; orgHint: string | null } {
   const src = entry.sourceUrl || null;
   if (src && /^https?:\/\/(?:www\.)?(x|twitter)\.com\//i.test(src)) {
-    const m = (entry.description || '').match(/https?:\/\/(?!(?:www\.)?(?:x|twitter)\.com)[^\s)\]"']+/i);
-    if (m) return { canonicalUrl: m[0].replace(/[.,;:]+$/, ''), orgHint: null };
+    const m = (entry.description || '').match(/https?:\/\/(?!(?:www\.)?(?:x|twitter)\.com)[^\s)\]"'*<>\x60~!\\]+/i);
+    if (m) return { canonicalUrl: m[0].replace(/[.,;:*<>\x60~!\\]+$/, ''), orgHint: null };
     return { canonicalUrl: src, orgHint: null };
   }
   for (const { re } of ATS_PATTERNS) {
@@ -142,8 +142,17 @@ export async function maybeScrapeAggregator(
     await deps.setAppState(key, count + 1);
     const result = await deps.scrape(entry.sourceUrl as string);
     if (!result.success || !result.content) return null;
-    const m = result.content.match(/https?:\/\/(?![^\s]*(?:opportunitiesforyouth|opportunities247)\.org)[^\s)\]"']+/i);
-    return m ? m[0].replace(/[.,;:]+$/, '') : null;
+    // Extract all URLs and return the first one that is not from an aggregator domain
+    const urlRegex = /https?:\/\/[^\s)\]"'*<>\x60~!\\]+/g;
+    let match;
+    while ((match = urlRegex.exec(result.content)) !== null) {
+      const url = match[0].replace(/[.,;:*<>\x60~!\\]+$/, '');
+      const urlDomain = domainOf(url);
+      if (urlDomain && !aggregators.has(urlDomain)) {
+        return url;
+      }
+    }
+    return null;
   } catch {
     return null;
   }
