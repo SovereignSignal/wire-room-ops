@@ -26,6 +26,8 @@ import { lookup as dnsLookup } from 'node:dns';
 import { isBlockedHost, isSafeHttpUrl } from '../utils/ssrf';
 import { getCachedProvider } from '../services/api-provider';
 import { logApiUsage } from '../services/api-usage';
+import { classifySourceLink, type SourceLinkClass } from '../services/source-filter';
+import { resolveDuplicateChain } from '../services/duplicate-chain';
 import { config } from '../config';
 
 let isRunning = false;
@@ -172,53 +174,90 @@ Respond with ONLY JSON: {"matched_id": <id or null>, "verdict": "same_listing"|"
 
 export async function applyVerdict(pool: Pool, target: RecheckTarget, candidates: Candidate[], verdict: Verdict): Promise<string> {
   const matched = candidates.find(c => c.id === verdict.matched_id);
-  const stamp = { at: new Date().toISOString(), verdict: verdict.verdict, matched_id: verdict.matched_id, confidence: verdict.confidence };
+  const stamp = {
+    at: new Date().toISOString(),
+    verdict: verdict.verdict,
+    matched_id: verdict.matched_id,
+    confidence: verdict.confidence,
+    reason: verdict.reason,
+  };
 
   if (verdict.verdict === 'same_listing' && matched && verdict.confidence >= 0.8
       && ['approved', 'declined', 'queued', 'duplicate'].includes(matched.status)) {
-    // Matching a row that is ITSELF a duplicate is the same evidence — resolve
-    // through its duplicate_of_id chain instead of stalling (a stalled verdict
-    // left flagged dupes queued and let one reach the digest, 2026-07-09).
-    const resolvedId = matched.status === 'duplicate' ? (matched.resolve_to ?? matched.id) : matched.id;
-    const chainNote = resolvedId !== matched.id ? `, resolved to canonical #${resolvedId}` : '';
-    await pool.query(
+    let resolvedId = matched.id;
+    let chainDepth = 0;
+    if (matched.status === 'duplicate') {
+      const resolution = await resolveDuplicateChain(pool, matched.id);
+      if (resolution.error || resolution.id === null) {
+        const chainError = {
+          matched_id: matched.id,
+          error: resolution.error,
+          depth: resolution.depth,
+          at: stamp.at,
+        };
+        const stalled = await pool.query(
+          `UPDATE scan_entries SET
+             operator_notes = CONCAT_WS(E'\n', NULLIF(operator_notes, ''), $2::text),
+             metadata = COALESCE(metadata, '{}'::jsonb)
+               || jsonb_build_object('decided_recheck', $3::jsonb, 'duplicate_chain_error', $4::jsonb),
+             updated_at = NOW()
+           WHERE id = $1 AND status = 'queued'
+           RETURNING id`,
+          [
+            target.id,
+            `Automatic duplicate action blocked: matched #${matched.id} has an invalid duplicate chain (${resolution.error}).`,
+            JSON.stringify(stamp),
+            JSON.stringify(chainError),
+          ],
+        );
+        return stalled.rowCount === 1 ? 'chain-unresolved' : 'stale';
+      }
+      resolvedId = resolution.id;
+      chainDepth = resolution.depth;
+    }
+
+    const chainNote = resolvedId !== matched.id
+      ? `, resolved ${chainDepth} hop${chainDepth === 1 ? '' : 's'} to canonical #${resolvedId}`
+      : '';
+    const reason = `Same listing as #${matched.id} "${matched.name.slice(0, 80)}" (${matched.status} ${matched.decided_date})${chainNote}: ${verdict.reason}`.slice(0, 400);
+    const result = await pool.query(
       `UPDATE scan_entries SET status = 'duplicate', duplicate_of_id = $2,
-         duplicate_reason = $3::text, actioned_by = 'decided-recheck',
-         metadata = metadata || jsonb_build_object('decided_recheck', $4::jsonb)
-       WHERE id = $1 AND status = 'queued'`,
-      [target.id, resolvedId, `Same listing as #${matched.id} "${matched.name.slice(0, 80)}" (${matched.status} ${matched.decided_date})${chainNote}: ${verdict.reason}`.slice(0, 400), JSON.stringify(stamp)]
+         duplicate_reason = $3::text, distributable = false,
+         actioned_by = 'decided-recheck', action_reason = $3::text,
+         metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('decided_recheck', $4::jsonb),
+         updated_at = NOW()
+       WHERE id = $1 AND status = 'queued'
+       RETURNING id`,
+      [target.id, resolvedId, reason, JSON.stringify(stamp)]
     );
-    return 'duplicate';
+    return result.rowCount === 1 ? 'duplicate' : 'stale';
   }
 
   if (verdict.verdict === 'update' && matched) {
-    await pool.query(
+    const result = await pool.query(
       `UPDATE scan_entries SET
          operator_notes = CONCAT_WS(E'\n', NULLIF(operator_notes, ''), $2::text),
-         metadata = metadata || jsonb_build_object('decided_recheck', $3::jsonb, 'related_decided', $4::int)
-       WHERE id = $1 AND status = 'queued'`,
+         metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('decided_recheck', $3::jsonb, 'related_decided', $4::int),
+         updated_at = NOW()
+       WHERE id = $1 AND status = 'queued'
+       RETURNING id`,
       [target.id, `↻ Update of #${matched.id} "${matched.name.slice(0, 80)}" (${matched.status} ${matched.decided_date}): ${verdict.reason}`.slice(0, 400), JSON.stringify(stamp), matched.id]
     );
-    return 'update-noted';
+    return result.rowCount === 1 ? 'update-noted' : 'stale';
   }
 
-  await pool.query(
-    `UPDATE scan_entries SET metadata = metadata || jsonb_build_object('decided_recheck', $2::jsonb) WHERE id = $1`,
+  const result = await pool.query(
+    `UPDATE scan_entries
+     SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('decided_recheck', $2::jsonb),
+         updated_at = NOW()
+     WHERE id = $1 AND status = 'queued'
+     RETURNING id`,
     [target.id, JSON.stringify(stamp)]
   );
-  return verdict.verdict;
+  return result.rowCount === 1 ? verdict.verdict : 'stale';
 }
 
-export type SourceLinkClass = 'missing' | 'placeholder' | 'shortener' | 'tweet-only' | 'ok';
-
-export function classifySourceLink(url: string | null | undefined): SourceLinkClass {
-  const u = (url || '').trim();
-  if (!u) return 'missing';
-  if (u.startsWith('https://t.me/manual/') || u.startsWith('scan://')) return 'placeholder';
-  if (/^https?:\/\/(t\.co|bit\.ly|tinyurl\.com|buff\.ly|ow\.ly)\//i.test(u)) return 'shortener';
-  if (/^https?:\/\/(x|twitter)\.com\//i.test(u)) return 'tweet-only';
-  return 'ok';
-}
+export { classifySourceLink, resolveDuplicateChain, type SourceLinkClass };
 
 
 // DNS lookup that validates EVERY resolved address against the blocklist and
