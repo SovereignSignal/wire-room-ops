@@ -187,13 +187,12 @@ Authenticated API (partial list -- see CLAUDE.md for complete reference):
 
 ## Scheduler Types
 
-Supported schedule types (6):
+Supported schedule types (5):
 
-- `daily-digest` — **the anchor cron**: one cycle runs forum scan + source feeds + (Wednesdays) the BD leads run + (Fridays) the weekly issue + digest email + CSV export + the daily CRM cycle (org enrichment, contact discovery, Notion sync — after the email). Fold new periodic work into this cycle instead of adding crons
+- `daily-digest` — **the anchor cron**: one cycle runs forum scan + source feeds + (Wednesdays) the BD leads run + (Fridays) the weekly issue + digest email + CSV export + the daily CRM cycle (org enrichment, contact discovery, Notion sync — after the email). The digest email's "Closing soon" section is the deadline digest folded in — the standalone `deadline-digest` email was retired 2026-07-09. Fold new periodic work into this cycle instead of adding crons
 - `scan-execution`
 - `forum-scan`
 - `source-feeds`
-- `deadline-digest`
 - `account-monitor`
 
 Notes:

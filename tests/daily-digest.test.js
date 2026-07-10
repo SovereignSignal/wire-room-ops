@@ -56,8 +56,11 @@ test('getFreshFinds excludes watermarked ids, keeps curator ordering, and has NO
   assert.match(findsSql, /deadline_parsed IS NULL OR deadline_parsed >= CURRENT_DATE/);
   assert.match(findsSql, /metadata->'curator'->>'route'/);
   assert.match(findsSql, /quality_score DESC NULLS LAST/);
+  assert.match(findsSql, /created_at >= NOW\(\) - INTERVAL '60 days'/, 'candidate window must match watermark retention');
   assert.ok(!findsSql.includes('24 hours'), 'watermark replaces the 24h window');
   assert.deepEqual(pool.calls[0].params, [8, [7]]);
+  const countSql = pool.calls[1].sql;
+  assert.match(countSql, /created_at >= NOW\(\) - INTERVAL '60 days'/, 'totalNew count must match the same 60-day window');
   assert.equal(res.seeded, false);
   assert.equal(res.fallback, false);
 });
@@ -76,6 +79,23 @@ test('getFreshFinds first run seeds the watermark with all queued ids and surfac
   assert.deepEqual(Object.keys(saved).sort(), ['4', '9']);
 });
 
+test('getFreshFinds: a seeding write failure degrades to the 24h-window fallback instead of throwing', async () => {
+  const pool = fakePool();
+  pool.queueResponse([{ id: 1 }, { id: 2 }]); // seed SELECT id (queued ids)
+  pool.queueResponse([{ id: 1, name: 'X', wire: 'ai', quality_score: 90, amount: null, deadline: null, source_url: null, curator_route: null, curator_confidence: null }]); // fallback SELECT
+  const deps = {
+    async getAppState() { return null; },
+    async setAppState() { throw new Error('write failed'); },
+  };
+
+  const res = await getFreshFinds(pool, 8, deps);
+
+  assert.equal(res.seeded, false);
+  assert.equal(res.fallback, true);
+  assert.equal(res.finds.length, 1);
+  assert.match(pool.calls[1].sql, /24 hours/);
+});
+
 test('getFreshFinds falls back to a 24h window when the watermark read throws', async () => {
   const pool = fakePool();
   pool.queueResponse([{ id: 1, name: 'X', wire: 'ai', quality_score: 90, amount: null, deadline: null, source_url: null, curator_route: null, curator_confidence: null }]);
@@ -89,6 +109,18 @@ test('getFreshFinds falls back to a 24h window when the watermark read throws', 
   assert.equal(res.fallback, true);
   assert.match(pool.calls[0].sql, /24 hours/);
   assert.equal(res.finds.length, 1);
+});
+
+test('advanceDigestWatermark: a failed read never wipes history — it skips the write entirely', async () => {
+  let setCalled = false;
+  const deps = {
+    async getAppState() { throw new Error('boom'); },
+    async setAppState() { setCalled = true; },
+  };
+
+  await advanceDigestWatermark([5, 6], deps, new Date('2026-07-09T00:00:00Z'));
+
+  assert.equal(setCalled, false, 'setAppState must never be called when the read fails');
 });
 
 test('advanceDigestWatermark merges shown ids, prunes old ones, and no-ops on empty', async () => {
@@ -123,7 +155,7 @@ test('buildRunLedger: clean day — scans ok, bridge fresh, agent present, no an
   assert.deepEqual(anomalies, []);
 });
 
-test('buildRunLedger: failed scans and stale bridge produce anomalies', async () => {
+test('buildRunLedger: failed scans produce an anomaly; stale bridge warns without flipping the verdict', async () => {
   const pool = fakePool();
   pool.queueResponse([{ ok: '39', failed: '2' }]);
   const { deps } = fakeState({
@@ -137,9 +169,8 @@ test('buildRunLedger: failed scans and stale bridge produce anomalies', async ()
   assert.equal(scans.detail, 'scans 39✓ 2✗');
   const bridge = ledger.lanes.find(l => l.key === 'bridge');
   assert.equal(bridge.state, 'warn');
-  assert.equal(anomalies.length, 2);
+  assert.equal(anomalies.length, 1);
   assert.match(anomalies[0], /2 failed/);
-  assert.match(anomalies[1], /stale/);
 });
 
 test('buildRunLedger: probe failures degrade to "?" lanes and never throw', async () => {
@@ -202,6 +233,15 @@ test('assembleAndSendDailyDigest: a failed send never advances the watermark', a
   const { deps, advanced } = assemblyDeps({ send: async () => { throw new Error('resend down'); } });
   await assert.rejects(() => assembleAndSendDailyDigest({}, {}, deps));
   assert.deepEqual(advanced, []);
+});
+
+test('assembleAndSendDailyDigest: a watermark advance failure never fails a delivered email', async () => {
+  const { deps, sent } = assemblyDeps({ advance: async () => { throw new Error('app_state write failed'); } });
+
+  const summary = await assembleAndSendDailyDigest({}, {}, deps);
+
+  assert.equal(sent.length, 1);
+  assert.equal(summary.freshCount, 1);
 });
 
 test('assembleAndSendDailyDigest: cost spike >$5 becomes an anomaly', async () => {

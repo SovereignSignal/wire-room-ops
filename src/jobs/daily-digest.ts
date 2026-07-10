@@ -188,9 +188,11 @@ export async function getSourceBreakdown(pool: Pool): Promise<SourceBreakdownRow
 }
 
 // ── Digest email watermark ─────────────────────────────────────────────────
-// An entry is emailed by the digest AT MOST ONCE, ever. The watermark is a
-// forward-only map in app_state; it advances only after a successful send
-// (same pattern as the BD roles lane), so a failed email never swallows items.
+// An entry is emailed by the digest at most once (best-effort: no
+// cross-process lock, so concurrent cron + send-now can in rare cases repeat
+// an item). The watermark is a forward-only map in app_state; it advances
+// only after a successful send (same pattern as the BD roles lane), so a
+// failed email never swallows items.
 
 export const DIGEST_WATERMARK_KEY = 'digest:emailed-ids';
 const WATERMARK_MAX_AGE_DAYS = 60;
@@ -227,7 +229,10 @@ const FRESH_FINDS_SELECT = `
          metadata->'curator'->>'confidence' AS curator_confidence
   FROM scan_entries
   WHERE status = 'queued'
-    AND (deadline_parsed IS NULL OR deadline_parsed >= CURRENT_DATE)`;
+    AND (deadline_parsed IS NULL OR deadline_parsed >= CURRENT_DATE)
+    -- candidate window matches watermark retention (60d) so an entry can
+    -- never outlive its watermark entry and reappear as "new"
+    AND created_at >= NOW() - INTERVAL '60 days'`;
 
 const CURATOR_ORDER = `
   ORDER BY
@@ -249,18 +254,23 @@ const CURATOR_ORDER = `
     deadline_parsed ASC NULLS LAST,
     created_at DESC`;
 
+/** 24h-window fallback used whenever the watermark can't be trusted (unreadable, or a seed write failed). */
+async function fetch24hFallbackFinds(pool: Pool, limit: number): Promise<FreshFindsResult> {
+  const { rows } = await pool.query<TopFindEntry>(
+    `${FRESH_FINDS_SELECT}
+      AND created_at >= NOW() - INTERVAL '24 hours'
+    ${CURATOR_ORDER}
+    LIMIT $1`, [limit]);
+  return { finds: rows, totalNew: rows.length, seeded: false, fallback: true };
+}
+
 export async function getFreshFinds(pool: Pool, limit = 8, deps: WatermarkDeps = defaultWatermarkDeps): Promise<FreshFindsResult> {
   let map: EmailedIdsMap | null;
   try {
     map = await deps.getAppState<EmailedIdsMap>(DIGEST_WATERMARK_KEY);
   } catch (err) {
     console.error('[DailyDigest] Watermark read failed — falling back to 24h window:', err instanceof Error ? err.message : err);
-    const { rows } = await pool.query<TopFindEntry>(
-      `${FRESH_FINDS_SELECT}
-        AND created_at >= NOW() - INTERVAL '24 hours'
-      ${CURATOR_ORDER}
-      LIMIT $1`, [limit]);
-    return { finds: rows, totalNew: rows.length, seeded: false, fallback: true };
+    return fetch24hFallbackFinds(pool, limit);
   }
 
   if (map === null) {
@@ -268,7 +278,12 @@ export async function getFreshFinds(pool: Pool, limit = 8, deps: WatermarkDeps =
     const nowIso = new Date().toISOString();
     const seeded: EmailedIdsMap = {};
     for (const r of rows) seeded[String(r.id)] = nowIso;
-    await deps.setAppState(DIGEST_WATERMARK_KEY, seeded);
+    try {
+      await deps.setAppState(DIGEST_WATERMARK_KEY, seeded);
+    } catch (err) {
+      console.error('[DailyDigest] Watermark seeding write failed — degrading to 24h window for today:', err instanceof Error ? err.message : err);
+      return fetch24hFallbackFinds(pool, limit);
+    }
     console.log(`[DailyDigest] Watermark seeded with ${rows.length} queued entries (forward-only start)`);
     return { finds: [], totalNew: 0, seeded: true, fallback: false };
   }
@@ -284,17 +299,23 @@ export async function getFreshFinds(pool: Pool, limit = 8, deps: WatermarkDeps =
      FROM scan_entries
      WHERE status = 'queued'
        AND (deadline_parsed IS NULL OR deadline_parsed >= CURRENT_DATE)
+       AND created_at >= NOW() - INTERVAL '60 days'
        AND NOT (id = ANY($1::int[]))`, [excluded]);
   return { finds: rows, totalNew: parseInt(count.rows[0]?.total_new ?? '0', 10), seeded: false, fallback: false };
 }
 
 export async function advanceDigestWatermark(ids: number[], deps: WatermarkDeps = defaultWatermarkDeps, now = new Date()): Promise<void> {
   if (ids.length === 0) return;
-  let map: EmailedIdsMap = {};
+  let map: EmailedIdsMap;
   try {
     map = (await deps.getAppState<EmailedIdsMap>(DIGEST_WATERMARK_KEY)) ?? {};
-  } catch {
-    // Unreadable map: start fresh — worst case an old item repeats once.
+  } catch (err) {
+    // Unreadable map: skip the advance entirely rather than writing a fresh
+    // map — that would silently wipe up to 60 days of watermark history and
+    // flood every already-emailed item back as "new". Worst case here is
+    // strictly safer: today's shown items may repeat once tomorrow.
+    console.error('[DailyDigest] Watermark advance read failed — skipping advance (no write):', err instanceof Error ? err.message : err);
+    return;
   }
   const iso = now.toISOString();
   for (const id of ids) map[String(id)] = iso;
@@ -350,14 +371,17 @@ export async function buildRunLedger(
     lanes.push({ key: 'forum', state: inputs.forum === 'ok' ? 'ok' : 'fail', detail: inputs.forum === 'ok' ? 'forum ✓' : 'forum ✗' });
   }
 
-  // bridge — tele-sum summary-sync watermark age (15-min cycle; >6h = stale)
+  // bridge — tele-sum summary-sync watermark age (15-min cycle; >6h = stale).
+  // The watermark only advances when tele-sum processed new summaries, so it
+  // measures content arrival, not bridge health — a quiet Telegram night is
+  // indistinguishable from a broken bridge. Warn glyph only; never flips the
+  // digest's overall verdict. A proper heartbeat probe is a follow-up.
   try {
     const wm = await deps.getAppState<string>('summary-sync:watermark');
     if (wm) {
       const age = Date.now() - Date.parse(wm);
       if (Number.isNaN(age) || age > 6 * 60 * 60 * 1000) {
         lanes.push({ key: 'bridge', state: 'warn', detail: 'bridge stale' });
-        anomalies.push('Bridge: summary-sync watermark stale (>6h)');
       } else {
         lanes.push({ key: 'bridge', state: 'ok', detail: 'bridge ✓' });
       }
@@ -481,7 +505,11 @@ export async function assembleAndSendDailyDigest(
     bdLeadsUrl: opts.bdLeadsUrl,
     anomalies,
   });
-  await deps.advance(freshRes.finds.map(f => f.id));
+  try {
+    await deps.advance(freshRes.finds.map(f => f.id));
+  } catch (e) {
+    console.error('[DailyDigest] Watermark advance failed after send — shown items may repeat once:', e instanceof Error ? e.message : e);
+  }
 
   return {
     date: digest.date,
