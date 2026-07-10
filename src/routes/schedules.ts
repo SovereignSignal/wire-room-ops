@@ -175,7 +175,15 @@ router.delete('/schedules/:id', async (req: Request, res: Response) => {
 });
 
 // POST /digest/send-now — send actual daily digest now (on-demand)
+// In-flight guard: a double-click (or overlap with a running send) would email
+// the same "New for review" items twice — the watermark only advances after send.
+let digestSendInFlight = false;
 router.post('/digest/send-now', async (req: Request, res: Response) => {
+  if (digestSendInFlight) {
+    res.status(409).json({ success: false, error: 'A digest send is already running' });
+    return;
+  }
+  digestSendInFlight = true;
   try {
     const pool = getPool();
     const { assembleAndSendDailyDigest } = await import('../jobs/daily-digest');
@@ -196,6 +204,8 @@ router.post('/digest/send-now', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('[DigestNow] Failed:', error);
     res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Failed to send digest' });
+  } finally {
+    digestSendInFlight = false;
   }
 });
 
