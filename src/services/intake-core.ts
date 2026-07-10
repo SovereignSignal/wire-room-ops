@@ -9,13 +9,15 @@
  * (INTAKE_WIRE_KEYWORDS_{WIRE}) with built-in defaults as fallback.
  */
 
+import type { Pool } from 'pg';
 import { getPool, getAllFeeds } from '../db';
-import { checkDuplicate, registerSeen } from '../services/dedup';
+import { checkDuplicate, registerSeenInTransaction } from '../services/dedup';
 import { type Classification, type OperatorRoute } from '../services/classifier';
 import { scrapeUrl, isScrapableUrl, truncateContent } from './scraper';
 import { normalizeUrl } from '../utils/url';
-import { blockedSourceDomain } from '../services/source-filter';
+import { blockedSourceDomain, classifySourceLink } from '../services/source-filter';
 import { safePublicFetch } from '../utils/ssrf';
+import { demoteEntryToDuplicateInTransaction, lockDuplicateGraph } from './duplicate-chain';
 
 // ────────────────────────────────────────────────────────────────────────────────────
 // URL Title Fetcher
@@ -329,7 +331,7 @@ function buildName(text: string, url: string | null): string {
 // DB insert
 // ────────────────────────────────────────────────────────────────────────────
 
-async function insertEntry(entry: {
+interface NewIntakeEntry {
   name: string;
   description: string;
   sourceUrl: string;
@@ -339,17 +341,99 @@ async function insertEntry(entry: {
   scanSource: string;
   status?: string;
   deadline?: string | null;
-}): Promise<number> {
-  const pool = getPool();
+  sourceNeedsVerification?: boolean;
+  operatorRoute?: OperatorRoute;
+}
+
+type Queryable = Pick<Pool, 'query'>;
+
+async function insertEntry(db: Queryable, entry: NewIntakeEntry): Promise<number> {
   const status = entry.status ?? 'raw'; // Raw entries flow through the classification pipeline
-  const res = await pool.query(
+  const res = await db.query(
     `INSERT INTO scan_entries
-     (name, description, source_url, wire, prompt_variant, scan_source, scan_date, status, submitted_by, deadline)
-     VALUES ($1, $2, $3, $4, 'N', $5, $6, $7, $8, $9)
+     (name, description, source_url, wire, prompt_variant, scan_source, scan_date,
+      status, submitted_by, deadline, source_needs_verification, metadata)
+     VALUES ($1, $2, $3, $4, 'N', $5, $6, $7, $8, $9, $10, $11::jsonb)
      RETURNING id`,
-    [entry.name, entry.description, entry.sourceUrl, entry.wire, entry.scanSource, entry.scanDate, status, entry.submittedBy, entry.deadline ?? null]
+    [
+      entry.name,
+      entry.description,
+      entry.sourceUrl,
+      entry.wire,
+      entry.scanSource,
+      entry.scanDate,
+      status,
+      entry.submittedBy,
+      entry.deadline ?? null,
+      entry.sourceNeedsVerification ?? false,
+      JSON.stringify({
+        source_needs_verification: entry.sourceNeedsVerification ?? false,
+        operator_route: entry.operatorRoute ?? null,
+      }),
+    ],
   );
   return res.rows[0].id;
+}
+
+/** Insert an intake row and resolve the exact-URL claim in one transaction. */
+export async function insertIntakeEntryWithClaim(
+  pool: Pool,
+  entry: NewIntakeEntry,
+): Promise<{ id: number; urlConflict: boolean; conflictEntryId: number | null }> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const id = await insertEntry(client, entry);
+    // Keep the graph lock ahead of URL-registry locks everywhere. A single
+    // lock order prevents deadlocks with maintenance and duplicate rechecks.
+    await lockDuplicateGraph(client);
+    const claim = await registerSeenInTransaction(client, {
+      id,
+      sourceUrl: entry.sourceUrl,
+      name: entry.name,
+      wire: entry.wire,
+      scanDate: entry.scanDate,
+    });
+
+    let conflictEntryId = claim.conflictEntryId;
+    if (claim.urlConflict) {
+      const conflictReason = claim.conflictEntryId === null
+        ? 'URL already exists in seed history'
+        : 'URL claimed by concurrent submission';
+      if (claim.conflictEntryId === null) {
+        const demoted = await client.query(
+          `UPDATE scan_entries
+           SET status = 'deduped', duplicate_of_id = NULL,
+               duplicate_reason = $2, distributable = false, updated_at = NOW()
+           WHERE id = $1 AND status = $3 AND source_url = $4
+           RETURNING id`,
+          [id, conflictReason, entry.status ?? 'raw', entry.sourceUrl],
+        );
+        if (demoted.rowCount !== 1) throw new Error('Exact URL seed conflict loser changed before demotion');
+      } else {
+        const demoted = await demoteEntryToDuplicateInTransaction(client, {
+          targetId: id,
+          requestedParentId: claim.conflictEntryId,
+          expectedStatus: entry.status ?? 'raw',
+          expectedSourceUrl: entry.sourceUrl,
+          reason: conflictReason,
+          actor: 'intake-url-claim',
+        });
+        if (demoted.outcome !== 'linked' || demoted.canonicalParentId === null) {
+          throw new Error('Exact URL claim loser changed before demotion');
+        }
+        conflictEntryId = demoted.canonicalParentId;
+      }
+    }
+
+    await client.query('COMMIT');
+    return { id, urlConflict: claim.urlConflict, conflictEntryId };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -405,17 +489,26 @@ export async function processIntakeMessage(
     return { status: 'rejected', errorMessage: 'Empty message' };
   }
 
-  // Load active wires
+  // Extract and validate caller-supplied URLs before any DB or network work.
+  const textUrls = extractUrls(text);
+  const passedUrls = msg.urls || [];
+  const allUrls = [...new Set([...passedUrls, ...textUrls])];
+  const suppliedPrimaryUrl = allUrls[0] || null;
+  const suppliedSourceClass = suppliedPrimaryUrl ? classifySourceLink(suppliedPrimaryUrl) : null;
+  if (suppliedSourceClass === 'invalid') {
+    return { status: 'rejected', errorMessage: 'Invalid source URL: use HTTP or HTTPS' };
+  }
+  if (suppliedSourceClass === 'shortener') {
+    return { status: 'rejected', errorMessage: 'Unresolved shortener URL: submit the destination source' };
+  }
+  const primaryUrl = suppliedPrimaryUrl || `https://t.me/manual/${Date.now()}`;
+  const sourceNeedsVerification = classifySourceLink(primaryUrl) === 'placeholder';
+
+  // Load active wires only after cheap input validation.
   const wires = await getActiveWires();
   if (wires.length === 0) {
     return { status: 'error', errorMessage: 'No active wires configured' };
   }
-
-  // Extract URLs
-  const textUrls = extractUrls(text);
-  const passedUrls = msg.urls || [];
-  const allUrls = [...new Set([...passedUrls, ...textUrls])];
-  const primaryUrl = allUrls[0] || `https://t.me/manual/${Date.now()}`;
 
   // Gate 1: reject known Tier-3 aggregator sources before they cost a
   // classification call (opportunitydesk, afredac, menterprise, …).
@@ -474,7 +567,7 @@ export async function processIntakeMessage(
     }
 
     try {
-      const id = await insertEntry({
+      const inserted = await insertIntakeEntryWithClaim(getPool(), {
         name,
         description: effectiveDescription,
         sourceUrl: primaryUrl,
@@ -483,8 +576,19 @@ export async function processIntakeMessage(
         submittedBy: msg.senderId,
         scanSource,
         status: 'queued',
+        sourceNeedsVerification,
+        operatorRoute: sourceNeedsVerification ? 'source_check' : undefined,
       });
-      await registerSeen(getPool(), { id, sourceUrl: primaryUrl, name, wire, scanDate });
+      if (inserted.urlConflict) {
+        return {
+          status: 'rejected',
+          entryId: inserted.id,
+          errorMessage: inserted.conflictEntryId === null
+            ? 'Duplicate: exact URL already exists in history'
+            : `Duplicate: exact URL already belongs to entry #${inserted.conflictEntryId}`,
+        };
+      }
+      const id = inserted.id;
       // Dumb pipe: no classification at intake — the row lands in the queue as-is.
       // Scoring/classification/routing is the downstream filter's job, not the pipe's.
       return {
@@ -513,7 +617,7 @@ export async function processIntakeMessage(
   }
 
   try {
-    const id = await insertEntry({
+    const inserted = await insertIntakeEntryWithClaim(getPool(), {
       name,
       description: effectiveDescription,
       sourceUrl: primaryUrl,
@@ -522,8 +626,19 @@ export async function processIntakeMessage(
       submittedBy: msg.senderId,
       scanSource,
       status: 'queued',
+      sourceNeedsVerification,
+      operatorRoute: sourceNeedsVerification ? 'source_check' : undefined,
     });
-    await registerSeen(getPool(), { id, sourceUrl: primaryUrl, name, wire: fallbackWire, scanDate });
+    if (inserted.urlConflict) {
+      return {
+        status: 'rejected',
+        entryId: inserted.id,
+        errorMessage: inserted.conflictEntryId === null
+          ? 'Duplicate: exact URL already exists in history'
+          : `Duplicate: exact URL already belongs to entry #${inserted.conflictEntryId}`,
+      };
+    }
+    const id = inserted.id;
     // Dumb pipe: no classification at intake — lands in the queue as-is (filter runs downstream).
     return {
       status: 'inserted',
@@ -798,7 +913,7 @@ export async function processBatchMessage(
     failed: 0,
     entries: [],
   };
-  const seenInBatch = new Set<string>(); // Within-batch URL dedup
+  const seenInBatch = new Map<string, string[]>(); // normalized URL -> accepted names
 
   for (const entry of entries) {
     // Detect wire from combined name + description
@@ -823,6 +938,15 @@ export async function processBatchMessage(
     }
     const resolvedWire = (entry as typeof entry & { _resolvedWire?: string })._resolvedWire || wire!;
 
+    const sourceClass = classifySourceLink(entry.sourceUrl);
+    if (sourceClass === 'missing' || sourceClass === 'invalid' || sourceClass === 'shortener') {
+      result.errors++;
+      result.failed++;
+      result.entries.push({ name: entry.name, wire: resolvedWire, error: 'Missing verifiable source URL' });
+      continue;
+    }
+    const sourceNeedsVerification = sourceClass === 'placeholder';
+
     // Gate 1: reject known Tier-3 aggregator sources
     const batchBlocked = blockedSourceDomain(entry.sourceUrl);
     if (batchBlocked) {
@@ -834,7 +958,18 @@ export async function processBatchMessage(
 
     // Within-batch dedup: catch same URL appearing multiple times in one submission
     const normalizedBatchUrl = normalizeUrl(entry.sourceUrl);
-    if (seenInBatch.has(normalizedBatchUrl)) {
+    const priorNames = seenInBatch.get(normalizedBatchUrl) || [];
+    let isSocialAggregate = false;
+    try {
+      const host = new URL(entry.sourceUrl).hostname
+        .toLowerCase()
+        .replace(/^www\./, '')
+        .replace(/\.+$/, '');
+      isSocialAggregate = host === 'x.com' || host === 'twitter.com';
+    } catch {
+      isSocialAggregate = false;
+    }
+    if (priorNames.length > 0 && (!isSocialAggregate || priorNames.length >= 2)) {
       result.duplicates++;
       result.failed++;
       result.entries.push({ name: entry.name, wire: resolvedWire, error: 'Duplicate URL within batch', isDuplicate: true });
@@ -855,7 +990,7 @@ export async function processBatchMessage(
     }
 
     try {
-      const id = await insertEntry({
+      const inserted = await insertIntakeEntryWithClaim(getPool(), {
         name: entry.name,
         description: entry.description,
         sourceUrl: entry.sourceUrl,
@@ -865,9 +1000,26 @@ export async function processBatchMessage(
         scanSource,
         status: 'queued',
         deadline: normalizeDeadlineForDb(entry.deadline, scanDate),
+        sourceNeedsVerification,
+        operatorRoute: sourceNeedsVerification ? 'source_check' : undefined,
       });
-      await registerSeen(getPool(), { id, sourceUrl: entry.sourceUrl, name: entry.name, wire: resolvedWire, scanDate });
-      seenInBatch.add(normalizedBatchUrl);
+      if (inserted.urlConflict) {
+        result.duplicates++;
+        result.failed++;
+        result.entries.push({
+          name: entry.name,
+          wire: resolvedWire,
+          id: inserted.id,
+          error: inserted.conflictEntryId === null
+            ? 'Exact URL already exists in history'
+            : `Exact URL already belongs to entry #${inserted.conflictEntryId}`,
+          isDuplicate: true,
+        });
+        seenInBatch.set(normalizedBatchUrl, [...priorNames, entry.name]);
+        continue;
+      }
+      const id = inserted.id;
+      seenInBatch.set(normalizedBatchUrl, [...priorNames, entry.name]);
       result.inserted++;
       result.entries.push({ name: entry.name, wire: resolvedWire, id });
     } catch (err) {

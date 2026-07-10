@@ -11,6 +11,8 @@
  * GET    /seen-urls              — URL dedup stats
  * GET    /prompt-stats           — prompt effectiveness
  * PATCH  /entries/:id/wire       — reassign wire
+ * PATCH  /entries/:id/source     — guarded canonical source rewrite
+ * POST   /entries/:id/link-duplicate — guarded explicit duplicate link
  * POST   /entries/bulk-action    — bulk approve/decline/reviewlater/restore
  * POST   /entries/:id/action     — single entry action
  * GET    /entries/:id/distribution — distribution logs for single entry
@@ -25,11 +27,32 @@ import { buildSubmission, buildBatchSubmission } from '../services/intake';
 import { runDailyIntake, getDailyQueue, getIntakeStats } from '../jobs/daily-intake';
 import { getPromptEffectivenessStats } from '../services/scan-stats';
 import { singleEntryAction, bulkEntryAction, ApprovalBlockedError, BulkApprovalBlockedError } from '../services/entry-actions';
+import { rewriteEntrySource, linkEntryDuplicate, EntryMaintenanceError } from '../services/entry-maintenance';
 import { buildCuratorStamp } from '../services/curator';
 import { retryDistribution } from '../services/distribution';
 import { SCAN_SOURCES } from '../types/intake';
 
 const router = Router();
+
+/** Bind maintenance audit attribution to the authenticated principal. */
+export function resolveMaintenanceActor(req: Request): string {
+  return (req as any).agentSession?.userId || (req as any).authSession?.userId || '';
+}
+
+/** Internal-key agents may approve quietly, but may never bypass approval guards. */
+export function resolveApprovalForce(req: Request): boolean {
+  return !Boolean((req as any).agentSession) && req.query?.force === 'true';
+}
+
+function sendMaintenanceError(res: Response, error: unknown, label: string): void {
+  if (error instanceof EntryMaintenanceError) {
+    res.status(error.statusCode).json({ error: error.message });
+    return;
+  }
+  const message = error instanceof Error ? error.message : 'Unknown error';
+  console.error(`[${label}] Failed:`, error);
+  res.status(500).json({ error: message });
+}
 
 // POST /submit — single entry submission
 router.post('/submit', async (req: Request, res: Response) => {
@@ -323,7 +346,7 @@ router.get('/entries/:id', async (req: Request, res: Response) => {
 
 // POST /entries/bulk-action — bulk approve/decline/reviewlater/restore
 router.post('/entries/bulk-action', async (req: Request, res: Response) => {
-  const { ids, action, quiet, actor, reason, dryRun } = req.body;
+  const { ids, action, quiet, reason, dryRun } = req.body;
   const agentSession = (req as any).agentSession;
 
   if (!Array.isArray(ids) || ids.length === 0) {
@@ -346,8 +369,8 @@ router.post('/entries/bulk-action', async (req: Request, res: Response) => {
     const isAgent = !!(agentSession?.isAgent);
     const result = await bulkEntryAction(entryIds, action, {
       quiet: isAgent ? true : !!quiet,
-      force: req.query.force === 'true',
-      actor: actor || agentSession?.userId || undefined,
+      force: resolveApprovalForce(req),
+      actor: resolveMaintenanceActor(req) || undefined,
       reason: reason || undefined,
       dryRun: !!dryRun,
     });
@@ -379,7 +402,7 @@ router.post('/entries/:id/action', async (req: Request, res: Response) => {
     return;
   }
 
-  const { action, quiet, actor, reason, dryRun } = req.body;
+  const { action, quiet, reason, dryRun } = req.body;
   const agentSession = (req as any).agentSession;
 
   try {
@@ -387,8 +410,8 @@ router.post('/entries/:id/action', async (req: Request, res: Response) => {
     const isAgent = !!(agentSession?.isAgent);
     const result = await singleEntryAction(entryId, action, {
       quiet: isAgent ? true : !!quiet,
-      force: req.query.force === 'true',
-      actor: actor || agentSession?.userId || undefined,
+      force: resolveApprovalForce(req),
+      actor: resolveMaintenanceActor(req) || undefined,
       reason: reason || undefined,
       dryRun: !!dryRun,
     });
@@ -432,7 +455,7 @@ router.post('/entries/:id/curate', async (req: Request, res: Response) => {
       route: req.body?.route,
       confidence: req.body?.confidence,
       rationale: req.body?.rationale,
-      by: req.body?.by || agentSession?.userId,
+      by: resolveMaintenanceActor(req) || undefined,
     });
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : 'Invalid curator input' });
@@ -522,6 +545,50 @@ router.patch('/entries/:id/wire', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Failed to update entry wire:', error);
     res.status(500).json({ error: 'Failed to update wire' });
+  }
+});
+
+// PATCH /entries/:id/source — guarded canonical source rewrite with registry synchronization
+router.patch('/entries/:id/source', async (req: Request, res: Response) => {
+  const entryId = parseInt(req.params.id, 10);
+  if (!Number.isSafeInteger(entryId) || entryId <= 0) {
+    res.status(400).json({ error: 'Invalid entry ID' });
+    return;
+  }
+  try {
+    const result = await rewriteEntrySource(getPool(), entryId, {
+      expectedStatus: req.body.expectedStatus,
+      expectedSourceUrl: req.body.expectedSourceUrl,
+      newSourceUrl: req.body.newSourceUrl,
+      actor: resolveMaintenanceActor(req),
+      reason: req.body.reason,
+      dryRun: req.body.dryRun === true,
+    });
+    res.json({ success: true, ...result });
+  } catch (error) {
+    sendMaintenanceError(res, error, 'SourceRewrite');
+  }
+});
+
+// POST /entries/:id/link-duplicate — guarded link to a recursively resolved canonical parent
+router.post('/entries/:id/link-duplicate', async (req: Request, res: Response) => {
+  const entryId = parseInt(req.params.id, 10);
+  if (!Number.isSafeInteger(entryId) || entryId <= 0) {
+    res.status(400).json({ error: 'Invalid entry ID' });
+    return;
+  }
+  try {
+    const result = await linkEntryDuplicate(getPool(), entryId, {
+      expectedStatus: req.body.expectedStatus,
+      expectedSourceUrl: req.body.expectedSourceUrl,
+      duplicateOfId: Number(req.body.duplicateOfId),
+      actor: resolveMaintenanceActor(req),
+      reason: req.body.reason,
+      dryRun: req.body.dryRun === true,
+    });
+    res.json({ success: true, ...result });
+  } catch (error) {
+    sendMaintenanceError(res, error, 'DuplicateLink');
   }
 });
 

@@ -15,13 +15,14 @@ if (!DB_URL) {
 }
 
 const { getPool, closePool } = require('../src/db');
+const TEST_DESCRIPTION = 'recheck test entry with a sufficiently long description';
 
 async function insertEntry(pool, name, url, status = 'queued', wire = 'oss') {
   const res = await pool.query(
     `INSERT INTO scan_entries (name, description, source_url, wire, prompt_variant, scan_source, scan_date, status)
-     VALUES ($1, 'recheck test entry with a sufficiently long description', $2, $3, 'A', 'web-search', CURRENT_DATE, $4)
+     VALUES ($1, $5, $2, $3, 'A', 'web-search', CURRENT_DATE, $4)
      RETURNING id`,
-    [name, url, wire, status]
+    [name, url, wire, status, TEST_DESCRIPTION]
   );
   return res.rows[0].id;
 }
@@ -58,7 +59,7 @@ test('applyVerdict: update verdict keeps entry queued and adds a note', async ()
   const approvedId = await insertEntry(pool, `Recheck Round One ${pid}`, `https://recheck-rounds-${pid}.org/round-1`, 'approved');
   const queuedId = await insertEntry(pool, `Recheck Round Two ${pid}`, `https://recheck-rounds-${pid}.org/round-2`, 'queued');
   try {
-    const target = { id: queuedId, wire: 'oss', name: `Recheck Round Two ${pid}`, description: '', source_url: `https://recheck-rounds-${pid}.org/round-2`, deadline: null };
+    const target = { id: queuedId, wire: 'oss', name: `Recheck Round Two ${pid}`, description: TEST_DESCRIPTION, source_url: `https://recheck-rounds-${pid}.org/round-2`, deadline: null };
     const candidates = [{ id: approvedId, name: `Recheck Round One ${pid}`, status: 'approved', source_url: `https://recheck-rounds-${pid}.org/round-1`, decided_date: '2026-06-01', resolve_to: null, overlap: 3, domain_match: true, squash_match: false }];
     const outcome = await applyVerdict(pool, target, candidates, { matched_id: approvedId, verdict: 'update', confidence: 0.9, reason: 'new round of the same program' });
     assert.equal(outcome, 'update-noted');
@@ -79,7 +80,7 @@ test('applyVerdict: same_listing at high confidence marks duplicate of decided e
   const declinedId = await insertEntry(pool, `Recheck Declined Program ${pid}`, `https://recheck-declined-${pid}.org/`, 'declined');
   const queuedId = await insertEntry(pool, `Recheck Declined Program ${pid} (tweet)`, `https://x.com/org/status/9${pid}`, 'queued');
   try {
-    const target = { id: queuedId, wire: 'oss', name: `Recheck Declined Program ${pid} (tweet)`, description: '', source_url: `https://x.com/org/status/9${pid}`, deadline: null };
+    const target = { id: queuedId, wire: 'oss', name: `Recheck Declined Program ${pid} (tweet)`, description: TEST_DESCRIPTION, source_url: `https://x.com/org/status/9${pid}`, deadline: null };
     const candidates = [{ id: declinedId, name: `Recheck Declined Program ${pid}`, status: 'declined', source_url: `https://recheck-declined-${pid}.org/`, decided_date: '2026-06-01', resolve_to: null, overlap: 3, domain_match: false, squash_match: true }];
     const outcome = await applyVerdict(pool, target, candidates, { matched_id: declinedId, verdict: 'same_listing', confidence: 0.95, reason: 'identical listing' });
     assert.equal(outcome, 'duplicate');
@@ -92,12 +93,58 @@ test('applyVerdict: same_listing at high confidence marks duplicate of decided e
   }
 });
 
+test('applyVerdict refuses a stale target semantic snapshot', async () => {
+  const pool = getPool();
+  const pid = `${process.pid}-${Date.now()}`;
+  const { applyVerdict } = require('../src/jobs/decided-recheck');
+  const originalUrl = `https://stale-target-${pid}.org/original`;
+  const currentUrl = `https://stale-target-${pid}.org/current`;
+  const queuedId = await insertEntry(pool, `Stale Target ${pid}`, originalUrl, 'queued');
+  try {
+    const target = { id: queuedId, wire: 'oss', name: `Stale Target ${pid}`, description: TEST_DESCRIPTION, source_url: originalUrl, deadline: null };
+    await pool.query(`UPDATE scan_entries SET source_url = $2 WHERE id = $1`, [queuedId, currentUrl]);
+    const outcome = await applyVerdict(pool, target, [], { matched_id: null, verdict: 'distinct', confidence: 0.9, reason: 'looks distinct' });
+    assert.equal(outcome, 'stale');
+    const check = await pool.query(`SELECT status, source_url, metadata -> 'decided_recheck' AS stamp FROM scan_entries WHERE id = $1`, [queuedId]);
+    assert.equal(check.rows[0].status, 'queued');
+    assert.equal(check.rows[0].source_url, currentUrl);
+    assert.equal(check.rows[0].stamp, null);
+  } finally {
+    await pool.query(`DELETE FROM scan_entries WHERE id = $1`, [queuedId]);
+  }
+});
+
+test('applyVerdict refuses a stale candidate semantic snapshot', async () => {
+  const pool = getPool();
+  const pid = `${process.pid}-${Date.now()}`;
+  const { applyVerdict } = require('../src/jobs/decided-recheck');
+  const candidateName = `Candidate Before Rewrite ${pid}`;
+  const candidateUrl = `https://stale-candidate-${pid}.org/program`;
+  const approvedId = await insertEntry(pool, candidateName, candidateUrl, 'approved');
+  const queuedName = `Queued Candidate Check ${pid}`;
+  const queuedUrl = `https://queued-candidate-${pid}.org/program`;
+  const queuedId = await insertEntry(pool, queuedName, queuedUrl, 'queued');
+  try {
+    const target = { id: queuedId, wire: 'oss', name: queuedName, description: TEST_DESCRIPTION, source_url: queuedUrl, deadline: null };
+    const candidates = [{ id: approvedId, name: candidateName, status: 'approved', source_url: candidateUrl, decided_date: '2026-06-01', resolve_to: null, overlap: 2, domain_match: false, squash_match: false }];
+    await pool.query(`UPDATE scan_entries SET name = $2 WHERE id = $1`, [approvedId, `Candidate After Rewrite ${pid}`]);
+    const outcome = await applyVerdict(pool, target, candidates, { matched_id: approvedId, verdict: 'update', confidence: 0.9, reason: 'new cycle' });
+    assert.equal(outcome, 'stale');
+    const check = await pool.query(`SELECT operator_notes, metadata -> 'decided_recheck' AS stamp FROM scan_entries WHERE id = $1`, [queuedId]);
+    assert.equal(check.rows[0].operator_notes, null);
+    assert.equal(check.rows[0].stamp, null);
+  } finally {
+    await pool.query(`DELETE FROM scan_entries WHERE id IN ($1, $2)`, [approvedId, queuedId]);
+  }
+});
+
 test('classifySourceLink categorizes link quality', () => {
   const { classifySourceLink } = require('../src/jobs/decided-recheck');
   assert.equal(classifySourceLink('https://example.org/grants'), 'ok');
   assert.equal(classifySourceLink(''), 'missing');
   assert.equal(classifySourceLink(null), 'missing');
   assert.equal(classifySourceLink('https://t.me/manual/1749700000'), 'placeholder');
+  assert.equal(classifySourceLink('https://manual/needs-source/1749700000-abc123'), 'placeholder');
   assert.equal(classifySourceLink('scan://internal-ref'), 'placeholder');
   assert.equal(classifySourceLink('https://t.co/AbC123'), 'shortener');
   assert.equal(classifySourceLink('https://x.com/someorg/status/123'), 'tweet-only');

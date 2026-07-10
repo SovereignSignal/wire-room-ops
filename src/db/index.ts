@@ -1999,6 +1999,14 @@ export async function ensureOperatorNotesColumn(): Promise<void> {
   console.log('[DB] operator_notes column ready');
 }
 
+export async function ensureSourceNeedsVerificationColumn(): Promise<void> {
+  const pool = getPool();
+  await pool.query(`
+    ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS source_needs_verification BOOLEAN DEFAULT FALSE
+  `);
+  console.log('[DB] source_needs_verification column ready');
+}
+
 // ── app_state: small DB-backed key/value store for job state ────────────────
 // Used for the summary-sync watermark and the agent daily-scan brief.
 

@@ -21,7 +21,8 @@ dedup.checkDuplicate = async () => ({
   confidence: 0,
   reason: 'No duplicate found',
 });
-dedup.registerSeen = async () => ({ urlConflict: false, conflictEntryId: null });
+let registerSeenResult = { urlConflict: false, conflictEntryId: null };
+dedup.registerSeenInTransaction = async () => registerSeenResult;
 
 const { shouldBridgeWire, syncSummariesToScanEntries } = require('../src/jobs/summary-sync');
 
@@ -53,37 +54,62 @@ function makeMockPool(opts = {}) {
   const existingSummaryIds = new Set((opts.existingSummaryIds || []).map(String));
   const inserteds = [];
 
-  const pool = {
+  async function runQuery(sql, params = []) {
+    queries.push({ sql, params });
+    const normalized = (sql || '').trim().toUpperCase();
+
+    if (normalized === 'BEGIN' || normalized === 'COMMIT' || normalized === 'ROLLBACK'
+        || normalized.startsWith('SELECT PG_ADVISORY_XACT_LOCK')) {
+      return { rowCount: null, rows: [] };
+    }
+
+    // The summaries fetch SELECT.
+    if (normalized.includes('FROM SUMMARIES')) {
+      return { rows: opts.summaries || [] };
+    }
+
+    // Idempotency lookup inside the transaction.
+    if (normalized.startsWith('SELECT ID, STATUS, NAME, SOURCE_URL')) {
+      const url = params[0];
+      const summaryId = params[1];
+      if (!existing.has(url) && !existingSummaryIds.has(String(summaryId))) return { rows: [] };
+      return {
+        rows: [{
+          id: 999,
+          status: opts.existingStatus || 'approved',
+          name: 'Existing summary',
+          source_url: url,
+          wire: 'ai',
+          scan_date: '2026-06-22',
+        }],
+      };
+    }
+
+    // INSERT scan entry.
+    if (normalized.startsWith('INSERT INTO SCAN_ENTRIES')) {
+      inserteds.push({ sql, params });
+      return { rowCount: 1, rows: [{ id: opts.insertId || 12345 }] };
+    }
+
+    if (normalized.startsWith('UPDATE SCAN_ENTRIES')) {
+      return { rowCount: opts.updateRowCount ?? 1, rows: opts.updateRowCount === 0 ? [] : [{ id: params[3] }] };
+    }
+
+    return { rowCount: 0, rows: [] };
+  }
+
+  const client = {
+    query: runQuery,
+    release() {},
+  };
+  return {
     _queries: queries,
     _inserteds: inserteds,
     _existing: existing,
     _existingSummaryIds: existingSummaryIds,
-    async query(sql, params = []) {
-      queries.push({ sql, params });
-      const normalized = (sql || '').trim().toUpperCase();
-
-      // The look-up SELECT in syncSummariesToScanEntries.
-      if (normalized.startsWith('SELECT ID FROM SCAN_ENTRIES')) {
-        const url = params[0];
-        const summaryId = params[1];
-        return { rows: existing.has(url) || existingSummaryIds.has(String(summaryId)) ? [{ id: 999 }] : [] };
-      }
-
-      // The summaries fetch SELECT.
-      if (normalized.includes('FROM SUMMARIES')) {
-        return { rows: opts.summaries || [] };
-      }
-
-      // INSERT scan entry.
-      if (normalized.startsWith('INSERT INTO SCAN_ENTRIES')) {
-        inserteds.push({ sql, params });
-        return { rowCount: 1, rows: [{ id: opts.insertId || 12345 }] };
-      }
-
-      return { rows: [] };
-    },
+    query: runQuery,
+    async connect() { return client; },
   };
-  return pool;
 }
 
 test('summary-sync inserts URL-backed summary as queued source_check', async () => {
@@ -116,6 +142,36 @@ test('summary-sync inserts URL-backed summary as queued source_check', async () 
   assert.equal(ins.params[0], 'Tarbell Grants for AI Accountability Reporting');
   assert.equal(ins.params[2], 'https://www.tarbellcenter.org/grants');
   assert.equal(ins.params[9], false, 'real URL rows should not require source verification');
+});
+
+test('summary-sync parks a seed-history URL instead of leaving it queued', async () => {
+  const pool = makeMockPool({
+    summaries: [
+      {
+        summary_id: 1007,
+        title: 'Historical Seed Program',
+        description: 'Already present in the seed URL history.',
+        wire: 'oss',
+        entities: {},
+        created_at: '2026-06-22T14:18:00Z',
+        extracted_urls: ['https://example.com/historical-seed-program'],
+      },
+    ],
+  });
+  registerSeenResult = { urlConflict: true, conflictEntryId: null };
+  try {
+    const result = await syncSummariesToScanEntries(pool, 168);
+    assert.equal(result.synced, 0);
+    assert.equal(result.skipped, 1);
+    const parked = pool._queries.find(({ sql }) => /SET status = 'deduped'/i.test(sql));
+    assert.ok(parked, 'conflicting insert must be parked');
+    assert.deepEqual(parked.params.slice(0, 2), [
+      12345,
+      'URL already exists in seed history',
+    ]);
+  } finally {
+    registerSeenResult = { urlConflict: false, conflictEntryId: null };
+  }
 });
 
 test('summary-sync creates placeholder URL when summary has no extracted URL', async () => {
