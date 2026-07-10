@@ -1,4 +1,4 @@
-import { Pool, PoolClient } from 'pg';
+import { Pool } from 'pg';
 
 export interface DuplicateChainResolution {
   id: number | null;
@@ -7,9 +7,15 @@ export interface DuplicateChainResolution {
   error: 'missing' | 'cycle' | 'dead-end' | 'max-depth' | 'invalid-status' | null;
 }
 
-type Queryable = Pick<Pool | PoolClient, 'query'>;
+type Queryable = Pick<Pool, 'query'>;
 
-/** Resolve a duplicate pointer to its terminal row with cycle and depth guards. */
+const DUPLICATE_GRAPH_LOCK_KEY = 'wire-room-ops:duplicate-graph';
+
+/** Serialize graph mutations that can create duplicate edges. Must run in a transaction. */
+export async function lockDuplicateGraph(db: Queryable): Promise<void> {
+  await db.query('SELECT pg_advisory_xact_lock(hashtext($1))', [DUPLICATE_GRAPH_LOCK_KEY]);
+}
+
 export async function resolveDuplicateChain(
   db: Queryable,
   startId: number,
@@ -63,4 +69,116 @@ export async function reassignSeenUrlOwnership(
      WHERE first_seen_entry_id = $1`,
     [duplicateEntryId, canonicalEntryId],
   );
+}
+
+export interface DuplicateDemotionOptions {
+  targetId: number;
+  requestedParentId: number;
+  expectedStatus: string;
+  expectedSourceUrl: string;
+  reason: string;
+  actor?: string;
+}
+
+export interface DuplicateDemotionResult {
+  outcome: 'linked' | 'stale';
+  canonicalParentId: number | null;
+}
+
+/**
+ * Create a duplicate edge inside the caller's transaction.
+ *
+ * Every production writer uses the same graph lock, deterministic endpoint
+ * locks, recursive parent resolution, and source/status compare-and-set. This
+ * prevents concurrent A to B / B to A writes and stops background jobs from
+ * overwriting an operator edit made after they read the row.
+ */
+export async function demoteEntryToDuplicateInTransaction(
+  db: Queryable,
+  opts: DuplicateDemotionOptions,
+): Promise<DuplicateDemotionResult> {
+  if (opts.targetId === opts.requestedParentId) {
+    throw new Error('Entry cannot duplicate itself');
+  }
+
+  await lockDuplicateGraph(db);
+  const endpointIds = [opts.targetId, opts.requestedParentId].sort((a, b) => a - b);
+  const endpointResult = await db.query(
+    `SELECT id, status, source_url, duplicate_of_id
+     FROM scan_entries
+     WHERE id = ANY($1::bigint[])
+     ORDER BY id
+     FOR UPDATE`,
+    [endpointIds],
+  );
+  const target = endpointResult.rows.find(row => Number(row.id) === opts.targetId);
+  const requestedParent = endpointResult.rows.find(row => Number(row.id) === opts.requestedParentId);
+  if (!target
+      || target.status !== opts.expectedStatus
+      || target.source_url !== opts.expectedSourceUrl) {
+    return { outcome: 'stale', canonicalParentId: null };
+  }
+  if (!requestedParent) throw new Error('Duplicate parent is missing');
+
+  const resolution = await resolveDuplicateChain(db, opts.requestedParentId);
+  if (resolution.error || resolution.id === null) {
+    throw new Error(`Duplicate parent chain is invalid (${resolution.error || 'unknown'})`);
+  }
+  if (resolution.id === opts.targetId) {
+    throw new Error('Duplicate link would create a cycle');
+  }
+
+  const terminalResult = await db.query(
+    `SELECT id, status, duplicate_of_id
+     FROM scan_entries
+     WHERE id = $1
+     FOR UPDATE`,
+    [resolution.id],
+  );
+  const terminal = terminalResult.rows[0];
+  if (!terminal
+      || !['approved', 'declined', 'queued'].includes(terminal.status)
+      || terminal.duplicate_of_id !== null) {
+    throw new Error('Duplicate parent changed before write');
+  }
+
+  const revalidated = await resolveDuplicateChain(db, opts.requestedParentId);
+  if (revalidated.error || revalidated.id !== resolution.id) {
+    throw new Error('Duplicate parent changed before write');
+  }
+
+  const updated = await db.query(
+    `UPDATE scan_entries AS target SET
+       status = 'duplicate',
+       duplicate_of_id = $2,
+       duplicate_reason = $3,
+       distributable = false,
+       actioned_by = COALESCE($4, target.actioned_by),
+       action_reason = COALESCE($3, target.action_reason),
+       updated_at = NOW()
+     WHERE target.id = $1
+       AND target.status = $5
+       AND target.source_url IS NOT DISTINCT FROM $6
+       AND EXISTS (
+         SELECT 1 FROM scan_entries AS parent
+         WHERE parent.id = $2
+           AND parent.status IN ('approved', 'declined', 'queued')
+           AND parent.duplicate_of_id IS NULL
+       )
+     RETURNING target.id`,
+    [
+      opts.targetId,
+      resolution.id,
+      opts.reason,
+      opts.actor ?? null,
+      opts.expectedStatus,
+      opts.expectedSourceUrl,
+    ],
+  );
+  if (updated.rowCount !== 1) {
+    return { outcome: 'stale', canonicalParentId: null };
+  }
+
+  await reassignSeenUrlOwnership(db, opts.targetId, resolution.id);
+  return { outcome: 'linked', canonicalParentId: resolution.id };
 }

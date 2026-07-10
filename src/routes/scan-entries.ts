@@ -34,9 +34,14 @@ import { SCAN_SOURCES } from '../types/intake';
 
 const router = Router();
 
-/** Bind maintenance audit attribution to the authenticated agent principal. */
+/** Bind maintenance audit attribution to the authenticated principal. */
 export function resolveMaintenanceActor(req: Request): string {
-  return (req as any).agentSession?.userId || req.body?.actor || '';
+  return (req as any).agentSession?.userId || (req as any).authSession?.userId || '';
+}
+
+/** Internal-key agents may approve quietly, but may never bypass approval guards. */
+export function resolveApprovalForce(req: Request): boolean {
+  return !Boolean((req as any).agentSession) && req.query?.force === 'true';
 }
 
 function sendMaintenanceError(res: Response, error: unknown, label: string): void {
@@ -341,7 +346,7 @@ router.get('/entries/:id', async (req: Request, res: Response) => {
 
 // POST /entries/bulk-action — bulk approve/decline/reviewlater/restore
 router.post('/entries/bulk-action', async (req: Request, res: Response) => {
-  const { ids, action, quiet, actor, reason, dryRun } = req.body;
+  const { ids, action, quiet, reason, dryRun } = req.body;
   const agentSession = (req as any).agentSession;
 
   if (!Array.isArray(ids) || ids.length === 0) {
@@ -364,8 +369,8 @@ router.post('/entries/bulk-action', async (req: Request, res: Response) => {
     const isAgent = !!(agentSession?.isAgent);
     const result = await bulkEntryAction(entryIds, action, {
       quiet: isAgent ? true : !!quiet,
-      force: req.query.force === 'true',
-      actor: actor || agentSession?.userId || undefined,
+      force: resolveApprovalForce(req),
+      actor: resolveMaintenanceActor(req) || undefined,
       reason: reason || undefined,
       dryRun: !!dryRun,
     });
@@ -397,7 +402,7 @@ router.post('/entries/:id/action', async (req: Request, res: Response) => {
     return;
   }
 
-  const { action, quiet, actor, reason, dryRun } = req.body;
+  const { action, quiet, reason, dryRun } = req.body;
   const agentSession = (req as any).agentSession;
 
   try {
@@ -405,8 +410,8 @@ router.post('/entries/:id/action', async (req: Request, res: Response) => {
     const isAgent = !!(agentSession?.isAgent);
     const result = await singleEntryAction(entryId, action, {
       quiet: isAgent ? true : !!quiet,
-      force: req.query.force === 'true',
-      actor: actor || agentSession?.userId || undefined,
+      force: resolveApprovalForce(req),
+      actor: resolveMaintenanceActor(req) || undefined,
       reason: reason || undefined,
       dryRun: !!dryRun,
     });
@@ -450,7 +455,7 @@ router.post('/entries/:id/curate', async (req: Request, res: Response) => {
       route: req.body?.route,
       confidence: req.body?.confidence,
       rationale: req.body?.rationale,
-      by: req.body?.by || agentSession?.userId,
+      by: resolveMaintenanceActor(req) || undefined,
     });
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : 'Invalid curator input' });

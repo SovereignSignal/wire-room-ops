@@ -11,8 +11,9 @@
 
 import type { Pool } from 'pg';
 import { getActiveWires } from '../services/intake-core';
-import { checkDuplicate, registerSeen } from '../services/dedup';
+import { checkDuplicate, registerSeenInTransaction } from '../services/dedup';
 import { getAppState, setAppState } from '../db';
+import { demoteEntryToDuplicateInTransaction, lockDuplicateGraph } from '../services/duplicate-chain';
 
 // High-water mark: created_at of the newest summary we have fully processed.
 // Avoids re-scanning the whole 7-day window every 15 minutes.
@@ -183,20 +184,6 @@ export async function syncSummariesToScanEntries(
       const realUrl = Array.isArray(urls) && urls.length > 0 ? urls[0] : null;
       const sourceUrl = realUrl || placeholderSourceUrl(row.summary_id, row.title);
 
-      // Idempotency: skip if either the URL or the summary_id bridge key is already present.
-      const existing = await pool.query(
-        `SELECT id FROM scan_entries
-         WHERE source_url = $1
-            OR metadata->>'summary_id' = $2
-         LIMIT 1`,
-        [sourceUrl, String(row.summary_id)]
-      );
-
-      if (existing.rows.length > 0) {
-        result.skipped++;
-        continue;
-      }
-
       const wire = await inferWire(row.title, row.description || '', activeWires, row.wire);
 
       // Cross-source dedup: the same program often already exists under a
@@ -225,47 +212,162 @@ export async function syncSummariesToScanEntries(
 
       const scanDate = new Date(row.created_at).toISOString().split('T')[0];
 
-      // Insert as a queued review candidate. quality_breakdown carries the
-      // operator_route so the queue UI shows it as source_check; metadata
-      // preserves the summary_id bridge key for future idempotency.
-      const inserted = await pool.query(`
-        INSERT INTO scan_entries (
-          name, description, source_url, amount, deadline,
-          wire, prompt_variant, scan_source, scan_date,
-          status, quality_score, quality_breakdown, classification,
-          metadata, tags, created_at
-        ) VALUES (
-          $1, $2, $3, $4, $5,
-          $6, 'N', 'telegram', $7,
-          'queued', 70,
-          $8, 'UNCHECKED',
-          jsonb_build_object('summary_id', $9::text, 'summary_sync', true, 'operator_route', 'source_check', 'source_needs_verification', $10::boolean),
-          $11, $12
-        ) RETURNING id
-      `, [
-        row.title,
-        row.description || '',
-        sourceUrl,
-        amount,
-        deadline,
-        wire,
-        scanDate,
-        JSON.stringify({ scoreReason: 'Summary sync bridge (tele-sum → scan_entries)', operatorRoute: 'source_check' }),
-        String(row.summary_id),
-        !realUrl, // source_needs_verification = true when we used a placeholder
-        tags,
-        row.created_at, // preserve original timestamp
-      ]);
+      // Insert, exact-URL claim, and any conflict demotion share one
+      // transaction. A summary-level advisory lock makes concurrent sync runs
+      // idempotent and lets retries repair queued rows from older releases that
+      // were inserted before their seen_urls claim.
+      const client = await pool.connect();
+      let transactionOutcome: 'synced' | 'skipped' = 'synced';
+      try {
+        await client.query('BEGIN');
+        await client.query(
+          'SELECT pg_advisory_xact_lock(hashtext($1))',
+          [`summary-sync:${row.summary_id}`],
+        );
+        await lockDuplicateGraph(client);
 
-      // Register in seen_urls/seen_names so the intake pipeline's dedup can
-      // see telegram-synced entries too (it was blind to them before).
-      await registerSeen(pool, {
-        id: inserted.rows[0].id,
-        sourceUrl,
-        name: row.title,
-        wire,
-        scanDate,
-      });
+        const existing = await client.query(
+          `SELECT id, status, name, source_url, wire, scan_date
+           FROM scan_entries
+           WHERE source_url = $1
+              OR metadata->>'summary_id' = $2
+           ORDER BY id
+           LIMIT 1
+           FOR UPDATE`,
+          [sourceUrl, String(row.summary_id)],
+        );
+
+        if (existing.rows.length > 0) {
+          const existingRow = existing.rows[0];
+          // Repair an older queued orphan before treating the summary as done.
+          if (existingRow.status === 'queued') {
+            const existingClaim = await registerSeenInTransaction(client, {
+              id: Number(existingRow.id),
+              sourceUrl: String(existingRow.source_url),
+              name: String(existingRow.name),
+              wire: String(existingRow.wire),
+              scanDate: existingRow.scan_date instanceof Date
+                ? existingRow.scan_date.toISOString().split('T')[0]
+                : String(existingRow.scan_date),
+            });
+            if (existingClaim.urlConflict) {
+              const conflictReason = existingClaim.conflictEntryId === null
+                ? 'URL already exists in seed history'
+                : 'URL claimed by concurrent submission';
+              if (existingClaim.conflictEntryId === null) {
+                const repaired = await client.query(
+                  `UPDATE scan_entries
+                   SET status = 'deduped', duplicate_of_id = NULL,
+                       duplicate_reason = $2, distributable = false
+                   WHERE id = $1 AND status = 'queued' AND source_url = $3
+                   RETURNING id`,
+                  [existingRow.id, conflictReason, existingRow.source_url],
+                );
+                if (repaired.rowCount !== 1) {
+                  throw new Error('Existing summary entry changed before seed conflict repair');
+                }
+              } else {
+                const repaired = await demoteEntryToDuplicateInTransaction(client, {
+                  targetId: Number(existingRow.id),
+                  requestedParentId: existingClaim.conflictEntryId,
+                  expectedStatus: 'queued',
+                  expectedSourceUrl: String(existingRow.source_url),
+                  reason: conflictReason,
+                  actor: 'summary-sync',
+                });
+                if (repaired.outcome !== 'linked') {
+                  throw new Error('Existing summary entry changed before conflict repair');
+                }
+              }
+            }
+          }
+          transactionOutcome = 'skipped';
+        } else {
+          // Insert as a queued review candidate. quality_breakdown carries the
+          // operator_route so the queue UI shows it as source_check; metadata
+          // preserves the summary_id bridge key for future idempotency.
+          const inserted = await client.query(`
+            INSERT INTO scan_entries (
+              name, description, source_url, amount, deadline,
+              wire, prompt_variant, scan_source, scan_date,
+              status, quality_score, quality_breakdown, classification,
+              metadata, tags, created_at, source_needs_verification
+            ) VALUES (
+              $1, $2, $3, $4, $5,
+              $6, 'N', 'telegram', $7,
+              'queued', 70,
+              $8, 'UNCHECKED',
+              jsonb_build_object('summary_id', $9::text, 'summary_sync', true, 'operator_route', 'source_check', 'source_needs_verification', $10::boolean),
+              $11, $12, $10
+            ) RETURNING id
+          `, [
+            row.title,
+            row.description || '',
+            sourceUrl,
+            amount,
+            deadline,
+            wire,
+            scanDate,
+            JSON.stringify({ scoreReason: 'Summary sync bridge (tele-sum → scan_entries)', operatorRoute: 'source_check' }),
+            String(row.summary_id),
+            !realUrl,
+            tags,
+            row.created_at,
+          ]);
+
+          const claim = await registerSeenInTransaction(client, {
+            id: inserted.rows[0].id,
+            sourceUrl,
+            name: row.title,
+            wire,
+            scanDate,
+          });
+
+          if (claim.urlConflict) {
+            const conflictReason = claim.conflictEntryId === null
+              ? 'URL already exists in seed history'
+              : 'URL claimed by concurrent submission';
+            if (claim.conflictEntryId === null) {
+              const demoted = await client.query(
+                `UPDATE scan_entries
+                 SET status = 'deduped', duplicate_of_id = NULL,
+                     duplicate_reason = $2, distributable = false
+                 WHERE id = $1 AND status = 'queued' AND source_url = $3
+                 RETURNING id`,
+                [inserted.rows[0].id, conflictReason, sourceUrl],
+              );
+              if (demoted.rowCount !== 1) {
+                throw new Error('New summary entry changed before seed conflict demotion');
+              }
+            } else {
+              const demoted = await demoteEntryToDuplicateInTransaction(client, {
+                targetId: Number(inserted.rows[0].id),
+                requestedParentId: claim.conflictEntryId,
+                expectedStatus: 'queued',
+                expectedSourceUrl: sourceUrl,
+                reason: conflictReason,
+                actor: 'summary-sync',
+              });
+              if (demoted.outcome !== 'linked') {
+                throw new Error('New summary entry changed before conflict demotion');
+              }
+            }
+            transactionOutcome = 'skipped';
+          }
+        }
+
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+
+      if (transactionOutcome === 'skipped') {
+        result.skipped++;
+        continue;
+      }
 
       result.synced++;
     } catch (err) {

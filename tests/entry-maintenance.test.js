@@ -22,11 +22,25 @@ function fakePool(options = {}) {
     calls,
     async query(sql, params) {
       calls.push({ sql, params });
+      if (/pg_advisory_xact_lock/.test(sql)) {
+        return { rows: [{ pg_advisory_xact_lock: null }], rowCount: 1 };
+      }
+      if (/WHERE id = ANY\(\$1::bigint\[\]\)/.test(sql)) {
+        const rows = options.endpointRows || [
+          entry,
+          { id: 10431, status: 'duplicate', source_url: 'https://example.com/parent', duplicate_of_id: 10355 },
+        ];
+        return { rows, rowCount: rows.length };
+      }
       if (/SELECT id, status, source_url, wire, scan_date/.test(sql)) {
         return { rows: entry ? [entry] : [], rowCount: entry ? 1 : 0 };
       }
       if (/SELECT id, status, source_url\s+FROM scan_entries/.test(sql)) {
         return { rows: entry ? [entry] : [], rowCount: entry ? 1 : 0 };
+      }
+      if (/SELECT id, status, duplicate_of_id\s+FROM scan_entries WHERE id = \$1 FOR UPDATE/.test(sql)) {
+        const terminal = (options.chainRows || [{ id: 10699, status: 'approved', duplicate_of_id: null, depth: 1, cycle: false }])[0];
+        return { rows: terminal ? [terminal] : [], rowCount: terminal ? 1 : 0 };
       }
       if (/SELECT first_seen_entry_id FROM seen_urls/.test(sql)) {
         const rows = options.conflictRows || [];

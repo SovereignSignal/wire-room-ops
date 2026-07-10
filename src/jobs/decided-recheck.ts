@@ -19,7 +19,7 @@
  * is one Grok call per entry that has candidates.
  */
 
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import http from 'node:http';
 import https from 'node:https';
 import { lookup as dnsLookup } from 'node:dns';
@@ -27,7 +27,8 @@ import { isBlockedHost, isSafeHttpUrl } from '../utils/ssrf';
 import { getCachedProvider } from '../services/api-provider';
 import { logApiUsage } from '../services/api-usage';
 import { classifySourceLink, type SourceLinkClass } from '../services/source-filter';
-import { reassignSeenUrlOwnership, resolveDuplicateChain } from '../services/duplicate-chain';
+import { lockDuplicateGraph, reassignSeenUrlOwnership, resolveDuplicateChain } from '../services/duplicate-chain';
+import { EntryMaintenanceError, rewriteEntrySource } from '../services/entry-maintenance';
 import { config } from '../config';
 
 let isRunning = false;
@@ -172,6 +173,95 @@ Respond with ONLY JSON: {"matched_id": <id or null>, "verdict": "same_listing"|"
   return parsed;
 }
 
+function dateKey(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  return String(value).slice(0, 10);
+}
+
+function targetSnapshotMatches(row: any, target: RecheckTarget): boolean {
+  return !!row
+    && row.status === 'queued'
+    && row.name === target.name
+    && row.description === target.description
+    && dateKey(row.deadline) === dateKey(target.deadline)
+    && row.source_url === target.source_url
+    && row.wire === target.wire;
+}
+
+function candidateSnapshotMatches(row: any, candidate: Candidate): boolean {
+  const currentParent = row?.duplicate_of_id === null || row?.duplicate_of_id === undefined
+    ? null
+    : Number(row.duplicate_of_id);
+  return !!row
+    && row.status === candidate.status
+    && row.name === candidate.name
+    && row.source_url === candidate.source_url
+    && currentParent === candidate.resolve_to;
+}
+
+async function stampTargetIfFresh(
+  pool: Pool,
+  target: RecheckTarget,
+  verdict: string,
+): Promise<boolean> {
+  const result = await pool.query(
+    `UPDATE scan_entries
+     SET metadata = COALESCE(metadata, '{}'::jsonb)
+       || jsonb_build_object('decided_recheck', jsonb_build_object('verdict', $2::text)),
+         updated_at = NOW()
+     WHERE id = $1
+       AND status = 'queued'
+       AND name IS NOT DISTINCT FROM $3
+       AND description IS NOT DISTINCT FROM $4
+       AND source_url IS NOT DISTINCT FROM $5
+       AND deadline IS NOT DISTINCT FROM $6::date
+       AND wire IS NOT DISTINCT FROM $7
+       AND (metadata -> 'decided_recheck') IS NULL
+     RETURNING id`,
+    [target.id, verdict, target.name, target.description, target.source_url, target.deadline, target.wire],
+  );
+  return result.rowCount === 1;
+}
+
+async function applyWithFreshVerdictSnapshots(
+  pool: Pool,
+  target: RecheckTarget,
+  matched: Candidate | undefined,
+  mutate: (client: PoolClient) => Promise<string>,
+): Promise<string> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const ids = matched ? [target.id, matched.id] : [target.id];
+    const locked = await client.query(
+      `SELECT id, status, duplicate_of_id, name, description, amount, deadline, source_url, wire
+       FROM scan_entries
+       WHERE id = ANY($1::bigint[])
+       ORDER BY id
+       FOR UPDATE`,
+      [ids],
+    );
+    const currentTarget = locked.rows.find((row: any) => Number(row.id) === target.id);
+    const currentMatched = matched
+      ? locked.rows.find((row: any) => Number(row.id) === matched.id)
+      : undefined;
+    if (!targetSnapshotMatches(currentTarget, target)
+        || (matched && !candidateSnapshotMatches(currentMatched, matched))) {
+      await client.query('ROLLBACK');
+      return 'stale';
+    }
+    const outcome = await mutate(client);
+    await client.query('COMMIT');
+    return outcome;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function applyVerdict(pool: Pool, target: RecheckTarget, candidates: Candidate[], verdict: Verdict): Promise<string> {
   const matched = candidates.find(c => c.id === verdict.matched_id);
   const stamp = {
@@ -182,20 +272,25 @@ export async function applyVerdict(pool: Pool, target: RecheckTarget, candidates
     reason: verdict.reason,
   };
 
+  if (verdict.matched_id !== null && !matched) return 'stale';
+
   if (verdict.verdict === 'same_listing' && matched && verdict.confidence >= 0.8) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      await lockDuplicateGraph(client);
       const locked = await client.query(
-        `SELECT id, status, duplicate_of_id
+        `SELECT id, status, duplicate_of_id, name, description, amount, deadline, source_url, wire
          FROM scan_entries
          WHERE id = ANY($1::bigint[])
          ORDER BY id
          FOR UPDATE`,
         [[target.id, matched.id]],
       );
-      const currentTarget = locked.rows.find(row => Number(row.id) === target.id);
-      if (!currentTarget || currentTarget.status !== 'queued') {
+      const currentTarget = locked.rows.find((row: any) => Number(row.id) === target.id);
+      const currentMatched = locked.rows.find((row: any) => Number(row.id) === matched.id);
+      if (!targetSnapshotMatches(currentTarget, target)
+          || !candidateSnapshotMatches(currentMatched, matched)) {
         await client.query('ROLLBACK');
         return 'stale';
       }
@@ -310,27 +405,31 @@ export async function applyVerdict(pool: Pool, target: RecheckTarget, candidates
   }
 
   if (verdict.verdict === 'update' && matched) {
-    const result = await pool.query(
-      `UPDATE scan_entries SET
-         operator_notes = CONCAT_WS(E'\n', NULLIF(operator_notes, ''), $2::text),
-         metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('decided_recheck', $3::jsonb, 'related_decided', $4::int),
-         updated_at = NOW()
-       WHERE id = $1 AND status = 'queued'
-       RETURNING id`,
-      [target.id, `↻ Update of #${matched.id} "${matched.name.slice(0, 80)}" (${matched.status} ${matched.decided_date}): ${verdict.reason}`.slice(0, 400), JSON.stringify(stamp), matched.id]
-    );
-    return result.rowCount === 1 ? 'update-noted' : 'stale';
+    return applyWithFreshVerdictSnapshots(pool, target, matched, async client => {
+      const result = await client.query(
+        `UPDATE scan_entries SET
+           operator_notes = CONCAT_WS(E'\n', NULLIF(operator_notes, ''), $2::text),
+           metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('decided_recheck', $3::jsonb, 'related_decided', $4::int),
+           updated_at = NOW()
+         WHERE id = $1 AND status = 'queued'
+         RETURNING id`,
+        [target.id, `↻ Update of #${matched.id} "${matched.name.slice(0, 80)}" (${matched.status} ${matched.decided_date}): ${verdict.reason}`.slice(0, 400), JSON.stringify(stamp), matched.id]
+      );
+      return result.rowCount === 1 ? 'update-noted' : 'stale';
+    });
   }
 
-  const result = await pool.query(
-    `UPDATE scan_entries
-     SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('decided_recheck', $2::jsonb),
-         updated_at = NOW()
-     WHERE id = $1 AND status = 'queued'
-     RETURNING id`,
-    [target.id, JSON.stringify(stamp)]
-  );
-  return result.rowCount === 1 ? verdict.verdict : 'stale';
+  return applyWithFreshVerdictSnapshots(pool, target, matched, async client => {
+    const result = await client.query(
+      `UPDATE scan_entries
+       SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('decided_recheck', $2::jsonb),
+           updated_at = NOW()
+       WHERE id = $1 AND status = 'queued'
+       RETURNING id`,
+      [target.id, JSON.stringify(stamp)]
+    );
+    return result.rowCount === 1 ? verdict.verdict : 'stale';
+  });
 }
 
 export { classifySourceLink, resolveDuplicateChain, type SourceLinkClass };
@@ -404,48 +503,70 @@ async function resolveShortener(url: string): Promise<string | null> {
  * whose only source is a placeholder or tweet so the operator (and the
  * approval guard) see it. Never archives or declines — flag, don't filter.
  */
-async function sweepSourceLinks(pool: Pool): Promise<number> {
+export async function sweepSourceLinks(pool: Pool): Promise<number> {
   const batch = await pool.query(
     `SELECT id, source_url FROM scan_entries
      WHERE status = 'queued' AND (metadata -> 'source_link') IS NULL
        AND created_at > NOW() - INTERVAL '7 days'
-     ORDER BY created_at ASC LIMIT 30`
+     ORDER BY created_at ASC LIMIT 30`,
   );
 
   let flagged = 0;
   for (const row of batch.rows as Array<{ id: number; source_url: string | null }>) {
     let cls = classifySourceLink(row.source_url);
+    let currentSourceUrl = row.source_url;
 
     if (cls === 'shortener' && row.source_url) {
       const resolved = await resolveShortener(row.source_url);
       if (resolved) {
-        await pool.query(`UPDATE scan_entries SET source_url = $2 WHERE id = $1`, [row.id, resolved]);
-        console.log(`[DecidedRecheck] #${row.id}: resolved shortener → ${resolved}`);
-        cls = 'ok';
+        try {
+          await rewriteEntrySource(pool, row.id, {
+            expectedStatus: 'queued',
+            expectedSourceUrl: row.source_url,
+            newSourceUrl: resolved,
+            actor: 'decided-recheck',
+            reason: 'Resolved source shortener',
+          });
+          currentSourceUrl = resolved;
+          cls = 'ok';
+          console.log(`[DecidedRecheck] #${row.id}: resolved shortener → ${resolved}`);
+        } catch (error) {
+          if (!(error instanceof EntryMaintenanceError)) throw error;
+          console.warn(`[DecidedRecheck] #${row.id}: shortener rewrite skipped: ${error.message}`);
+        }
       }
     }
 
     const note =
       cls === 'missing' || cls === 'placeholder' ? '⚠ No real source link — a primary URL is required before this can publish' :
       cls === 'invalid' ? '⚠ Source URL is invalid — replace it with an HTTP or HTTPS primary source' :
-      cls === 'shortener' ? '⚠ Source is an unresolved shortener (resolution failed) — fix before publish' :
+      cls === 'shortener' ? '⚠ Source is an unresolved shortener or its destination is already claimed — fix before publish' :
       cls === 'tweet-only' ? '⚠ Source is a tweet link only — find the primary program page before publishing' : null;
 
-    if (note) {
-      await pool.query(
+    const result = note
+      ? await pool.query(
         `UPDATE scan_entries SET
            operator_notes = CONCAT_WS(E'\n', NULLIF(operator_notes, ''), $2::text),
-           metadata = metadata || jsonb_build_object('source_link', $3::text)
-         WHERE id = $1 AND NOT COALESCE(operator_notes, '') LIKE '%' || $2 || '%'`,
-        [row.id, note, cls]
+           metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('source_link', $3::text),
+           updated_at = NOW()
+         WHERE id = $1 AND status = 'queued'
+           AND source_url IS NOT DISTINCT FROM $4
+           AND (metadata -> 'source_link') IS NULL
+         RETURNING id`,
+        [row.id, note, cls, currentSourceUrl],
+      )
+      : await pool.query(
+        `UPDATE scan_entries SET
+           metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('source_link', $2::text),
+           updated_at = NOW()
+         WHERE id = $1 AND status = 'queued'
+           AND source_url IS NOT DISTINCT FROM $3
+           AND (metadata -> 'source_link') IS NULL
+         RETURNING id`,
+        [row.id, cls, currentSourceUrl],
       );
-      flagged++;
-    } else {
-      await pool.query(
-        `UPDATE scan_entries SET metadata = metadata || jsonb_build_object('source_link', $2::text) WHERE id = $1`,
-        [row.id, cls]
-      );
-    }
+
+    if (note && result.rowCount === 1) flagged++;
   }
   if (flagged > 0) console.log(`[DecidedRecheck] Source-link sweep: ${batch.rows.length} checked, ${flagged} flagged`);
   return flagged;
@@ -481,20 +602,13 @@ export async function runDecidedRecheck(pool: Pool): Promise<{ checked: number; 
       try {
         const candidates = await findCandidates(pool, target);
         if (candidates.length === 0) {
-          await pool.query(
-            `UPDATE scan_entries SET metadata = metadata || '{"decided_recheck": {"verdict": "no_candidates"}}'::jsonb WHERE id = $1`,
-            [target.id]
-          );
-          stats.checked++;
+          if (await stampTargetIfFresh(pool, target, 'no_candidates')) stats.checked++;
           continue;
         }
 
         const verdict = await judgeCandidates(target, candidates);
         if (!verdict) {
-          await pool.query(
-            `UPDATE scan_entries SET metadata = metadata || '{"decided_recheck": {"verdict": "skipped-error"}}'::jsonb WHERE id = $1`,
-            [target.id]
-          );
+          await stampTargetIfFresh(pool, target, 'skipped-error');
           stats.errors++;
           continue;
         }
@@ -502,16 +616,13 @@ export async function runDecidedRecheck(pool: Pool): Promise<{ checked: number; 
         const outcome = await applyVerdict(pool, target, candidates, verdict);
         if (outcome === 'duplicate') stats.duplicates++;
         else if (outcome === 'update-noted') stats.updates++;
-        else stats.distinct++;
-        stats.checked++;
+        else if (outcome !== 'stale') stats.distinct++;
+        if (outcome !== 'stale') stats.checked++;
         console.log(`[DecidedRecheck] #${target.id} "${target.name.slice(0, 50)}" → ${outcome}${verdict.matched_id ? ` (vs #${verdict.matched_id})` : ''}`);
       } catch (err) {
         stats.errors++;
         // Mark so a persistent failure doesn't retry forever
-        await pool.query(
-          `UPDATE scan_entries SET metadata = metadata || '{"decided_recheck": {"verdict": "skipped-error"}}'::jsonb WHERE id = $1`,
-          [target.id]
-        ).catch(() => {});
+        await stampTargetIfFresh(pool, target, 'skipped-error').catch(() => {});
         console.error(`[DecidedRecheck] Error on entry ${target.id}:`, err instanceof Error ? err.message : err);
       }
     }

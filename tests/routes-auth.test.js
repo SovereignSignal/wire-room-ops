@@ -16,7 +16,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { app } = require('../src/server');
-const { resolveMaintenanceActor } = require('../src/routes/scan-entries');
+const { resolveMaintenanceActor, resolveApprovalForce } = require('../src/routes/scan-entries');
+const { canForceApproval } = require('../src/services/entry-actions');
 
 const KEY = process.env.INTERNAL_API_KEY;
 let server;
@@ -65,12 +66,37 @@ test('internal key reaches guarded scan maintenance routes', async () => {
   assert.ok(duplicate.status !== 401 && duplicate.status !== 403, `duplicate link auth rejected: ${duplicate.status}`);
 });
 
-test('maintenance actor is bound to the authenticated agent principal', () => {
-  const actor = resolveMaintenanceActor({
-    agentSession: { userId: 'agent:daily-scan', isAgent: true },
-    body: { actor: 'sov' },
+test('maintenance actor is bound to authenticated middleware state', () => {
+  const agentActor = resolveMaintenanceActor({
+    agentSession: { userId: 'agent:daily-scan' },
+    authSession: { userId: 'user:sov@example.com', isAgent: false },
+    body: { actor: 'forged' },
   });
-  assert.equal(actor, 'agent:daily-scan');
+  assert.equal(agentActor, 'agent:daily-scan');
+
+  const userActor = resolveMaintenanceActor({
+    authSession: { userId: 'user:sov@example.com', isAgent: false },
+    body: { actor: 'forged' },
+  });
+  assert.equal(userActor, 'user:sov@example.com');
+  assert.equal(resolveMaintenanceActor({ body: { actor: 'forged' } }), '');
+});
+
+test('internal agents cannot force approval guard bypasses', () => {
+  assert.equal(resolveApprovalForce({
+    agentSession: { userId: 'agent:daily-scan' },
+    query: { force: 'true' },
+  }), false);
+  assert.equal(resolveApprovalForce({
+    authSession: { userId: 'user:sov@example.com', isAgent: false },
+    query: { force: 'true' },
+  }), true);
+  assert.equal(resolveApprovalForce({
+    authSession: { userId: 'user:sov@example.com', isAgent: false },
+    query: { force: 'false' },
+  }), false);
+  assert.equal(canForceApproval({ actor: 'agent:daily-scan', force: true }), false);
+  assert.equal(canForceApproval({ actor: 'user:sov@example.com', force: true }), true);
 });
 
 test('a WRONG internal key is rejected on internal-key routes', async () => {

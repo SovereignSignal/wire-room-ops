@@ -1,7 +1,7 @@
 import { Pool } from 'pg';
 import { normalizeUrl } from './intake';
 import { classifySourceLink } from './source-filter';
-import { reassignSeenUrlOwnership, resolveDuplicateChain } from './duplicate-chain';
+import { lockDuplicateGraph, reassignSeenUrlOwnership, resolveDuplicateChain } from './duplicate-chain';
 
 export class EntryMaintenanceError extends Error {
   constructor(
@@ -27,7 +27,7 @@ export interface RewriteSourceOptions extends GuardedMutationOptions {
 
 export interface LinkDuplicateOptions extends GuardedMutationOptions {
   duplicateOfId: number;
-  expectedSourceUrl?: string;
+  expectedSourceUrl: string;
 }
 
 function requireAuditFields(opts: GuardedMutationOptions): void {
@@ -46,7 +46,7 @@ function validateCanonicalSource(url: string): string {
     throw new EntryMaintenanceError('newSourceUrl must be an HTTP or HTTPS URL', 400);
   }
   const sourceClass = classifySourceLink(trimmed);
-  if (sourceClass === 'placeholder' || sourceClass === 'shortener' || sourceClass === 'missing') {
+  if (sourceClass !== 'ok' && sourceClass !== 'tweet-only') {
     throw new EntryMaintenanceError(`newSourceUrl is not canonical (${sourceClass})`, 400);
   }
   return trimmed;
@@ -73,6 +73,9 @@ export async function rewriteEntrySource(
     );
     const current = currentResult.rows[0];
     if (!current) throw new EntryMaintenanceError('Entry not found', 404);
+    if (current.status === 'duplicate') {
+      throw new EntryMaintenanceError('Duplicate entries cannot own rewritten source URLs', 409);
+    }
     if (current.status !== opts.expectedStatus || current.source_url !== opts.expectedSourceUrl) {
       throw new EntryMaintenanceError(
         `Entry changed before write (expected status=${opts.expectedStatus} and source_url=${opts.expectedSourceUrl})`,
@@ -162,6 +165,9 @@ export async function linkEntryDuplicate(
   opts: LinkDuplicateOptions,
 ): Promise<{ entryId: number; duplicateOfId: number; requestedParentId: number; dryRun: boolean }> {
   requireAuditFields(opts);
+  if (!opts.expectedSourceUrl) {
+    throw new EntryMaintenanceError('expectedSourceUrl is required', 400);
+  }
   if (!Number.isSafeInteger(opts.duplicateOfId) || opts.duplicateOfId <= 0) {
     throw new EntryMaintenanceError('duplicateOfId must be a positive integer', 400);
   }
@@ -170,15 +176,24 @@ export async function linkEntryDuplicate(
 
   try {
     await client.query('BEGIN');
-    const currentResult = await client.query(
-      `SELECT id, status, source_url
-       FROM scan_entries WHERE id = $1 FOR UPDATE`,
-      [entryId],
+    await lockDuplicateGraph(client);
+
+    // Lock both endpoints in deterministic order. Opposite requests such as
+    // A→B and B→A therefore cannot each observe the other as canonical.
+    const endpointIds = [entryId, opts.duplicateOfId].sort((a, b) => a - b);
+    const endpointResult = await client.query(
+      `SELECT id, status, source_url, duplicate_of_id
+       FROM scan_entries
+       WHERE id = ANY($1::bigint[])
+       ORDER BY id
+       FOR UPDATE`,
+      [endpointIds],
     );
-    const current = currentResult.rows[0];
+    const current = endpointResult.rows.find((row) => Number(row.id) === entryId);
+    const requestedParent = endpointResult.rows.find((row) => Number(row.id) === opts.duplicateOfId);
     if (!current) throw new EntryMaintenanceError('Entry not found', 404);
-    if (current.status !== opts.expectedStatus
-        || (opts.expectedSourceUrl !== undefined && current.source_url !== opts.expectedSourceUrl)) {
+    if (!requestedParent) throw new EntryMaintenanceError('Duplicate parent chain is invalid (missing)', 409);
+    if (current.status !== opts.expectedStatus || current.source_url !== opts.expectedSourceUrl) {
       throw new EntryMaintenanceError('Entry changed before write', 409);
     }
 
@@ -190,6 +205,22 @@ export async function linkEntryDuplicate(
       );
     }
     if (resolution.id === entryId) throw new EntryMaintenanceError('Duplicate link would create a cycle', 409);
+
+    // The terminal parent may be beyond the requested endpoint. Lock it, then
+    // resolve again so a stale chain snapshot cannot drive the mutation.
+    const terminalResult = await client.query(
+      `SELECT id, status, duplicate_of_id
+       FROM scan_entries WHERE id = $1 FOR UPDATE`,
+      [resolution.id],
+    );
+    const terminal = terminalResult.rows[0];
+    if (!terminal || terminal.status === 'duplicate' || terminal.duplicate_of_id !== null) {
+      throw new EntryMaintenanceError('Duplicate parent changed before write', 409);
+    }
+    const revalidated = await resolveDuplicateChain(client, opts.duplicateOfId);
+    if (revalidated.error || revalidated.id !== resolution.id) {
+      throw new EntryMaintenanceError('Duplicate parent changed before write', 409);
+    }
 
     if (opts.dryRun) {
       await client.query('ROLLBACK');
@@ -211,12 +242,8 @@ export async function linkEntryDuplicate(
       opts.actor,
       audit,
       opts.expectedStatus,
+      opts.expectedSourceUrl,
     ];
-    let sourceGuard = '';
-    if (opts.expectedSourceUrl !== undefined) {
-      params.push(opts.expectedSourceUrl);
-      sourceGuard = ` AND source_url = $${params.length}`;
-    }
     const updated = await client.query(
       `UPDATE scan_entries SET
          status = 'duplicate',
@@ -232,7 +259,7 @@ export async function linkEntryDuplicate(
            true
          ),
          updated_at = NOW()
-       WHERE id = $1 AND status = $6${sourceGuard}
+       WHERE id = $1 AND status = $6 AND source_url = $7
        RETURNING id`,
       params,
     );

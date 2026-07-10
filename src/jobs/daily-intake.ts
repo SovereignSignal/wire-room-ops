@@ -28,12 +28,12 @@ import {
   parseStructuredOutput,
   parseAmount,
   parseDeadline,
-  normalizeUrl,
+
   normalizeName,
   extractNameTokens,
   isUsefulUrl,
 } from '../services/intake';
-import { checkDuplicate, findRelatedOpportunity, registerSeen, annotateAlternateSource } from '../services/dedup';
+import { findRelatedOpportunity, finalizeExistingEntryDedup, annotateAlternateSource } from '../services/dedup';
 // quality-scorer.ts replaced by LLM scoring in classifier.ts
 import { seedSeenUrlsFromMessages } from '../db';
 import type { Classification } from '../services/classifier';
@@ -334,95 +334,45 @@ export async function runDailyIntake(
   progress('Running deduplication...', 30);
   let duplicatesFound = 0;
   const uniqueEntryIds: number[] = [];
-  const seenUrlsInBatch = new Set<string>(); // Within-batch URL dedup
 
   for (const idx of validIndices) {
     const item = allResults[idx];
     const entryId = insertedIds[idx];
 
-    // Within-batch dedup: catch same URL appearing multiple times in one scan
-    const normalizedBatchUrl = normalizeUrl(item.result.sourceUrl);
-    if (seenUrlsInBatch.has(normalizedBatchUrl)) {
-      await pool.query(
-        `UPDATE scan_entries SET status = 'duplicate', duplicate_reason = $1 WHERE id = $2`,
-        ['Duplicate URL within same batch', entryId]
-      );
+    const dedupOutcome = await finalizeExistingEntryDedup(pool, {
+      id: entryId,
+      sourceUrl: item.result.sourceUrl,
+      name: item.result.name,
+      wire: item.wire,
+      scanDate: item.scanDate,
+      expectedStatus: 'raw',
+    }, config.dedupeWindow);
+
+    if (dedupOutcome.outcome === 'duplicate' || dedupOutcome.outcome === 'seed-conflict') {
       duplicatesFound++;
       continue;
     }
+    if (dedupOutcome.outcome === 'stale') {
+      console.log(`[DailyIntake] Entry ${entryId} changed during dedup; preserving operator state`);
+      continue;
+    }
 
-    const dedupResult = await checkDuplicate(
+    // The transaction above already set status=deduped. A soft related-source
+    // annotation may enrich that state, but its compare-and-set cannot revive
+    // a row changed by an operator while this lookup was running.
+    const relatedResult = await findRelatedOpportunity(
       pool,
       {
         sourceUrl: item.result.sourceUrl,
         name: item.result.name,
         wire: item.wire,
-        // Entry is already inserted as raw — exclude it or the name layer
-        // matches the entry against itself.
-        excludeEntryId: entryId,
       },
       config.dedupeWindow
     );
-
-    if (dedupResult.isDuplicate) {
-      // Mark as duplicate
-      await pool.query(
-        `UPDATE scan_entries
-         SET status = 'duplicate',
-             duplicate_of_id = $1,
-             duplicate_reason = $2
-         WHERE id = $3`,
-        [dedupResult.matchedEntryId, dedupResult.reason, entryId]
-      );
-      duplicatesFound++;
-    } else {
-      // Claim the URL FIRST. registerSeen's unique index is the atomic guard:
-      // when two identical submissions race past checkDuplicate concurrently,
-      // only one wins the claim — the loser is marked duplicate here instead
-      // of both ending up queued.
-      const claim = await registerSeen(pool, {
-        id: entryId,
-        sourceUrl: item.result.sourceUrl,
-        name: item.result.name,
-        wire: item.wire,
-        scanDate: item.scanDate,
-      });
-
-      if (claim.urlConflict) {
-        await pool.query(
-          `UPDATE scan_entries
-           SET status = 'duplicate',
-               duplicate_of_id = $1,
-               duplicate_reason = $2
-           WHERE id = $3`,
-          [claim.conflictEntryId, 'URL claimed by concurrent submission', entryId]
-        );
-        duplicatesFound++;
-        continue;
-      }
-
-      // Mark as deduped (passed), then annotate if it looks like an alternate source
-      const relatedResult = await findRelatedOpportunity(
-        pool,
-        {
-          sourceUrl: item.result.sourceUrl,
-          name: item.result.name,
-          wire: item.wire,
-        },
-        config.dedupeWindow
-      );
-
-      if (relatedResult.isRelated) {
-        await annotateAlternateSource(pool, entryId, relatedResult);
-      } else {
-        await pool.query(
-          `UPDATE scan_entries SET status = 'deduped' WHERE id = $1`,
-          [entryId]
-        );
-      }
-      uniqueEntryIds.push(entryId);
-      seenUrlsInBatch.add(normalizedBatchUrl);
+    if (relatedResult.isRelated) {
+      await annotateAlternateSource(pool, entryId, item.result.sourceUrl, relatedResult);
     }
+    uniqueEntryIds.push(entryId);
 
     // Progress update every 10 entries
     if (duplicatesFound % 10 === 0 && duplicatesFound > 0) {
@@ -452,10 +402,11 @@ export async function runDailyIntake(
               sp.intent AS prompt_intent
        FROM scan_entries se
        LEFT JOIN scan_prompts sp ON se.prompt_id = sp.id
-       WHERE se.id = $1`,
+       WHERE se.id = $1 AND se.status = 'deduped'`,
       [entryId]
     );
     const entry = entryRes.rows[0];
+    if (!entry) continue;
 
     // Gate 2: LLM classification + quality scoring (single call)
     let qualityScore = 0;
@@ -484,14 +435,22 @@ export async function runDailyIntake(
         ...freshnessDecision.metadata,
       };
 
-      await pool.query(
+      const classified = await pool.query(
         `UPDATE scan_entries
          SET quality_score = $1, quality_breakdown = $2, status = $8,
              classification = $3, classification_reason = $4,
              metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
              tags = $6,
              wire = COALESCE($9, wire)
-         WHERE id = $7`,
+         WHERE id = $7
+           AND status = 'deduped'
+           AND name IS NOT DISTINCT FROM $10
+           AND description IS NOT DISTINCT FROM $11
+           AND source_url IS NOT DISTINCT FROM $12
+           AND wire IS NOT DISTINCT FROM $13
+           AND deadline_parsed IS NOT DISTINCT FROM $14
+           AND source_published_at IS NOT DISTINCT FROM $15
+         RETURNING id`,
         [
           qualityScore,
           JSON.stringify({ scoreReason: classResult.scoreReason, in_scope: classResult.inScope, detected_wire: classResult.detectedWire }),
@@ -502,16 +461,30 @@ export async function runDailyIntake(
           entryId,
           classStatus,
           correctedWire,
+          entry.name,
+          entry.description,
+          entry.source_url,
+          entry.wire,
+          entry.deadline_parsed,
+          entry.source_published_at,
         ]
       );
+      if (classified.rowCount !== 1) continue;
     } catch (classError) {
       console.error(`[DailyIntake] Classification failed for entry ${entryId}:`, classError);
-      classificationFailures.push(entryId);
-      // Fallback: queue with score 0
-      await pool.query(
-        `UPDATE scan_entries SET quality_score = 0, status = 'queued' WHERE id = $1`,
-        [entryId]
+      // Fallback: queue with score 0 only if the semantic snapshot is current.
+      const fallback = await pool.query(
+        `UPDATE scan_entries SET quality_score = 0, status = 'queued'
+         WHERE id = $1
+           AND status = 'deduped'
+           AND name IS NOT DISTINCT FROM $2
+           AND description IS NOT DISTINCT FROM $3
+           AND source_url IS NOT DISTINCT FROM $4
+           AND wire IS NOT DISTINCT FROM $5
+         RETURNING id`,
+        [entryId, entry.name, entry.description, entry.source_url, entry.wire]
       );
+      if (fallback.rowCount === 1) classificationFailures.push(entryId);
     }
 
     totalScore += qualityScore;
@@ -532,7 +505,7 @@ export async function runDailyIntake(
                   se.deadline_parsed, se.wire, sp.intent AS prompt_intent
            FROM scan_entries se
            LEFT JOIN scan_prompts sp ON se.prompt_id = sp.id
-           WHERE se.id = $1`,
+           WHERE se.id = $1 AND se.status = 'queued'`,
           [entryId]
         );
         const entry = entryRes.rows[0];
@@ -558,13 +531,21 @@ export async function runDailyIntake(
           ...freshnessDecision.metadata,
         };
 
-        await pool.query(
+        const retried = await pool.query(
           `UPDATE scan_entries
            SET quality_score = $1, quality_breakdown = $2, status = $8,
                classification = $3, classification_reason = $4,
                metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
                tags = $6
-           WHERE id = $7`,
+           WHERE id = $7
+             AND status = 'queued'
+             AND name IS NOT DISTINCT FROM $9
+             AND description IS NOT DISTINCT FROM $10
+             AND source_url IS NOT DISTINCT FROM $11
+             AND wire IS NOT DISTINCT FROM $12
+             AND deadline_parsed IS NOT DISTINCT FROM $13
+             AND source_published_at IS NOT DISTINCT FROM $14
+           RETURNING id`,
           [
             classResult.qualityScore,
             JSON.stringify({ scoreReason: classResult.scoreReason }),
@@ -574,8 +555,15 @@ export async function runDailyIntake(
             classResult.tags,
             entryId,
             retryStatus,
+            entry.name,
+            entry.description,
+            entry.source_url,
+            entry.wire,
+            entry.deadline_parsed,
+            entry.source_published_at,
           ]
         );
+        if (retried.rowCount !== 1) continue;
 
         // Update running totals
         totalScore += classResult.qualityScore;

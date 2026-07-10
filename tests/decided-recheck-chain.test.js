@@ -49,8 +49,28 @@ function fakePool(
       const candidateStatus = options.currentCandidateStatus
         || (chainRows[0]?.id === 8572 && chainRows[0]?.depth === 0 ? chainRows[0].status : 'duplicate');
       const rows = options.lockedRows || [
-        { id: TARGET.id, status: options.targetStatus || 'queued', duplicate_of_id: null },
-        { id: 8572, status: candidateStatus, duplicate_of_id: candidateStatus === 'duplicate' ? 8416 : null },
+        {
+          id: TARGET.id,
+          status: options.targetStatus || 'queued',
+          duplicate_of_id: null,
+          name: TARGET.name,
+          description: TARGET.description,
+          amount: null,
+          deadline: TARGET.deadline,
+          source_url: TARGET.source_url,
+          wire: TARGET.wire,
+        },
+        {
+          id: 8572,
+          status: candidateStatus,
+          duplicate_of_id: candidateStatus === 'duplicate' ? 8416 : null,
+          name: 'Anthropic Fellows Program',
+          description: null,
+          amount: null,
+          deadline: null,
+          source_url: 'https://alignment.anthropic.com/x',
+          wire: 'ai',
+        },
       ];
       return { rows, rowCount: rows.length };
     }
@@ -96,17 +116,16 @@ test('same_listing resolves a multi-hop duplicate chain to the terminal row atom
   assert.ok(pool.calls.some(call => call.sql === 'COMMIT'));
 });
 
-test('candidate state is re-read after verdict instead of trusting the stale snapshot', async () => {
+test('candidate state changes after verdict are rejected as stale', async () => {
   const pool = fakePool(
     [{ id: 4200, status: 'approved', duplicate_of_id: null, depth: 1, cycle: false }],
     { currentCandidateStatus: 'duplicate' },
   );
   const out = await applyVerdict(pool, TARGET, [candidate({ status: 'approved' })], verdict());
 
-  assert.equal(out, 'duplicate');
-  assert.ok(pool.calls.some(call => /WITH RECURSIVE duplicate_chain/.test(call.sql)));
-  const update = pool.calls.find(call => /SET status = 'duplicate'/.test(call.sql));
-  assert.equal(update.params[1], 4200);
+  assert.equal(out, 'stale');
+  assert.equal(pool.calls.some(call => /WITH RECURSIVE duplicate_chain/.test(call.sql)), false);
+  assert.ok(pool.calls.some(call => call.sql === 'ROLLBACK'));
 });
 
 test('self-referential resolution blocks automatic demotion', async () => {
@@ -153,7 +172,7 @@ test('low-confidence same_listing only stamps metadata', async () => {
   const out = await applyVerdict(pool, TARGET, [candidate()], verdict({ confidence: 0.5 }));
 
   assert.equal(out, 'same_listing');
-  assert.equal(pool.calls.some(call => call.sql === 'BEGIN'), false);
+  assert.equal(pool.calls.some(call => call.sql === 'BEGIN'), true);
   assert.equal(pool.calls.some(call => /SET status = 'duplicate'/.test(call.sql)), false);
 });
 

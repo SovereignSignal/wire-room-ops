@@ -6,7 +6,7 @@ import { Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import jwksClient from 'jwks-rsa';
 import { config } from '../config';
-import { validateSession } from '../services/auth';
+import { getSessionEmail } from '../services/auth';
 
 const privyJwks = jwksClient({
   jwksUri: `https://auth.privy.io/api/v1/apps/${config.privy.appId}/jwks.json`,
@@ -36,11 +36,16 @@ export const isDevMode = process.env.DEV_MODE === 'true';
 
 // Auth middleware - checks session from HttpOnly cookie only
 export async function requireAuth(req: Request, res: Response, next: Function): Promise<void> {
-  if (isDevMode) return next();
+  if (isDevMode) {
+    (req as any).authSession = { userId: 'user:dev', isAgent: false };
+    return next();
+  }
   const session = req.cookies?.session as string;
-  if (!session || !(await validateSession(session))) {
+  const email = session ? await getSessionEmail(session) : null;
+  if (!email) {
     res.status(401).json({ error: 'Unauthorized' });
     return;
   }
+  (req as any).authSession = { userId: `user:${email}`, isAgent: false };
   next();
 }

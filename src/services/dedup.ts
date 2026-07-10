@@ -13,6 +13,7 @@
 import type { Pool } from 'pg';
 import type { DedupResult, RelatedOpportunityResult, ScanEntry } from '../types/intake';
 import { normalizeUrl, normalizeName, extractNameTokens } from './intake';
+import { demoteEntryToDuplicateInTransaction, lockDuplicateGraph } from './duplicate-chain';
 
 /**
  * "Semi-generic" tokens: these pass the main stopword filter in intake.ts
@@ -38,6 +39,18 @@ const SEMI_GENERIC_TOKENS = new Set([
   // Misc common qualifiers
   'core', 'advanced', 'early', 'stage', 'track',
 ]);
+
+function isSocialAggregateUrl(sourceUrl: string): boolean {
+  try {
+    const host = new URL(sourceUrl).hostname
+      .toLowerCase()
+      .replace(/^www\./, '')
+      .replace(/\.+$/, '');
+    return host === 'x.com' || host === 'twitter.com';
+  } catch {
+    return false;
+  }
+}
 
 // ============================================================
 // Main Dedup Check
@@ -157,7 +170,7 @@ async function checkUrlMatch(
     // Name similarity escape: ONLY for social media aggregate URLs (x.com, twitter.com).
     // One tweet can list multiple distinct grants — different names from same URL is valid.
     // For direct source pages (nlnet.nl, sovereign.tech, etc.), same URL = same thing, period.
-    const isSocialUrl = /^https?:\/\/(x\.com|twitter\.com)\//i.test(sourceUrl);
+    const isSocialUrl = isSocialAggregateUrl(sourceUrl);
     if (isSocialUrl && entryName && matchedName && !areNamesSimilar(entryName, matchedName)) {
       const countResult = await pool.query(
         `SELECT COUNT(*)::int AS cnt FROM scan_entries
@@ -502,71 +515,251 @@ function relationOverlapScore(nameA: string, nameB: string): number {
  * Call this after an entry passes dedup and gets inserted.
  */
 export interface RegisterSeenResult {
-  /** True when another entry already owns this URL — the caller lost a
-   *  concurrent race and should mark its entry as a duplicate. */
+  /** True when another entry or a seed-only history row already owns this URL. */
   urlConflict: boolean;
-  /** The entry id that owns the URL when urlConflict is true. */
+  /** The owning entry id, or null when the conflict is a seed-only history row. */
   conflictEntryId: number | null;
 }
 
-export async function registerSeen(
-  pool: Pool,
-  entry: {
-    id: number;
-    sourceUrl: string;
-    name: string;
-    wire: string;
-    scanDate: string;
-  }
+interface SeenEntry {
+  id: number;
+  sourceUrl: string;
+  name: string;
+  wire: string;
+  scanDate: string;
+}
+
+type Queryable = Pick<Pool, 'query'>;
+
+/** Register URL and name ownership inside an existing transaction. */
+export async function registerSeenInTransaction(
+  db: Queryable,
+  entry: SeenEntry,
 ): Promise<RegisterSeenResult> {
   const normalized_url = normalizeUrl(entry.sourceUrl);
   const normalized_name = normalizeName(entry.name);
   const tokens = extractNameTokens(entry.name);
 
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
+  // ON CONFLICT DO NOTHING + RETURNING makes the exact-URL claim atomic.
+  const urlRes = await db.query(
+    `INSERT INTO seen_urls (url, normalized_url, first_seen_entry_id, first_seen_date, wire)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (normalized_url, wire) DO NOTHING
+     RETURNING id`,
+    [entry.sourceUrl, normalized_url, entry.id, entry.scanDate, entry.wire],
+  );
 
-    // Register URL. ON CONFLICT DO NOTHING + RETURNING lets us detect when a
-    // concurrent identical submission already claimed this URL — previously
-    // both entries sailed through dedup and ended up queued side by side.
-    const urlRes = await client.query(
-      `INSERT INTO seen_urls (url, normalized_url, first_seen_entry_id, first_seen_date, wire)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (normalized_url, wire) DO NOTHING
-       RETURNING id`,
-      [entry.sourceUrl, normalized_url, entry.id, entry.scanDate, entry.wire]
+  let urlConflict = false;
+  let conflictEntryId: number | null = null;
+  if (urlRes.rowCount === 0) {
+    const existing = await db.query(
+      `SELECT su.first_seen_entry_id, se.name
+       FROM seen_urls su
+       LEFT JOIN scan_entries se ON se.id = su.first_seen_entry_id
+       WHERE su.normalized_url = $1 AND su.wire = $2
+       FOR UPDATE OF su`,
+      [normalized_url, entry.wire],
     );
+    if (existing.rows.length === 0) {
+      throw new Error('Exact URL claim conflicted but the registry row was not found');
+    }
+    const ownerId = existing.rows[0].first_seen_entry_id as number | null;
+    // Re-registering the same entry (e.g. a reprocessed raw row) is idempotent.
+    // A null owner is a seed-only historical URL and must remain a conflict.
+    if (ownerId !== entry.id) {
+      const ownerName = existing.rows[0].name as string | null;
+      let allowSharedSocialSource = false;
+      if (ownerId !== null
+          && ownerName
+          && isSocialAggregateUrl(entry.sourceUrl)
+          && !areNamesSimilar(entry.name, ownerName)) {
+        // The seen_urls row lock serializes concurrent claimants for this
+        // normalized URL. Count active rows after acquiring it so at most two
+        // distinct opportunities can share one aggregate social post.
+        const activeSocial = await db.query(
+          `SELECT id, source_url
+           FROM scan_entries
+           WHERE wire = $1
+             AND id != $2
+             AND source_url IS NOT NULL
+             AND source_url ~* '^https?://(www\\.)?(x|twitter)\\.com\\.?/'
+             AND status NOT IN ('duplicate', 'archived')`,
+          [entry.wire, entry.id],
+        );
+        const existingCount = activeSocial.rows.filter(
+          row => normalizeUrl(String(row.source_url)) === normalized_url,
+        ).length;
+        allowSharedSocialSource = existingCount < 2;
+      }
 
-    let urlConflict = false;
-    let conflictEntryId: number | null = null;
-    if (urlRes.rowCount === 0) {
-      const existing = await client.query(
-        `SELECT first_seen_entry_id FROM seen_urls WHERE normalized_url = $1 AND wire = $2`,
-        [normalized_url, entry.wire]
-      );
-      const ownerId = existing.rows[0]?.first_seen_entry_id ?? null;
-      // Re-registering the same entry (e.g. a reprocessed raw row) is not a conflict
-      if (ownerId !== null && ownerId !== entry.id) {
+      if (!allowSharedSocialSource) {
         urlConflict = true;
         conflictEntryId = ownerId;
       }
     }
+  }
 
-    if (!urlConflict) {
-      // Register name (idempotent — retries won't create duplicates)
-      await client.query(
-        `INSERT INTO seen_names (name_original, name_normalized, name_tokens, entry_id, wire, first_seen)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (entry_id) DO NOTHING`,
-        [entry.name, normalized_name, tokens, entry.id, entry.wire, entry.scanDate]
-      );
+  if (!urlConflict) {
+    await db.query(
+      `INSERT INTO seen_names (name_original, name_normalized, name_tokens, entry_id, wire, first_seen)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (entry_id) DO NOTHING`,
+      [entry.name, normalized_name, tokens, entry.id, entry.wire, entry.scanDate],
+    );
+  }
+
+  return { urlConflict, conflictEntryId };
+}
+
+export async function registerSeen(
+  pool: Pool,
+  entry: SeenEntry,
+): Promise<RegisterSeenResult> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await registerSeenInTransaction(client, entry);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export interface ExistingEntryDedupInput {
+  id: number;
+  sourceUrl: string;
+  name: string;
+  wire: string;
+  scanDate: string | Date;
+  expectedStatus: string;
+}
+
+export type ExistingEntryDedupOutcome = 'unique' | 'duplicate' | 'seed-conflict' | 'stale';
+
+/**
+ * Recheck, URL-claim, and finalize an already-visible entry in one transaction.
+ * This is the shared path for daily intake and the raw-entry worker.
+ */
+export async function finalizeExistingEntryDedup(
+  pool: Pool,
+  entry: ExistingEntryDedupInput,
+  lookbackDays: number,
+): Promise<{ outcome: ExistingEntryDedupOutcome; canonicalParentId: number | null }> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // Duplicate graph before URL registry is the global mutation lock order.
+    await lockDuplicateGraph(client);
+    const currentResult = await client.query(
+      `SELECT id, status, source_url, name, wire
+       FROM scan_entries
+       WHERE id = $1
+       FOR UPDATE`,
+      [entry.id],
+    );
+    const current = currentResult.rows[0];
+    if (!current
+        || current.status !== entry.expectedStatus
+        || current.source_url !== entry.sourceUrl
+        || current.name !== entry.name
+        || current.wire !== entry.wire) {
+      await client.query('ROLLBACK');
+      return { outcome: 'stale', canonicalParentId: null };
+    }
+
+    // Repeat the semantic check after locking. Results obtained before this
+    // transaction are only hints and cannot authorize a state transition.
+    const dedupResult = await checkDuplicate(
+      client as unknown as Pool,
+      {
+        sourceUrl: entry.sourceUrl,
+        name: entry.name,
+        wire: entry.wire,
+        excludeEntryId: entry.id,
+      },
+      lookbackDays,
+    );
+
+    if (dedupResult.isDuplicate) {
+      if (!Number.isSafeInteger(dedupResult.matchedEntryId)) {
+        throw new Error('Duplicate result did not identify a parent entry');
+      }
+      const linked = await demoteEntryToDuplicateInTransaction(client, {
+        targetId: entry.id,
+        requestedParentId: dedupResult.matchedEntryId!,
+        expectedStatus: entry.expectedStatus,
+        expectedSourceUrl: entry.sourceUrl,
+        reason: dedupResult.reason || 'Duplicate detected during intake',
+        actor: 'dedup-worker',
+      });
+      if (linked.outcome !== 'linked') {
+        await client.query('ROLLBACK');
+        return { outcome: 'stale', canonicalParentId: null };
+      }
+      await client.query('COMMIT');
+      return { outcome: 'duplicate', canonicalParentId: linked.canonicalParentId };
+    }
+
+    const scanDate = entry.scanDate instanceof Date
+      ? entry.scanDate.toISOString().split('T')[0]
+      : String(entry.scanDate);
+    const claim = await registerSeenInTransaction(client, {
+      id: entry.id,
+      sourceUrl: entry.sourceUrl,
+      name: entry.name,
+      wire: entry.wire,
+      scanDate,
+    });
+
+    if (claim.urlConflict && claim.conflictEntryId !== null) {
+      const linked = await demoteEntryToDuplicateInTransaction(client, {
+        targetId: entry.id,
+        requestedParentId: claim.conflictEntryId,
+        expectedStatus: entry.expectedStatus,
+        expectedSourceUrl: entry.sourceUrl,
+        reason: 'URL claimed by concurrent submission',
+        actor: 'dedup-worker',
+      });
+      if (linked.outcome !== 'linked') {
+        await client.query('ROLLBACK');
+        return { outcome: 'stale', canonicalParentId: null };
+      }
+      await client.query('COMMIT');
+      return { outcome: 'duplicate', canonicalParentId: linked.canonicalParentId };
+    }
+
+    const reason = claim.urlConflict ? 'URL already exists in seed history' : null;
+    const finalized = await client.query(
+      `UPDATE scan_entries
+       SET status = 'deduped',
+           duplicate_of_id = NULL,
+           duplicate_reason = $2,
+           distributable = CASE WHEN $2::text IS NULL THEN distributable ELSE false END,
+           updated_at = NOW()
+       WHERE id = $1
+         AND status = $3
+         AND source_url = $4
+         AND name = $5
+         AND wire = $6
+       RETURNING id`,
+      [entry.id, reason, entry.expectedStatus, entry.sourceUrl, entry.name, entry.wire],
+    );
+    if (finalized.rowCount !== 1) {
+      await client.query('ROLLBACK');
+      return { outcome: 'stale', canonicalParentId: null };
     }
 
     await client.query('COMMIT');
-    return { urlConflict, conflictEntryId };
+    return {
+      outcome: claim.urlConflict ? 'seed-conflict' : 'unique',
+      canonicalParentId: null,
+    };
   } catch (error) {
-    await client.query('ROLLBACK');
+    await client.query('ROLLBACK').catch(() => undefined);
     throw error;
   } finally {
     client.release();
@@ -582,14 +775,17 @@ export async function registerSeen(
 export async function annotateAlternateSource(
   pool: Pool,
   entryId: number,
+  expectedSourceUrl: string,
   related: RelatedOpportunityResult
-): Promise<void> {
-  await pool.query(
+): Promise<boolean> {
+  const result = await pool.query(
     `UPDATE scan_entries
-     SET status = 'deduped',
-         metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb,
+     SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb,
          operator_notes = CONCAT_WS(E'\n', NULLIF(operator_notes, ''), $2::text)
-     WHERE id = $3`,
+     WHERE id = $3
+       AND status = 'deduped'
+       AND source_url = $4
+     RETURNING id`,
     [
       JSON.stringify({
         related_source: {
@@ -604,8 +800,10 @@ export async function annotateAlternateSource(
       }),
       `Possible alternate source: ${related.matchedEntryName} (#${related.matchedEntryId})`,
       entryId,
+      expectedSourceUrl,
     ]
   );
+  return result.rowCount === 1;
 }
 
 // ============================================================
