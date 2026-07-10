@@ -105,12 +105,13 @@ export async function checkDuplicate(
       const match = await resolveProgram(pool, { name: entry.name, sourceUrl: entry.sourceUrl, wire: entry.wire });
       if (match) {
         const round = assessRound(match.program, { name: entry.name });
+        const history = historyLine(match.program);
         programResolution = {
           programId: match.program.id,
           confidence: match.confidence,
           verdict: round.verdict,
           roundLabel: round.roundLabel,
-          historyLine: historyLine(match.program),
+          historyLine: history,
         };
         if (round.verdict === 'same_round' && match.confidence >= 0.85
             && match.program.entry_count > 0 && match.program.canonical_entry_id) {
@@ -120,7 +121,7 @@ export async function checkDuplicate(
             matchedEntryId: match.program.canonical_entry_id,
             matchedEntryName: match.program.canonical_name,
             confidence: match.confidence,
-            reason: `Program "${match.program.canonical_name}" — ${historyLine(match.program)}`,
+            reason: `Program "${match.program.canonical_name}" — ${history}`,
             programResolution,
           };
         }

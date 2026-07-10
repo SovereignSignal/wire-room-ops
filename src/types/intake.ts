@@ -3,6 +3,8 @@
  * These extend the existing wire-room-ops type system.
  */
 
+import type { ProgramResolutionStamp } from '../services/program-identity';
+
 // Wire values are dynamic (driven by feeds table), so we use string
 
 // Which prompt variant produced this result
@@ -127,7 +129,7 @@ export interface DedupResult {
   confidence: number;               // 0-1 confidence in the match
   reason: string;
   /** Program-identity resolution (Layer 1.75) — present when the gate ran and matched, even on non-duplicate outcomes. */
-  programResolution?: any | null;
+  programResolution?: ProgramResolutionStamp | null;
 }
 
 /**
