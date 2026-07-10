@@ -436,8 +436,26 @@ test('createProgram upserts by normalized_key and returns id', async () => {
   const pool = programPool([{ id: 42 }]);
   const id = await createProgram(pool, { name: 'Brand New Grants Round 2', canonicalName: 'Brand New Grants', orgName: 'BrandCo', wire: 'oss', sourceUrl: 'https://brand.co/grants', roundLabel: 'round 2' });
   assert.equal(id, 42);
-  assert.match(pool.calls[0].sql, /INSERT INTO programs/);
-  assert.match(pool.calls[0].sql, /ON CONFLICT \(normalized_key\)/);
+  const insert = pool.calls.find(c => /INSERT INTO programs/.test(c.sql));
+  assert.ok(insert);
+  assert.match(insert.sql, /ON CONFLICT \(normalized_key\)/);
+});
+
+test('createProgram disambiguates the key when the same key belongs to a different org', async () => {
+  // First call answers the org lookup with an existing DIFFERENT-org holder; second answers the insert.
+  const calls = [];
+  const pool = {
+    calls,
+    async query(sql, params) {
+      calls.push({ sql, params });
+      if (/SELECT org_name FROM programs/.test(sql)) return { rows: [{ org_name: 'Totally Other Org' }] };
+      return { rows: [{ id: 77 }] };
+    },
+  };
+  const id = await createProgram(pool, { name: 'Fellowship Grants', orgName: 'BrandCo' });
+  assert.equal(id, 77);
+  const insert = calls.find(c => /INSERT INTO programs/.test(c.sql));
+  assert.match(insert.params[1], /--brandco$/, 'key must carry the org disambiguator');
 });
 
 test('canonicalizeBatch parses the LLM JSON and survives junk', async () => {
@@ -480,7 +498,19 @@ export async function createProgram(
   data: { name: string; canonicalName?: string | null; orgName?: string | null; wire?: string | null; sourceUrl?: string | null; roundLabel?: string | null },
 ): Promise<number> {
   const canonical = (data.canonicalName || data.name).trim();
-  const key = normalizeProgramKey(canonical) || normalizeProgramKey(data.name);
+  let key = normalizeProgramKey(canonical) || normalizeProgramKey(data.name);
+  // Collision guard (Task-1 review finding): noise-stripping can collapse two
+  // genuinely different programs to one key ("Round Table Grants" class).
+  // When the existing key-holder belongs to a DIFFERENT org, disambiguate the
+  // key with the org instead of merging identities.
+  const orgNorm = data.orgName ? norm(data.orgName) : null;
+  if (orgNorm) {
+    const existing = await pool.query(`SELECT org_name FROM programs WHERE normalized_key = $1`, [key]) as { rows: Array<{ org_name: string | null }> };
+    const other = existing.rows[0]?.org_name ? norm(existing.rows[0].org_name) : null;
+    if (other && other !== orgNorm && !other.includes(orgNorm) && !orgNorm.includes(other)) {
+      key = `${key}--${orgNorm}`;
+    }
+  }
   const dom = domainOf(data.sourceUrl);
   const { rows } = await pool.query(
     `INSERT INTO programs (canonical_name, normalized_key, org_name, wire, aliases, canonical_url, url_domains, latest_round_label, entry_count, first_seen, last_seen)
@@ -606,7 +636,9 @@ export async function finalizeProgramForEntry(
 }
 ```
 
-- [ ] **Step 4: Verify** (focused + `npm test` + bare typecheck). **Step 5: Commit** — `git commit -m "feat(programs): creation, sightings, LLM canonicalization, finalize hook"`.
+- [ ] **Step 4: Cleanup (Task-1 review finding):** in `NOISE_PATTERNS`, delete the vestigial `/\bfund\s*(\d+)\b/gi` entry and its comment — the standalone `s = s.replace(/\bfund\s*\d+\b/gi, 'fund')` pre-strip already handles it, so the loop entry can never match.
+
+- [ ] **Step 5: Verify** (focused + `npm test` + bare typecheck). **Step 6: Commit** — `git commit -m "feat(programs): creation, sightings, LLM canonicalization, finalize hook"`.
 
 ---
 
