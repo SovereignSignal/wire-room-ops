@@ -190,3 +190,37 @@ test('recordSighting never writes an epoch sentinel into latest_deadline', async
   assert.ok(!sql.includes("'1970-01-01'"), 'no epoch sentinel — NULLs must stay NULL');
   assert.match(sql, /latest_deadline = CASE/);
 });
+
+// ── Task 8: Link introspection ────────────────────────────────────────
+
+const { introspectEntryUrl, maybeScrapeAggregator } = require('../src/services/program-identity');
+
+test('introspectEntryUrl unwraps tweets and maps ATS hosts to org hints', () => {
+  const tweet = introspectEntryUrl({
+    sourceUrl: 'https://x.com/someuser/status/12345',
+    description: 'Apply now: https://alignment.anthropic.com/2025/fellows/ — great program',
+  });
+  assert.equal(tweet.canonicalUrl, 'https://alignment.anthropic.com/2025/fellows/');
+  const ats = introspectEntryUrl({ sourceUrl: 'https://job-boards.greenhouse.io/anthropic/jobs/5023394008' });
+  assert.equal(ats.orgHint, 'anthropic');
+  assert.equal(ats.canonicalUrl, null);
+  const plain = introspectEntryUrl({ sourceUrl: 'https://nlnet.nl/news/2026/call.html' });
+  assert.equal(plain.canonicalUrl, 'https://nlnet.nl/news/2026/call.html');
+  assert.equal(plain.orgHint, null);
+});
+
+test('maybeScrapeAggregator: cap enforced, non-aggregators skipped, failures null', async () => {
+  const store = new Map();
+  const deps = {
+    async getAppState(k) { return store.has(k) ? store.get(k) : null; },
+    async setAppState(k, v) { store.set(k, v); },
+    async scrape() { return { success: true, content: 'Apply at https://real-funder.org/grants today' }; },
+  };
+  assert.equal(await maybeScrapeAggregator({ sourceUrl: 'https://nlnet.nl/x' }, deps), null, 'non-aggregator skipped');
+  const hit = await maybeScrapeAggregator({ sourceUrl: 'https://opportunitiesforyouth.org/2026/05/some-post' }, deps);
+  assert.equal(hit, 'https://real-funder.org/grants');
+  const key = [...store.keys()].find(k => k.startsWith('program-gate:scrape-count:'));
+  assert.equal(store.get(key), 1);
+  store.set(key, 10);
+  assert.equal(await maybeScrapeAggregator({ sourceUrl: 'https://opportunitiesforyouth.org/2026/05/other' }, deps), null, 'cap enforced');
+});

@@ -10,10 +10,11 @@
  * org_profiles living in org-extractor.ts).
  */
 import { config } from '../config';
-import { getPool } from '../db';
+import { getPool, getAppState, setAppState } from '../db';
 import { logApiUsage } from './api-usage';
 import { extractOrgFromName } from './org-extractor';
 import { normalizeUrl } from '../utils/url';
+import { scrapeUrl } from './scraper';
 
 // ── Key normalization ───────────────────────────────────────────────────
 // The primary identity key: lowercase alnum with round/cohort/date noise
@@ -101,6 +102,52 @@ const domainOf = (url: string | null | undefined): string | null => {
   const m = (url || '').match(/^https?:\/\/(?:www\.)?([^/]+)/i);
   return m ? m[1].toLowerCase() : null;
 };
+
+// ── Link introspection ──────────────────────────────────────────────────
+const ATS_PATTERNS: Array<{ re: RegExp }> = [
+  { re: /^https?:\/\/job-boards\.greenhouse\.io\/([^/]+)/i },
+  { re: /^https?:\/\/jobs\.ashbyhq\.com\/([^/]+)/i },
+  { re: /^https?:\/\/jobs\.lever\.co\/([^/]+)/i },
+];
+
+export function introspectEntryUrl(entry: { sourceUrl?: string | null; description?: string | null }): { canonicalUrl: string | null; orgHint: string | null } {
+  const src = entry.sourceUrl || null;
+  if (src && /^https?:\/\/(?:www\.)?(x|twitter)\.com\//i.test(src)) {
+    const m = (entry.description || '').match(/https?:\/\/(?!(?:www\.)?(?:x|twitter)\.com)[^\s)\]"']+/i);
+    if (m) return { canonicalUrl: m[0].replace(/[.,;:]+$/, ''), orgHint: null };
+    return { canonicalUrl: src, orgHint: null };
+  }
+  for (const { re } of ATS_PATTERNS) {
+    const m = src ? src.match(re) : null;
+    if (m) return { canonicalUrl: null, orgHint: m[1].replace(/-/g, ' ').toLowerCase() };
+  }
+  return { canonicalUrl: src, orgHint: null };
+}
+
+const DEFAULT_AGGREGATORS = ['opportunitiesforyouth.org', 'opportunities247.org'];
+const SCRAPE_CAP_PER_DAY = 10;
+
+export async function maybeScrapeAggregator(
+  entry: { sourceUrl?: string | null },
+  deps: { getAppState: typeof getAppState; setAppState: typeof setAppState; scrape: typeof scrapeUrl } = { getAppState, setAppState, scrape: scrapeUrl },
+): Promise<string | null> {
+  try {
+    const dom = domainOf(entry.sourceUrl);
+    if (!dom) return null;
+    const aggregators = new Set([...DEFAULT_AGGREGATORS, ...(process.env.PROGRAM_AGGREGATOR_DOMAINS || '').split(',').map(s => s.trim()).filter(Boolean)]);
+    if (!aggregators.has(dom)) return null;
+    const key = `program-gate:scrape-count:${new Date().toISOString().slice(0, 10)}`;
+    const count = (await deps.getAppState<number>(key)) ?? 0;
+    if (count >= SCRAPE_CAP_PER_DAY) return null;
+    await deps.setAppState(key, count + 1);
+    const result = await deps.scrape(entry.sourceUrl as string);
+    if (!result.success || !result.content) return null;
+    const m = result.content.match(/https?:\/\/(?![^\s]*(?:opportunitiesforyouth|opportunities247)\.org)[^\s)\]"']+/i);
+    return m ? m[0].replace(/[.,;:]+$/, '') : null;
+  } catch {
+    return null;
+  }
+}
 
 export type QueryPool = { query: (sql: string, params?: unknown[]) => Promise<{ rows: any[] }> };
 
@@ -331,13 +378,16 @@ export async function finalizeProgramForEntry(
       );
       return;
     }
-    // New program: one small LLM call; deterministic fallback on failure
+    // New program: introspect link identity first, then LLM canonicalization
+    const intro = introspectEntryUrl({ sourceUrl: entry.sourceUrl, description: entry.description ?? null });
+    const scraped = intro.canonicalUrl === entry.sourceUrl ? await maybeScrapeAggregator(entry) : null;
+    const bestUrl = scraped ?? intro.canonicalUrl ?? entry.sourceUrl ?? null;
     const [canon] = await canonicalizeBatch([{ id: entry.id, name: entry.name, description: '' }]);
-    const orgName = canon?.org ?? extractOrgFromName(entry.name);
+    const orgName = intro.orgHint ?? canon?.org ?? extractOrgFromName(entry.name);
     const programId = await createProgram(pool, {
       name: entry.name,
       canonicalName: canon?.program ?? null,
-      orgName, wire: entry.wire ?? null, sourceUrl: entry.sourceUrl ?? null,
+      orgName, wire: entry.wire ?? null, sourceUrl: bestUrl,
       roundLabel: canon?.round_label ?? extractRoundLabel(entry.name),
     });
     await pool.query(
