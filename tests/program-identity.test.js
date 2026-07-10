@@ -89,7 +89,13 @@ test('resolveProgram: URL domain agreement boosts confidence', async () => {
 
 test('resolveProgram: org mismatch vetoes non-key matches', async () => {
   const pool = programPool([fakeProgram()]);
-  const m = await resolveProgram(pool, { name: 'OpenAI Fellows Program Something', orgName: 'OpenAI' });
+  // Tokens shared with fakeProgram's canonical_name + aliases ("Anthropic Fellows
+  // Program Anthropic Fellows Program 2026 Anthropic AI Safety Fellowship"):
+  // candidate tokens {openai, fellows, program, safety} (4) share {fellows, program,
+  // safety} (3) with program tokens (6) -> 3/min(4,6) = 0.75 >= 0.6, so this WOULD
+  // token-match absent the veto. orgName 'OpenAI' vs the program's org_name
+  // 'Anthropic' disagree, so the veto must fire.
+  const m = await resolveProgram(pool, { name: 'OpenAI Fellows Program AI Safety', orgName: 'OpenAI' });
   assert.equal(m, null, 'different org must not fuzzy-match');
 });
 

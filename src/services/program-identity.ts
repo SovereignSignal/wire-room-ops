@@ -115,6 +115,11 @@ export async function resolveProgram(
         OR normalized_key LIKE $2 || '%' OR $2 LIKE normalized_key || '%'
         OR ($3::text IS NOT NULL AND lower(org_name) = lower($3))
         OR ($4::text IS NOT NULL AND $4 = ANY(url_domains))
+        OR EXISTS (
+             SELECT 1 FROM unnest(aliases) a
+             WHERE lower(regexp_replace(a, '[^a-zA-Z0-9]', '', 'g')) LIKE $2 || '%'
+                OR $2 LIKE left(lower(regexp_replace(a, '[^a-zA-Z0-9]', '', 'g')), 10) || '%'
+           )
      LIMIT 25`,
     [key, key.slice(0, 10), candidate.orgName ?? null, domainOf(candidate.sourceUrl) ?? null],
   ) as { rows: ProgramRow[] };
