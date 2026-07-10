@@ -224,19 +224,28 @@ export interface FreshFindsResult {
 }
 
 const FRESH_FINDS_SELECT = `
-  SELECT id, name, wire, quality_score, amount, deadline, source_url,
-         metadata->'curator'->>'route' AS curator_route,
-         metadata->'curator'->>'confidence' AS curator_confidence
-  FROM scan_entries
-  WHERE status = 'queued'
-    AND (deadline_parsed IS NULL OR deadline_parsed >= CURRENT_DATE)
+  SELECT q.id, q.name, q.wire, q.quality_score, q.amount, q.deadline, q.source_url,
+         q.metadata->'curator'->>'route' AS curator_route,
+         q.metadata->'curator'->>'confidence' AS curator_confidence,
+         COALESCE(NULLIF(q.metadata->>'summary', ''), LEFT(q.description, 220)) AS summary,
+         q.metadata->'decided_recheck'->>'verdict' AS recheck_verdict,
+         m.name AS recheck_matched_name,
+         m.status AS recheck_matched_status
+  FROM scan_entries q
+  LEFT JOIN scan_entries m
+    ON m.id = NULLIF(q.metadata->'decided_recheck'->>'matched_id', '')::int
+  WHERE q.status = 'queued'
+    AND (q.deadline_parsed IS NULL OR q.deadline_parsed >= CURRENT_DATE)
     -- candidate window matches watermark retention (60d) so an entry can
     -- never outlive its watermark entry and reappear as "new"
-    AND created_at >= NOW() - INTERVAL '60 days'`;
+    AND q.created_at >= NOW() - INTERVAL '60 days'
+    -- a stamped same_listing verdict IS a known duplicate even when the
+    -- status demotion didn't fire — never email it
+    AND COALESCE(q.metadata->'decided_recheck'->>'verdict', '') <> 'same_listing'`;
 
 const CURATOR_ORDER = `
   ORDER BY
-    CASE metadata->'curator'->>'route'
+    CASE q.metadata->'curator'->>'route'
       WHEN 'publish' THEN 0
       WHEN 'source_check' THEN 1
       WHEN 'relationship_signal' THEN 2
@@ -244,21 +253,21 @@ const CURATOR_ORDER = `
       WHEN 'decline' THEN 4
       ELSE 5
     END,
-    CASE metadata->'curator'->>'confidence'
+    CASE q.metadata->'curator'->>'confidence'
       WHEN 'high' THEN 0
       WHEN 'med' THEN 1
       WHEN 'low' THEN 2
       ELSE 3
     END,
-    quality_score DESC NULLS LAST,
-    deadline_parsed ASC NULLS LAST,
-    created_at DESC`;
+    q.quality_score DESC NULLS LAST,
+    q.deadline_parsed ASC NULLS LAST,
+    q.created_at DESC`;
 
 /** 24h-window fallback used whenever the watermark can't be trusted (unreadable, or a seed write failed). */
 async function fetch24hFallbackFinds(pool: Pool, limit: number): Promise<FreshFindsResult> {
   const { rows } = await pool.query<TopFindEntry>(
     `${FRESH_FINDS_SELECT}
-      AND created_at >= NOW() - INTERVAL '24 hours'
+      AND q.created_at >= NOW() - INTERVAL '24 hours'
     ${CURATOR_ORDER}
     LIMIT $1`, [limit]);
   return { finds: rows, totalNew: rows.length, seeded: false, fallback: true };
@@ -291,7 +300,7 @@ export async function getFreshFinds(pool: Pool, limit = 8, deps: WatermarkDeps =
   const excluded = Object.keys(map).map(Number).filter(Number.isInteger);
   const { rows } = await pool.query<TopFindEntry>(
     `${FRESH_FINDS_SELECT}
-      AND NOT (id = ANY($2::int[]))
+      AND NOT (q.id = ANY($2::int[]))
     ${CURATOR_ORDER}
     LIMIT $1`, [limit, excluded]);
   const count = await pool.query<{ total_new: string }>(
@@ -300,6 +309,7 @@ export async function getFreshFinds(pool: Pool, limit = 8, deps: WatermarkDeps =
      WHERE status = 'queued'
        AND (deadline_parsed IS NULL OR deadline_parsed >= CURRENT_DATE)
        AND created_at >= NOW() - INTERVAL '60 days'
+       AND COALESCE(metadata->'decided_recheck'->>'verdict', '') <> 'same_listing'
        AND NOT (id = ANY($1::int[]))`, [excluded]);
   return { finds: rows, totalNew: parseInt(count.rows[0]?.total_new ?? '0', 10), seeded: false, fallback: false };
 }
