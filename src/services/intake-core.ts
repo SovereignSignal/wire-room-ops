@@ -14,7 +14,7 @@ import { checkDuplicate, registerSeen } from '../services/dedup';
 import { type Classification, type OperatorRoute } from '../services/classifier';
 import { scrapeUrl, isScrapableUrl, truncateContent } from './scraper';
 import { normalizeUrl } from '../utils/url';
-import { blockedSourceDomain } from '../services/source-filter';
+import { blockedSourceDomain, classifySourceLink } from '../services/source-filter';
 import { safePublicFetch } from '../utils/ssrf';
 
 // ────────────────────────────────────────────────────────────────────────────────────
@@ -822,6 +822,14 @@ export async function processBatchMessage(
       Object.assign(entry, { _resolvedWire: resolvedWire });
     }
     const resolvedWire = (entry as typeof entry & { _resolvedWire?: string })._resolvedWire || wire!;
+
+    const sourceClass = classifySourceLink(entry.sourceUrl);
+    if (sourceClass === 'missing' || sourceClass === 'placeholder') {
+      result.errors++;
+      result.failed++;
+      result.entries.push({ name: entry.name, wire: resolvedWire, error: 'Missing verifiable source URL' });
+      continue;
+    }
 
     // Gate 1: reject known Tier-3 aggregator sources
     const batchBlocked = blockedSourceDomain(entry.sourceUrl);
