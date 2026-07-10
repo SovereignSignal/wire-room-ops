@@ -70,3 +70,29 @@ export function blockedSourceDomain(url: string | null | undefined): string | nu
   }
   return null;
 }
+
+export type SourceLinkClass = 'missing' | 'placeholder' | 'shortener' | 'tweet-only' | 'ok';
+
+/**
+ * Classify whether a source URL is publishable evidence or an intake marker.
+ * Keep this shared: batch intake, raw processing, source sweep, and approval
+ * must agree or placeholders can become queued entries merely by changing path.
+ */
+export function classifySourceLink(url: string | null | undefined): SourceLinkClass {
+  const value = (url || '').trim();
+  if (!value) return 'missing';
+  if (value.startsWith('scan://')) return 'placeholder';
+
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return 'ok';
+  }
+  const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
+  if (host === 'manual' && /^\/needs-source(?:\/|$)/i.test(parsed.pathname)) return 'placeholder';
+  if (host === 't.me' && /^\/manual(?:\/|$)/i.test(parsed.pathname)) return 'placeholder';
+  if (['t.co', 'bit.ly', 'tinyurl.com', 'buff.ly', 'ow.ly'].includes(host)) return 'shortener';
+  if (host === 'x.com' || host === 'twitter.com') return 'tweet-only';
+  return 'ok';
+}
