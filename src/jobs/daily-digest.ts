@@ -230,10 +230,18 @@ const FRESH_FINDS_SELECT = `
          COALESCE(NULLIF(q.metadata->>'summary', ''), LEFT(q.description, 220)) AS summary,
          q.metadata->'decided_recheck'->>'verdict' AS recheck_verdict,
          m.name AS recheck_matched_name,
-         m.status AS recheck_matched_status
+         m.status AS recheck_matched_status,
+         q.metadata->'program'->>'verdict' AS program_verdict,
+         CASE WHEN p.id IS NULL THEN NULL ELSE
+           'seen ' || p.entry_count || '×'
+           || CASE WHEN p.approved_count > 0 THEN ' · approved ' || p.approved_count || '×' ELSE '' END
+           || CASE WHEN p.declined_count > 0 THEN ' · declined ' || p.declined_count || '×' ELSE '' END
+           || CASE WHEN p.last_decision IS NOT NULL THEN ' · last ' || p.last_decision ELSE '' END
+         END AS program_history
   FROM scan_entries q
   LEFT JOIN scan_entries m
     ON m.id = NULLIF(q.metadata->'decided_recheck'->>'matched_id', '')::int
+  LEFT JOIN programs p ON p.id = q.program_id
   WHERE q.status = 'queued'
     AND (q.deadline_parsed IS NULL OR q.deadline_parsed >= CURRENT_DATE)
     -- candidate window matches watermark retention (60d) so an entry can
@@ -370,6 +378,17 @@ export async function buildRunLedger(
     }
   } catch {
     lanes.push({ key: 'scans', state: 'warn', detail: 'scans ?' });
+  }
+
+  // gate — program-identity auto-dupes in the last 24h (the "report" half of act-and-report)
+  try {
+    const { rows } = await pool.query<{ n: string }>(`
+      SELECT COUNT(*) AS n FROM scan_entries
+      WHERE actioned_by = 'program-gate' AND updated_at >= NOW() - INTERVAL '24 hours'`);
+    const n = parseInt(rows[0]?.n ?? '0', 10);
+    if (n > 0) lanes.push({ key: 'gate', state: 'ok', detail: `gate ${n} duped` });
+  } catch {
+    // omit — optional evidence
   }
 
   if (inputs.feeds) {

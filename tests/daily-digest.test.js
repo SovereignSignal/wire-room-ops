@@ -266,3 +266,31 @@ test('getFreshFinds excludes recheck-flagged duplicates and selects the card sum
   const countSql = pool.calls[1].sql;
   assert.match(countSql, /<> 'same_listing'/, 'the totalNew count must apply the same exclusion');
 });
+
+test('buildRunLedger: gate lane appears with 24h auto-dupe count, omitted at zero', async () => {
+  const pool = fakePool();
+  pool.queueResponse([{ ok: '5', failed: '0' }]);   // scans probe
+  pool.queueResponse([{ n: '12' }]);                 // gate probe
+  const { deps } = fakeState({ 'summary-sync:watermark': new Date().toISOString() });
+  const { ledger } = await buildRunLedger(pool, { date: '2026-07-10' }, deps);
+  const gate = ledger.lanes.find(l => l.key === 'gate');
+  assert.equal(gate.detail, 'gate 12 duped');
+  assert.equal(gate.state, 'ok');
+
+  const pool2 = fakePool();
+  pool2.queueResponse([{ ok: '5', failed: '0' }]);
+  pool2.queueResponse([{ n: '0' }]);
+  const r2 = await buildRunLedger(pool2, { date: '2026-07-10' }, deps);
+  assert.ok(!r2.ledger.lanes.some(l => l.key === 'gate'), 'zero → omitted');
+});
+
+test('getFreshFinds selects program history via the programs join', async () => {
+  const pool = fakePool();
+  pool.queueResponse([]);
+  pool.queueResponse([{ total_new: '0' }]);
+  const { deps } = fakeState({ [DIGEST_WATERMARK_KEY]: {} });
+  await getFreshFinds(pool, 8, deps);
+  assert.match(pool.calls[0].sql, /LEFT JOIN programs/);
+  assert.match(pool.calls[0].sql, /program_history/);
+  assert.match(pool.calls[0].sql, /program_verdict/);
+});

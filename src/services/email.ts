@@ -346,6 +346,8 @@ export interface TopFindEntry {
   recheck_verdict: string | null;
   recheck_matched_name: string | null;
   recheck_matched_status: string | null;
+  program_verdict: string | null;
+  program_history: string | null;
 }
 
 export type LaneState = 'ok' | 'warn' | 'fail';
@@ -501,11 +503,15 @@ export function renderDailyDigest(
       const updateHtml = e.recheck_verdict === 'update' && e.recheck_matched_name
         ? `<p style="margin:5px 0 0;font-size:10.5px;color:#8a6d1f;${MONO}">&#8635; Update of a prior entry: &ldquo;${escapeHtml(e.recheck_matched_name)}&rdquo; (${escapeHtml(e.recheck_matched_status || 'seen')})</p>`
         : '';
+      const programHtml = e.program_history
+        ? `<p style="margin:5px 0 0;font-size:10.5px;color:#8a6d1f;${MONO}">${e.program_verdict === 'new_round' ? '&#8635; New round of a known program &middot; ' : ''}${escapeHtml(e.program_history)}</p>`
+        : '';
       return `<div style="border:1px solid #e2e8ed;border-left:3px solid ${isPublish ? '#1a8a5a' : '#d0d9df'};padding:10px 12px;margin:0 0 8px;">
         <p style="margin:0;font-size:13px;line-height:1.4;"><a href="${escapeHtml(entryUrl)}" style="color:#14181c;font-weight:700;text-decoration:none;border-bottom:1px solid #9fd4f5;">${escapeHtml(e.name)}</a></p>
         ${summaryHtml}
         <p style="margin:5px 0 0;font-size:10.5px;color:#64717b;${MONO}">${metaParts.join(' &middot; ')}</p>
         ${updateHtml}
+        ${programHtml}
       </div>`;
     }).join('');
     const more = totalNew - freshCount;
@@ -522,7 +528,9 @@ export function renderDailyDigest(
       const summaryLine = e.summary ? `\n    ${e.summary.slice(0, 220)}` : '';
       const updateLine = e.recheck_verdict === 'update' && e.recheck_matched_name
         ? `\n    ↻ Update of a prior entry: "${e.recheck_matched_name}" (${e.recheck_matched_status || 'seen'})` : '';
-      return `  [${e.wire}]${stamp} ${e.name}${amount ? ` | ${amount}` : ''}${deadline ? ` | due ${deadline}` : ''}${summaryLine}${updateLine}\n    ${queueUrl}?entry=${e.id}`;
+      const programLine = e.program_history
+        ? `\n    ${e.program_verdict === 'new_round' ? '↻ New round of a known program · ' : ''}${e.program_history}` : '';
+      return `  [${e.wire}]${stamp} ${e.name}${amount ? ` | ${amount}` : ''}${deadline ? ` | due ${deadline}` : ''}${summaryLine}${updateLine}${programLine}\n    ${queueUrl}?entry=${e.id}`;
     }).join('\n') + (more > 0 ? `\n  ${more} more new in the queue` : '') + `\n  Open queue (${waiting} waiting): ${queueUrl}\n`;
   } else {
     reviewHtml = `
