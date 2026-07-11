@@ -406,6 +406,16 @@ function createJobExecutor(schedule: ScheduleConfig) {
         // Discovery lanes run as part of this one daily cycle — no separate cron to manage.
         // Each is isolated so a lane failure never blocks the digest.
         try {
+          // No-op when no scan prompts are active — prompt activation is the on/off switch.
+          const sr = await runScanExecution(pool, {});
+          if (sr.promptsExecuted > 0) {
+            console.log(`[Scheduler] Daily scans: ${sr.promptsExecuted} prompts, ${sr.totalResults} results, ${sr.intakeSummary.newUnique} unique`);
+          }
+        } catch (e) {
+          console.error('[Scheduler] Daily scan lane failed (non-fatal):', e instanceof Error ? e.message : e);
+          anomalies.push(`Scan lane failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+        try {
           if (config.forum.enabled) {
             const fr = await runForumScan(pool, {});
             console.log(`[Scheduler] Daily forum scan: ${fr.opportunityCount} opps from ${fr.candidateCount} candidates, ${fr.intakeSummary.newUnique} unique`);
