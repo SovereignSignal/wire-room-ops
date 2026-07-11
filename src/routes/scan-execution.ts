@@ -13,7 +13,6 @@ import { getPool } from '../db';
 import { runScanExecution } from '../jobs/scan-execution';
 import { runForumScan } from '../jobs/forum-scan';
 import { runSourceFeeds } from '../jobs/source-feeds';
-import { sendScanDigestEmail } from '../services/email';
 
 const router = Router();
 
@@ -62,16 +61,6 @@ router.post('/scan/run', async (req: Request, res: Response) => {
       });
 
       jobQueue.completeJob(jobId, result);
-
-      // Send digest email for manual scans too
-      if (result.totalResults > 0) {
-        try {
-          await sendScanDigestEmail(result, config.app.url);
-          console.log(`[ScanRun] Digest email sent`);
-        } catch (emailErr) {
-          console.error(`[ScanRun] Failed to send digest email:`, emailErr);
-        }
-      }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       jobQueue.failJob(jobId, errorMsg);
