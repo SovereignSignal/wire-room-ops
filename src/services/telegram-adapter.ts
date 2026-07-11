@@ -125,6 +125,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     text,
     senderId: `telegram:${userId}`,
     channelMessageId: String(message.message_id),
+    channelUpdateId: String(update.update_id),
     forwardedFrom,
   };
 

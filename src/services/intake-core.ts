@@ -121,7 +121,8 @@ export interface IntakeMessage {
   text: string;              // raw message text
   urls?: string[];           // pre-extracted URLs (optional, core will also extract)
   senderId: string;          // channel-specific user ID
-  channelMessageId: string;  // for correlating callback responses
+  channelMessageId: string;  // source message ID for lineage
+  channelUpdateId?: string;  // transport update ID for webhook lineage
   forwardedFrom?: string;    // original source name if forwarded
 }
 
@@ -343,9 +344,22 @@ interface NewIntakeEntry {
   deadline?: string | null;
   sourceNeedsVerification?: boolean;
   operatorRoute?: OperatorRoute;
+  channelMessageId?: string;
+  channelUpdateId?: string;
+  forwardedFrom?: string;
 }
 
 type Queryable = Pick<Pool, 'query'>;
+
+export function buildIntakeMetadata(entry: NewIntakeEntry): Record<string, unknown> {
+  return {
+    source_needs_verification: entry.sourceNeedsVerification ?? false,
+    operator_route: entry.operatorRoute ?? null,
+    channel_message_id: entry.channelMessageId ?? null,
+    channel_update_id: entry.channelUpdateId ?? null,
+    forwarded_from: entry.forwardedFrom ?? null,
+  };
+}
 
 async function insertEntry(db: Queryable, entry: NewIntakeEntry): Promise<number> {
   const status = entry.status ?? 'raw'; // Raw entries flow through the classification pipeline
@@ -366,10 +380,7 @@ async function insertEntry(db: Queryable, entry: NewIntakeEntry): Promise<number
       entry.submittedBy,
       entry.deadline ?? null,
       entry.sourceNeedsVerification ?? false,
-      JSON.stringify({
-        source_needs_verification: entry.sourceNeedsVerification ?? false,
-        operator_route: entry.operatorRoute ?? null,
-      }),
+      JSON.stringify(buildIntakeMetadata(entry)),
     ],
   );
   return res.rows[0].id;
@@ -578,6 +589,9 @@ export async function processIntakeMessage(
         status: 'queued',
         sourceNeedsVerification,
         operatorRoute: sourceNeedsVerification ? 'source_check' : undefined,
+        channelMessageId: msg.channelMessageId,
+        channelUpdateId: msg.channelUpdateId,
+        forwardedFrom: msg.forwardedFrom,
       });
       if (inserted.urlConflict) {
         return {
@@ -628,6 +642,9 @@ export async function processIntakeMessage(
       status: 'queued',
       sourceNeedsVerification,
       operatorRoute: sourceNeedsVerification ? 'source_check' : undefined,
+      channelMessageId: msg.channelMessageId,
+      channelUpdateId: msg.channelUpdateId,
+      forwardedFrom: msg.forwardedFrom,
     });
     if (inserted.urlConflict) {
       return {
@@ -1002,6 +1019,9 @@ export async function processBatchMessage(
         deadline: normalizeDeadlineForDb(entry.deadline, scanDate),
         sourceNeedsVerification,
         operatorRoute: sourceNeedsVerification ? 'source_check' : undefined,
+        channelMessageId: msg.channelMessageId,
+        channelUpdateId: msg.channelUpdateId,
+        forwardedFrom: msg.forwardedFrom,
       });
       if (inserted.urlConflict) {
         result.duplicates++;
