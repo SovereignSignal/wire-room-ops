@@ -81,7 +81,7 @@ async function planQueries(objective: string, wire?: string): Promise<string[]> 
   const wireHint = wire ? `The vertical is "${wire}". ` : '';
   const content = await grokChat(
     `${wireHint}Turn this research objective into 2-3 concise web search queries (3-6 keywords each) that will surface NEW grant/funding programs, open application rounds, and major funding news. Return ONLY a JSON array of strings, nothing else.\n\nObjective: ${objective.slice(0, 1200)}`,
-    150, 'parallel-queries', wire
+    2000, 'parallel-queries', wire
   );
   if (content) {
     try {
@@ -164,7 +164,7 @@ export async function executeParallelScan(
 
   const extractPrompt = `You are extracting ${getBrand().contentType} from web search results. From the results below, list every distinct grant/funding program, open application round, or major funding announcement. Use ONLY the canonical Source URL shown for each result — never invent URLs. Skip duplicates, closed programs, and pure marketing. If nothing qualifies, return "No results."\n\nFormat each entry exactly:\n${format}\n\nSEARCH RESULTS:\n${resultsBlock}`;
 
-  const extracted = await grokChat(extractPrompt, 2000, 'parallel-extract', wire);
+  const extracted = await grokChat(extractPrompt, 6000, 'parallel-extract', wire);
   if (!extracted) {
     throw new Error('Parallel scan: Grok extraction returned empty');
   }
