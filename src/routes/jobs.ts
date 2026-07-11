@@ -24,6 +24,7 @@ import { runEnrichment } from '../jobs/enrichment';
 import { handleTelegramUpdate } from '../services/telegram-adapter';
 import {
   processTelegramUpdateWithReceipt,
+  TelegramIntakeCapacityError,
   TelegramUpdateBusyError,
   TelegramUpdateValidationError,
 } from '../services/telegram-intake-receipts';
@@ -207,10 +208,10 @@ router.post('/telegram/intake-webhook', async (req: Request, res: Response) => {
       res.status(400).json({ error: 'Invalid Telegram update' });
       return;
     }
-    if (error instanceof TelegramUpdateBusyError) {
-      console.warn(`[TelegramIntake] Update ${error.updateId} is still processing; requesting retry`);
+    if (error instanceof TelegramUpdateBusyError || error instanceof TelegramIntakeCapacityError) {
+      console.warn('[TelegramIntake] Intake busy; requesting retry');
       res.setHeader('Retry-After', '5');
-      res.status(503).json({ error: 'Telegram update is still processing' });
+      res.status(503).json({ error: 'Telegram intake is busy' });
       return;
     }
     console.error('[TelegramIntake] Handler error; requesting Telegram retry:', error);

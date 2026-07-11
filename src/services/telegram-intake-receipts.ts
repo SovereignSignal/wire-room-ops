@@ -1,9 +1,11 @@
 import { randomUUID } from 'crypto';
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import { getPool } from '../db';
 
 const MAX_ERROR_LENGTH = 2_000;
 const ADVISORY_LOCK_NAMESPACE = 'telegram-intake-update';
+export const MAX_CONCURRENT_TELEGRAM_UPDATES = 5;
+let activeTelegramUpdates = 0;
 
 export type TelegramReceiptResult = 'processed' | 'already_processed';
 
@@ -20,6 +22,13 @@ export class TelegramUpdateBusyError extends Error {
   constructor(public readonly updateId: number) {
     super(`Telegram update ${updateId} is already being processed`);
     this.name = 'TelegramUpdateBusyError';
+  }
+}
+
+export class TelegramIntakeCapacityError extends Error {
+  constructor() {
+    super('Telegram intake is at processing capacity');
+    this.name = 'TelegramIntakeCapacityError';
   }
 }
 
@@ -52,6 +61,16 @@ export async function ensureTelegramIntakeReceiptsTable(): Promise<void> {
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_telegram_intake_receipts_status_updated
       ON telegram_intake_receipts(status, updated_at DESC)
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_scan_entries_telegram_update_item
+      ON scan_entries (
+        (metadata->>'channel_update_id'),
+        (metadata->>'channel_item_key')
+      )
+      WHERE scan_source = 'telegram'
+        AND metadata->>'channel_update_id' IS NOT NULL
+        AND metadata->>'channel_item_key' IS NOT NULL
   `);
   console.log('[DB] Telegram intake receipts ready');
 }
@@ -87,10 +106,15 @@ export async function processTelegramUpdateWithReceipt(
   const leaseToken = randomUUID();
   const message = update.message;
   const lockKey = `${ADVISORY_LOCK_NAMESPACE}:${updateId}`;
-  const client = await pool.connect();
+  if (activeTelegramUpdates >= MAX_CONCURRENT_TELEGRAM_UPDATES) {
+    throw new TelegramIntakeCapacityError();
+  }
+  activeTelegramUpdates++;
+  let client: PoolClient | undefined;
   let lockAcquired = false;
 
   try {
+    client = await pool.connect();
     const lock = await client.query(
       `SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS acquired`,
       [lockKey]
@@ -164,14 +188,15 @@ export async function processTelegramUpdateWithReceipt(
     }
   } finally {
     try {
-      if (lockAcquired) {
+      if (client && lockAcquired) {
         await client.query(
           `SELECT pg_advisory_unlock(hashtextextended($1, 0))`,
           [lockKey]
         );
       }
     } finally {
-      client.release();
+      client?.release();
+      activeTelegramUpdates--;
     }
   }
 }

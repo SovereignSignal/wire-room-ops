@@ -346,6 +346,7 @@ interface NewIntakeEntry {
   operatorRoute?: OperatorRoute;
   channelMessageId?: string;
   channelUpdateId?: string;
+  channelItemKey?: string;
   forwardedFrom?: string;
 }
 
@@ -357,8 +358,32 @@ export function buildIntakeMetadata(entry: NewIntakeEntry): Record<string, unkno
     operator_route: entry.operatorRoute ?? null,
     channel_message_id: entry.channelMessageId ?? null,
     channel_update_id: entry.channelUpdateId ?? null,
+    channel_item_key: entry.channelItemKey ?? null,
     forwarded_from: entry.forwardedFrom ?? null,
   };
+}
+
+export function telegramReplayPlaceholder(updateId: string, itemKey: string): string {
+  return `https://manual/needs-source/telegram-${encodeURIComponent(updateId)}-${encodeURIComponent(itemKey)}`;
+}
+
+export async function findTelegramReplayEntry(
+  db: Queryable,
+  updateId?: string,
+  itemKey?: string,
+): Promise<number | null> {
+  if (!updateId || !itemKey) return null;
+  const existing = await db.query(
+    `SELECT id
+     FROM scan_entries
+     WHERE scan_source = 'telegram'
+       AND metadata->>'channel_update_id' = $1
+       AND metadata->>'channel_item_key' = $2
+     ORDER BY id ASC
+     LIMIT 1`,
+    [updateId, itemKey],
+  );
+  return existing.rows[0]?.id ?? null;
 }
 
 async function insertEntry(db: Queryable, entry: NewIntakeEntry): Promise<number> {
@@ -512,13 +537,26 @@ export async function processIntakeMessage(
   if (suppliedSourceClass === 'shortener') {
     return { status: 'rejected', errorMessage: 'Unresolved shortener URL: submit the destination source' };
   }
-  const primaryUrl = suppliedPrimaryUrl || `https://t.me/manual/${Date.now()}`;
+  const channelItemKey = msg.channelUpdateId ? 'single' : undefined;
+  const primaryUrl = suppliedPrimaryUrl
+    || (msg.channelUpdateId
+      ? telegramReplayPlaceholder(msg.channelUpdateId, channelItemKey!)
+      : `https://t.me/manual/${Date.now()}`);
   const sourceNeedsVerification = classifySourceLink(primaryUrl) === 'placeholder';
 
   // Load active wires only after cheap input validation.
   const wires = await getActiveWires();
   if (wires.length === 0) {
     return { status: 'error', errorMessage: 'No active wires configured' };
+  }
+
+  const replayEntryId = await findTelegramReplayEntry(getPool(), msg.channelUpdateId, channelItemKey);
+  if (replayEntryId !== null) {
+    return {
+      status: 'inserted',
+      entryId: replayEntryId,
+      confirmText: `Captured existing entry #${replayEntryId} from a retried Telegram update`,
+    };
   }
 
   // Gate 1: reject known Tier-3 aggregator sources before they cost a
@@ -591,6 +629,7 @@ export async function processIntakeMessage(
         operatorRoute: sourceNeedsVerification ? 'source_check' : undefined,
         channelMessageId: msg.channelMessageId,
         channelUpdateId: msg.channelUpdateId,
+        channelItemKey,
         forwardedFrom: msg.forwardedFrom,
       });
       if (inserted.urlConflict) {
@@ -644,6 +683,7 @@ export async function processIntakeMessage(
       operatorRoute: sourceNeedsVerification ? 'source_check' : undefined,
       channelMessageId: msg.channelMessageId,
       channelUpdateId: msg.channelUpdateId,
+      channelItemKey,
       forwardedFrom: msg.forwardedFrom,
     });
     if (inserted.urlConflict) {
@@ -677,6 +717,7 @@ export interface BatchIntakeResult {
   inserted: number;
   duplicates: number;
   errors: number;
+  retryableErrors: number;
   /** @deprecated use duplicates + errors instead */
   failed: number;
   entries: Array<{ name: string; wire: string; id?: number; error?: string; isDuplicate?: boolean }>;
@@ -927,12 +968,26 @@ export async function processBatchMessage(
     inserted: 0,
     duplicates: parsedCount - entries.length,
     errors: 0,
+    retryableErrors: 0,
     failed: 0,
     entries: [],
   };
   const seenInBatch = new Map<string, string[]>(); // normalized URL -> accepted names
 
   for (const entry of entries) {
+    const semanticKey = semanticBatchKey(entry.name) || entry.name.toLowerCase();
+    const channelItemKey = msg.channelUpdateId ? `batch:${semanticKey}` : undefined;
+    if (msg.channelUpdateId && classifySourceLink(entry.sourceUrl) === 'placeholder') {
+      entry.sourceUrl = telegramReplayPlaceholder(msg.channelUpdateId, channelItemKey!);
+    }
+
+    const replayEntryId = await findTelegramReplayEntry(getPool(), msg.channelUpdateId, channelItemKey);
+    if (replayEntryId !== null) {
+      result.inserted++;
+      result.entries.push({ name: entry.name, wire: 'existing', id: replayEntryId });
+      continue;
+    }
+
     // Detect wire from combined name + description
     const combined = `${entry.name} ${entry.description}`;
     const wire = detectWire(combined, wires);
@@ -943,6 +998,7 @@ export async function processBatchMessage(
       const defaultWire = wires.includes('crypto') ? 'crypto' : wires[0];
       if (!defaultWire) {
         result.errors++;
+        result.retryableErrors++;
         result.failed++;
         result.entries.push({ name: entry.name, wire: 'unknown', error: 'No wires configured' });
         continue;
@@ -1021,6 +1077,7 @@ export async function processBatchMessage(
         operatorRoute: sourceNeedsVerification ? 'source_check' : undefined,
         channelMessageId: msg.channelMessageId,
         channelUpdateId: msg.channelUpdateId,
+        channelItemKey,
         forwardedFrom: msg.forwardedFrom,
       });
       if (inserted.urlConflict) {
@@ -1044,6 +1101,7 @@ export async function processBatchMessage(
       result.entries.push({ name: entry.name, wire: resolvedWire, id });
     } catch (err) {
       result.errors++;
+      result.retryableErrors++;
       result.failed++;
       result.entries.push({ name: entry.name, wire: resolvedWire, error: err instanceof Error ? err.message : 'Insert failed' });
     }

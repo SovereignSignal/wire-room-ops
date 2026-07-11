@@ -5,10 +5,16 @@ const assert = require('node:assert/strict');
 
 const {
   processTelegramUpdateWithReceipt,
+  MAX_CONCURRENT_TELEGRAM_UPDATES,
+  TelegramIntakeCapacityError,
   TelegramUpdateBusyError,
   TelegramUpdateValidationError,
 } = require('../src/services/telegram-intake-receipts');
-const { buildIntakeMetadata } = require('../src/services/intake-core');
+const {
+  buildIntakeMetadata,
+  findTelegramReplayEntry,
+  telegramReplayPlaceholder,
+} = require('../src/services/intake-core');
 
 function receiptPool({ lock = true, claim = true, existingStatus = null } = {}) {
   const calls = [];
@@ -144,6 +150,50 @@ test('invalid update IDs fail before opening a database connection', async () =>
   assert.equal(pool.calls.length, 0);
 });
 
+test('bounded Telegram processing leaves database pool capacity for handlers', async () => {
+  let entered = 0;
+  let releaseHandlers;
+  let allEntered;
+  const gate = new Promise(resolve => { releaseHandlers = resolve; });
+  const started = new Promise(resolve => { allEntered = resolve; });
+  const active = Array.from({ length: MAX_CONCURRENT_TELEGRAM_UPDATES }, (_, index) => {
+    const pool = receiptPool();
+    return processTelegramUpdateWithReceipt(update(600 + index), async () => {
+      entered++;
+      if (entered === MAX_CONCURRENT_TELEGRAM_UPDATES) allEntered();
+      await gate;
+    }, pool);
+  });
+
+  await started;
+  const overflowPool = receiptPool();
+  await assert.rejects(
+    processTelegramUpdateWithReceipt(update(999), async () => {}, overflowPool),
+    TelegramIntakeCapacityError,
+  );
+  assert.equal(overflowPool.connects, 0);
+
+  releaseHandlers();
+  await Promise.all(active);
+});
+
+test('Telegram replay placeholders and row lookup are stable per update item', async () => {
+  assert.equal(
+    telegramReplayPlaceholder('501', 'batch:example grant'),
+    'https://manual/needs-source/telegram-501-batch%3Aexample%20grant',
+  );
+  const calls = [];
+  const db = {
+    query: async (sql, params) => {
+      calls.push({ sql, params });
+      return { rows: [{ id: 42 }] };
+    },
+  };
+  assert.equal(await findTelegramReplayEntry(db, '501', 'single'), 42);
+  assert.deepEqual(calls[0].params, ['501', 'single']);
+  assert.match(calls[0].sql, /channel_item_key/);
+});
+
 test('intake metadata carries Telegram update and message lineage', () => {
   assert.deepEqual(buildIntakeMetadata({
     name: 'Example Grant',
@@ -157,12 +207,14 @@ test('intake metadata carries Telegram update and message lineage', () => {
     operatorRoute: 'publish',
     channelMessageId: '77',
     channelUpdateId: '501',
+    channelItemKey: 'single',
     forwardedFrom: 'Example Channel',
   }), {
     source_needs_verification: false,
     operator_route: 'publish',
     channel_message_id: '77',
     channel_update_id: '501',
+    channel_item_key: 'single',
     forwarded_from: 'Example Channel',
   });
 });

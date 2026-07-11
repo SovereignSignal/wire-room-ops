@@ -82,6 +82,15 @@ test('webhook returns retryable 503 while another worker owns the update', async
   assert.equal(response.headers.get('retry-after'), '5');
 });
 
+test('webhook returns retryable 503 while intake is at connection-safe capacity', async () => {
+  receipts.processTelegramUpdateWithReceipt = async () => {
+    throw new receipts.TelegramIntakeCapacityError();
+  };
+  const response = await call();
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get('retry-after'), '5');
+});
+
 test('webhook returns 500 on intake failure so Telegram retries', async () => {
   receipts.processTelegramUpdateWithReceipt = async () => {
     throw new Error('simulated intake crash');

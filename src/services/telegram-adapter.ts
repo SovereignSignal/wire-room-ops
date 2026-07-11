@@ -16,6 +16,13 @@ import type { IntakeResult } from './intake-core';
 
 const TELEGRAM_API = 'https://api.telegram.org';
 
+export class TelegramIntakeRetryableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TelegramIntakeRetryableError';
+  }
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Minimal Telegram types (only what we need)
 // ────────────────────────────────────────────────────────────────────────────
@@ -134,6 +141,11 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     console.log(`[TelegramAdapter] Batch message detected from user ${userId}`);
     await sendMessage(message.chat.id, '⏳ Processing batch… hold tight.');
     const batch = await processBatchMessage(intakeMsg, 'telegram');
+    if (batch.retryableErrors > 0) {
+      throw new TelegramIntakeRetryableError(
+        `Batch intake had ${batch.retryableErrors} retryable persistence error${batch.retryableErrors === 1 ? '' : 's'}`,
+      );
+    }
     const summaryParts = [`✅ ${batch.inserted} added`];
     if (batch.duplicates > 0) summaryParts.push(`🔄 ${batch.duplicates} duplicate${batch.duplicates !== 1 ? 's' : ''}`);
     if (batch.errors > 0) summaryParts.push(`❌ ${batch.errors} error${batch.errors !== 1 ? 's' : ''}`);
@@ -153,7 +165,11 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
 
   const result = await processIntakeMessage(intakeMsg, 'telegram');
 
-  // Inserted, rejected, or error — send reply
+  if (result.status === 'error') {
+    throw new TelegramIntakeRetryableError(result.errorMessage || 'Telegram intake failed');
+  }
+
+  // Inserted or permanently rejected — send reply
   const reply = formatReply(result);
   if (reply) {
     await sendMessage(message.chat.id, reply);
