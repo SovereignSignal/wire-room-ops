@@ -12,6 +12,7 @@
 import { config } from '../config';
 import { getPool, getAppState, setAppState } from '../db';
 import { logApiUsage } from './api-usage';
+import { getCachedProvider } from './api-provider';
 import { extractOrgFromName } from './org-extractor';
 import { normalizeUrl } from '../utils/url';
 import { scrapeUrl } from './scraper';
@@ -335,25 +336,29 @@ Entries:
 ${entriesText}
 
 Return ONLY valid JSON array, no explanation.`;
+  const provider = getCachedProvider('grok');
+  const apiKey = provider?.api_key || config.apis.grok.apiKey;
+  const baseUrl = provider?.base_url || config.apis.grok.baseUrl;
+  const model = provider?.default_model || 'grok-4.20-beta-0309-non-reasoning';
   try {
-    const response = await fetchImpl(`${config.apis.grok.baseUrl}/chat/completions`, {
+    const response = await fetchImpl(`${baseUrl}/chat/completions`, {
       method: 'POST',
       signal: AbortSignal.timeout(120_000),
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.apis.grok.apiKey}` },
-      body: JSON.stringify({ model: 'grok-4.20-beta-0309-non-reasoning', messages: [{ role: 'user', content: prompt }], temperature: 0 }),
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], temperature: 0 }),
     });
     if (!response.ok) throw new Error(`grok ${((response as Response).status)}`);
     const data = await (response as Response).json() as { choices?: Array<{ message?: { content?: string } }> };
     const content = data.choices?.[0]?.message?.content || '[]';
     const cleaned = content.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '').trim();
     const parsed = JSON.parse(cleaned);
-    logApiUsage({ provider: 'grok', model: 'grok-4.20-beta-0309-non-reasoning', purpose: 'program-identity', duration_ms: Date.now() - start });
+    logApiUsage({ provider: 'grok', model, purpose: 'program-identity', duration_ms: Date.now() - start });
     if (!Array.isArray(parsed)) return [];
     return parsed
       .filter((r: any) => r && typeof r.id === 'number')
       .map((r: any) => ({ id: r.id, org: r.org ?? null, program: r.program ?? null, round_label: r.round_label ?? null }));
   } catch (err) {
-    logApiUsage({ provider: 'grok', model: 'grok-4.20-beta-0309-non-reasoning', purpose: 'program-identity', duration_ms: Date.now() - start, success: false, error_message: err instanceof Error ? err.message : String(err) });
+    logApiUsage({ provider: 'grok', model, purpose: 'program-identity', duration_ms: Date.now() - start, success: false, error_message: err instanceof Error ? err.message : String(err) });
     return [];
   }
 }
