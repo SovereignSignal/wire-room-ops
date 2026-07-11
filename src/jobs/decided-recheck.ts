@@ -154,7 +154,7 @@ Respond with ONLY JSON: {"matched_id": <id or null>, "verdict": "same_listing"|"
     method: 'POST',
     signal: AbortSignal.timeout(120_000),
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-    body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], max_tokens: 200, temperature: 0.1 }),
+    body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], max_tokens: 4000, temperature: 0.1 }),
   });
 
   if (!response.ok) {

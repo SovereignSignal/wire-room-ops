@@ -611,7 +611,7 @@ export async function judgeForumCandidates(
         body: JSON.stringify({
           model,
           messages: [{ role: 'user', content: buildForumJudgePrompt(batch, wire) }],
-          max_tokens: 1600,
+          max_tokens: 6000,
           temperature: 0.1,
         }),
       });
