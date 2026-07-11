@@ -90,6 +90,13 @@ export const config = {
     grantsMinConfidence: parseInt(process.env.FORUM_GRANTS_MIN_CONFIDENCE || '60', 10) || 60,
   },
 
+  crm: {
+    // Org enrichment + contact discovery ran on xAI's server-side web_search
+    // (Responses API) — retired 2026-07-11 with the xAI account. OFF until
+    // rebuilt on a supported retrieval path; Notion sync + BD stay on.
+    enrichEnabled: process.env.CRM_ENRICH_ENABLED === 'true',
+  },
+
   telegram: {
     botToken: process.env.TELEGRAM_BOT_TOKEN || '',
   },

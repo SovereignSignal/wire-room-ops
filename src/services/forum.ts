@@ -617,7 +617,8 @@ export async function judgeForumCandidates(
       });
 
       if (!response.ok) {
-        logApiUsage({ provider: 'grok', model, purpose: 'forum-judge', wire, duration_ms: Date.now() - start, success: false, error_message: String(response.status) });
+        const errorText = await response.text().catch(() => '');
+        logApiUsage({ provider: 'grok', model, purpose: 'forum-judge', wire, duration_ms: Date.now() - start, success: false, error_message: `${response.status} ${errorText.slice(0, 200)}`.trim() });
         console.warn(`[Forum] Judge batch ${b + 1} HTTP ${response.status} — degrading batch to keyword filter`);
         out.push(...batch.filter(c => isRelevantDiscussion(c.title)).map(c => candidateToRaw(c, null)));
         continue;

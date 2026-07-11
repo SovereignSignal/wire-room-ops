@@ -158,7 +158,8 @@ Respond with ONLY JSON: {"matched_id": <id or null>, "verdict": "same_listing"|"
   });
 
   if (!response.ok) {
-    logApiUsage({ provider: 'grok', model, purpose: 'decided-recheck', wire: target.wire, duration_ms: Date.now() - start, success: false, error_message: `${response.status}` });
+    const errorText = await response.text().catch(() => '');
+    logApiUsage({ provider: 'grok', model, purpose: 'decided-recheck', wire: target.wire, duration_ms: Date.now() - start, success: false, error_message: `${response.status} ${errorText.slice(0, 200)}`.trim() });
     throw new Error(`Grok ${response.status}`);
   }
 

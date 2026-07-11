@@ -51,7 +51,8 @@ async function grokChat(prompt: string, maxTokens: number, purpose: string, wire
       body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], max_tokens: maxTokens, temperature: 0.1 }),
     });
     if (!response.ok) {
-      logApiUsage({ provider: 'grok', model, purpose, wire, duration_ms: Date.now() - start, success: false, error_message: `${response.status}` });
+      const errorText = await response.text().catch(() => '');
+      logApiUsage({ provider: 'grok', model, purpose, wire, duration_ms: Date.now() - start, success: false, error_message: `${response.status} ${errorText.slice(0, 200)}`.trim() });
       return null;
     }
     const data = await response.json() as { choices?: Array<{ message?: { content?: string } }>; usage?: { prompt_tokens?: number; completion_tokens?: number } };
@@ -142,7 +143,7 @@ export async function executeParallelScan(
 
   if (!searchResp.ok) {
     const errorText = await searchResp.text();
-    logApiUsage({ provider: 'parallel', model: 'search', purpose: 'scan', wire, duration_ms: Date.now() - searchStart, success: false, error_message: `${searchResp.status}` });
+    logApiUsage({ provider: 'parallel', model: 'search', purpose: 'scan', wire, duration_ms: Date.now() - searchStart, success: false, error_message: `${searchResp.status} ${errorText.slice(0, 200)}`.trim() });
     throw new Error(`Parallel Search API error: ${searchResp.status} - ${errorText}`);
   }
 

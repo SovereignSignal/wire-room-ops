@@ -171,7 +171,7 @@ async function scrapeWithFirecrawl(url: string): Promise<ScrapeResult> {
 
   if (!response.ok) {
     const errorText = await response.text();
-    logApiUsage({ provider: 'firecrawl', model: 'scrape', purpose: 'scrape', duration_ms: Date.now() - start, success: false, error_message: `${response.status}` });
+    logApiUsage({ provider: 'firecrawl', model: 'scrape', purpose: 'scrape', duration_ms: Date.now() - start, success: false, error_message: `${response.status} ${errorText.slice(0, 200)}`.trim() });
     throw new Error(`Firecrawl API error: ${response.status} - ${errorText}`);
   }
 
