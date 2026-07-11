@@ -372,6 +372,30 @@ export async function buildRunLedger(
     lanes.push({ key: 'scans', state: 'warn', detail: 'scans ?' });
   }
 
+  // provider outages — a provider with failures and ZERO successes across ALL
+  // purposes in 24h is an account/endpoint-level problem, not a lane problem.
+  // The 2026-07-10 xAI billing block hid behind the scans-only probe above:
+  // classify/recheck/discovery were down for a day with no digest signal.
+  try {
+    const { rows } = await pool.query<{ provider: string; ok: string; failed: string }>(`
+      SELECT provider,
+             COUNT(*) FILTER (WHERE success) AS ok,
+             COUNT(*) FILTER (WHERE NOT success) AS failed
+      FROM api_usage_log
+      WHERE created_at >= NOW() - INTERVAL '24 hours'
+      GROUP BY provider`);
+    for (const r of rows) {
+      const ok = parseInt(r.ok ?? '0', 10);
+      const failed = parseInt(r.failed ?? '0', 10);
+      if (failed >= 5 && ok === 0) {
+        lanes.push({ key: `api:${r.provider}`, state: 'fail', detail: `${r.provider} ${failed}✗ all calls` });
+        anomalies.push(`Provider ${r.provider}: ${failed} failed calls and 0 successes in 24h — account/endpoint-level outage`);
+      }
+    }
+  } catch {
+    // optional evidence — never blocks the ledger
+  }
+
   if (inputs.feeds) {
     const { ok, total } = inputs.feeds;
     // feed-source failures already push their own anomaly in the scheduler fold

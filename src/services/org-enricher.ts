@@ -201,7 +201,7 @@ ${orgList}`;
 
   if (!response.ok) {
     const errorText = await response.text().catch(() => 'unknown');
-    logApiUsage({ provider: 'grok', model, purpose: 'org-enrichment', duration_ms: Date.now() - start, success: false, error_message: `${response.status}` });
+    logApiUsage({ provider: 'grok', model, purpose: 'org-enrichment', duration_ms: Date.now() - start, success: false, error_message: `${response.status} ${errorText.slice(0, 200)}`.trim() });
     throw new Error(`Grok returned ${response.status}: ${errorText}`);
   }
 

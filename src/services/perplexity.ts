@@ -78,7 +78,7 @@ export async function executePerplexityScan(
 
   if (!response.ok) {
     const errorText = await response.text();
-    logApiUsage({ provider: 'perplexity', model, purpose: 'scan', duration_ms: Date.now() - start, success: false, error_message: `${response.status}` });
+    logApiUsage({ provider: 'perplexity', model, purpose: 'scan', duration_ms: Date.now() - start, success: false, error_message: `${response.status} ${errorText.slice(0, 200)}`.trim() });
     throw new Error(`Perplexity API error: ${response.status} - ${errorText}`);
   }
 

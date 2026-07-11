@@ -158,7 +158,7 @@ export async function classifyEntry(entry: {
 
   if (!response.ok) {
     const errorText = await response.text();
-    logApiUsage({ provider: 'grok', model: classifyModel, purpose: 'classify', wire: entry.wire, duration_ms: Date.now() - start, success: false, error_message: `${response.status}` });
+    logApiUsage({ provider: 'grok', model: classifyModel, purpose: 'classify', wire: entry.wire, duration_ms: Date.now() - start, success: false, error_message: `${response.status} ${errorText.slice(0, 200)}`.trim() });
     throw new Error(`Grok API error: ${response.status} - ${errorText}`);
   }
 
@@ -353,7 +353,8 @@ export async function tagBatch(
       });
 
       if (!response.ok) {
-        logApiUsage({ provider: 'grok', model: tagModel, purpose: 'tag-backfill', wire: chunk[0].wire, duration_ms: Date.now() - start, success: false, error_message: `${response.status}` });
+        const errorText = await response.text().catch(() => '');
+        logApiUsage({ provider: 'grok', model: tagModel, purpose: 'tag-backfill', wire: chunk[0].wire, duration_ms: Date.now() - start, success: false, error_message: `${response.status} ${errorText.slice(0, 200)}`.trim() });
         errors += chunk.length;
         continue;
       }
