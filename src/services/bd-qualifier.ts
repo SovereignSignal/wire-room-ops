@@ -111,7 +111,7 @@ export async function qualifyOpportunities(
         method: 'POST',
         signal: AbortSignal.timeout(120_000),
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-        body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], max_tokens: 2400, temperature: 0.1 }),
+        body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], max_tokens: 6000, temperature: 0.1 }),
       });
       if (!response.ok) {
         logApiUsage({ provider: 'grok', model, purpose: 'bd-qualify', duration_ms: Date.now() - start, success: false, error_message: `${response.status}` });

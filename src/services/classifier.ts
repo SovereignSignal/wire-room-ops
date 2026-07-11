@@ -151,7 +151,7 @@ export async function classifyEntry(entry: {
     body: JSON.stringify({
       model: classifyModel,
       messages: [{ role: 'user', content: prompt }],
-      max_tokens: 400,
+      max_tokens: 4000,
       temperature: 0.1,
     }),
   });
@@ -347,7 +347,7 @@ export async function tagBatch(
         body: JSON.stringify({
           model: tagModel,
           messages: [{ role: 'user', content: prompt }],
-          max_tokens: 400,
+          max_tokens: 4000,
           temperature: 0.1,
         }),
       });
