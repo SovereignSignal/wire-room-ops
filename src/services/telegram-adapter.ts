@@ -75,9 +75,20 @@ async function sendMessage(chatId: number, text: string, replyMarkup?: object): 
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    const data = await resp.json() as { ok: boolean; description?: string };
+    const data = await resp.json() as { ok: boolean; error_code?: number; description?: string };
     if (!data.ok) {
-      throw new TelegramIntakeRetryableError(`Telegram send failed: ${data.description || 'unknown error'}`);
+      const errorCode = Number(data.error_code ?? resp.status);
+      const reason = `Telegram send failed: ${data.description || 'unknown error'}`;
+      const retryable = !Number.isFinite(errorCode)
+        || errorCode === 408
+        || errorCode === 429
+        || errorCode >= 500;
+      if (retryable) throw new TelegramIntakeRetryableError(reason);
+
+      // Retrying a deterministic 4xx cannot deliver the message and can trap
+      // the same update in a replay loop. Preserve the durable intake and log
+      // the permanent delivery failure for operator attention.
+      console.error(`[TelegramAdapter] Permanent send failure (${errorCode}): ${reason}`);
     }
   } catch (error) {
     console.error('[TelegramAdapter] sendMessage error:', error);

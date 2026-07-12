@@ -97,7 +97,12 @@ test('Telegram adapter propagates reply delivery failures for webhook retry', as
   global.fetch = async (_url, options) => {
     requestOptions = options;
     return {
-      json: async () => ({ ok: false, description: 'temporary Telegram failure' }),
+      status: 503,
+      json: async () => ({
+        ok: false,
+        error_code: 503,
+        description: 'temporary Telegram failure',
+      }),
     };
   };
 
@@ -107,6 +112,34 @@ test('Telegram adapter propagates reply delivery failures for webhook retry', as
       && /temporary Telegram failure/.test(error.message),
   );
   assert.ok(requestOptions.signal instanceof AbortSignal);
+});
+
+test('Telegram adapter does not retry permanent Bot API failures', async t => {
+  const originalBatchCheck = intakeCore.isBatchMessage;
+  const originalProcess = intakeCore.processIntakeMessage;
+  const originalFetch = global.fetch;
+  t.after(() => {
+    intakeCore.isBatchMessage = originalBatchCheck;
+    intakeCore.processIntakeMessage = originalProcess;
+    global.fetch = originalFetch;
+  });
+  intakeCore.isBatchMessage = () => false;
+  intakeCore.processIntakeMessage = async () => ({
+    status: 'inserted',
+    entryId: 42,
+    detectedWire: 'oss',
+    confirmText: 'Saved entry #42',
+  });
+  global.fetch = async () => ({
+    status: 400,
+    json: async () => ({
+      ok: false,
+      error_code: 400,
+      description: "Bad Request: can't parse entities",
+    }),
+  });
+
+  await assert.doesNotReject(handleTelegramUpdate(baseUpdate));
 });
 
 test('history settlement returns pending when the webhook budget expires', async t => {
