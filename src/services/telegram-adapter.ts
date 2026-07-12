@@ -59,7 +59,7 @@ function escapeHtml(text: string): string {
     .replace(/>/g, '&gt;');
 }
 
-async function sendMessage(chatId: number, text: string, replyMarkup?: object): Promise<void> {
+export async function sendMessage(chatId: number, text: string, replyMarkup?: object): Promise<void> {
   const botToken = getIntakeBotToken();
   try {
     const body: Record<string, unknown> = {
@@ -75,21 +75,58 @@ async function sendMessage(chatId: number, text: string, replyMarkup?: object): 
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    const data = await resp.json() as { ok: boolean; error_code?: number; description?: string };
-    if (!data.ok) {
-      const errorCode = Number(data.error_code ?? resp.status);
-      const reason = `Telegram send failed: ${data.description || 'unknown error'}`;
-      const retryable = !Number.isFinite(errorCode)
-        || errorCode === 408
-        || errorCode === 429
-        || errorCode >= 500;
-      if (retryable) throw new TelegramIntakeRetryableError(reason);
+    const httpStatus = Number(resp.status);
+    const permanentHttpFailure = Number.isInteger(httpStatus)
+      && httpStatus >= 400
+      && httpStatus < 500
+      && httpStatus !== 408
+      && httpStatus !== 429;
 
-      // Retrying a deterministic 4xx cannot deliver the message and can trap
-      // the same update in a replay loop. Preserve the durable intake and log
-      // the permanent delivery failure for operator attention.
-      console.error(`[TelegramAdapter] Permanent send failure (${errorCode}): ${reason}`);
+    let data: { ok?: unknown; error_code?: unknown; description?: unknown };
+    try {
+      const parsed = await resp.json() as unknown;
+      data = parsed !== null && typeof parsed === 'object'
+        ? parsed as { ok?: unknown; error_code?: unknown; description?: unknown }
+        : {};
+    } catch {
+      const reason = `Telegram send failed: invalid response body (HTTP ${Number.isFinite(httpStatus) ? httpStatus : 'unknown'})`;
+      if (permanentHttpFailure) {
+        console.error(`[TelegramAdapter] Permanent send failure (${httpStatus}): ${reason}`);
+        return;
+      }
+      throw new TelegramIntakeRetryableError(reason);
     }
+
+    const httpSucceeded = resp.ok === true
+      && httpStatus >= 200
+      && httpStatus < 300;
+    if (httpSucceeded && data.ok === true) return;
+
+    const apiCode = typeof data.error_code === 'number' && Number.isInteger(data.error_code)
+      ? data.error_code
+      : null;
+    const permanentApiFailure = apiCode !== null
+      && apiCode >= 400
+      && apiCode < 500
+      && apiCode !== 408
+      && apiCode !== 429;
+    const transientApiFailure = apiCode === 408
+      || apiCode === 429
+      || (apiCode !== null && apiCode >= 500);
+    const reason = `Telegram send failed: ${typeof data.description === 'string' ? data.description : 'unknown error'}`;
+
+    // A permanent result must be confirmed by the HTTP 4xx status and must
+    // not contradict a successful or transient Bot API payload. Unknown,
+    // malformed, contradictory, 408, 429, and 5xx responses remain retryable.
+    if (permanentHttpFailure
+      && data.ok !== true
+      && !transientApiFailure
+      && (apiCode === null || permanentApiFailure)) {
+      console.error(`[TelegramAdapter] Permanent send failure (${httpStatus}): ${reason}`);
+      return;
+    }
+
+    throw new TelegramIntakeRetryableError(reason);
   } catch (error) {
     console.error('[TelegramAdapter] sendMessage error:', error);
     if (error instanceof TelegramIntakeRetryableError) throw error;
