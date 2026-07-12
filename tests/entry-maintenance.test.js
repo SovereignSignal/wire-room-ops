@@ -149,13 +149,11 @@ test('explicit duplicate link refuses a dead-end parent chain', async () => {
   assert.equal(pool.calls.some(call => /^\s*UPDATE scan_entries SET[\s\S]*status = 'duplicate'/.test(call.sql)), false);
 });
 
-test('explicit duplicate link refuses a non-reviewable terminal parent', async () => {
+test('explicit duplicate link accepts an archived terminal parent', async () => {
   const pool = fakePool({
     chainRows: [{ id: 10355, status: 'archived', duplicate_of_id: null, depth: 0, cycle: false }],
   });
-  await assert.rejects(
-    linkEntryDuplicate(pool, 11106, duplicateOptions),
-    error => error instanceof EntryMaintenanceError && /invalid-status/.test(error.message),
-  );
-  assert.ok(pool.calls.some(call => call.sql === 'ROLLBACK'));
+  const result = await linkEntryDuplicate(pool, 11106, duplicateOptions);
+  assert.equal(result.duplicateOfId, 10355);
+  assert.equal(result.dryRun, false);
 });

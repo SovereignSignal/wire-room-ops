@@ -51,7 +51,7 @@ export async function resolveDuplicateChain(
     const error = terminal.duplicate_of_id && terminal.depth >= maxDepth ? 'max-depth' : 'dead-end';
     return { id: null, status: terminal.status, depth: terminal.depth, error };
   }
-  if (!['approved', 'declined', 'queued'].includes(terminal.status)) {
+  if (!['approved', 'declined', 'queued', 'archived'].includes(terminal.status)) {
     return { id: null, status: terminal.status, depth: terminal.depth, error: 'invalid-status' };
   }
   return { id: terminal.id, status: terminal.status, depth: terminal.depth, error: null };
@@ -137,7 +137,7 @@ export async function demoteEntryToDuplicateInTransaction(
   );
   const terminal = terminalResult.rows[0];
   if (!terminal
-      || !['approved', 'declined', 'queued'].includes(terminal.status)
+      || !['approved', 'declined', 'queued', 'archived'].includes(terminal.status)
       || terminal.duplicate_of_id !== null) {
     throw new Error('Duplicate parent changed before write');
   }
@@ -162,7 +162,7 @@ export async function demoteEntryToDuplicateInTransaction(
        AND EXISTS (
          SELECT 1 FROM scan_entries AS parent
          WHERE parent.id = $2
-           AND parent.status IN ('approved', 'declined', 'queued')
+           AND parent.status IN ('approved', 'declined', 'queued', 'archived')
            AND parent.duplicate_of_id IS NULL
        )
      RETURNING target.id`,
