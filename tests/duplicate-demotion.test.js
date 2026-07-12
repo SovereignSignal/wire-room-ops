@@ -96,3 +96,13 @@ test('duplicate demotion rejects self links before acquiring graph locks', async
   );
   assert.equal(db.calls.length, 0);
 });
+
+test('duplicate demotion succeeds when canonical parent is archived', async () => {
+  const db = fakeDb({
+    resolutionRow: { id: 30, status: 'archived', duplicate_of_id: null, depth: 1, cycle: false },
+    terminalRow: { id: 30, status: 'archived', duplicate_of_id: null },
+  });
+  const result = await demoteEntryToDuplicateInTransaction(db, INPUT);
+
+  assert.deepEqual(result, { outcome: 'linked', canonicalParentId: 30 });
+});
