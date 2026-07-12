@@ -62,3 +62,24 @@ test('settled batch report escapes Telegram HTML', () => {
   assert.match(report, /Grant &lt;script&gt;/);
   assert.match(report, /Bad &amp; unsafe/);
 });
+
+test('settled batch report truncates only at complete HTML line boundaries', () => {
+  const entries = Array.from({ length: 60 }, (_, index) => ({
+    name: `Grant ${index} ${'&'.repeat(160)}`,
+    wire: 'oss',
+    isDuplicate: true,
+    error: `Already seen ${'&'.repeat(320)}`,
+  }));
+  const report = formatSettledBatchReport({
+    inserted: 0,
+    duplicates: entries.length,
+    errors: 0,
+    failed: entries.length,
+    entries,
+  }, []);
+
+  assert.ok(report.length <= 4000);
+  assert.match(report, /more results omitted/);
+  assert.doesNotMatch(report.replaceAll('&amp;', '').replaceAll('&lt;', '').replaceAll('&gt;', ''), /&/);
+  assert.equal((report.match(/<b>/g) || []).length, (report.match(/<\/b>/g) || []).length);
+});

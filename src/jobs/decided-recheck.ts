@@ -32,30 +32,13 @@ import { EntryMaintenanceError, rewriteEntrySource } from '../services/entry-mai
 import { config } from '../config';
 
 let isRunning = false;
-let activeRunDone: Promise<void> | null = null;
-let finishActiveRun: (() => void) | null = null;
 
 function tryStartRecheckRun(): (() => void) | null {
   if (isRunning) return null;
   isRunning = true;
-  activeRunDone = new Promise(resolve => {
-    finishActiveRun = resolve;
-  });
   return () => {
-    const finish = finishActiveRun;
-    finishActiveRun = null;
-    activeRunDone = null;
     isRunning = false;
-    finish?.();
   };
-}
-
-async function waitAndStartRecheckRun(): Promise<() => void> {
-  while (true) {
-    const release = tryStartRecheckRun();
-    if (release) return release;
-    if (activeRunDone) await activeRunDone;
-  }
 }
 
 const BATCH_SIZE = 20;
@@ -636,9 +619,10 @@ async function processRecheckTargets(pool: Pool, targets: RecheckTarget[]): Prom
 }
 
 /**
- * Settle one Telegram intake batch immediately instead of waiting for the
- * five-minute global sweep. The in-process run lock serializes targeted and
- * scheduled checks so two LLM verdicts cannot race on the same row.
+ * Attempt to settle one Telegram intake batch immediately. If the scheduled
+ * sweep or another targeted run is active, return without waiting. The caller
+ * can report the submitted rows as pending instead of holding a webhook and a
+ * database connection behind a potentially long provider call.
  */
 export async function runDecidedRecheckForIds(pool: Pool, entryIds: number[]): Promise<RecheckStats> {
   const ids = [...new Set(entryIds.filter(Number.isInteger))];
@@ -646,7 +630,10 @@ export async function runDecidedRecheckForIds(pool: Pool, entryIds: number[]): P
     return { checked: 0, duplicates: 0, updates: 0, distinct: 0, errors: 0 };
   }
 
-  const release = await waitAndStartRecheckRun();
+  const release = tryStartRecheckRun();
+  if (!release) {
+    return { checked: 0, duplicates: 0, updates: 0, distinct: 0, errors: 0 };
+  }
   try {
     const batch = await pool.query(
       `SELECT id, wire, name, description, source_url, deadline

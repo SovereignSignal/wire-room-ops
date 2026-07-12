@@ -12,6 +12,7 @@ const assert = require('node:assert/strict');
 const intakeCore = require('../src/services/intake-core');
 const {
   handleTelegramUpdate,
+  settleHistoryWithinBudget,
   TelegramIntakeRetryableError,
 } = require('../src/services/telegram-adapter');
 
@@ -92,13 +93,41 @@ test('Telegram adapter propagates reply delivery failures for webhook retry', as
     detectedWire: 'oss',
     confirmText: 'Saved entry #42',
   });
-  global.fetch = async () => ({
-    json: async () => ({ ok: false, description: 'temporary Telegram failure' }),
-  });
+  let requestOptions;
+  global.fetch = async (_url, options) => {
+    requestOptions = options;
+    return {
+      json: async () => ({ ok: false, description: 'temporary Telegram failure' }),
+    };
+  };
 
   await assert.rejects(
     handleTelegramUpdate(baseUpdate),
     error => error instanceof TelegramIntakeRetryableError
       && /temporary Telegram failure/.test(error.message),
   );
+  assert.ok(requestOptions.signal instanceof AbortSignal);
+});
+
+test('history settlement returns pending when the webhook budget expires', async t => {
+  const db = require('../src/db');
+  const decidedRecheck = require('../src/jobs/decided-recheck');
+  const originalGetPool = db.getPool;
+  const originalRun = decidedRecheck.runDecidedRecheckForIds;
+  t.after(() => {
+    db.getPool = originalGetPool;
+    decidedRecheck.runDecidedRecheckForIds = originalRun;
+  });
+
+  db.getPool = () => ({});
+  decidedRecheck.runDecidedRecheckForIds = async () => {
+    await new Promise(resolve => setTimeout(resolve, 50));
+    return { checked: 0, duplicates: 0, updates: 0, distinct: 0, errors: 0 };
+  };
+
+  const startedAt = Date.now();
+  const outcome = await settleHistoryWithinBudget([42], 5);
+  assert.equal(outcome, 'pending');
+  assert.ok(Date.now() - startedAt < 40);
+  await new Promise(resolve => setTimeout(resolve, 55));
 });
