@@ -75,3 +75,30 @@ test('Telegram adapter propagates batch persistence failures for webhook retry',
     TelegramIntakeRetryableError,
   );
 });
+
+test('Telegram adapter propagates reply delivery failures for webhook retry', async t => {
+  const originalBatchCheck = intakeCore.isBatchMessage;
+  const originalProcess = intakeCore.processIntakeMessage;
+  const originalFetch = global.fetch;
+  t.after(() => {
+    intakeCore.isBatchMessage = originalBatchCheck;
+    intakeCore.processIntakeMessage = originalProcess;
+    global.fetch = originalFetch;
+  });
+  intakeCore.isBatchMessage = () => false;
+  intakeCore.processIntakeMessage = async () => ({
+    status: 'inserted',
+    entryId: 42,
+    detectedWire: 'oss',
+    confirmText: 'Saved entry #42',
+  });
+  global.fetch = async () => ({
+    json: async () => ({ ok: false, description: 'temporary Telegram failure' }),
+  });
+
+  await assert.rejects(
+    handleTelegramUpdate(baseUpdate),
+    error => error instanceof TelegramIntakeRetryableError
+      && /temporary Telegram failure/.test(error.message),
+  );
+});
