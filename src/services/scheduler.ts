@@ -406,6 +406,16 @@ function createJobExecutor(schedule: ScheduleConfig) {
         // Discovery lanes run as part of this one daily cycle — no separate cron to manage.
         // Each is isolated so a lane failure never blocks the digest.
         try {
+          // No-op when no scan prompts are active — prompt activation is the on/off switch.
+          const sr = await runScanExecution(pool, {});
+          if (sr.promptsExecuted > 0) {
+            console.log(`[Scheduler] Daily scans: ${sr.promptsExecuted} prompts, ${sr.totalResults} results, ${sr.intakeSummary.newUnique} unique`);
+          }
+        } catch (e) {
+          console.error('[Scheduler] Daily scan lane failed (non-fatal):', e instanceof Error ? e.message : e);
+          anomalies.push(`Scan lane failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+        try {
           if (config.forum.enabled) {
             const fr = await runForumScan(pool, {});
             console.log(`[Scheduler] Daily forum scan: ${fr.opportunityCount} opps from ${fr.candidateCount} candidates, ${fr.intakeSummary.newUnique} unique`);
@@ -518,20 +528,27 @@ function createJobExecutor(schedule: ScheduleConfig) {
         // ---- Daily CRM cycle (folded — no standalone timers) ----
         // Runs AFTER the digest email so CRM latency can never delay the
         // operator's morning touchpoint. Each step isolated + non-fatal.
-        try {
-          const { enrichBatch, computeDerivedFields } = await import('./org-enricher');
-          await enrichBatch({ limit: 40 });
-          await computeDerivedFields();
-          console.log('[Scheduler] Daily CRM: org enrichment + derived fields done');
-        } catch (e) {
-          console.error('[Scheduler] Daily CRM enrichment failed (non-fatal):', e);
-        }
-        try {
-          const { runContactDiscovery } = await import('./contact-discovery');
-          const cd = await runContactDiscovery(pool, { limit: 20 });
-          console.log(`[Scheduler] Daily CRM: contact discovery — ${cd?.contactsCreated ?? 0} created, ${cd?.orgsProcessed ?? 0} orgs`);
-        } catch (e) {
-          console.error('[Scheduler] Daily CRM contact discovery failed (non-fatal):', e);
+        // Enrichment + contact discovery are gated: their xAI web_search
+        // engine was retired 2026-07-11 (they'd fail every cycle). Notion
+        // sync below stays on so the CRM reflects current org_profiles.
+        if (config.crm.enrichEnabled) {
+          try {
+            const { enrichBatch, computeDerivedFields } = await import('./org-enricher');
+            await enrichBatch({ limit: 40 });
+            await computeDerivedFields();
+            console.log('[Scheduler] Daily CRM: org enrichment + derived fields done');
+          } catch (e) {
+            console.error('[Scheduler] Daily CRM enrichment failed (non-fatal):', e);
+          }
+          try {
+            const { runContactDiscovery } = await import('./contact-discovery');
+            const cd = await runContactDiscovery(pool, { limit: 20 });
+            console.log(`[Scheduler] Daily CRM: contact discovery — ${cd?.contactsCreated ?? 0} created, ${cd?.orgsProcessed ?? 0} orgs`);
+          } catch (e) {
+            console.error('[Scheduler] Daily CRM contact discovery failed (non-fatal):', e);
+          }
+        } else {
+          console.log('[Scheduler] Daily CRM: enrichment + contact discovery skipped (CRM_ENRICH_ENABLED != true)');
         }
         try {
           const { getIntegrationConfigs, syncOrgsToNotion } = await import('./notion-sync');

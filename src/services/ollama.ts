@@ -87,7 +87,7 @@ export async function summarizeWithOllama(entry: DatabaseEntry, model?: string):
     const errorText = await response.text();
     logApiUsage({
       provider: 'ollama', model: useModel, purpose: 'summarize',
-      duration_ms: Date.now() - start, success: false, error_message: `${response.status}`,
+      duration_ms: Date.now() - start, success: false, error_message: `${response.status} ${errorText.slice(0, 200)}`.trim(),
     });
     throw new Error(`Ollama API error: ${response.status} - ${errorText}`);
   }
@@ -165,9 +165,10 @@ Write ONLY the final newsletter summary below. No thinking, no explanation, no m
   });
 
   if (!response.ok) {
+    const errorText = await response.text().catch(() => '');
     logApiUsage({
       provider: 'ollama', model: useModel, purpose: 'auto-summarize',
-      duration_ms: Date.now() - start, success: false, error_message: `${response.status}`,
+      duration_ms: Date.now() - start, success: false, error_message: `${response.status} ${errorText.slice(0, 200)}`.trim(),
     });
     return null;
   }

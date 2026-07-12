@@ -282,7 +282,7 @@ export async function grokWebSearch(prompt: string): Promise<string> {
 
   if (!response.ok) {
     const errorText = await response.text().catch(() => 'unknown');
-    logApiUsage({ provider: 'grok', model, purpose: 'contact-discovery', duration_ms: Date.now() - start, success: false, error_message: `${response.status}` });
+    logApiUsage({ provider: 'grok', model, purpose: 'contact-discovery', duration_ms: Date.now() - start, success: false, error_message: `${response.status} ${errorText.slice(0, 200)}`.trim() });
     throw new Error(`Grok returned ${response.status}: ${errorText}`);
   }
 

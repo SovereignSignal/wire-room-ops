@@ -117,7 +117,7 @@ export async function createSessionToken(email: string): Promise<string> {
   return token;
 }
 
-export async function validateSession(token: string): Promise<boolean> {
+export async function getSessionEmail(token: string): Promise<string | null> {
   const hashedToken = hashToken(token);
 
   // Check in-memory cache first
@@ -127,9 +127,9 @@ export async function validateSession(token: string): Promise<boolean> {
       sessionCache.delete(hashedToken);
       // Clean from DB too (fire-and-forget)
       getPool().query('DELETE FROM sessions WHERE token_hash = $1', [hashedToken]).catch(() => {});
-      return false;
+      return null;
     }
-    return true;
+    return cached.email;
   }
 
   // Not in cache — check DB (session may have been created before this deploy)
@@ -139,13 +139,13 @@ export async function validateSession(token: string): Promise<boolean> {
       'SELECT email, created_at, expires_at FROM sessions WHERE token_hash = $1',
       [hashedToken]
     );
-    if (result.rows.length === 0) return false;
+    if (result.rows.length === 0) return null;
 
     const row = result.rows[0];
     const expiresAt = new Date(row.expires_at);
     if (new Date() > expiresAt) {
       pool.query('DELETE FROM sessions WHERE token_hash = $1', [hashedToken]).catch(() => {});
-      return false;
+      return null;
     }
 
     // Populate cache
@@ -154,11 +154,15 @@ export async function validateSession(token: string): Promise<boolean> {
       createdAt: new Date(row.created_at),
       expiresAt,
     });
-    return true;
+    return row.email;
   } catch (err) {
     console.error('[Auth] Failed to check session in DB:', err);
-    return false;
+    return null;
   }
+}
+
+export async function validateSession(token: string): Promise<boolean> {
+  return (await getSessionEmail(token)) !== null;
 }
 
 export async function invalidateSession(token: string): Promise<void> {

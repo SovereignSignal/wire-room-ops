@@ -26,6 +26,11 @@ export interface ActionOptions {
   dryRun?: boolean; // if true, validate and return result without committing
 }
 
+/** Force is reserved for authenticated human operators, never agent principals. */
+export function canForceApproval(opts: ActionOptions): boolean {
+  return opts.force === true && !(opts.actor || '').startsWith('agent:');
+}
+
 export interface SingleActionResult {
   success: boolean;
   newStatus: string;
@@ -150,6 +155,7 @@ export async function singleEntryAction(
 ): Promise<SingleActionResult> {
   const newStatus = resolveAction(action);
   const pool = getPool();
+  const forceApproval = canForceApproval(opts);
 
   // Pre-approval validation gate
   let approvalWarnings: string[] = [];
@@ -167,7 +173,7 @@ export async function singleEntryAction(
     const validation = validateForApproval(preCheck.rows[0]);
     approvalWarnings = validation.warnings;
 
-    if (!validation.valid && !opts.force) {
+    if (!validation.valid && !forceApproval) {
       throw new ApprovalBlockedError(validation.errors, validation.warnings);
     }
   }
@@ -262,6 +268,7 @@ export async function bulkEntryAction(
 ): Promise<BulkActionResult> {
   const newStatus = resolveAction(action);
   const pool = getPool();
+  const forceApproval = canForceApproval(opts);
 
   // Pre-approval validation gate for bulk approve
   if (action === 'approve') {
@@ -283,7 +290,7 @@ export async function bulkEntryAction(
       }
     }
 
-    if (blocked.length > 0 && !opts.force) {
+    if (blocked.length > 0 && !forceApproval) {
       throw new BulkApprovalBlockedError(blocked, passCount, blocked.length);
     }
   }

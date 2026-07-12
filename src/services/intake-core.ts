@@ -9,13 +9,15 @@
  * (INTAKE_WIRE_KEYWORDS_{WIRE}) with built-in defaults as fallback.
  */
 
+import type { Pool } from 'pg';
 import { getPool, getAllFeeds } from '../db';
-import { checkDuplicate, registerSeen } from '../services/dedup';
+import { checkDuplicate, registerSeenInTransaction } from '../services/dedup';
 import { type Classification, type OperatorRoute } from '../services/classifier';
 import { scrapeUrl, isScrapableUrl, truncateContent } from './scraper';
 import { normalizeUrl } from '../utils/url';
-import { blockedSourceDomain } from '../services/source-filter';
+import { blockedSourceDomain, classifySourceLink } from '../services/source-filter';
 import { safePublicFetch } from '../utils/ssrf';
+import { demoteEntryToDuplicateInTransaction, lockDuplicateGraph } from './duplicate-chain';
 
 // ────────────────────────────────────────────────────────────────────────────────────
 // URL Title Fetcher
@@ -119,7 +121,8 @@ export interface IntakeMessage {
   text: string;              // raw message text
   urls?: string[];           // pre-extracted URLs (optional, core will also extract)
   senderId: string;          // channel-specific user ID
-  channelMessageId: string;  // for correlating callback responses
+  channelMessageId: string;  // source message ID for lineage
+  channelUpdateId?: string;  // transport update ID for webhook lineage
   forwardedFrom?: string;    // original source name if forwarded
 }
 
@@ -329,7 +332,7 @@ function buildName(text: string, url: string | null): string {
 // DB insert
 // ────────────────────────────────────────────────────────────────────────────
 
-async function insertEntry(entry: {
+interface NewIntakeEntry {
   name: string;
   description: string;
   sourceUrl: string;
@@ -339,17 +342,145 @@ async function insertEntry(entry: {
   scanSource: string;
   status?: string;
   deadline?: string | null;
-}): Promise<number> {
-  const pool = getPool();
+  sourceNeedsVerification?: boolean;
+  operatorRoute?: OperatorRoute;
+  channelMessageId?: string;
+  channelUpdateId?: string;
+  channelItemKey?: string;
+  forwardedFrom?: string;
+}
+
+type Queryable = Pick<Pool, 'query'>;
+
+export function buildIntakeMetadata(entry: NewIntakeEntry): Record<string, unknown> {
+  return {
+    source_needs_verification: entry.sourceNeedsVerification ?? false,
+    operator_route: entry.operatorRoute ?? null,
+    channel_message_id: entry.channelMessageId ?? null,
+    channel_update_id: entry.channelUpdateId ?? null,
+    channel_item_key: entry.channelItemKey ?? null,
+    forwarded_from: entry.forwardedFrom ?? null,
+  };
+}
+
+export function telegramReplayPlaceholder(updateId: string, itemKey: string): string {
+  return `https://manual/needs-source/telegram-${encodeURIComponent(updateId)}-${encodeURIComponent(itemKey)}`;
+}
+
+export async function findTelegramReplayEntry(
+  db: Queryable,
+  updateId?: string,
+  itemKey?: string,
+): Promise<number | null> {
+  if (!updateId || !itemKey) return null;
+  const existing = await db.query(
+    `SELECT id
+     FROM scan_entries
+     WHERE scan_source = 'telegram'
+       AND metadata->>'channel_update_id' = $1
+       AND metadata->>'channel_item_key' = $2
+     ORDER BY id ASC
+     LIMIT 1`,
+    [updateId, itemKey],
+  );
+  return existing.rows[0]?.id ?? null;
+}
+
+async function insertEntry(db: Queryable, entry: NewIntakeEntry): Promise<number> {
   const status = entry.status ?? 'raw'; // Raw entries flow through the classification pipeline
-  const res = await pool.query(
+  const res = await db.query(
     `INSERT INTO scan_entries
-     (name, description, source_url, wire, prompt_variant, scan_source, scan_date, status, submitted_by, deadline)
-     VALUES ($1, $2, $3, $4, 'N', $5, $6, $7, $8, $9)
+     (name, description, source_url, wire, prompt_variant, scan_source, scan_date,
+      status, submitted_by, deadline, source_needs_verification, metadata)
+     VALUES ($1, $2, $3, $4, 'N', $5, $6, $7, $8, $9, $10, $11::jsonb)
      RETURNING id`,
-    [entry.name, entry.description, entry.sourceUrl, entry.wire, entry.scanSource, entry.scanDate, status, entry.submittedBy, entry.deadline ?? null]
+    [
+      entry.name,
+      entry.description,
+      entry.sourceUrl,
+      entry.wire,
+      entry.scanSource,
+      entry.scanDate,
+      status,
+      entry.submittedBy,
+      entry.deadline ?? null,
+      entry.sourceNeedsVerification ?? false,
+      JSON.stringify(buildIntakeMetadata(entry)),
+    ],
   );
   return res.rows[0].id;
+}
+
+/** Insert an intake row and resolve the exact-URL claim in one transaction. */
+export async function insertIntakeEntryWithClaim(
+  pool: Pool,
+  entry: NewIntakeEntry,
+): Promise<{ id: number; urlConflict: boolean; conflictEntryId: number | null; unresolvedParent?: boolean }> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const id = await insertEntry(client, entry);
+    // Keep the graph lock ahead of URL-registry locks everywhere. A single
+    // lock order prevents deadlocks with maintenance and duplicate rechecks.
+    await lockDuplicateGraph(client);
+    const claim = await registerSeenInTransaction(client, {
+      id,
+      sourceUrl: entry.sourceUrl,
+      name: entry.name,
+      wire: entry.wire,
+      scanDate: entry.scanDate,
+    });
+
+    let conflictEntryId = claim.conflictEntryId;
+    let urlConflict = claim.urlConflict;
+    let unresolvedParent = false;
+    if (claim.urlConflict) {
+      const conflictReason = claim.conflictEntryId === null
+        ? 'URL already exists in seed history'
+        : 'URL claimed by concurrent submission';
+      if (claim.conflictEntryId === null) {
+        const demoted = await client.query(
+          `UPDATE scan_entries
+           SET status = 'deduped', duplicate_of_id = NULL,
+               duplicate_reason = $2, distributable = false, updated_at = NOW()
+           WHERE id = $1 AND status = $3 AND source_url = $4
+           RETURNING id`,
+          [id, conflictReason, entry.status ?? 'raw', entry.sourceUrl],
+        );
+        if (demoted.rowCount !== 1) throw new Error('Exact URL seed conflict loser changed before demotion');
+      } else {
+        const demoted = await demoteEntryToDuplicateInTransaction(client, {
+          targetId: id,
+          requestedParentId: claim.conflictEntryId,
+          expectedStatus: entry.status ?? 'raw',
+          expectedSourceUrl: entry.sourceUrl,
+          reason: conflictReason,
+          actor: 'intake-url-claim',
+        });
+        if (demoted.outcome === 'unresolvable') {
+          // Permanent: the URL owner can never be a canonical parent. Throwing
+          // here is what spun the Telegram webhook 44+ times in the July 2026
+          // incident. Keep the freshly-inserted entry visible for review and
+          // report the unresolvable parent up instead of demanding a retry.
+          unresolvedParent = true;
+          urlConflict = false;
+          conflictEntryId = null;
+        } else if (demoted.outcome !== 'linked' || demoted.canonicalParentId === null) {
+          throw new Error('Exact URL claim loser changed before demotion');
+        } else {
+          conflictEntryId = demoted.canonicalParentId;
+        }
+      }
+    }
+
+    await client.query('COMMIT');
+    return { id, urlConflict, conflictEntryId, unresolvedParent };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -405,17 +536,39 @@ export async function processIntakeMessage(
     return { status: 'rejected', errorMessage: 'Empty message' };
   }
 
-  // Load active wires
+  // Extract and validate caller-supplied URLs before any DB or network work.
+  const textUrls = extractUrls(text);
+  const passedUrls = msg.urls || [];
+  const allUrls = [...new Set([...passedUrls, ...textUrls])];
+  const suppliedPrimaryUrl = allUrls[0] || null;
+  const suppliedSourceClass = suppliedPrimaryUrl ? classifySourceLink(suppliedPrimaryUrl) : null;
+  if (suppliedSourceClass === 'invalid') {
+    return { status: 'rejected', errorMessage: 'Invalid source URL: use HTTP or HTTPS' };
+  }
+  if (suppliedSourceClass === 'shortener') {
+    return { status: 'rejected', errorMessage: 'Unresolved shortener URL: submit the destination source' };
+  }
+  const channelItemKey = msg.channelUpdateId ? 'single' : undefined;
+  const primaryUrl = suppliedPrimaryUrl
+    || (msg.channelUpdateId
+      ? telegramReplayPlaceholder(msg.channelUpdateId, channelItemKey!)
+      : `https://t.me/manual/${Date.now()}`);
+  const sourceNeedsVerification = classifySourceLink(primaryUrl) === 'placeholder';
+
+  // Load active wires only after cheap input validation.
   const wires = await getActiveWires();
   if (wires.length === 0) {
     return { status: 'error', errorMessage: 'No active wires configured' };
   }
 
-  // Extract URLs
-  const textUrls = extractUrls(text);
-  const passedUrls = msg.urls || [];
-  const allUrls = [...new Set([...passedUrls, ...textUrls])];
-  const primaryUrl = allUrls[0] || `https://t.me/manual/${Date.now()}`;
+  const replayEntryId = await findTelegramReplayEntry(getPool(), msg.channelUpdateId, channelItemKey);
+  if (replayEntryId !== null) {
+    return {
+      status: 'inserted',
+      entryId: replayEntryId,
+      confirmText: `Captured existing entry #${replayEntryId} from a retried Telegram update`,
+    };
+  }
 
   // Gate 1: reject known Tier-3 aggregator sources before they cost a
   // classification call (opportunitydesk, afredac, menterprise, …).
@@ -474,7 +627,7 @@ export async function processIntakeMessage(
     }
 
     try {
-      const id = await insertEntry({
+      const inserted = await insertIntakeEntryWithClaim(getPool(), {
         name,
         description: effectiveDescription,
         sourceUrl: primaryUrl,
@@ -483,8 +636,23 @@ export async function processIntakeMessage(
         submittedBy: msg.senderId,
         scanSource,
         status: 'queued',
+        sourceNeedsVerification,
+        operatorRoute: sourceNeedsVerification ? 'source_check' : undefined,
+        channelMessageId: msg.channelMessageId,
+        channelUpdateId: msg.channelUpdateId,
+        channelItemKey,
+        forwardedFrom: msg.forwardedFrom,
       });
-      await registerSeen(getPool(), { id, sourceUrl: primaryUrl, name, wire, scanDate });
+      if (inserted.urlConflict) {
+        return {
+          status: 'rejected',
+          entryId: inserted.id,
+          errorMessage: inserted.conflictEntryId === null
+            ? 'Duplicate: exact URL already exists in history'
+            : `Duplicate: exact URL already belongs to entry #${inserted.conflictEntryId}`,
+        };
+      }
+      const id = inserted.id;
       // Dumb pipe: no classification at intake — the row lands in the queue as-is.
       // Scoring/classification/routing is the downstream filter's job, not the pipe's.
       return {
@@ -513,7 +681,7 @@ export async function processIntakeMessage(
   }
 
   try {
-    const id = await insertEntry({
+    const inserted = await insertIntakeEntryWithClaim(getPool(), {
       name,
       description: effectiveDescription,
       sourceUrl: primaryUrl,
@@ -522,8 +690,23 @@ export async function processIntakeMessage(
       submittedBy: msg.senderId,
       scanSource,
       status: 'queued',
+      sourceNeedsVerification,
+      operatorRoute: sourceNeedsVerification ? 'source_check' : undefined,
+      channelMessageId: msg.channelMessageId,
+      channelUpdateId: msg.channelUpdateId,
+      channelItemKey,
+      forwardedFrom: msg.forwardedFrom,
     });
-    await registerSeen(getPool(), { id, sourceUrl: primaryUrl, name, wire: fallbackWire, scanDate });
+    if (inserted.urlConflict) {
+      return {
+        status: 'rejected',
+        entryId: inserted.id,
+        errorMessage: inserted.conflictEntryId === null
+          ? 'Duplicate: exact URL already exists in history'
+          : `Duplicate: exact URL already belongs to entry #${inserted.conflictEntryId}`,
+      };
+    }
+    const id = inserted.id;
     // Dumb pipe: no classification at intake — lands in the queue as-is (filter runs downstream).
     return {
       status: 'inserted',
@@ -545,9 +728,17 @@ export interface BatchIntakeResult {
   inserted: number;
   duplicates: number;
   errors: number;
+  retryableErrors: number;
   /** @deprecated use duplicates + errors instead */
   failed: number;
-  entries: Array<{ name: string; wire: string; id?: number; error?: string; isDuplicate?: boolean }>;
+  entries: Array<{
+    name: string;
+    wire: string;
+    id?: number;
+    error?: string;
+    isDuplicate?: boolean;
+    retryable?: boolean;
+  }>;
 }
 
 /**
@@ -795,12 +986,26 @@ export async function processBatchMessage(
     inserted: 0,
     duplicates: parsedCount - entries.length,
     errors: 0,
+    retryableErrors: 0,
     failed: 0,
     entries: [],
   };
-  const seenInBatch = new Set<string>(); // Within-batch URL dedup
+  const seenInBatch = new Map<string, string[]>(); // normalized URL -> accepted names
 
   for (const entry of entries) {
+    const semanticKey = semanticBatchKey(entry.name) || entry.name.toLowerCase();
+    const channelItemKey = msg.channelUpdateId ? `batch:${semanticKey}` : undefined;
+    if (msg.channelUpdateId && classifySourceLink(entry.sourceUrl) === 'placeholder') {
+      entry.sourceUrl = telegramReplayPlaceholder(msg.channelUpdateId, channelItemKey!);
+    }
+
+    const replayEntryId = await findTelegramReplayEntry(getPool(), msg.channelUpdateId, channelItemKey);
+    if (replayEntryId !== null) {
+      result.inserted++;
+      result.entries.push({ name: entry.name, wire: 'existing', id: replayEntryId });
+      continue;
+    }
+
     // Detect wire from combined name + description
     const combined = `${entry.name} ${entry.description}`;
     const wire = detectWire(combined, wires);
@@ -811,8 +1016,14 @@ export async function processBatchMessage(
       const defaultWire = wires.includes('crypto') ? 'crypto' : wires[0];
       if (!defaultWire) {
         result.errors++;
+        result.retryableErrors++;
         result.failed++;
-        result.entries.push({ name: entry.name, wire: 'unknown', error: 'No wires configured' });
+        result.entries.push({
+          name: entry.name,
+          wire: 'unknown',
+          error: 'No wires configured',
+          retryable: true,
+        });
         continue;
       }
       console.log(`[BatchIntake] Wire not detected for "${entry.name}", defaulting to "${defaultWire}"`);
@@ -822,6 +1033,15 @@ export async function processBatchMessage(
       Object.assign(entry, { _resolvedWire: resolvedWire });
     }
     const resolvedWire = (entry as typeof entry & { _resolvedWire?: string })._resolvedWire || wire!;
+
+    const sourceClass = classifySourceLink(entry.sourceUrl);
+    if (sourceClass === 'missing' || sourceClass === 'invalid' || sourceClass === 'shortener') {
+      result.errors++;
+      result.failed++;
+      result.entries.push({ name: entry.name, wire: resolvedWire, error: 'Missing verifiable source URL' });
+      continue;
+    }
+    const sourceNeedsVerification = sourceClass === 'placeholder';
 
     // Gate 1: reject known Tier-3 aggregator sources
     const batchBlocked = blockedSourceDomain(entry.sourceUrl);
@@ -834,7 +1054,18 @@ export async function processBatchMessage(
 
     // Within-batch dedup: catch same URL appearing multiple times in one submission
     const normalizedBatchUrl = normalizeUrl(entry.sourceUrl);
-    if (seenInBatch.has(normalizedBatchUrl)) {
+    const priorNames = seenInBatch.get(normalizedBatchUrl) || [];
+    let isSocialAggregate = false;
+    try {
+      const host = new URL(entry.sourceUrl).hostname
+        .toLowerCase()
+        .replace(/^www\./, '')
+        .replace(/\.+$/, '');
+      isSocialAggregate = host === 'x.com' || host === 'twitter.com';
+    } catch {
+      isSocialAggregate = false;
+    }
+    if (priorNames.length > 0 && (!isSocialAggregate || priorNames.length >= 2)) {
       result.duplicates++;
       result.failed++;
       result.entries.push({ name: entry.name, wire: resolvedWire, error: 'Duplicate URL within batch', isDuplicate: true });
@@ -855,7 +1086,7 @@ export async function processBatchMessage(
     }
 
     try {
-      const id = await insertEntry({
+      const inserted = await insertIntakeEntryWithClaim(getPool(), {
         name: entry.name,
         description: entry.description,
         sourceUrl: entry.sourceUrl,
@@ -865,15 +1096,42 @@ export async function processBatchMessage(
         scanSource,
         status: 'queued',
         deadline: normalizeDeadlineForDb(entry.deadline, scanDate),
+        sourceNeedsVerification,
+        operatorRoute: sourceNeedsVerification ? 'source_check' : undefined,
+        channelMessageId: msg.channelMessageId,
+        channelUpdateId: msg.channelUpdateId,
+        channelItemKey,
+        forwardedFrom: msg.forwardedFrom,
       });
-      await registerSeen(getPool(), { id, sourceUrl: entry.sourceUrl, name: entry.name, wire: resolvedWire, scanDate });
-      seenInBatch.add(normalizedBatchUrl);
+      if (inserted.urlConflict) {
+        result.duplicates++;
+        result.failed++;
+        result.entries.push({
+          name: entry.name,
+          wire: resolvedWire,
+          id: inserted.id,
+          error: inserted.conflictEntryId === null
+            ? 'Exact URL already exists in history'
+            : `Exact URL already belongs to entry #${inserted.conflictEntryId}`,
+          isDuplicate: true,
+        });
+        seenInBatch.set(normalizedBatchUrl, [...priorNames, entry.name]);
+        continue;
+      }
+      const id = inserted.id;
+      seenInBatch.set(normalizedBatchUrl, [...priorNames, entry.name]);
       result.inserted++;
       result.entries.push({ name: entry.name, wire: resolvedWire, id });
     } catch (err) {
       result.errors++;
+      result.retryableErrors++;
       result.failed++;
-      result.entries.push({ name: entry.name, wire: resolvedWire, error: err instanceof Error ? err.message : 'Insert failed' });
+      result.entries.push({
+        name: entry.name,
+        wire: resolvedWire,
+        error: err instanceof Error ? err.message : 'Insert failed',
+        retryable: true,
+      });
     }
   }
 

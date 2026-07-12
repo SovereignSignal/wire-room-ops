@@ -294,3 +294,24 @@ test('getFreshFinds selects program history via the programs join', async () => 
   assert.match(pool.calls[0].sql, /program_history/);
   assert.match(pool.calls[0].sql, /program_verdict/);
 });
+
+test('buildRunLedger: a provider with failures and zero successes flags an account-level outage', async () => {
+  const pool = fakePool();
+  pool.queueResponse([{ ok: '12', failed: '0' }]);               // scans probe: healthy
+  pool.queueResponse([{ n: '0' }]);                              // gate probe: no auto-dupes this run
+  pool.queueResponse([                                            // provider-outage probe
+    { provider: 'grok', ok: '0', failed: '120' },
+    { provider: 'parallel', ok: '7', failed: '0' },
+    { provider: 'firecrawl', ok: '3', failed: '2' },
+  ]);
+  const { deps } = fakeState({ 'summary-sync:watermark': new Date().toISOString() });
+
+  const { ledger, anomalies } = await buildRunLedger(pool, { date: '2026-07-11' }, deps);
+
+  const outage = ledger.lanes.find(l => l.key === 'api:grok');
+  assert.equal(outage.state, 'fail');
+  assert.match(outage.detail, /120✗/);
+  assert.equal(ledger.lanes.find(l => l.key === 'api:parallel'), undefined, 'healthy providers add no lane');
+  assert.equal(ledger.lanes.find(l => l.key === 'api:firecrawl'), undefined, 'mixed results add no lane');
+  assert.match(anomalies.find(a => /grok/.test(a)), /account\/endpoint-level/);
+});

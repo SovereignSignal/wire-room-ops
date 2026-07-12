@@ -116,14 +116,14 @@ REQUIREMENTS:
           content: prompt,
         },
       ],
-      max_tokens: 500,
+      max_tokens: 2000,
       temperature: 0.3,
     }),
   });
 
   if (!response.ok) {
     const errorText = await response.text();
-    logApiUsage({ provider: 'grok', model: useModel, purpose: 'summarize', duration_ms: Date.now() - start, success: false, error_message: `${response.status}` });
+    logApiUsage({ provider: 'grok', model: useModel, purpose: 'summarize', duration_ms: Date.now() - start, success: false, error_message: `${response.status} ${errorText.slice(0, 200)}`.trim() });
     throw new Error(`Grok API error: ${response.status} - ${errorText}`);
   }
 
@@ -193,7 +193,7 @@ export async function executeScanPrompt(
 
   if (!response.ok) {
     const errorText = await response.text();
-    logApiUsage({ provider: 'grok', model, purpose: 'scan', duration_ms: Date.now() - start, success: false, error_message: `${response.status}` });
+    logApiUsage({ provider: 'grok', model, purpose: 'scan', duration_ms: Date.now() - start, success: false, error_message: `${response.status} ${errorText.slice(0, 200)}`.trim() });
     throw new Error(`Grok API error: ${response.status} - ${errorText}`);
   }
 

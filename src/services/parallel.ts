@@ -51,7 +51,8 @@ async function grokChat(prompt: string, maxTokens: number, purpose: string, wire
       body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], max_tokens: maxTokens, temperature: 0.1 }),
     });
     if (!response.ok) {
-      logApiUsage({ provider: 'grok', model, purpose, wire, duration_ms: Date.now() - start, success: false, error_message: `${response.status}` });
+      const errorText = await response.text().catch(() => '');
+      logApiUsage({ provider: 'grok', model, purpose, wire, duration_ms: Date.now() - start, success: false, error_message: `${response.status} ${errorText.slice(0, 200)}`.trim() });
       return null;
     }
     const data = await response.json() as { choices?: Array<{ message?: { content?: string } }>; usage?: { prompt_tokens?: number; completion_tokens?: number } };
@@ -81,7 +82,7 @@ async function planQueries(objective: string, wire?: string): Promise<string[]> 
   const wireHint = wire ? `The vertical is "${wire}". ` : '';
   const content = await grokChat(
     `${wireHint}Turn this research objective into 2-3 concise web search queries (3-6 keywords each) that will surface NEW grant/funding programs, open application rounds, and major funding news. Return ONLY a JSON array of strings, nothing else.\n\nObjective: ${objective.slice(0, 1200)}`,
-    150, 'parallel-queries', wire
+    2000, 'parallel-queries', wire
   );
   if (content) {
     try {
@@ -142,7 +143,7 @@ export async function executeParallelScan(
 
   if (!searchResp.ok) {
     const errorText = await searchResp.text();
-    logApiUsage({ provider: 'parallel', model: 'search', purpose: 'scan', wire, duration_ms: Date.now() - searchStart, success: false, error_message: `${searchResp.status}` });
+    logApiUsage({ provider: 'parallel', model: 'search', purpose: 'scan', wire, duration_ms: Date.now() - searchStart, success: false, error_message: `${searchResp.status} ${errorText.slice(0, 200)}`.trim() });
     throw new Error(`Parallel Search API error: ${searchResp.status} - ${errorText}`);
   }
 
@@ -164,7 +165,7 @@ export async function executeParallelScan(
 
   const extractPrompt = `You are extracting ${getBrand().contentType} from web search results. From the results below, list every distinct grant/funding program, open application round, or major funding announcement. Use ONLY the canonical Source URL shown for each result — never invent URLs. Skip duplicates, closed programs, and pure marketing. If nothing qualifies, return "No results."\n\nFormat each entry exactly:\n${format}\n\nSEARCH RESULTS:\n${resultsBlock}`;
 
-  const extracted = await grokChat(extractPrompt, 2000, 'parallel-extract', wire);
+  const extracted = await grokChat(extractPrompt, 6000, 'parallel-extract', wire);
   if (!extracted) {
     throw new Error('Parallel scan: Grok extraction returned empty');
   }

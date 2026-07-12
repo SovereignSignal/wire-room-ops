@@ -21,7 +21,8 @@ dedup.checkDuplicate = async () => ({
   confidence: 0,
   reason: 'No duplicate found',
 });
-dedup.registerSeen = async () => ({ urlConflict: false, conflictEntryId: null });
+let registerSeenResult = { urlConflict: false, conflictEntryId: null };
+dedup.registerSeenInTransaction = async () => registerSeenResult;
 
 const { shouldBridgeWire, syncSummariesToScanEntries } = require('../src/jobs/summary-sync');
 
@@ -53,37 +54,62 @@ function makeMockPool(opts = {}) {
   const existingSummaryIds = new Set((opts.existingSummaryIds || []).map(String));
   const inserteds = [];
 
-  const pool = {
+  async function runQuery(sql, params = []) {
+    queries.push({ sql, params });
+    const normalized = (sql || '').trim().toUpperCase();
+
+    if (normalized === 'BEGIN' || normalized === 'COMMIT' || normalized === 'ROLLBACK'
+        || normalized.startsWith('SELECT PG_ADVISORY_XACT_LOCK')) {
+      return { rowCount: null, rows: [] };
+    }
+
+    // The summaries fetch SELECT.
+    if (normalized.includes('FROM SUMMARIES')) {
+      return { rows: opts.summaries || [] };
+    }
+
+    // Idempotency lookup inside the transaction.
+    if (normalized.startsWith('SELECT ID, STATUS, NAME, SOURCE_URL')) {
+      const url = params[0];
+      const summaryId = params[1];
+      if (!existing.has(url) && !existingSummaryIds.has(String(summaryId))) return { rows: [] };
+      return {
+        rows: [{
+          id: 999,
+          status: opts.existingStatus || 'approved',
+          name: 'Existing summary',
+          source_url: url,
+          wire: 'ai',
+          scan_date: '2026-06-22',
+        }],
+      };
+    }
+
+    // INSERT scan entry.
+    if (normalized.startsWith('INSERT INTO SCAN_ENTRIES')) {
+      inserteds.push({ sql, params });
+      return { rowCount: 1, rows: [{ id: opts.insertId || 12345 }] };
+    }
+
+    if (normalized.startsWith('UPDATE SCAN_ENTRIES')) {
+      return { rowCount: opts.updateRowCount ?? 1, rows: opts.updateRowCount === 0 ? [] : [{ id: params[3] }] };
+    }
+
+    return { rowCount: 0, rows: [] };
+  }
+
+  const client = {
+    query: runQuery,
+    release() {},
+  };
+  return {
     _queries: queries,
     _inserteds: inserteds,
     _existing: existing,
     _existingSummaryIds: existingSummaryIds,
-    async query(sql, params = []) {
-      queries.push({ sql, params });
-      const normalized = (sql || '').trim().toUpperCase();
-
-      // The look-up SELECT in syncSummariesToScanEntries.
-      if (normalized.startsWith('SELECT ID FROM SCAN_ENTRIES')) {
-        const url = params[0];
-        const summaryId = params[1];
-        return { rows: existing.has(url) || existingSummaryIds.has(String(summaryId)) ? [{ id: 999 }] : [] };
-      }
-
-      // The summaries fetch SELECT.
-      if (normalized.includes('FROM SUMMARIES')) {
-        return { rows: opts.summaries || [] };
-      }
-
-      // INSERT scan entry.
-      if (normalized.startsWith('INSERT INTO SCAN_ENTRIES')) {
-        inserteds.push({ sql, params });
-        return { rowCount: 1, rows: [{ id: opts.insertId || 12345 }] };
-      }
-
-      return { rows: [] };
-    },
+    query: runQuery,
+    async connect() { return client; },
   };
-  return pool;
 }
 
 test('summary-sync inserts URL-backed summary as queued source_check', async () => {
@@ -116,6 +142,73 @@ test('summary-sync inserts URL-backed summary as queued source_check', async () 
   assert.equal(ins.params[0], 'Tarbell Grants for AI Accountability Reporting');
   assert.equal(ins.params[2], 'https://www.tarbellcenter.org/grants');
   assert.equal(ins.params[9], false, 'real URL rows should not require source verification');
+});
+
+test('summary-sync parks a seed-history URL instead of leaving it queued', async () => {
+  const pool = makeMockPool({
+    summaries: [
+      {
+        summary_id: 1007,
+        title: 'Historical Seed Program',
+        description: 'Already present in the seed URL history.',
+        wire: 'oss',
+        entities: {},
+        created_at: '2026-06-22T14:18:00Z',
+        extracted_urls: ['https://example.com/historical-seed-program'],
+      },
+    ],
+  });
+  registerSeenResult = { urlConflict: true, conflictEntryId: null };
+  try {
+    const result = await syncSummariesToScanEntries(pool, 168);
+    assert.equal(result.synced, 0);
+    assert.equal(result.skipped, 1);
+    const parked = pool._queries.find(({ sql }) => /SET status = 'deduped'/i.test(sql));
+    assert.ok(parked, 'conflicting insert must be parked');
+    assert.deepEqual(parked.params.slice(0, 2), [
+      12345,
+      'URL already exists in seed history',
+    ]);
+  } finally {
+    registerSeenResult = { urlConflict: false, conflictEntryId: null };
+  }
+});
+
+test('summary-sync parks (does NOT stall the bridge) when the URL owner is a non-canonical parent', async () => {
+  // Regression for the July 2026 unresolvable-parent class in the tele-sum bridge.
+  // A URL claim that resolves to a parent the demoter cannot accept is PERMANENT.
+  // If it throws, the row errors, and the watermark only advances on a clean run
+  // (result.errors === 0) — so ONE poison summary would freeze the watermark and
+  // stall every later summary behind it. It must park forward instead.
+  const pool = makeMockPool({
+    summaries: [
+      {
+        summary_id: 1099,
+        title: 'Unresolvable Parent Summary',
+        description: 'URL owned by an entry in a status the demoter cannot canonicalize.',
+        wire: 'oss',
+        entities: {},
+        created_at: '2026-06-22T14:18:00Z',
+        extracted_urls: ['https://example.com/unresolvable-summary-parent'],
+      },
+    ],
+  });
+  const duplicateChain = require('../src/services/duplicate-chain');
+  const originalDemote = duplicateChain.demoteEntryToDuplicateInTransaction;
+  registerSeenResult = { urlConflict: true, conflictEntryId: 999 };
+  duplicateChain.demoteEntryToDuplicateInTransaction = async () => ({
+    outcome: 'unresolvable', canonicalParentId: null, unresolvableReason: 'invalid-status',
+  });
+  try {
+    const result = await syncSummariesToScanEntries(pool, 168);
+    assert.equal(result.errors, 0, 'an unresolvable parent must not error the run — an error freezes the watermark and stalls the whole bridge');
+    assert.equal(result.skipped, 1, 'the conflicting row is parked and counted as skipped');
+    const parked = pool._queries.find(({ sql }) => /SET status = 'deduped'/i.test(sql));
+    assert.ok(parked, 'entry must be parked forward (deduped), not thrown');
+  } finally {
+    registerSeenResult = { urlConflict: false, conflictEntryId: null };
+    duplicateChain.demoteEntryToDuplicateInTransaction = originalDemote;
+  }
 });
 
 test('summary-sync creates placeholder URL when summary has no extracted URL', async () => {

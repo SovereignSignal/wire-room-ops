@@ -104,7 +104,7 @@ Write a 2-4 sentence newsletter summary. Lead with the organization/program name
     body: JSON.stringify({
       model,
       messages: [{ role: 'user', content: prompt }],
-      max_tokens: threadContext?.isThread ? 400 : 200,
+      max_tokens: threadContext?.isThread ? 2000 : 1200,
       temperature: 0.3,
     }),
   });

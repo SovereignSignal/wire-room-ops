@@ -13,9 +13,10 @@
  */
 
 import type { Pool } from 'pg';
-import { checkDuplicate, registerSeen } from '../services/dedup';
+import { finalizeExistingEntryDedup } from '../services/dedup';
 // quality-scorer.ts replaced by LLM scoring in classifier.ts
 import { classifyEntry } from '../services/classifier';
+import { classifySourceLink } from '../services/source-filter';
 import { finalizeProgramForEntry } from '../services/program-identity';
 
 const BATCH_SIZE = 50;
@@ -67,11 +68,65 @@ export function isCompletionSufficient(entry: {
 
   // Check source_url
   const sourceUrl = entry.source_url?.trim() ?? '';
-  if (!sourceUrl || sourceUrl.startsWith('scan://')) {
-    return { passes: false, reason: sourceUrl ? 'Internal scan:// URL' : 'Missing source URL' };
+  const sourceClass = classifySourceLink(sourceUrl);
+  if (sourceClass === 'missing' || sourceClass === 'placeholder' || sourceClass === 'invalid' || sourceClass === 'shortener') {
+    return {
+      passes: false,
+      reason: sourceClass === 'missing'
+        ? 'Missing source URL'
+        : sourceClass === 'placeholder'
+          ? 'Internal source placeholder'
+          : sourceClass === 'shortener'
+            ? 'Unresolved shortener URL'
+            : 'Invalid source URL',
+    };
   }
 
   return { passes: true };
+}
+
+export interface RawClassificationWrite {
+  classification: string;
+  reason: string;
+  qualityScore: number;
+  qualityBreakdown: unknown;
+  metadata: unknown;
+  tags: string[];
+  status: 'queued' | 'archived';
+  correctedWire: string | null;
+}
+
+/** Apply LLM output only while the row is still in the temporary queued state. */
+export async function applyClassificationIfQueued(
+  db: Pick<Pool, 'query'>,
+  entryId: number,
+  result: RawClassificationWrite,
+): Promise<boolean> {
+  const classified = await db.query(
+    `UPDATE scan_entries
+     SET classification = $1,
+         classification_reason = $2,
+         quality_score = $3,
+         quality_breakdown = $4,
+         metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
+         tags = $6,
+         status = $8,
+         wire = COALESCE($9, wire)
+     WHERE id = $7 AND status = 'queued'
+     RETURNING id`,
+    [
+      result.classification,
+      result.reason,
+      result.qualityScore,
+      JSON.stringify(result.qualityBreakdown),
+      JSON.stringify(result.metadata),
+      result.tags,
+      entryId,
+      result.status,
+      result.correctedWire,
+    ],
+  );
+  return classified.rowCount === 1;
 }
 
 /**
@@ -140,86 +195,51 @@ export async function processRawEntries(pool?: Pool): Promise<{
           });
 
           if (!completeness.passes) {
-            await db.query(
+            const markedIncomplete = await db.query(
               `UPDATE scan_entries
                SET status = 'incomplete',
                    classification = 'UNCHECKED'
-               WHERE id = $1 AND status = 'raw'`,
+               WHERE id = $1 AND status = 'raw'
+               RETURNING id`,
               [row.id]
             );
+            if (markedIncomplete.rowCount !== 1) continue;
             console.log(`[ProcessRaw] Gate 1 fail for entry ${row.id}: ${completeness.reason}`);
             stats.incomplete++;
             stats.processed++;
             continue;
           }
 
-          // Phase 2: Dedup check
-          const dedupResult = await checkDuplicate(
-            db,
-            {
-              sourceUrl: row.source_url,
-              name: row.name,
-              wire: row.wire,
-              // Row is already inserted as raw — exclude it or the name layer
-              // matches the row against itself (self-duplicate).
-              excludeEntryId: row.id,
-            },
-            14, // lookback days
-            { programGate: true }
-          );
-
-          if (dedupResult.isDuplicate) {
-            await db.query(
-              `UPDATE scan_entries
-               SET status = 'duplicate',
-                   duplicate_of_id = $1,
-                   duplicate_reason = $2,
-                   actioned_by = COALESCE($4, actioned_by)
-               WHERE id = $3 AND status = 'raw'`,
-              [dedupResult.matchedEntryId, dedupResult.reason, row.id,
-               dedupResult.matchType === 'program' ? 'program-gate' : null]
-            );
+          // Phase 2: repeat the dedup check under the graph lock, claim the URL,
+          // and finalize the raw row in one transaction. The program-identity
+          // gate (Layer 1.75) runs inside the same atomic check; a same-round
+          // program match is demoted with actioned_by='program-gate'.
+          const dedupOutcome = await finalizeExistingEntryDedup(db, {
+            id: row.id,
+            sourceUrl: row.source_url,
+            name: row.name,
+            wire: row.wire,
+            scanDate: row.scan_date,
+            expectedStatus: 'raw',
+          }, 14, { programGate: true });
+          if (dedupOutcome.outcome === 'stale') continue;
+          if (dedupOutcome.outcome === 'duplicate' || dedupOutcome.outcome === 'seed-conflict') {
             stats.duplicates++;
-          } else {
-            // Claim the URL first — atomic guard against a concurrent path
-            // (e.g. a synchronous dashboard submit) registering the same URL
-            // between our checkDuplicate and registerSeen.
-            const claim = await registerSeen(db, {
-              id: row.id,
-              sourceUrl: row.source_url,
-              name: row.name,
-              wire: row.wire,
-              scanDate: row.scan_date instanceof Date
-                ? row.scan_date.toISOString().split('T')[0]
-                : String(row.scan_date),
-            });
+            stats.processed++;
+            continue;
+          }
 
-            if (claim.urlConflict) {
-              await db.query(
-                `UPDATE scan_entries
-                 SET status = 'duplicate', duplicate_of_id = $1, duplicate_reason = $2
-                 WHERE id = $3 AND status = 'raw'`,
-                [claim.conflictEntryId, 'URL claimed by concurrent submission', row.id]
-              );
-              stats.duplicates++;
-              continue;
-            }
-
-            // Mark as deduped
-            await db.query(
-              `UPDATE scan_entries SET status = 'deduped' WHERE id = $1 AND status = 'raw'`,
-              [row.id]
-            );
-
-            // Temporarily queue — Gate 2 below may auto-archive based on classification/score.
-            await db.query(
+          // Temporarily queue — Gate 2 below may auto-archive based on classification/score.
+          const queued = await db.query(
               `UPDATE scan_entries
                SET quality_score = 0,
                    status = 'queued',
                    classification = 'UNCHECKED'
-               WHERE id = $1`,
+               WHERE id = $1 AND status = 'deduped'
+               RETURNING id`,
               [row.id]
             );
+            if (queued.rowCount !== 1) continue;
 
             stats.queued++;
             // Gate 2: LLM classification + quality scoring (single Grok call)
@@ -238,44 +258,34 @@ export async function processRawEntries(pool?: Pool): Promise<{
               const correctedWire = (classResult.inScope && classResult.detectedWire
                 && ['crypto', 'ai', 'oss'].includes(classResult.detectedWire) && classResult.detectedWire !== row.wire)
                 ? classResult.detectedWire : null;
-              await db.query(
-                `UPDATE scan_entries
-                 SET classification = $1,
-                     classification_reason = $2,
-                     quality_score = $3,
-                     quality_breakdown = $4,
-                     metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
-                     tags = $6,
-                     status = $8,
-                     wire = COALESCE($9, wire)
-                 WHERE id = $7`,
-                [
-                  classResult.classification,
-                  classResult.reason,
-                  classResult.qualityScore,
-                  JSON.stringify({ scoreReason: classResult.scoreReason, in_scope: classResult.inScope, detected_wire: classResult.detectedWire }),
-                  // operator_route MUST persist into metadata — it is the BD
-                  // loop's source signal (relationship_signal) and the queue's
-                  // route filter. It was silently dropped when classify-at-intake
-                  // was removed (#44); this is now the canonical persistence point.
-                  JSON.stringify({ ...classResult.extracted, operator_route: classResult.operatorRoute || null }),
-                  classResult.tags,
-                  row.id,
-                  classStatus,
-                  correctedWire,
-                ]
-              );
+              const classified = await applyClassificationIfQueued(db, row.id, {
+                classification: classResult.classification,
+                reason: classResult.reason,
+                qualityScore: classResult.qualityScore,
+                qualityBreakdown: {
+                  scoreReason: classResult.scoreReason,
+                  in_scope: classResult.inScope,
+                  detected_wire: classResult.detectedWire,
+                },
+                // operator_route MUST persist into metadata. It is the BD
+                // loop's source signal and the queue's route filter.
+                metadata: { ...classResult.extracted, operator_route: classResult.operatorRoute || null },
+                tags: classResult.tags,
+                status: classStatus,
+                correctedWire,
+              });
+              if (!classified) {
+                console.log(`[ProcessRaw] Entry ${row.id} changed during classification; preserving operator state`);
+              }
             } catch (classError) {
               console.error(`[ProcessRaw] Classification failed for entry ${row.id}, leaving as UNCHECKED:`, classError);
             }
-
             // Program identity: record the sighting / create the program and
             // stamp metadata.program. Fail-open inside; never blocks the cycle.
             await finalizeProgramForEntry(db, {
               id: row.id, name: row.name, sourceUrl: row.source_url, wire: row.wire,
               description: row.description ?? null,
-            }, dedupResult.programResolution ?? null);
-          }
+            }, dedupOutcome.programResolution ?? null);
 
           stats.processed++;
         } catch (entryError) {

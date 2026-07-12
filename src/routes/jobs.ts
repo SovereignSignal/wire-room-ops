@@ -22,6 +22,12 @@ import { syncSummariesToScanEntries } from '../jobs/summary-sync';
 import { processRawEntries } from '../jobs/process-raw';
 import { runEnrichment } from '../jobs/enrichment';
 import { handleTelegramUpdate } from '../services/telegram-adapter';
+import {
+  processTelegramUpdateWithReceipt,
+  TelegramIntakeCapacityError,
+  TelegramUpdateBusyError,
+  TelegramUpdateValidationError,
+} from '../services/telegram-intake-receipts';
 
 const router = Router();
 
@@ -187,12 +193,32 @@ router.post('/telegram/intake-webhook', async (req: Request, res: Response) => {
     return;
   }
 
-  // Fire and forget — respond immediately
-  handleTelegramUpdate(req.body).catch(err => {
-    console.error('[TelegramIntake] Handler error:', err);
-  });
-
-  res.sendStatus(200);
+  try {
+    const outcome = await processTelegramUpdateWithReceipt(
+      req.body,
+      context => handleTelegramUpdate(req.body, {
+        sendBatchAcknowledgement: context.isFirstAttempt,
+      })
+    );
+    if (outcome === 'already_processed') {
+      console.info(`[TelegramIntake] Duplicate update ${req.body?.update_id} already processed`);
+    }
+    res.sendStatus(200);
+  } catch (error) {
+    if (error instanceof TelegramUpdateValidationError) {
+      console.warn('[TelegramIntake] Invalid webhook update:', error.message);
+      res.status(400).json({ error: 'Invalid Telegram update' });
+      return;
+    }
+    if (error instanceof TelegramUpdateBusyError || error instanceof TelegramIntakeCapacityError) {
+      console.warn('[TelegramIntake] Intake busy; requesting retry');
+      res.setHeader('Retry-After', '5');
+      res.status(503).json({ error: 'Telegram intake is busy' });
+      return;
+    }
+    console.error('[TelegramIntake] Handler error; requesting Telegram retry:', error);
+    res.status(500).json({ error: 'Telegram intake failed' });
+  }
 });
 
 export { router as jobRouter };

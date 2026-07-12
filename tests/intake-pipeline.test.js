@@ -14,6 +14,15 @@ const assert = require('node:assert/strict');
 const classifier = require('../src/services/classifier');
 classifier.classifyEntry = async () => { throw new Error('classifier stubbed out in tests'); };
 
+const dedup = require('../src/services/dedup');
+const finalized = [];
+dedup.finalizeExistingEntryDedup = async (_pool, entry) => {
+  finalized.push(entry);
+  if (entry.id === 202) return { outcome: 'duplicate', canonicalEntryId: 77 };
+  if (entry.id === 404) throw new Error('simulated DB failure during claim');
+  return { outcome: 'unique' };
+};
+
 const { processRawEntries } = require('../src/jobs/process-raw');
 
 /** Stub pool that routes by SQL substring, records every call (params deep-
@@ -37,7 +46,7 @@ function routingPool(routes) {
   };
 }
 
-const RAW_BATCH = "se.status = 'raw'";
+const RAW_BATCH = 'SELECT se.id, se.name';
 
 test('Gate 1: incomplete row is marked incomplete and excluded from the next batch query', async () => {
   let batchCalls = 0;
@@ -48,6 +57,7 @@ test('Gate 1: incomplete row is marked incomplete and excluded from the next bat
         ? { rows: [{ id: 101, name: 'X', description: '', source_url: '', wire: 'crypto', scan_date: '2026-07-03', prompt_id: null, prompt_intent: null }] }
         : { rows: [] };
     }],
+    ["SET status = 'incomplete'", { rows: [{ id: 101 }], rowCount: 1 }],
   ]);
 
   const stats = await processRawEntries(pool);
@@ -74,17 +84,11 @@ test('dedup: exact-name match from another source is marked duplicate with prove
         ? { rows: [{ id: 202, name: 'Filecoin PropGF Batch 3', description: 'A real grant program with a description well over the completeness minimum.', source_url: 'https://example.org/propgf', wire: 'crypto', scan_date: '2026-07-03', prompt_id: null, prompt_intent: null }] }
         : { rows: [] };
     }],
-    ['FROM seen_urls', { rows: [] }],                                        // URL layer: no match
-    ['FROM scan_entries', { rows: [{ id: 77, name: 'Filecoin PropGF Batch 3' }] }], // name layer: match
   ]);
 
   const stats = await processRawEntries(pool);
   assert.equal(stats.duplicates, 1);
-
-  const dupUpdate = pool.calls.find(c => c.sql.includes("'duplicate'"));
-  assert.ok(dupUpdate, 'no duplicate UPDATE issued');
-  assert.equal(dupUpdate.params[0], 77, 'duplicate_of_id must point at the matched entry');
-  assert.equal(dupUpdate.params[2], 202);
+  assert.equal(finalized.at(-1).id, 202);
 });
 
 test('clean row is URL-claimed then queued; classifier failure leaves it queued as UNCHECKED (fail-open)', async () => {
@@ -96,17 +100,14 @@ test('clean row is URL-claimed then queued; classifier failure leaves it queued 
         ? { rows: [{ id: 303, name: 'NLnet Open Call June', description: 'Open call for privacy-enhancing internet technology projects, grants 5k-50k EUR.', source_url: 'https://nlnet.nl/propose', wire: 'oss', scan_date: '2026-07-03', prompt_id: null, prompt_intent: null }] }
         : { rows: [] };
     }],
-    ['FROM seen_urls', { rows: [] }],
-    ['FROM scan_entries', { rows: [] }],
-    ['INSERT INTO seen_urls', { rows: [{ id: 9001 }] }],  // claim succeeds (no conflict)
-    ['INSERT INTO seen_names', { rows: [] }],
+    ["WHERE id = $1 AND status = 'deduped'", { rows: [{ id: 303 }], rowCount: 1 }],
   ]);
 
   const stats = await processRawEntries(pool);
   assert.equal(stats.queued, 1);
   assert.equal(stats.duplicates, 0);
 
-  assert.ok(pool.calls.some(c => c.sql.includes("SET status = 'deduped'")), 'row was never marked deduped');
+  assert.equal(finalized.at(-1).id, 303, 'entry was not finalized through the atomic dedup path');
   const queuedUpdate = pool.calls.find(c => c.sql.includes("status = 'queued'") && c.sql.includes("'UNCHECKED'"));
   assert.ok(queuedUpdate, 'row was never queued as UNCHECKED');
   assert.deepEqual(queuedUpdate.params, [303]);

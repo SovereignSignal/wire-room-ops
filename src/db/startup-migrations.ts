@@ -22,6 +22,7 @@ import {
   ensureDistributionTables,
   ensureAutoSummarizeFailedColumn,
   ensureOperatorNotesColumn,
+  ensureSourceNeedsVerificationColumn,
   ensureAppStateTable,
   ensureMonitoredAccountsTable,
   ensureWatchSurfacesTable,
@@ -33,12 +34,14 @@ import { ensureIntegrationConfigTable } from '../services/notion-sync';
 import { ensureEntryActionColumns } from '../services/entry-actions';
 import { ensureApiProviderTables } from '../services/api-provider';
 import { ensureApiUsageTables } from '../services/api-usage';
+import { ensureTelegramIntakeReceiptsTable } from '../services/telegram-intake-receipts';
 
 export const STARTUP_MIGRATIONS: ReadonlyArray<{ name: string; run: () => Promise<void> }> = [
   { name: 'sessions', run: ensureSessionsTable },
   { name: 'feeds', run: ensureFeedsTable },
   { name: 'scan-tables', run: ensureScanTables },
   { name: 'classification-columns', run: ensureClassificationColumns },
+  { name: 'telegram-intake-receipts', run: ensureTelegramIntakeReceiptsTable },
   { name: 'scan-prompts', run: ensureScanPromptsTable },
   { name: 'schedules', run: ensureScheduleTable },
   { name: 'distribution', run: ensureDistributionTables },
@@ -49,6 +52,7 @@ export const STARTUP_MIGRATIONS: ReadonlyArray<{ name: string; run: () => Promis
   { name: 'entry-action-columns', run: ensureEntryActionColumns },
   { name: 'auto-summarize-failed-column', run: ensureAutoSummarizeFailedColumn },
   { name: 'operator-notes-column', run: ensureOperatorNotesColumn },
+  { name: 'source-needs-verification-column', run: ensureSourceNeedsVerificationColumn },
   { name: 'app-state', run: ensureAppStateTable },
   { name: 'monitored-accounts', run: ensureMonitoredAccountsTable },
   { name: 'api-providers', run: ensureApiProviderTables },

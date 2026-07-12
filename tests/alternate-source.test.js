@@ -14,25 +14,28 @@ if (!DB_URL) {
 
 const { getPool, closePool } = require('../src/db');
 const { annotateAlternateSource, registerSeen, checkDuplicate } = require('../src/services/dedup');
+const { insertIntakeEntryWithClaim } = require('../src/services/intake-core');
+const { linkEntryDuplicate, EntryMaintenanceError } = require('../src/services/entry-maintenance');
 
-async function insertEntry(pool, name, url) {
+async function insertEntry(pool, name, url, status = 'raw') {
   const res = await pool.query(
     `INSERT INTO scan_entries (name, description, source_url, wire, prompt_variant, scan_source, scan_date, status)
-     VALUES ($1, 'test entry', $2, 'oss', 'A', 'web-search', CURRENT_DATE, 'raw')
+     VALUES ($1, 'test entry', $2, 'oss', 'A', 'web-search', CURRENT_DATE, $3)
      RETURNING id`,
-    [name, url]
+    [name, url, status]
   );
   return res.rows[0].id;
 }
 
 test('annotateAlternateSource writes operator_notes without 42P18', async () => {
   const pool = getPool();
-  const id = await insertEntry(pool, 'Regression Test Program A', 'https://example.com/regression-a-' + process.pid);
+  const sourceUrl = 'https://example.com/regression-a-' + process.pid;
+  const id = await insertEntry(pool, 'Regression Test Program A', sourceUrl, 'deduped');
   try {
     // This UPDATE used to fail with "could not determine data type of
     // parameter" because CONCAT_WS is variadic "any" — the ::text cast is
     // load-bearing.
-    await annotateAlternateSource(pool, id, {
+    await annotateAlternateSource(pool, id, sourceUrl, {
       isRelated: true,
       relationType: 'alternate_source',
       matchedEntryId: 12345,
@@ -73,6 +76,53 @@ test('registerSeen reports a conflict when another entry owns the URL', async ()
   }
 });
 
+test('seed-only seen URL remains a conflict and cannot enter the live queue', async () => {
+  const pool = getPool();
+  const url = `https://example.com/seed-history-${process.pid}-${Date.now()}`;
+  await pool.query(
+    `INSERT INTO seen_urls (url, normalized_url, first_seen_entry_id, first_seen_date, wire)
+     VALUES ($1, $1, NULL, CURRENT_DATE, 'oss')`,
+    [url],
+  );
+
+  let insertedId;
+  try {
+    const inserted = await insertIntakeEntryWithClaim(pool, {
+      name: 'Seed History Regression Program',
+      description: 'must remain blocked by the seed-only URL registry',
+      sourceUrl: url,
+      wire: 'oss',
+      scanDate: '2026-07-10',
+      submittedBy: 'integration-test',
+      scanSource: 'manual-intake',
+      status: 'queued',
+    });
+    insertedId = inserted.id;
+    assert.equal(inserted.urlConflict, true);
+    assert.equal(inserted.conflictEntryId, null);
+
+    const row = await pool.query(
+      `SELECT status, duplicate_of_id, distributable FROM scan_entries WHERE id = $1`,
+      [insertedId],
+    );
+    assert.equal(row.rows[0].status, 'deduped');
+    assert.equal(row.rows[0].duplicate_of_id, null);
+    assert.equal(row.rows[0].distributable, false);
+
+    const registry = await pool.query(
+      `SELECT first_seen_entry_id FROM seen_urls WHERE normalized_url = $1 AND wire = 'oss'`,
+      [url],
+    );
+    assert.equal(registry.rows[0].first_seen_entry_id, null);
+  } finally {
+    if (insertedId) {
+      await pool.query(`DELETE FROM seen_names WHERE entry_id = $1`, [insertedId]);
+      await pool.query(`DELETE FROM scan_entries WHERE id = $1`, [insertedId]);
+    }
+    await pool.query(`DELETE FROM seen_urls WHERE normalized_url = $1 AND wire = 'oss'`, [url]);
+  }
+});
+
 test('checkDuplicate does not match an entry against its own raw row', async () => {
   const pool = getPool();
   const name = 'Self Dedup Regression Program ' + process.pid;
@@ -93,6 +143,94 @@ test('checkDuplicate does not match an entry against its own raw row', async () 
     await pool.query(`DELETE FROM scan_entries WHERE id = $1`, [secondId]);
   } finally {
     await pool.query(`DELETE FROM scan_entries WHERE id = $1`, [id]);
+  }
+});
+
+test('concurrent intake claims leave only the exact-URL winner queued', async () => {
+  const pool = getPool();
+  const url = `https://example.com/intake-claim-race-${process.pid}-${Date.now()}`;
+  const scanDate = '2026-07-10';
+  const common = {
+    description: 'concurrent exact URL claim regression',
+    sourceUrl: url,
+    wire: 'oss',
+    scanDate,
+    submittedBy: 'integration-test',
+    scanSource: 'manual-intake',
+    status: 'queued',
+  };
+  const results = await Promise.all([
+    insertIntakeEntryWithClaim(pool, { ...common, name: 'Concurrent Claim Alpha' }),
+    insertIntakeEntryWithClaim(pool, { ...common, name: 'Concurrent Claim Beta' }),
+  ]);
+  const ids = results.map(result => result.id);
+  try {
+    const winners = results.filter(result => result.conflictEntryId === null);
+    const losers = results.filter(result => result.conflictEntryId !== null);
+    assert.equal(winners.length, 1);
+    assert.equal(losers.length, 1);
+    assert.equal(losers[0].conflictEntryId, winners[0].id);
+
+    const rows = await pool.query(
+      `SELECT id, status, duplicate_of_id FROM scan_entries WHERE id = ANY($1::bigint[]) ORDER BY id`,
+      [ids],
+    );
+    const winner = rows.rows.find(row => Number(row.id) === winners[0].id);
+    const loser = rows.rows.find(row => Number(row.id) === losers[0].id);
+    assert.equal(winner.status, 'queued');
+    assert.equal(winner.duplicate_of_id, null);
+    assert.equal(loser.status, 'duplicate');
+    assert.equal(Number(loser.duplicate_of_id), winners[0].id);
+
+    const registry = await pool.query(
+      `SELECT first_seen_entry_id FROM seen_urls WHERE normalized_url = $1 AND wire = 'oss'`,
+      [url],
+    );
+    assert.equal(Number(registry.rows[0].first_seen_entry_id), winners[0].id);
+  } finally {
+    await pool.query(`DELETE FROM seen_names WHERE entry_id = ANY($1::bigint[])`, [ids]);
+    await pool.query(`DELETE FROM seen_urls WHERE first_seen_entry_id = ANY($1::bigint[])`, [ids]);
+    await pool.query(`DELETE FROM scan_entries WHERE id = ANY($1::bigint[])`, [ids]);
+  }
+});
+
+test('opposite concurrent duplicate links cannot create a two-entry cycle', async () => {
+  const pool = getPool();
+  const suffix = `${process.pid}-${Date.now()}`;
+  const urlA = `https://example.com/cycle-a-${suffix}`;
+  const urlB = `https://example.com/cycle-b-${suffix}`;
+  const a = await insertEntry(pool, `Cycle Alpha ${suffix}`, urlA, 'queued');
+  const b = await insertEntry(pool, `Cycle Beta ${suffix}`, urlB, 'queued');
+  try {
+    const [ab, ba] = await Promise.allSettled([
+      linkEntryDuplicate(pool, a, {
+        expectedStatus: 'queued', expectedSourceUrl: urlA, duplicateOfId: b,
+        actor: 'integration-test', reason: 'concurrent cycle regression A to B',
+      }),
+      linkEntryDuplicate(pool, b, {
+        expectedStatus: 'queued', expectedSourceUrl: urlB, duplicateOfId: a,
+        actor: 'integration-test', reason: 'concurrent cycle regression B to A',
+      }),
+    ]);
+    const fulfilled = [ab, ba].filter(result => result.status === 'fulfilled');
+    const rejected = [ab, ba].filter(result => result.status === 'rejected');
+    assert.equal(fulfilled.length, 1);
+    assert.equal(rejected.length, 1);
+    assert.ok(rejected[0].reason instanceof EntryMaintenanceError);
+    assert.equal(rejected[0].reason.statusCode, 409);
+
+    const rows = await pool.query(
+      `SELECT id, status, duplicate_of_id FROM scan_entries WHERE id = ANY($1::bigint[])`,
+      [[a, b]],
+    );
+    const rowA = rows.rows.find(row => Number(row.id) === a);
+    const rowB = rows.rows.find(row => Number(row.id) === b);
+    assert.equal(Number(rowA.duplicate_of_id) === b && Number(rowB.duplicate_of_id) === a, false);
+    assert.equal(rows.rows.filter(row => row.status === 'duplicate').length, 1);
+  } finally {
+    await pool.query(`DELETE FROM seen_names WHERE entry_id IN ($1, $2)`, [a, b]);
+    await pool.query(`DELETE FROM seen_urls WHERE first_seen_entry_id IN ($1, $2)`, [a, b]);
+    await pool.query(`DELETE FROM scan_entries WHERE id IN ($1, $2)`, [a, b]);
   }
 });
 

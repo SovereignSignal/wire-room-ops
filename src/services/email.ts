@@ -3,7 +3,6 @@ import { config } from '../config';
 import { getBrand } from '../config/brand';
 import { ProcessingStats } from '../types';
 import { escapeHtml } from '../utils/html';
-import type { ScanExecutionResult } from '../jobs/scan-execution';
 import { logApiUsage } from './api-usage';
 import { getCachedProvider } from './api-provider';
 
@@ -234,100 +233,6 @@ This link expires in 24 hours.`.trim();
   });
 
   console.log(`[Email] Resend link email sent successfully`);
-}
-
-export async function sendScanDigestEmail(
-  scanResult: ScanExecutionResult,
-  dashboardUrl: string,
-  recipients?: string[]
-): Promise<void> {
-  const now = new Date();
-  const dateStr = now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-  const { intakeSummary, perPrompt, totalResults, promptsExecuted, promptsFailed, totalDurationMs } = scanResult;
-  const durationSec = Math.round(totalDurationMs / 1000);
-
-  // Top finds
-  const topFinds = intakeSummary.topFinds.slice(0, 10);
-  let topFindsHtml = '';
-  let topFindsText = '';
-
-  if (topFinds.length > 0) {
-    const rows = topFinds.map(entry => {
-      const score = entry.qualityScore ?? 0;
-      const name = escapeHtml(entry.name);
-      const nameCell = entry.sourceUrl
-        ? `<a href="${escapeHtml(entry.sourceUrl)}" style="color:#0088cc;text-decoration:none;">${name}</a>`
-        : name;
-      return `<tr>
-        <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:12px;color:#444;text-align:center;${MONO}">${score}</td>
-        <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:12px;color:#222;">${nameCell}</td>
-        <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:12px;color:#666;">${escapeHtml(entry.wire)}</td>
-      </tr>`;
-    }).join('');
-
-    topFindsHtml = `
-      ${sectionLabel('Top Finds')}
-      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-bottom:16px;">
-        <tr>
-          <th style="padding:6px 8px;text-align:center;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;">Score</th>
-          <th style="padding:6px 8px;text-align:left;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;">Name</th>
-          <th style="padding:6px 8px;text-align:left;font-size:10px;font-weight:600;color:#888;border-bottom:1px solid #ddd;text-transform:uppercase;">Wire</th>
-        </tr>
-        ${rows}
-      </table>`;
-
-    topFindsText = topFinds.map(e => `  [${e.qualityScore ?? 0}] ${e.name} (${e.wire})`).join('\n');
-  }
-
-  // Per-prompt breakdown
-  const promptLines = perPrompt.map(p => {
-    if (p.error) return `<span style="color:#cc0000;">${escapeHtml(p.label)}: FAILED</span>`;
-    return `${escapeHtml(p.label)}: ${p.resultCount} results (${Math.round(p.durationMs / 1000)}s)`;
-  }).join('<br>');
-
-  const promptLinesText = perPrompt.map(p => {
-    if (p.error) return `  ${p.label}: FAILED`;
-    return `  ${p.label}: ${p.resultCount} results (${Math.round(p.durationMs / 1000)}s)`;
-  }).join('\n');
-
-  const reviewUrl = `${dashboardUrl.replace(/\/$/, '')}/queue`;
-
-  const body = `
-    <p style="margin:0 0 16px;font-size:15px;color:#222;">Scan Results &mdash; ${escapeHtml(dateStr)}</p>
-    <p style="margin:0 0 4px;font-size:13px;color:#444;"><strong>${totalResults}</strong> results across ${promptsExecuted} prompts</p>
-    <p style="margin:0 0 4px;font-size:13px;color:#666;">${intakeSummary.newUnique} unique &middot; ${intakeSummary.duplicatesFound} duplicates &middot; ${intakeSummary.highQualityCount} high quality</p>
-    <p style="margin:0 0 16px;font-size:12px;color:#999;">${durationSec}s${promptsFailed > 0 ? ` &middot; <span style="color:#cc0000;">${promptsFailed} failed</span>` : ''}</p>
-    ${topFindsHtml}
-    ${sectionLabel('Per-Prompt')}
-    <p style="margin:0 0 16px;font-size:12px;color:#666;${MONO}line-height:1.6;">${promptLines}</p>
-    ${emailBtn(reviewUrl, 'Review Queue')}`;
-
-  const htmlContent = emailShell('Scan Digest', body);
-
-  const textContent = `WIREOPS - Scan Digest ${dateStr}
-
-${totalResults} results across ${promptsExecuted} prompts
-${intakeSummary.newUnique} unique, ${intakeSummary.duplicatesFound} duplicates, ${intakeSummary.highQualityCount} high quality
-${durationSec}s${promptsFailed > 0 ? `, ${promptsFailed} failed` : ''}
-
-${topFindsText ? `TOP FINDS\n${topFindsText}\n` : ''}
-PER-PROMPT
-${promptLinesText}
-
-Review: ${reviewUrl}`.trim();
-
-  const to = recipients && recipients.length > 0 ? recipients : config.email.notificationEmail;
-  console.log(`[Email] Sending scan digest to: ${Array.isArray(to) ? to.join(', ') : to}`);
-
-  await sendWithTracking({
-    from: config.email.fromEmail,
-    to,
-    subject: `Scan Digest - ${dateStr} | ${intakeSummary.newUnique} new finds`,
-    html: htmlContent,
-    text: textContent,
-  });
-
-  console.log(`[Email] Scan digest email sent successfully`);
 }
 
 export interface TopFindEntry {
