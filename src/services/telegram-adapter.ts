@@ -17,6 +17,9 @@ function getIntakeBotToken(): string {
 }
 
 const TELEGRAM_API = 'https://api.telegram.org';
+const TELEGRAM_SEND_TIMEOUT_MS = 10_000;
+const HISTORY_SETTLE_BUDGET_MS = 15_000;
+const TELEGRAM_TEXT_LIMIT = 4_000;
 
 export class TelegramIntakeRetryableError extends Error {
   constructor(message: string) {
@@ -68,6 +71,7 @@ async function sendMessage(chatId: number, text: string, replyMarkup?: object): 
 
     const resp = await fetch(`${TELEGRAM_API}/bot${botToken}/sendMessage`, {
       method: 'POST',
+      signal: AbortSignal.timeout(TELEGRAM_SEND_TIMEOUT_MS),
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
@@ -91,6 +95,63 @@ export interface SettledBatchEntry {
   duplicate_reason: string | null;
   decided_recheck: { verdict?: string } | null;
   duplicate_chain_error: unknown | null;
+}
+
+function escapedField(text: string, maxRawLength: number): string {
+  const suffix = text.length > maxRawLength ? '…' : '';
+  return escapeHtml(text.slice(0, maxRawLength)) + suffix;
+}
+
+function fitTelegramHtmlLines(lines: string[]): string {
+  if (lines.length === 0) return '';
+  const included = [lines[0]];
+
+  for (let index = 1; index < lines.length; index++) {
+    const remaining = lines.length - index;
+    const footer = `… ${remaining} more result${remaining === 1 ? '' : 's'} omitted`;
+    const candidate = [...included, lines[index]];
+    const hasMore = index < lines.length - 1;
+    const rendered = hasMore ? [...candidate, footer].join('\n') : candidate.join('\n');
+    if (rendered.length > TELEGRAM_TEXT_LIMIT) break;
+    included.push(lines[index]);
+  }
+
+  let omitted = lines.length - included.length;
+  if (omitted > 0) {
+    let footer = `… ${omitted} more result${omitted === 1 ? '' : 's'} omitted`;
+    while (included.length > 1 && [...included, footer].join('\n').length > TELEGRAM_TEXT_LIMIT) {
+      included.pop();
+      omitted = lines.length - included.length;
+      footer = `… ${omitted} more result${omitted === 1 ? '' : 's'} omitted`;
+    }
+    included.push(footer);
+  }
+  return included.join('\n');
+}
+
+export async function settleHistoryWithinBudget(
+  acceptedIds: number[],
+  budgetMs = HISTORY_SETTLE_BUDGET_MS,
+): Promise<'settled' | 'pending' | 'failed'> {
+  if (acceptedIds.length === 0) return 'settled';
+
+  let timer: NodeJS.Timeout | undefined;
+  const recheck = runDecidedRecheckForIds(getPool(), acceptedIds)
+    .then(() => 'settled' as const)
+    .catch(error => {
+      console.error('[TelegramAdapter] Immediate history check failed:', error);
+      return 'failed' as const;
+    });
+  const budget = new Promise<'pending'>(resolve => {
+    timer = setTimeout(() => resolve('pending'), budgetMs);
+    timer.unref();
+  });
+  const outcome = await Promise.race([recheck, budget]);
+  if (timer) clearTimeout(timer);
+  if (outcome === 'pending') {
+    console.warn(`[TelegramAdapter] History check exceeded ${budgetMs}ms; reporting pending state`);
+  }
+  return outcome;
 }
 
 /** Build the final Telegram receipt from settled database state. */
@@ -130,14 +191,14 @@ export function formatSettledBatchReport(batch: BatchIntakeResult, settledEntrie
     : '<b>Intake settled:</b>';
   const lines = [`${heading} ${summaryParts.join(', ')}\n`];
   for (const entry of batch.entries) {
-    const safeName = escapeHtml(entry.name);
-    const safeWire = escapeHtml(entry.wire);
+    const safeName = escapedField(entry.name, 180);
+    const safeWire = escapedField(entry.wire, 60);
     if (entry.isDuplicate) {
-      lines.push(`• 🔄 ${safeName} — ${escapeHtml(entry.error || 'duplicate')}`);
+      lines.push(`• 🔄 ${safeName} — ${escapedField(entry.error || 'duplicate', 500)}`);
       continue;
     }
     if (!entry.id) {
-      lines.push(`• ❌ ${safeName} — ${escapeHtml(entry.error || 'processing failed')}`);
+      lines.push(`• ❌ ${safeName} — ${escapedField(entry.error || 'processing failed', 500)}`);
       continue;
     }
 
@@ -156,10 +217,10 @@ export function formatSettledBatchReport(batch: BatchIntakeResult, settledEntrie
     } else if (settled.status === 'queued') {
       lines.push(`• ✅ #${entry.id} [${safeWire}] ${safeName}`);
     } else {
-      lines.push(`• ℹ️ #${entry.id} [${safeWire}] ${safeName} — ${escapeHtml(settled.status)}`);
+      lines.push(`• ℹ️ #${entry.id} [${safeWire}] ${safeName} — ${escapedField(settled.status, 80)}`);
     }
   }
-  return lines.join('\n').slice(0, 4000);
+  return fitTelegramHtmlLines(lines);
 }
 
 /**
@@ -236,11 +297,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       .map(entry => entry.id!);
 
     let settled: SettledBatchEntry[] = [];
-    try {
-      await runDecidedRecheckForIds(getPool(), acceptedIds);
-    } catch (error) {
-      console.error('[TelegramAdapter] Immediate history check failed:', error);
-    }
+    await settleHistoryWithinBudget(acceptedIds);
 
     if (acceptedIds.length > 0) {
       try {
