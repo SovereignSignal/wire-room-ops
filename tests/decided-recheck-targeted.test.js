@@ -49,24 +49,28 @@ test('no-candidate stamp compares the text deadline without a date type mismatch
   assert.equal(calls[2].params[5], 'Rolling');
 });
 
-test('targeted rechecks serialize to avoid racing the scheduled sweep', async () => {
-  let activeQueries = 0;
-  let maxActiveQueries = 0;
+test('a targeted recheck skips instead of waiting behind an active run', async () => {
+  let releaseFirstQuery;
+  let firstQueryStarted;
+  const started = new Promise(resolve => { firstQueryStarted = resolve; });
+  const gate = new Promise(resolve => { releaseFirstQuery = resolve; });
+  let queryCount = 0;
   const pool = {
     query: async () => {
-      activeQueries++;
-      maxActiveQueries = Math.max(maxActiveQueries, activeQueries);
-      await new Promise(resolve => setTimeout(resolve, 20));
-      activeQueries--;
+      queryCount++;
+      firstQueryStarted();
+      await gate;
       return { rows: [] };
     },
   };
 
-  await Promise.all([
-    runDecidedRecheckForIds(pool, [21]),
-    runDecidedRecheckForIds(pool, [22]),
-  ]);
-  assert.equal(maxActiveQueries, 1);
+  const first = runDecidedRecheckForIds(pool, [21]);
+  await started;
+  const second = await runDecidedRecheckForIds(pool, [22]);
+  assert.deepEqual(second, { checked: 0, duplicates: 0, updates: 0, distinct: 0, errors: 0 });
+  assert.equal(queryCount, 1);
+  releaseFirstQuery();
+  await first;
 });
 
 test('targeted recheck is a no op for an empty id list', async () => {
