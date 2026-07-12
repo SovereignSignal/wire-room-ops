@@ -32,6 +32,31 @@ import { EntryMaintenanceError, rewriteEntrySource } from '../services/entry-mai
 import { config } from '../config';
 
 let isRunning = false;
+let activeRunDone: Promise<void> | null = null;
+let finishActiveRun: (() => void) | null = null;
+
+function tryStartRecheckRun(): (() => void) | null {
+  if (isRunning) return null;
+  isRunning = true;
+  activeRunDone = new Promise(resolve => {
+    finishActiveRun = resolve;
+  });
+  return () => {
+    const finish = finishActiveRun;
+    finishActiveRun = null;
+    activeRunDone = null;
+    isRunning = false;
+    finish?.();
+  };
+}
+
+async function waitAndStartRecheckRun(): Promise<() => void> {
+  while (true) {
+    const release = tryStartRecheckRun();
+    if (release) return release;
+    if (activeRunDone) await activeRunDone;
+  }
+}
 
 const BATCH_SIZE = 20;
 const MAX_CANDIDATES = 4;
@@ -573,12 +598,78 @@ export async function sweepSourceLinks(pool: Pool): Promise<number> {
   return flagged;
 }
 
-export async function runDecidedRecheck(pool: Pool): Promise<{ checked: number; duplicates: number; updates: number; distinct: number; errors: number }> {
-  if (isRunning) {
+type RecheckStats = { checked: number; duplicates: number; updates: number; distinct: number; errors: number };
+
+async function processRecheckTargets(pool: Pool, targets: RecheckTarget[]): Promise<RecheckStats> {
+  const stats: RecheckStats = { checked: 0, duplicates: 0, updates: 0, distinct: 0, errors: 0 };
+
+  for (const target of targets) {
+    try {
+      const candidates = await findCandidates(pool, target);
+      if (candidates.length === 0) {
+        if (await stampTargetIfFresh(pool, target, 'no_candidates')) stats.checked++;
+        continue;
+      }
+
+      const verdict = await judgeCandidates(target, candidates);
+      if (!verdict) {
+        await stampTargetIfFresh(pool, target, 'skipped-error');
+        stats.errors++;
+        continue;
+      }
+
+      const outcome = await applyVerdict(pool, target, candidates, verdict);
+      if (outcome === 'duplicate') stats.duplicates++;
+      else if (outcome === 'update-noted') stats.updates++;
+      else if (outcome !== 'stale') stats.distinct++;
+      if (outcome !== 'stale') stats.checked++;
+      console.log(`[DecidedRecheck] #${target.id} "${target.name.slice(0, 50)}" → ${outcome}${verdict.matched_id ? ` (vs #${verdict.matched_id})` : ''}`);
+    } catch (err) {
+      stats.errors++;
+      // Mark so a persistent failure doesn't retry forever
+      await stampTargetIfFresh(pool, target, 'skipped-error').catch(() => {});
+      console.error(`[DecidedRecheck] Error on entry ${target.id}:`, err instanceof Error ? err.message : err);
+    }
+  }
+
+  return stats;
+}
+
+/**
+ * Settle one Telegram intake batch immediately instead of waiting for the
+ * five-minute global sweep. The in-process run lock serializes targeted and
+ * scheduled checks so two LLM verdicts cannot race on the same row.
+ */
+export async function runDecidedRecheckForIds(pool: Pool, entryIds: number[]): Promise<RecheckStats> {
+  const ids = [...new Set(entryIds.filter(Number.isInteger))];
+  if (ids.length === 0) {
     return { checked: 0, duplicates: 0, updates: 0, distinct: 0, errors: 0 };
   }
-  isRunning = true;
-  const stats = { checked: 0, duplicates: 0, updates: 0, distinct: 0, errors: 0 };
+
+  const release = await waitAndStartRecheckRun();
+  try {
+    const batch = await pool.query(
+      `SELECT id, wire, name, description, source_url, deadline
+       FROM scan_entries
+       WHERE id = ANY($1::bigint[])
+         AND status = 'queued'
+         AND (metadata -> 'decided_recheck') IS NULL
+       ORDER BY created_at ASC`,
+      [ids],
+    );
+
+    return await processRecheckTargets(pool, batch.rows as RecheckTarget[]);
+  } finally {
+    release();
+  }
+}
+
+export async function runDecidedRecheck(pool: Pool): Promise<RecheckStats> {
+  const release = tryStartRecheckRun();
+  if (!release) {
+    return { checked: 0, duplicates: 0, updates: 0, distinct: 0, errors: 0 };
+  }
+  let stats: RecheckStats = { checked: 0, duplicates: 0, updates: 0, distinct: 0, errors: 0 };
 
   try {
     // Phase 0: source-link quality sweep (cheap, independent gating)
@@ -599,40 +690,13 @@ export async function runDecidedRecheck(pool: Pool): Promise<{ checked: number; 
       [BATCH_SIZE]
     );
 
-    for (const target of batch.rows as RecheckTarget[]) {
-      try {
-        const candidates = await findCandidates(pool, target);
-        if (candidates.length === 0) {
-          if (await stampTargetIfFresh(pool, target, 'no_candidates')) stats.checked++;
-          continue;
-        }
-
-        const verdict = await judgeCandidates(target, candidates);
-        if (!verdict) {
-          await stampTargetIfFresh(pool, target, 'skipped-error');
-          stats.errors++;
-          continue;
-        }
-
-        const outcome = await applyVerdict(pool, target, candidates, verdict);
-        if (outcome === 'duplicate') stats.duplicates++;
-        else if (outcome === 'update-noted') stats.updates++;
-        else if (outcome !== 'stale') stats.distinct++;
-        if (outcome !== 'stale') stats.checked++;
-        console.log(`[DecidedRecheck] #${target.id} "${target.name.slice(0, 50)}" → ${outcome}${verdict.matched_id ? ` (vs #${verdict.matched_id})` : ''}`);
-      } catch (err) {
-        stats.errors++;
-        // Mark so a persistent failure doesn't retry forever
-        await stampTargetIfFresh(pool, target, 'skipped-error').catch(() => {});
-        console.error(`[DecidedRecheck] Error on entry ${target.id}:`, err instanceof Error ? err.message : err);
-      }
-    }
+    stats = await processRecheckTargets(pool, batch.rows as RecheckTarget[]);
 
     if (stats.checked > 0 || stats.errors > 0) {
       console.log(`[DecidedRecheck] Done: ${stats.checked} checked, ${stats.duplicates} duplicates, ${stats.updates} updates noted, ${stats.errors} errors`);
     }
   } finally {
-    isRunning = false;
+    release();
   }
 
   return stats;
