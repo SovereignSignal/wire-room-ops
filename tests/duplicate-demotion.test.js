@@ -106,3 +106,52 @@ test('duplicate demotion succeeds when canonical parent is archived', async () =
 
   assert.deepEqual(result, { outcome: 'linked', canonicalParentId: 30 });
 });
+
+// ── Permanent, non-retryable parent conditions ──────────────────────────────
+// A parent chain that resolves to a stable-but-non-canonical state is a
+// PERMANENT data condition: retrying the exact same demotion can never make it
+// succeed. It must NOT throw (a throw is treated as retryable by every automatic
+// caller, producing the infinite Telegram webhook retry / 5-min process-raw loop
+// that PR #86 spot-fixed for `archived` only). Instead the demotion reports an
+// 'unresolvable' outcome so callers can make forward progress. See the July 2026
+// "OpenClaw Foundation Launch" incident (invalid-status → 44+ webhook retries).
+
+test('duplicate demotion is unresolvable (not thrown) when the parent chain ends in a non-canonical status', async () => {
+  const db = fakeDb({
+    // A parent that terminates in 'skipped' is not an allowed canonical status,
+    // exactly like 'archived' was before #86 — but the class is open-ended.
+    resolutionRow: { id: 30, status: 'skipped', duplicate_of_id: null, depth: 1, cycle: false },
+  });
+  const result = await demoteEntryToDuplicateInTransaction(db, INPUT);
+
+  assert.deepEqual(result, { outcome: 'unresolvable', canonicalParentId: null, unresolvableReason: 'invalid-status' });
+  assert.equal(db.calls.some(call => /UPDATE scan_entries AS target/.test(call.sql)), false, 'must not mutate the target');
+  assert.equal(db.calls.some(call => /UPDATE seen_urls/.test(call.sql)), false, 'must not reassign URL ownership');
+});
+
+test('duplicate demotion is unresolvable when the parent chain dead-ends', async () => {
+  const db = fakeDb({
+    resolutionRow: { id: 30, status: 'duplicate', duplicate_of_id: null, depth: 1, cycle: false },
+  });
+  const result = await demoteEntryToDuplicateInTransaction(db, INPUT);
+
+  assert.deepEqual(result, { outcome: 'unresolvable', canonicalParentId: null, unresolvableReason: 'dead-end' });
+});
+
+test('duplicate demotion is unresolvable when the parent chain cycles', async () => {
+  const db = fakeDb({
+    resolutionRow: { id: 30, status: 'queued', duplicate_of_id: 20, depth: 3, cycle: true },
+  });
+  const result = await demoteEntryToDuplicateInTransaction(db, INPUT);
+
+  assert.deepEqual(result, { outcome: 'unresolvable', canonicalParentId: null, unresolvableReason: 'cycle' });
+});
+
+test('duplicate demotion is unresolvable when the chain resolves back to the target itself', async () => {
+  const db = fakeDb({
+    resolutionRow: { id: 10, status: 'approved', duplicate_of_id: null, depth: 2, cycle: false },
+  });
+  const result = await demoteEntryToDuplicateInTransaction(db, INPUT);
+
+  assert.deepEqual(result, { outcome: 'unresolvable', canonicalParentId: null, unresolvableReason: 'self-cycle' });
+});

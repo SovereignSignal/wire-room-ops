@@ -638,7 +638,32 @@ export interface ExistingEntryDedupInput {
   expectedStatus: string;
 }
 
-export type ExistingEntryDedupOutcome = 'unique' | 'duplicate' | 'seed-conflict' | 'stale';
+export type ExistingEntryDedupOutcome = 'unique' | 'duplicate' | 'seed-conflict' | 'stale' | 'unresolved-parent';
+
+/**
+ * Move a raw row forward when its URL matches an entry that can never be a
+ * canonical duplicate parent (a permanent `unresolvable` demotion). The row
+ * advances to 'deduped' — exactly like a unique row — so process-raw and
+ * daily-intake queue it for a human instead of retrying the impossible demotion
+ * every cycle. distributable is left untouched: once queued it is an ordinary
+ * review candidate. Returns false if the row changed under us (a real stale).
+ */
+async function surfaceUnresolvableDuplicate(
+  db: Queryable,
+  entry: ExistingEntryDedupInput,
+  reason: string | undefined,
+): Promise<boolean> {
+  const surfaced = await db.query(
+    `UPDATE scan_entries
+     SET status = 'deduped', duplicate_of_id = NULL,
+         duplicate_reason = $2, updated_at = NOW()
+     WHERE id = $1 AND status = $3 AND source_url = $4 AND name = $5 AND wire = $6
+     RETURNING id`,
+    [entry.id, `Unresolvable duplicate parent (${reason ?? 'unknown'}); surfaced for review`,
+     entry.expectedStatus, entry.sourceUrl, entry.name, entry.wire],
+  );
+  return surfaced.rowCount === 1;
+}
 
 /**
  * Recheck, URL-claim, and finalize an already-visible entry in one transaction.
@@ -696,6 +721,17 @@ export async function finalizeExistingEntryDedup(
         reason: dedupResult.reason || 'Duplicate detected during intake',
         actor: 'dedup-worker',
       });
+      if (linked.outcome === 'unresolvable') {
+        // Permanent: the matched parent can never be a canonical reference, so
+        // demotion can't succeed. Surface the row for review instead of looping.
+        const surfaced = await surfaceUnresolvableDuplicate(client, entry, linked.unresolvableReason);
+        if (!surfaced) {
+          await client.query('ROLLBACK');
+          return { outcome: 'stale', canonicalParentId: null };
+        }
+        await client.query('COMMIT');
+        return { outcome: 'unresolved-parent', canonicalParentId: null };
+      }
       if (linked.outcome !== 'linked') {
         await client.query('ROLLBACK');
         return { outcome: 'stale', canonicalParentId: null };
@@ -724,6 +760,17 @@ export async function finalizeExistingEntryDedup(
         reason: 'URL claimed by concurrent submission',
         actor: 'dedup-worker',
       });
+      if (linked.outcome === 'unresolvable') {
+        // Permanent: the matched parent can never be a canonical reference, so
+        // demotion can't succeed. Surface the row for review instead of looping.
+        const surfaced = await surfaceUnresolvableDuplicate(client, entry, linked.unresolvableReason);
+        if (!surfaced) {
+          await client.query('ROLLBACK');
+          return { outcome: 'stale', canonicalParentId: null };
+        }
+        await client.query('COMMIT');
+        return { outcome: 'unresolved-parent', canonicalParentId: null };
+      }
       if (linked.outcome !== 'linked') {
         await client.query('ROLLBACK');
         return { outcome: 'stale', canonicalParentId: null };

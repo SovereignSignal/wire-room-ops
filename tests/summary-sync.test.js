@@ -174,6 +174,43 @@ test('summary-sync parks a seed-history URL instead of leaving it queued', async
   }
 });
 
+test('summary-sync parks (does NOT stall the bridge) when the URL owner is a non-canonical parent', async () => {
+  // Regression for the July 2026 unresolvable-parent class in the tele-sum bridge.
+  // A URL claim that resolves to a parent the demoter cannot accept is PERMANENT.
+  // If it throws, the row errors, and the watermark only advances on a clean run
+  // (result.errors === 0) — so ONE poison summary would freeze the watermark and
+  // stall every later summary behind it. It must park forward instead.
+  const pool = makeMockPool({
+    summaries: [
+      {
+        summary_id: 1099,
+        title: 'Unresolvable Parent Summary',
+        description: 'URL owned by an entry in a status the demoter cannot canonicalize.',
+        wire: 'oss',
+        entities: {},
+        created_at: '2026-06-22T14:18:00Z',
+        extracted_urls: ['https://example.com/unresolvable-summary-parent'],
+      },
+    ],
+  });
+  const duplicateChain = require('../src/services/duplicate-chain');
+  const originalDemote = duplicateChain.demoteEntryToDuplicateInTransaction;
+  registerSeenResult = { urlConflict: true, conflictEntryId: 999 };
+  duplicateChain.demoteEntryToDuplicateInTransaction = async () => ({
+    outcome: 'unresolvable', canonicalParentId: null, unresolvableReason: 'invalid-status',
+  });
+  try {
+    const result = await syncSummariesToScanEntries(pool, 168);
+    assert.equal(result.errors, 0, 'an unresolvable parent must not error the run — an error freezes the watermark and stalls the whole bridge');
+    assert.equal(result.skipped, 1, 'the conflicting row is parked and counted as skipped');
+    const parked = pool._queries.find(({ sql }) => /SET status = 'deduped'/i.test(sql));
+    assert.ok(parked, 'entry must be parked forward (deduped), not thrown');
+  } finally {
+    registerSeenResult = { urlConflict: false, conflictEntryId: null };
+    duplicateChain.demoteEntryToDuplicateInTransaction = originalDemote;
+  }
+});
+
 test('summary-sync creates placeholder URL when summary has no extracted URL', async () => {
   const pool = makeMockPool({
     summaries: [
