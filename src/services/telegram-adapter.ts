@@ -18,6 +18,13 @@ function getIntakeBotToken(): string {
 
 const TELEGRAM_API = 'https://api.telegram.org';
 
+export class TelegramIntakeRetryableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TelegramIntakeRetryableError';
+  }
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Minimal Telegram types (only what we need)
 // ────────────────────────────────────────────────────────────────────────────
@@ -66,10 +73,14 @@ async function sendMessage(chatId: number, text: string, replyMarkup?: object): 
     });
     const data = await resp.json() as { ok: boolean; description?: string };
     if (!data.ok) {
-      console.error(`[TelegramAdapter] sendMessage failed: ${data.description}`);
+      throw new TelegramIntakeRetryableError(`Telegram send failed: ${data.description || 'unknown error'}`);
     }
   } catch (error) {
     console.error('[TelegramAdapter] sendMessage error:', error);
+    if (error instanceof TelegramIntakeRetryableError) throw error;
+    throw new TelegramIntakeRetryableError(
+      `Telegram send failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 
@@ -205,6 +216,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     text,
     senderId: `telegram:${userId}`,
     channelMessageId: String(message.message_id),
+    channelUpdateId: String(update.update_id),
     forwardedFrom,
   };
 
@@ -213,6 +225,12 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     console.log(`[TelegramAdapter] Batch message detected from user ${userId}`);
     await sendMessage(message.chat.id, '📥 Batch received. Running intake and history checks…');
     const batch = await processBatchMessage(intakeMsg, 'telegram');
+    if (batch.retryableErrors > 0) {
+      throw new TelegramIntakeRetryableError(
+        `Batch intake had ${batch.retryableErrors} retryable persistence error${batch.retryableErrors === 1 ? '' : 's'}`,
+      );
+    }
+
     const acceptedIds = batch.entries
       .filter(entry => entry.id && !entry.isDuplicate)
       .map(entry => entry.id!);
@@ -245,7 +263,11 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
 
   const result = await processIntakeMessage(intakeMsg, 'telegram');
 
-  // Inserted, rejected, or error — send reply
+  if (result.status === 'error') {
+    throw new TelegramIntakeRetryableError(result.errorMessage || 'Telegram intake failed');
+  }
+
+  // Inserted or permanently rejected — send reply
   const reply = formatReply(result);
   if (reply) {
     await sendMessage(message.chat.id, reply);
