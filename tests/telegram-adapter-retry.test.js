@@ -12,6 +12,7 @@ const assert = require('node:assert/strict');
 const intakeCore = require('../src/services/intake-core');
 const {
   handleTelegramUpdate,
+  sendMessage,
   settleHistoryWithinBudget,
   TelegramIntakeRetryableError,
 } = require('../src/services/telegram-adapter');
@@ -40,7 +41,11 @@ test('Telegram adapter propagates single item persistence failures for webhook r
     status: 'error',
     errorMessage: 'database unavailable',
   });
-  global.fetch = async () => ({ json: async () => ({ ok: true }) });
+  global.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ ok: true }),
+  });
 
   await assert.rejects(
     handleTelegramUpdate(baseUpdate),
@@ -66,7 +71,11 @@ test('Telegram adapter propagates batch persistence failures for webhook retry',
     failed: 1,
     entries: [],
   });
-  global.fetch = async () => ({ json: async () => ({ ok: true }) });
+  global.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ ok: true }),
+  });
 
   await assert.rejects(
     handleTelegramUpdate({
@@ -97,6 +106,7 @@ test('Telegram adapter propagates reply delivery failures for webhook retry', as
   global.fetch = async (_url, options) => {
     requestOptions = options;
     return {
+      ok: false,
       status: 503,
       json: async () => ({
         ok: false,
@@ -131,6 +141,7 @@ test('Telegram adapter does not retry permanent Bot API failures', async t => {
     confirmText: 'Saved entry #42',
   });
   global.fetch = async () => ({
+    ok: false,
     status: 400,
     json: async () => ({
       ok: false,
@@ -140,6 +151,87 @@ test('Telegram adapter does not retry permanent Bot API failures', async t => {
   });
 
   await assert.doesNotReject(handleTelegramUpdate(baseUpdate));
+});
+
+test('Telegram send classification rejects unknown, transient, and contradictory responses', async t => {
+  const originalFetch = global.fetch;
+  t.after(() => {
+    global.fetch = originalFetch;
+  });
+
+  const response = (status, payload, ok = status >= 200 && status < 300) => ({
+    ok,
+    status,
+    json: async () => payload,
+  });
+  const retryableCases = [
+    ['HTTP 200 with an unexplained API failure', () => response(200, { ok: false })],
+    ['HTTP 200 contradicting API code 400', () => response(200, { ok: false, error_code: 400 })],
+    ['HTTP 200 with an invalid API code', () => response(200, { ok: false, error_code: '400' })],
+    ['HTTP 503 contradicting API code 400', () => response(503, { ok: false, error_code: 400 })],
+    ['HTTP 500 contradicting an API success payload', () => response(500, { ok: true })],
+    ['HTTP 400 contradicting an API success payload', () => response(400, { ok: true })],
+    ['HTTP 400 contradicting API code 500', () => response(400, { ok: false, error_code: 500 })],
+    ['HTTP 408', () => response(408, { ok: false, error_code: 408 })],
+    ['HTTP 429', () => response(429, { ok: false, error_code: 429 })],
+    ['malformed HTTP 503 body', () => ({
+      ok: false,
+      status: 503,
+      json: async () => { throw new SyntaxError('invalid JSON'); },
+    })],
+  ];
+
+  for (const [name, makeResponse] of retryableCases) {
+    await t.test(name, async () => {
+      global.fetch = async () => makeResponse();
+      await assert.rejects(
+        sendMessage(394395765, 'test'),
+        TelegramIntakeRetryableError,
+      );
+    });
+  }
+
+  await t.test('network rejection', async () => {
+    global.fetch = async () => { throw new Error('network down'); };
+    await assert.rejects(
+      sendMessage(394395765, 'test'),
+      TelegramIntakeRetryableError,
+    );
+  });
+});
+
+test('Telegram send classification accepts only aligned success and confirmed permanent 4xx', async t => {
+  const originalFetch = global.fetch;
+  t.after(() => {
+    global.fetch = originalFetch;
+  });
+
+  await t.test('aligned HTTP and API success', async () => {
+    global.fetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true }),
+    });
+    await assert.doesNotReject(sendMessage(394395765, 'test'));
+  });
+
+  await t.test('aligned permanent API failure', async () => {
+    global.fetch = async () => ({
+      ok: false,
+      status: 400,
+      json: async () => ({ ok: false, error_code: 400, description: 'bad request' }),
+    });
+    await assert.doesNotReject(sendMessage(394395765, 'test'));
+  });
+
+  await t.test('non JSON permanent HTTP failure', async () => {
+    global.fetch = async () => ({
+      ok: false,
+      status: 400,
+      json: async () => { throw new SyntaxError('invalid JSON'); },
+    });
+    await assert.doesNotReject(sendMessage(394395765, 'test'));
+  });
 });
 
 test('history settlement returns pending when the webhook budget expires', async t => {
