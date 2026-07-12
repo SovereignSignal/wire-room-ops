@@ -183,6 +183,31 @@ test('validatingLookup blocks a hostname that resolves to a private/loopback IP'
   assert.equal(await __ssrf.validatesClean('example.com'), true, 'public DNS resolves clean');
 });
 
+test('targeted batch recheck settles only the submitted entry ids', async () => {
+  const pool = getPool();
+  const pid = process.pid;
+  const targetId = await insertEntry(pool, `Zyqwv Batchonly ${pid}`, `https://zyqwv-batchonly-${pid}.org/program`, 'queued');
+  const untouchedId = await insertEntry(pool, `Plmkj Untouched ${pid}`, `https://plmkj-untouched-${pid}.org/program`, 'queued');
+  try {
+    const { runDecidedRecheckForIds } = require('../src/jobs/decided-recheck');
+    const stats = await runDecidedRecheckForIds(pool, [targetId]);
+    assert.equal(stats.checked, 1);
+
+    const check = await pool.query(
+      `SELECT id, metadata -> 'decided_recheck' ->> 'verdict' AS verdict
+       FROM scan_entries
+       WHERE id IN ($1, $2)
+       ORDER BY id`,
+      [targetId, untouchedId],
+    );
+    const byId = new Map(check.rows.map(row => [Number(row.id), row.verdict]));
+    assert.equal(byId.get(targetId), 'no_candidates');
+    assert.equal(byId.get(untouchedId), null);
+  } finally {
+    await pool.query(`DELETE FROM scan_entries WHERE id IN ($1, $2)`, [targetId, untouchedId]);
+  }
+});
+
 test.after(async () => {
 
   await closePool();
