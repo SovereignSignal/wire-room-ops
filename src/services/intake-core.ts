@@ -415,7 +415,7 @@ async function insertEntry(db: Queryable, entry: NewIntakeEntry): Promise<number
 export async function insertIntakeEntryWithClaim(
   pool: Pool,
   entry: NewIntakeEntry,
-): Promise<{ id: number; urlConflict: boolean; conflictEntryId: number | null }> {
+): Promise<{ id: number; urlConflict: boolean; conflictEntryId: number | null; unresolvedParent?: boolean }> {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -432,6 +432,8 @@ export async function insertIntakeEntryWithClaim(
     });
 
     let conflictEntryId = claim.conflictEntryId;
+    let urlConflict = claim.urlConflict;
+    let unresolvedParent = false;
     if (claim.urlConflict) {
       const conflictReason = claim.conflictEntryId === null
         ? 'URL already exists in seed history'
@@ -455,15 +457,24 @@ export async function insertIntakeEntryWithClaim(
           reason: conflictReason,
           actor: 'intake-url-claim',
         });
-        if (demoted.outcome !== 'linked' || demoted.canonicalParentId === null) {
+        if (demoted.outcome === 'unresolvable') {
+          // Permanent: the URL owner can never be a canonical parent. Throwing
+          // here is what spun the Telegram webhook 44+ times in the July 2026
+          // incident. Keep the freshly-inserted entry visible for review and
+          // report the unresolvable parent up instead of demanding a retry.
+          unresolvedParent = true;
+          urlConflict = false;
+          conflictEntryId = null;
+        } else if (demoted.outcome !== 'linked' || demoted.canonicalParentId === null) {
           throw new Error('Exact URL claim loser changed before demotion');
+        } else {
+          conflictEntryId = demoted.canonicalParentId;
         }
-        conflictEntryId = demoted.canonicalParentId;
       }
     }
 
     await client.query('COMMIT');
-    return { id, urlConflict: claim.urlConflict, conflictEntryId };
+    return { id, urlConflict, conflictEntryId, unresolvedParent };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => undefined);
     throw error;

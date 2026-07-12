@@ -275,7 +275,23 @@ export async function syncSummariesToScanEntries(
                   reason: conflictReason,
                   actor: 'summary-sync',
                 });
-                if (repaired.outcome !== 'linked') {
+                if (repaired.outcome === 'unresolvable') {
+                  // Permanent: the URL owner can't be a canonical parent. Park
+                  // forward instead of throwing — an errored row freezes the
+                  // watermark (advances only when result.errors === 0) and would
+                  // stall every later summary behind this one poison row.
+                  const parked = await client.query(
+                    `UPDATE scan_entries
+                     SET status = 'deduped', duplicate_of_id = NULL,
+                         duplicate_reason = $2, distributable = false
+                     WHERE id = $1 AND status = 'queued' AND source_url = $3
+                     RETURNING id`,
+                    [existingRow.id, `${conflictReason} (unresolvable parent: ${repaired.unresolvableReason})`, existingRow.source_url],
+                  );
+                  if (parked.rowCount !== 1) {
+                    throw new Error('Existing summary entry changed before unresolvable-parent park');
+                  }
+                } else if (repaired.outcome !== 'linked') {
                   throw new Error('Existing summary entry changed before conflict repair');
                 }
               }
@@ -348,7 +364,21 @@ export async function syncSummariesToScanEntries(
                 reason: conflictReason,
                 actor: 'summary-sync',
               });
-              if (demoted.outcome !== 'linked') {
+              if (demoted.outcome === 'unresolvable') {
+                // Permanent: park forward instead of throwing (see the existing-
+                // entry branch above) so one poison row can't freeze the watermark.
+                const parked = await client.query(
+                  `UPDATE scan_entries
+                   SET status = 'deduped', duplicate_of_id = NULL,
+                       duplicate_reason = $2, distributable = false
+                   WHERE id = $1 AND status = 'queued' AND source_url = $3
+                   RETURNING id`,
+                  [inserted.rows[0].id, `${conflictReason} (unresolvable parent: ${demoted.unresolvableReason})`, sourceUrl],
+                );
+                if (parked.rowCount !== 1) {
+                  throw new Error('New summary entry changed before unresolvable-parent park');
+                }
+              } else if (demoted.outcome !== 'linked') {
                 throw new Error('New summary entry changed before conflict demotion');
               }
             }

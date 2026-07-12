@@ -81,8 +81,23 @@ export interface DuplicateDemotionOptions {
 }
 
 export interface DuplicateDemotionResult {
-  outcome: 'linked' | 'stale';
+  /**
+   * - `linked`: the target was demoted to a duplicate of the resolved canonical.
+   * - `stale`: the target row changed under us (compare-and-set miss). The
+   *   condition is transient — the caller may retry on a later cycle.
+   * - `unresolvable`: the requested parent chain can never yield a valid
+   *   canonical (missing parent, dead-end / cycle / max-depth, a non-canonical
+   *   terminal status, or a chain that resolves back to the target). This is a
+   *   PERMANENT data condition — retrying the identical demotion cannot make it
+   *   succeed — so the caller must make forward progress (surface the entry for
+   *   review) rather than retry. Throwing here instead is what produced the
+   *   infinite Telegram webhook retry / 5-minute process-raw loop that PR #86
+   *   spot-fixed for `archived` alone; `unresolvable` closes the whole class.
+   */
+  outcome: 'linked' | 'stale' | 'unresolvable';
   canonicalParentId: number | null;
+  /** Set only when outcome === 'unresolvable'; names why (for the audit trail). */
+  unresolvableReason?: string;
 }
 
 /**
@@ -118,14 +133,19 @@ export async function demoteEntryToDuplicateInTransaction(
       || target.source_url !== opts.expectedSourceUrl) {
     return { outcome: 'stale', canonicalParentId: null };
   }
-  if (!requestedParent) throw new Error('Duplicate parent is missing');
+  // Permanent parent conditions below resolve to `unresolvable`, never a throw:
+  // an automatic caller (dedup finalization, intake URL-claim, summary-sync)
+  // treats a thrown demotion as a retryable failure and would retry it forever.
+  if (!requestedParent) {
+    return { outcome: 'unresolvable', canonicalParentId: null, unresolvableReason: 'missing-parent' };
+  }
 
   const resolution = await resolveDuplicateChain(db, opts.requestedParentId);
   if (resolution.error || resolution.id === null) {
-    throw new Error(`Duplicate parent chain is invalid (${resolution.error || 'unknown'})`);
+    return { outcome: 'unresolvable', canonicalParentId: null, unresolvableReason: resolution.error ?? 'unknown' };
   }
   if (resolution.id === opts.targetId) {
-    throw new Error('Duplicate link would create a cycle');
+    return { outcome: 'unresolvable', canonicalParentId: null, unresolvableReason: 'self-cycle' };
   }
 
   const terminalResult = await db.query(
