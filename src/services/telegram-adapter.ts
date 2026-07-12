@@ -48,6 +48,10 @@ interface TelegramUpdate {
   message?: TelegramMessage;
 }
 
+export interface TelegramUpdateHandlingOptions {
+  sendBatchAcknowledgement?: boolean;
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Telegram API helpers
 // ────────────────────────────────────────────────────────────────────────────
@@ -297,7 +301,10 @@ function formatReply(result: IntakeResult): string {
 /**
  * Handle an incoming Telegram webhook update (message or callback).
  */
-export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void> {
+export async function handleTelegramUpdate(
+  update: TelegramUpdate,
+  options: TelegramUpdateHandlingOptions = {},
+): Promise<void> {
   const message = update.message;
   if (!message?.from) return;
 
@@ -333,11 +340,25 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
   // Batch mode: numbered list, bold-name, or structured (Link:) format
   if (isBatchMessage(text)) {
     console.log(`[TelegramAdapter] Batch message detected from user ${userId}`);
-    await sendMessage(message.chat.id, '📥 Batch received. Running intake and history checks…');
+    if (options.sendBatchAcknowledgement !== false) {
+      await sendMessage(message.chat.id, '📥 Batch received. Running intake and history checks…');
+    }
     const batch = await processBatchMessage(intakeMsg, 'telegram');
     if (batch.retryableErrors > 0) {
+      const failures = batch.entries
+        .filter(entry => entry.retryable)
+        .slice(0, 3)
+        .map(entry => {
+          const name = entry.name.replace(/\s+/g, ' ').trim().slice(0, 160);
+          const reason = (entry.error || 'unknown persistence error')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 500);
+          return `${name}: ${reason}`;
+        });
+      const detail = failures.length > 0 ? `: ${failures.join('; ')}` : '';
       throw new TelegramIntakeRetryableError(
-        `Batch intake had ${batch.retryableErrors} retryable persistence error${batch.retryableErrors === 1 ? '' : 's'}`,
+        `Batch intake had ${batch.retryableErrors} retryable persistence error${batch.retryableErrors === 1 ? '' : 's'}${detail}`,
       );
     }
 

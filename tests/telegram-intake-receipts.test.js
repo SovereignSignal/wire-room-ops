@@ -16,7 +16,7 @@ const {
   telegramReplayPlaceholder,
 } = require('../src/services/intake-core');
 
-function receiptPool({ lock = true, claim = true, existingStatus = null } = {}) {
+function receiptPool({ lock = true, claim = true, existingStatus = null, attempts = 1 } = {}) {
   const calls = [];
   let connects = 0;
   let releases = 0;
@@ -30,7 +30,7 @@ function receiptPool({ lock = true, claim = true, existingStatus = null } = {}) 
         return { rows: [{ pg_advisory_unlock: true }], rowCount: 1 };
       }
       if (sql.includes('INSERT INTO telegram_intake_receipts')) {
-        return { rows: claim ? [{ update_id: params[0] }] : [], rowCount: claim ? 1 : 0 };
+        return { rows: claim ? [{ update_id: params[0], attempts }] : [], rowCount: claim ? 1 : 0 };
       }
       if (sql.includes('SELECT status FROM telegram_intake_receipts')) {
         return { rows: existingStatus ? [{ status: existingStatus }] : [], rowCount: existingStatus ? 1 : 0 };
@@ -86,6 +86,23 @@ test('new Telegram update is locked and durably claimed before the handler, then
   assert.equal(claim.params[0], 501);
   assert.equal(claim.params[1], 77);
   assert.equal(pool.releases, 1);
+});
+
+test('durable receipt tells the handler whether this is the first delivery attempt', async () => {
+  const firstPool = receiptPool({ attempts: 1 });
+  const retryPool = receiptPool({ attempts: 4 });
+  let firstAttempt;
+  let retryAttempt;
+
+  await processTelegramUpdateWithReceipt(update(701), async context => {
+    firstAttempt = context.isFirstAttempt;
+  }, firstPool);
+  await processTelegramUpdateWithReceipt(update(702), async context => {
+    retryAttempt = context.isFirstAttempt;
+  }, retryPool);
+
+  assert.equal(firstAttempt, true);
+  assert.equal(retryAttempt, false);
 });
 
 test('successful duplicate update is acknowledged without running the handler twice', async () => {

@@ -9,6 +9,11 @@ let activeTelegramUpdates = 0;
 
 export type TelegramReceiptResult = 'processed' | 'already_processed';
 
+export interface TelegramReceiptHandlerContext {
+  attempt: number;
+  isFirstAttempt: boolean;
+}
+
 export interface TelegramWebhookUpdateIdentity {
   update_id?: number;
   message?: {
@@ -99,7 +104,7 @@ function errorText(error: unknown): string {
  */
 export async function processTelegramUpdateWithReceipt(
   update: TelegramWebhookUpdateIdentity,
-  handler: () => Promise<void>,
+  handler: (context: TelegramReceiptHandlerContext) => Promise<void>,
   pool: Pick<Pool, 'connect'> = getPool()
 ): Promise<TelegramReceiptResult> {
   const updateId = requireUpdateId(update);
@@ -138,7 +143,7 @@ export async function processTelegramUpdateWithReceipt(
          processed_at = NULL,
          updated_at = NOW()
        WHERE telegram_intake_receipts.status <> 'succeeded'
-       RETURNING update_id`,
+       RETURNING update_id, attempts`,
       [
         updateId,
         message?.message_id ?? null,
@@ -159,8 +164,13 @@ export async function processTelegramUpdateWithReceipt(
       throw new TelegramUpdateBusyError(updateId);
     }
 
+    const attempt = Number(claimed.rows[0]?.attempts);
+    if (!Number.isSafeInteger(attempt) || attempt < 1) {
+      throw new Error(`Invalid receipt attempt for Telegram update ${updateId}`);
+    }
+
     try {
-      await handler();
+      await handler({ attempt, isFirstAttempt: attempt === 1 });
       const completed = await client.query(
         `UPDATE telegram_intake_receipts
          SET status = 'succeeded', lease_token = NULL, last_error = NULL,
