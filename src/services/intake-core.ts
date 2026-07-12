@@ -720,7 +720,14 @@ export interface BatchIntakeResult {
   retryableErrors: number;
   /** @deprecated use duplicates + errors instead */
   failed: number;
-  entries: Array<{ name: string; wire: string; id?: number; error?: string; isDuplicate?: boolean }>;
+  entries: Array<{
+    name: string;
+    wire: string;
+    id?: number;
+    error?: string;
+    isDuplicate?: boolean;
+    retryable?: boolean;
+  }>;
 }
 
 /**
@@ -1000,7 +1007,12 @@ export async function processBatchMessage(
         result.errors++;
         result.retryableErrors++;
         result.failed++;
-        result.entries.push({ name: entry.name, wire: 'unknown', error: 'No wires configured' });
+        result.entries.push({
+          name: entry.name,
+          wire: 'unknown',
+          error: 'No wires configured',
+          retryable: true,
+        });
         continue;
       }
       console.log(`[BatchIntake] Wire not detected for "${entry.name}", defaulting to "${defaultWire}"`);
@@ -1103,7 +1115,12 @@ export async function processBatchMessage(
       result.errors++;
       result.retryableErrors++;
       result.failed++;
-      result.entries.push({ name: entry.name, wire: resolvedWire, error: err instanceof Error ? err.message : 'Insert failed' });
+      result.entries.push({
+        name: entry.name,
+        wire: resolvedWire,
+        error: err instanceof Error ? err.message : 'Insert failed',
+        retryable: true,
+      });
     }
   }
 

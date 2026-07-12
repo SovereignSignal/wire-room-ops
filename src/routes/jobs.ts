@@ -196,7 +196,9 @@ router.post('/telegram/intake-webhook', async (req: Request, res: Response) => {
   try {
     const outcome = await processTelegramUpdateWithReceipt(
       req.body,
-      () => handleTelegramUpdate(req.body)
+      context => handleTelegramUpdate(req.body, {
+        sendBatchAcknowledgement: context.isFirstAttempt,
+      })
     );
     if (outcome === 'already_processed') {
       console.info(`[TelegramIntake] Duplicate update ${req.body?.update_id} already processed`);

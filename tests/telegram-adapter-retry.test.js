@@ -69,7 +69,12 @@ test('Telegram adapter propagates batch persistence failures for webhook retry',
     errors: 1,
     retryableErrors: 1,
     failed: 1,
-    entries: [],
+    entries: [{
+      name: 'Broken Batch Item',
+      wire: 'oss',
+      error: 'database constraint failed',
+      retryable: true,
+    }],
   });
   global.fetch = async () => ({
     ok: true,
@@ -82,8 +87,49 @@ test('Telegram adapter propagates batch persistence failures for webhook retry',
       ...baseUpdate,
       message: { ...baseUpdate.message, text: 'batch payload' },
     }),
+    error => error instanceof TelegramIntakeRetryableError
+      && /Broken Batch Item/.test(error.message)
+      && /database constraint failed/.test(error.message),
+  );
+});
+
+test('Telegram adapter suppresses the preliminary batch acknowledgement on a retry', async t => {
+  const originalBatchCheck = intakeCore.isBatchMessage;
+  const originalProcessBatch = intakeCore.processBatchMessage;
+  const originalFetch = global.fetch;
+  t.after(() => {
+    intakeCore.isBatchMessage = originalBatchCheck;
+    intakeCore.processBatchMessage = originalProcessBatch;
+    global.fetch = originalFetch;
+  });
+  intakeCore.isBatchMessage = () => true;
+  intakeCore.processBatchMessage = async () => ({
+    inserted: 0,
+    duplicates: 0,
+    errors: 1,
+    retryableErrors: 1,
+    failed: 1,
+    entries: [{
+      name: 'Retrying Item',
+      wire: 'oss',
+      error: 'database unavailable',
+      retryable: true,
+    }],
+  });
+  let sends = 0;
+  global.fetch = async () => {
+    sends++;
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
+
+  await assert.rejects(
+    handleTelegramUpdate({
+      ...baseUpdate,
+      message: { ...baseUpdate.message, text: 'batch payload' },
+    }, { sendBatchAcknowledgement: false }),
     TelegramIntakeRetryableError,
   );
+  assert.equal(sends, 0);
 });
 
 test('Telegram adapter propagates reply delivery failures for webhook retry', async t => {
