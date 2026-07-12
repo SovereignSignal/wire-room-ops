@@ -97,14 +97,15 @@ export async function sendMessage(chatId: number, text: string, replyMarkup?: ob
       throw new TelegramIntakeRetryableError(reason);
     }
 
-    const httpSucceeded = resp.ok === true
-      && httpStatus >= 200
-      && httpStatus < 300;
-    if (httpSucceeded && data.ok === true) return;
-
+    const hasApiCode = Object.prototype.hasOwnProperty.call(data, 'error_code');
     const apiCode = typeof data.error_code === 'number' && Number.isInteger(data.error_code)
       ? data.error_code
       : null;
+    const httpSucceeded = resp.ok === true
+      && httpStatus >= 200
+      && httpStatus < 300;
+    if (httpSucceeded && data.ok === true && !hasApiCode) return;
+
     const permanentApiFailure = apiCode !== null
       && apiCode >= 400
       && apiCode < 500

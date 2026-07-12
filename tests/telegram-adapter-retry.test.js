@@ -166,6 +166,12 @@ test('Telegram send classification rejects unknown, transient, and contradictory
   });
   const retryableCases = [
     ['HTTP 200 with an unexplained API failure', () => response(200, { ok: false })],
+    ['HTTP 200 success payload contradicting API code 400', () => response(200, { ok: true, error_code: 400 })],
+    ['HTTP 200 success payload contradicting API code 408', () => response(200, { ok: true, error_code: 408 })],
+    ['HTTP 200 success payload contradicting API code 429', () => response(200, { ok: true, error_code: 429 })],
+    ['HTTP 200 success payload contradicting API code 500', () => response(200, { ok: true, error_code: 500 })],
+    ['HTTP 200 success payload with a malformed API code', () => response(200, { ok: true, error_code: '400' })],
+    ['HTTP 200 success payload with a null API code', () => response(200, { ok: true, error_code: null })],
     ['HTTP 200 contradicting API code 400', () => response(200, { ok: false, error_code: 400 })],
     ['HTTP 200 with an invalid API code', () => response(200, { ok: false, error_code: '400' })],
     ['HTTP 503 contradicting API code 400', () => response(503, { ok: false, error_code: 400 })],
