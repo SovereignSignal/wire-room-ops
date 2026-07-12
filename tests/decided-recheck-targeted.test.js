@@ -20,6 +20,35 @@ test('targeted recheck queries only unique integer submission ids', async () => 
   assert.deepEqual(calls[0].params, [[12, 13]]);
 });
 
+test('no-candidate stamp compares the text deadline without a date type mismatch', async () => {
+  const calls = [];
+  const pool = {
+    query: async (sql, params) => {
+      calls.push({ sql, params });
+      if (calls.length === 1) {
+        return {
+          rows: [{
+            id: 14,
+            wire: 'oss',
+            name: 'Deadline text target',
+            description: 'A sufficiently descriptive test entry',
+            source_url: 'https://example.org/deadline-text-target',
+            deadline: 'Rolling',
+          }],
+        };
+      }
+      if (calls.length === 2) return { rows: [] };
+      return { rows: [{ id: 14 }], rowCount: 1 };
+    },
+  };
+
+  const stats = await runDecidedRecheckForIds(pool, [14]);
+  assert.equal(stats.checked, 1);
+  assert.match(calls[2].sql, /deadline IS NOT DISTINCT FROM \$6::text/);
+  assert.doesNotMatch(calls[2].sql, /\$6::date/);
+  assert.equal(calls[2].params[5], 'Rolling');
+});
+
 test('targeted rechecks serialize to avoid racing the scheduled sweep', async () => {
   let activeQueries = 0;
   let maxActiveQueries = 0;

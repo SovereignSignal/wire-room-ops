@@ -241,7 +241,7 @@ async function stampTargetIfFresh(
        AND name IS NOT DISTINCT FROM $3
        AND description IS NOT DISTINCT FROM $4
        AND source_url IS NOT DISTINCT FROM $5
-       AND deadline IS NOT DISTINCT FROM $6::date
+       AND deadline IS NOT DISTINCT FROM $6::text
        AND wire IS NOT DISTINCT FROM $7
        AND (metadata -> 'decided_recheck') IS NULL
      RETURNING id`,
