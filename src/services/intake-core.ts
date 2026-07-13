@@ -837,11 +837,18 @@ export function isBatchMessage(text: string): boolean {
  *   Bold:      **Name** — Description / Deadline: X / Link: <url>
  *   Markdown:  [Name](url) — Description (newsletters/briefings)
  */
+export function isBatchControlLine(text: string): boolean {
+  return /^\s*Total:\s*\d+\s+results?\b/i.test(text);
+}
+
 export function parseBatchEntries(text: string): Array<{ name: string; description: string; sourceUrl: string; deadline?: string }> {
-  // Strip Grok count headers/footers like "Total: 18 results after dedup...016".
+  // Grok count lines can appear at the start, end, or between concatenated
+  // scan blocks. Remove every standalone control line before chunking so it
+  // cannot become the next entry's title.
   const cleaned = text
-    .replace(/^\s*Total:\s*\d+\s+results?[^\n]*(?:\n|$)/i, '')
-    .replace(/\n*Total:\s*\d+\s+results?[^\n]*$/i, '')
+    .split('\n')
+    .filter(line => !isBatchControlLine(line))
+    .join('\n')
     .trim();
 
   // Detect format: numbered vs bold-name vs markdown-link
@@ -957,7 +964,7 @@ export function parseBatchEntries(text: string): Array<{ name: string; descripti
     }
 
     return { name, description, sourceUrl, deadline };
-  }).filter(e => e.name.length > 2);
+  }).filter(e => e.name.length > 2 && !isBatchControlLine(e.name));
 }
 
 /**

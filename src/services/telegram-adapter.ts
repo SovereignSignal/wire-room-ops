@@ -5,6 +5,7 @@
  * DB insert) is delegated to intake-core.ts.
  */
 
+import type { Pool } from 'pg';
 import { config } from '../config';
 import { getPool } from '../db';
 import { runDecidedRecheckForIds } from '../jobs/decided-recheck';
@@ -19,6 +20,8 @@ function getIntakeBotToken(): string {
 const TELEGRAM_API = 'https://api.telegram.org';
 const TELEGRAM_SEND_TIMEOUT_MS = 10_000;
 const HISTORY_SETTLE_BUDGET_MS = 15_000;
+const HISTORY_FOLLOW_UP_TIMEOUT_MS = 20 * 60_000;
+const HISTORY_FOLLOW_UP_POLL_MS = 5_000;
 const TELEGRAM_TEXT_LIMIT = 4_000;
 
 export class TelegramIntakeRetryableError extends Error {
@@ -148,6 +151,130 @@ export interface SettledBatchEntry {
   duplicate_reason: string | null;
   decided_recheck: { verdict?: string } | null;
   duplicate_chain_error: unknown | null;
+}
+
+type SettledBatchPool = Pick<Pool, 'query'>;
+
+export interface SettledBatchFollowUpOptions {
+  pool?: SettledBatchPool;
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+  runRecheck?: (pool: SettledBatchPool, entryIds: number[]) => Promise<unknown>;
+  send?: (chatId: number, text: string) => Promise<void>;
+}
+
+async function readSettledBatchEntries(
+  pool: SettledBatchPool,
+  acceptedIds: number[],
+): Promise<SettledBatchEntry[]> {
+  if (acceptedIds.length === 0) return [];
+  const result = await pool.query(
+    `SELECT id, status, duplicate_of_id, duplicate_reason,
+            metadata -> 'decided_recheck' AS decided_recheck,
+            metadata -> 'duplicate_chain_error' AS duplicate_chain_error
+     FROM scan_entries
+     WHERE id = ANY($1::bigint[])`,
+    [acceptedIds],
+  );
+  return result.rows as SettledBatchEntry[];
+}
+
+function outstandingHistoryCheckIds(
+  acceptedIds: number[],
+  settledEntries: SettledBatchEntry[],
+): number[] {
+  const settledById = new Map(settledEntries.map(entry => [Number(entry.id), entry]));
+  return acceptedIds.filter(id => {
+    const settled = settledById.get(id);
+    if (!settled) return true;
+    if (settled.status !== 'queued') return false;
+    return !settled.decided_recheck && !settled.duplicate_chain_error;
+  });
+}
+
+export function hasOutstandingHistoryChecks(
+  acceptedIds: number[],
+  settledEntries: SettledBatchEntry[],
+): boolean {
+  return outstandingHistoryCheckIds(acceptedIds, settledEntries).length > 0;
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Finish a batch whose history pass exceeded the webhook budget. The worker
+ * retries the targeted pass when the shared recheck lock is free, then sends
+ * one report built from authoritative database state.
+ */
+export async function deliverSettledBatchFollowUp(
+  chatId: number,
+  batch: BatchIntakeResult,
+  acceptedIds: number[],
+  options: SettledBatchFollowUpOptions = {},
+): Promise<boolean> {
+  if (acceptedIds.length === 0) return false;
+
+  const pool = options.pool || getPool();
+  const timeoutMs = options.timeoutMs ?? HISTORY_FOLLOW_UP_TIMEOUT_MS;
+  const pollIntervalMs = options.pollIntervalMs ?? HISTORY_FOLLOW_UP_POLL_MS;
+  const send = options.send || sendMessage;
+  const runRecheck = options.runRecheck
+    || ((targetPool: SettledBatchPool, ids: number[]) => runDecidedRecheckForIds(targetPool as Pool, ids));
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+
+  while (Date.now() <= deadline) {
+    try {
+      let settled = await readSettledBatchEntries(pool, acceptedIds);
+      let pendingIds = outstandingHistoryCheckIds(acceptedIds, settled);
+      if (pendingIds.length === 0) {
+        await send(chatId, formatSettledBatchReport(batch, settled));
+        return true;
+      }
+
+      await runRecheck(pool, pendingIds);
+      settled = await readSettledBatchEntries(pool, acceptedIds);
+      pendingIds = outstandingHistoryCheckIds(acceptedIds, settled);
+      if (pendingIds.length === 0) {
+        await send(chatId, formatSettledBatchReport(batch, settled));
+        return true;
+      }
+    } catch (error) {
+      console.error('[TelegramAdapter] Settled batch follow up attempt failed:', error);
+    }
+
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    await wait(Math.min(Math.max(1, pollIntervalMs), remainingMs));
+  }
+
+  console.warn(`[TelegramAdapter] Settled batch follow up timed out for IDs ${acceptedIds.join(',')}`);
+  return false;
+}
+
+const scheduledFollowUps = new Set<string>();
+
+function scheduleSettledBatchFollowUp(
+  updateId: number,
+  chatId: number,
+  batch: BatchIntakeResult,
+  acceptedIds: number[],
+): void {
+  const key = `${updateId}:${chatId}`;
+  if (scheduledFollowUps.has(key)) return;
+  scheduledFollowUps.add(key);
+
+  void deliverSettledBatchFollowUp(chatId, batch, acceptedIds)
+    .then(delivered => {
+      if (!delivered) {
+        console.warn(`[TelegramAdapter] No settled follow up delivered for update ${updateId}`);
+      }
+    })
+    .catch(error => {
+      console.error(`[TelegramAdapter] Settled follow up failed for update ${updateId}:`, error);
+    })
+    .finally(() => scheduledFollowUps.delete(key));
 }
 
 function escapedField(text: string, maxRawLength: number): string {
@@ -371,20 +498,16 @@ export async function handleTelegramUpdate(
 
     if (acceptedIds.length > 0) {
       try {
-        settled = (await getPool().query(
-          `SELECT id, status, duplicate_of_id, duplicate_reason,
-                  metadata -> 'decided_recheck' AS decided_recheck,
-                  metadata -> 'duplicate_chain_error' AS duplicate_chain_error
-           FROM scan_entries
-           WHERE id = ANY($1::bigint[])`,
-          [acceptedIds],
-        )).rows as SettledBatchEntry[];
+        settled = await readSettledBatchEntries(getPool(), acceptedIds);
       } catch (error) {
         console.error('[TelegramAdapter] Final batch status read failed:', error);
       }
     }
 
     await sendMessage(message.chat.id, formatSettledBatchReport(batch, settled));
+    if (hasOutstandingHistoryChecks(acceptedIds, settled)) {
+      scheduleSettledBatchFollowUp(update.update_id, message.chat.id, batch, acceptedIds);
+    }
     return;
   }
 

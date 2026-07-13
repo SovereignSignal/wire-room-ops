@@ -2,7 +2,11 @@ require('ts-node/register/transpile-only');
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { formatSettledBatchReport } = require('../src/services/telegram-adapter');
+const {
+  deliverSettledBatchFollowUp,
+  formatSettledBatchReport,
+  hasOutstandingHistoryChecks,
+} = require('../src/services/telegram-adapter');
 
 test('settled batch report uses final database status instead of insert count', () => {
   const batch = {
@@ -82,4 +86,61 @@ test('settled batch report truncates only at complete HTML line boundaries', () 
   assert.match(report, /more results omitted/);
   assert.doesNotMatch(report.replaceAll('&amp;', '').replaceAll('&lt;', '').replaceAll('&gt;', ''), /&/);
   assert.equal((report.match(/<b>/g) || []).length, (report.match(/<\/b>/g) || []).length);
+});
+
+test('history completion detection treats unstamped queued rows as outstanding', () => {
+  const acceptedIds = [201, 202];
+  assert.equal(hasOutstandingHistoryChecks(acceptedIds, [
+    { id: 201, status: 'queued', decided_recheck: { verdict: 'distinct' }, duplicate_chain_error: null },
+    { id: 202, status: 'queued', decided_recheck: null, duplicate_chain_error: null },
+  ]), true);
+  assert.equal(hasOutstandingHistoryChecks(acceptedIds, [
+    { id: 201, status: 'queued', decided_recheck: { verdict: 'distinct' }, duplicate_chain_error: null },
+    { id: 202, status: 'duplicate', decided_recheck: null, duplicate_chain_error: null },
+  ]), false);
+});
+
+test('settled batch follow up reruns pending checks and sends one authoritative report', async () => {
+  const batch = {
+    inserted: 1,
+    duplicates: 0,
+    errors: 0,
+    retryableErrors: 0,
+    failed: 0,
+    entries: [{ id: 301, name: 'Fresh Grant', wire: 'oss' }],
+  };
+  let stamped = false;
+  let rechecks = 0;
+  const sent = [];
+  const pool = {
+    query: async () => ({
+      rows: [{
+        id: 301,
+        status: 'queued',
+        duplicate_of_id: null,
+        duplicate_reason: null,
+        decided_recheck: stamped ? { verdict: 'distinct' } : null,
+        duplicate_chain_error: null,
+      }],
+    }),
+  };
+
+  const delivered = await deliverSettledBatchFollowUp(394395765, batch, [301], {
+    pool,
+    timeoutMs: 100,
+    pollIntervalMs: 1,
+    runRecheck: async () => {
+      rechecks++;
+      stamped = true;
+      return { checked: 1, duplicates: 0, updates: 0, distinct: 1, errors: 0 };
+    },
+    send: async (_chatId, report) => sent.push(report),
+  });
+
+  assert.equal(delivered, true);
+  assert.equal(rechecks, 1);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /Intake settled:/);
+  assert.match(sent[0], /1 queued/);
+  assert.doesNotMatch(sent[0], /checks outstanding/);
 });
