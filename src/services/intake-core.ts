@@ -371,10 +371,10 @@ export async function findTelegramReplayEntry(
   db: Queryable,
   updateId?: string,
   itemKey?: string,
-): Promise<number | null> {
+): Promise<{ id: number; wire: string } | null> {
   if (!updateId || !itemKey) return null;
   const existing = await db.query(
-    `SELECT id
+    `SELECT id, wire
      FROM scan_entries
      WHERE scan_source = 'telegram'
        AND metadata->>'channel_update_id' = $1
@@ -383,7 +383,8 @@ export async function findTelegramReplayEntry(
      LIMIT 1`,
     [updateId, itemKey],
   );
-  return existing.rows[0]?.id ?? null;
+  const row = existing.rows[0];
+  return row ? { id: row.id, wire: row.wire } : null;
 }
 
 async function insertEntry(db: Queryable, entry: NewIntakeEntry): Promise<number> {
@@ -561,12 +562,12 @@ export async function processIntakeMessage(
     return { status: 'error', errorMessage: 'No active wires configured' };
   }
 
-  const replayEntryId = await findTelegramReplayEntry(getPool(), msg.channelUpdateId, channelItemKey);
-  if (replayEntryId !== null) {
+  const replayEntry = await findTelegramReplayEntry(getPool(), msg.channelUpdateId, channelItemKey);
+  if (replayEntry !== null) {
     return {
       status: 'inserted',
-      entryId: replayEntryId,
-      confirmText: `Captured existing entry #${replayEntryId} from a retried Telegram update`,
+      entryId: replayEntry.id,
+      confirmText: `Captured existing entry #${replayEntry.id} from a retried Telegram update`,
     };
   }
 
@@ -1006,10 +1007,10 @@ export async function processBatchMessage(
       entry.sourceUrl = telegramReplayPlaceholder(msg.channelUpdateId, channelItemKey!);
     }
 
-    const replayEntryId = await findTelegramReplayEntry(getPool(), msg.channelUpdateId, channelItemKey);
-    if (replayEntryId !== null) {
+    const replayEntry = await findTelegramReplayEntry(getPool(), msg.channelUpdateId, channelItemKey);
+    if (replayEntry !== null) {
       result.inserted++;
-      result.entries.push({ name: entry.name, wire: 'existing', id: replayEntryId });
+      result.entries.push({ name: entry.name, wire: replayEntry.wire, id: replayEntry.id });
       continue;
     }
 
