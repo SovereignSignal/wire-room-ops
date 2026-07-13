@@ -5,6 +5,7 @@
  * DB insert) is delegated to intake-core.ts.
  */
 
+import type { Pool } from 'pg';
 import { config } from '../config';
 import { getPool } from '../db';
 import { runDecidedRecheckForIds } from '../jobs/decided-recheck';
@@ -148,6 +149,44 @@ export interface SettledBatchEntry {
   duplicate_reason: string | null;
   decided_recheck: { verdict?: string } | null;
   duplicate_chain_error: unknown | null;
+}
+
+type SettledBatchPool = Pick<Pool, 'query'>;
+
+async function readSettledBatchEntries(
+  pool: SettledBatchPool,
+  acceptedIds: number[],
+): Promise<SettledBatchEntry[]> {
+  if (acceptedIds.length === 0) return [];
+  const result = await pool.query(
+    `SELECT id, status, duplicate_of_id, duplicate_reason,
+            metadata -> 'decided_recheck' AS decided_recheck,
+            metadata -> 'duplicate_chain_error' AS duplicate_chain_error
+     FROM scan_entries
+     WHERE id = ANY($1::bigint[])`,
+    [acceptedIds],
+  );
+  return result.rows as SettledBatchEntry[];
+}
+
+function outstandingHistoryCheckIds(
+  acceptedIds: number[],
+  settledEntries: SettledBatchEntry[],
+): number[] {
+  const settledById = new Map(settledEntries.map(entry => [Number(entry.id), entry]));
+  return acceptedIds.filter(id => {
+    const settled = settledById.get(id);
+    if (!settled) return true;
+    if (settled.status !== 'queued') return false;
+    return !settled.decided_recheck && !settled.duplicate_chain_error;
+  });
+}
+
+export function hasOutstandingHistoryChecks(
+  acceptedIds: number[],
+  settledEntries: SettledBatchEntry[],
+): boolean {
+  return outstandingHistoryCheckIds(acceptedIds, settledEntries).length > 0;
 }
 
 function escapedField(text: string, maxRawLength: number): string {
@@ -371,17 +410,22 @@ export async function handleTelegramUpdate(
 
     if (acceptedIds.length > 0) {
       try {
-        settled = (await getPool().query(
-          `SELECT id, status, duplicate_of_id, duplicate_reason,
-                  metadata -> 'decided_recheck' AS decided_recheck,
-                  metadata -> 'duplicate_chain_error' AS duplicate_chain_error
-           FROM scan_entries
-           WHERE id = ANY($1::bigint[])`,
-          [acceptedIds],
-        )).rows as SettledBatchEntry[];
+        settled = await readSettledBatchEntries(getPool(), acceptedIds);
       } catch (error) {
         console.error('[TelegramAdapter] Final batch status read failed:', error);
       }
+    }
+
+    if (hasOutstandingHistoryChecks(acceptedIds, settled)) {
+      // Send the pending report once, then leave the durable receipt failed so
+      // Telegram replays this update. Stable item keys make the replay safe;
+      // the successful receipt is written only after the settled report sends.
+      if (options.sendBatchAcknowledgement !== false) {
+        await sendMessage(message.chat.id, formatSettledBatchReport(batch, settled));
+      }
+      throw new TelegramIntakeRetryableError(
+        `Batch history checks still outstanding for IDs ${acceptedIds.join(',')}`,
+      );
     }
 
     await sendMessage(message.chat.id, formatSettledBatchReport(batch, settled));

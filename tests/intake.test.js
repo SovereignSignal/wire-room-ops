@@ -128,6 +128,25 @@ test('parseBatchEntries handles Grok scans with header, t.co links, and via-post
   assert.equal(parsed[2].sourceUrl, 'https://t.co/wPo1P52O9836');
 });
 
+test('parseBatchEntries ignores Grok totals lines between concatenated scan blocks', () => {
+  const content = [
+    'Ripple XRPL Grants Program — Rolling grants for XRPL builders.',
+    'Deadline: Rolling',
+    'Link: https://x.com/xrp_herald/status/2075497085332279724',
+    'Total: 8 results after dedup and filtering.',
+    'Stacks Endowment Community Grants Round — Community grants for Stacks projects.',
+    'Deadline: July 26, 2026',
+    'Link: https://zeroauthoritydao.com/funding/degrants',
+  ].join('\n');
+
+  const parsed = parseBatchEntries(content);
+  assert.deepEqual(parsed.map(entry => entry.name), [
+    'Ripple XRPL Grants Program',
+    'Stacks Endowment Community Grants Round',
+  ]);
+  assert.equal(parsed[1].sourceUrl, 'https://zeroauthoritydao.com/funding/degrants');
+});
+
 test('parseBatchEntries strips Grok citation suffixes from X status URLs', () => {
   const content = [
     '[Humanity AI $18M Grants] — Philanthropic initiative with $10M open call forthcoming.',
