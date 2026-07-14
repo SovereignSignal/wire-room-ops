@@ -360,9 +360,16 @@ export async function buildRunLedger(
       WHERE purpose = 'scan' AND created_at >= NOW() - INTERVAL '24 hours'`);
     const ok = parseInt(rows[0]?.ok ?? '0', 10);
     const failed = parseInt(rows[0]?.failed ?? '0', 10);
-    if (failed > 0) {
+    // A few transient failures among successful calls are visible as a warning
+    // in the ledger, but do not turn the email into a production incident.
+    // Escalate when every scan failed or failures are both repeated and at
+    // least half of all attempts.
+    const materialFailure = failed > 0 && (ok === 0 || (failed >= 2 && failed >= ok));
+    if (materialFailure) {
       lanes.push({ key: 'scans', state: 'fail', detail: `scans ${ok}✓ ${failed}✗` });
       anomalies.push(`Scan calls: ${failed} failed in 24h`);
+    } else if (failed > 0) {
+      lanes.push({ key: 'scans', state: 'warn', detail: `scans ${ok}✓ ${failed}✗` });
     } else if (ok === 0) {
       lanes.push({ key: 'scans', state: 'warn', detail: 'scans 0' });
     } else {
@@ -520,8 +527,12 @@ export async function assembleAndSendDailyDigest(
 
   try {
     const breakdown = await deps.sources(pool);
+    // Human and chat intake naturally re-submit already-seen listings. Their
+    // duplicate rate is useful in the source table, but it is not source-lane
+    // health and should not be presented as a production incident.
+    const nonAutomatedSources = new Set(['telegram', 'telegram-intake', 'manual-intake']);
     for (const row of breakdown) {
-      if (row.total >= 10 && row.duplicates / row.total > 0.6) {
+      if (!nonAutomatedSources.has(row.source) && row.total >= 10 && row.duplicates / row.total > 0.6) {
         anomalies.push(`High dupe rate: ${row.wire}/${row.source} — ${Math.round((row.duplicates / row.total) * 100)}% of ${row.total}`);
       }
     }
