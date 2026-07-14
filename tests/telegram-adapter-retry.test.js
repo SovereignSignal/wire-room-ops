@@ -192,24 +192,23 @@ test('Telegram adapter keeps the durable receipt retryable until one settled fol
     error => error instanceof TelegramIntakeRetryableError
       && /history checks still outstanding/.test(error.message),
   );
-  assert.equal(reports.length, 2, 'first attempt sends acknowledgement and one pending report');
+  assert.equal(reports.length, 1, 'first attempt sends only the acknowledgement');
   assert.match(reports[0], /Batch received/);
-  assert.match(reports[1], /history check pending/);
 
   await assert.rejects(
     handleTelegramUpdate(batchUpdate, { sendBatchAcknowledgement: false }),
     TelegramIntakeRetryableError,
   );
-  assert.equal(reports.length, 2, 'unsettled replays stay silent');
+  assert.equal(reports.length, 1, 'unsettled replays stay silent');
 
   settled = true;
   await assert.doesNotReject(
     handleTelegramUpdate(batchUpdate, { sendBatchAcknowledgement: false }),
   );
-  assert.equal(reports.length, 3, 'settled replay sends exactly one follow up');
-  assert.match(reports[2], /Intake settled:/);
-  assert.match(reports[2], /1 queued/);
-  assert.doesNotMatch(reports[2], /checks outstanding/);
+  assert.equal(reports.length, 2, 'settled replay sends exactly one follow up');
+  assert.match(reports[1], /Intake settled:/);
+  assert.match(reports[1], /1 queued/);
+  assert.doesNotMatch(reports[1], /checks outstanding/);
 });
 
 test('Telegram adapter propagates reply delivery failures for webhook retry', async t => {
