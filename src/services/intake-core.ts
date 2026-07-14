@@ -913,15 +913,36 @@ export function parseBatchEntries(text: string): Array<{ name: string; descripti
     }
   }
 
-  return chunks.map(rawChunk => {
+  return chunks.map((rawChunk, chunkIndex) => {
     // Trim leading blank lines and strip numbered prefix (e.g. "14. " or " 3.  ")
     const chunk = rawChunk.trim();
     const withoutPrefix = chunk.replace(/^\s*\d+\.\s+/, '');
 
+    // Plain-text scans sometimes put prose before the first real item. The
+    // chunker closes blocks on Link: lines, so that prose otherwise becomes
+    // the item's name while the real title supplies its description. When a
+    // later line has the canonical "Name — Description" shape, start there.
+    const unprefixedLines = withoutPrefix.split('\n');
+    const firstLine = unprefixedLines[0]?.trim() || '';
+    const preambleSignals = firstLine.match(
+      /\b(?:scan|results?|matches?|announcements?|findings?|compiled|qualifying)\b/gi,
+    )?.length || 0;
+    const looksLikePreamble = chunkIndex === 0
+      && preambleSignals >= 2
+      && /^(?:no\b|here(?:'s| is| are)\b|the following\b|below (?:is|are)\b|compiled\b|scan\b)/i.test(firstLine);
+    const structuredTitleIndex = looksLikePreamble
+      ? unprefixedLines.findIndex((line, index) =>
+          index > 0 && /^[^—–\n]{3,120}\s*[—–]\s+\S/.test(line.trim()),
+        )
+      : -1;
+    const entryText = structuredTitleIndex > 0
+      ? unprefixedLines.slice(structuredTitleIndex).join('\n').trim()
+      : withoutPrefix;
+
     // Extract name from **bold** or leading text (now without numbered prefix)
-    const boldMatch = withoutPrefix.match(/^\*\*([^*]+)\*\*/);
+    const boldMatch = entryText.match(/^\*\*([^*]+)\*\*/);
     // For non-bold: capture up to em dash, en dash, or newline
-    const plainMatch = withoutPrefix.match(/^([^\n—–]+)/);
+    const plainMatch = entryText.match(/^([^\n—–]+)/);
 
     let rawName: string;
     if (boldMatch) {
@@ -929,7 +950,7 @@ export function parseBatchEntries(text: string): Array<{ name: string; descripti
     } else if (plainMatch) {
       rawName = plainMatch[1].trim();
     } else {
-      rawName = withoutPrefix.split('\n')[0].trim();
+      rawName = entryText.split('\n')[0].trim();
     }
 
     // Strip trailing em-dash description suffix and any leftover numbered prefix
@@ -954,9 +975,9 @@ export function parseBatchEntries(text: string): Array<{ name: string; descripti
     const deadline = deadlineMatch ? deadlineMatch[1].trim() : undefined;
 
     // Build clean description: name — description text, append deadline if present
-    const descMatch = chunk.match(/\*\*[^*]+\*\*\s*[—–\-]\s*([\s\S]+?)(?:\n(?:Deadline|Link):|\s+Deadline:|\s*$)/)
-      || withoutPrefix.match(/^[^—–]+[—–]\s*([\s\S]+?)(?:\n(?:Deadline|Link):|\s+Deadline:|\s*$)/);
-    let description = descMatch ? descMatch[1].trim() : chunk.replace(/^\d+\.\s*/, '').trim();
+    const descMatch = entryText.match(/\*\*[^*]+\*\*\s*[—–\-]\s*([\s\S]+?)(?:\n(?:Deadline|Link):|\s+Deadline:|\s*$)/)
+      || entryText.match(/^[^—–]+[—–]\s*([\s\S]+?)(?:\n(?:Deadline|Link):|\s+Deadline:|\s*$)/);
+    let description = descMatch ? descMatch[1].trim() : entryText.replace(/^\d+\.\s*/, '').trim();
     if (!hasDirectUrl) {
       description += '\nNeeds source verification: Grok supplied a via-post or missing-link placeholder.';
     }

@@ -241,7 +241,7 @@ export async function settleHistoryWithinBudget(
   const outcome = await Promise.race([recheck, budget]);
   if (timer) clearTimeout(timer);
   if (outcome === 'pending') {
-    console.warn(`[TelegramAdapter] History check exceeded ${budgetMs}ms; reporting pending state`);
+    console.warn(`[TelegramAdapter] History check exceeded ${budgetMs}ms; requesting receipt retry`);
   }
   return outcome;
 }
@@ -417,12 +417,9 @@ export async function handleTelegramUpdate(
     }
 
     if (hasOutstandingHistoryChecks(acceptedIds, settled)) {
-      // Send the pending report once, then leave the durable receipt failed so
-      // Telegram replays this update. Stable item keys make the replay safe;
-      // the successful receipt is written only after the settled report sends.
-      if (options.sendBatchAcknowledgement !== false) {
-        await sendMessage(message.chat.id, formatSettledBatchReport(batch, settled));
-      }
+      // Keep the durable receipt retryable without sending a stale partial
+      // result. Telegram replays safely through stable item keys, and the user
+      // receives one follow-up only after every history check has settled.
       throw new TelegramIntakeRetryableError(
         `Batch history checks still outstanding for IDs ${acceptedIds.join(',')}`,
       );

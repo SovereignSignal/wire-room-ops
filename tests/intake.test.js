@@ -128,6 +128,44 @@ test('parseBatchEntries handles Grok scans with header, t.co links, and via-post
   assert.equal(parsed[2].sourceUrl, 'https://t.co/wPo1P52O9836');
 });
 
+test('parseBatchEntries ignores prose before the first plain-text batch item', () => {
+  const content = [
+    'No major new results missed in initial scan, but here is the compiled list of qualifying announcements:',
+    '',
+    'GOAT Network $1M Agent Builder Grants — Grants for agent builders on Bitcoin-secured infrastructure to drive transactions, security, and yield.',
+    'Deadline: None listed',
+    'Link: https://x.com/GOATNetwork/status/2076968094736511177',
+    'Ripple Effect Certified Veteran Employer Grants — $250,000 program awarding $10k grants to veteran-owned businesses.',
+    'Deadline: None listed',
+    'Link: https://x.com/MSBIntel/status/2077013500858450111',
+  ].join('\n');
+
+  const parsed = parseBatchEntries(content);
+  assert.equal(parsed.length, 2);
+  assert.equal(parsed[0].name, 'GOAT Network $1M Agent Builder Grants');
+  assert.match(parsed[0].description, /^Grants for agent builders/);
+  assert.equal(parsed[0].sourceUrl, 'https://x.com/GOATNetwork/status/2076968094736511177');
+  assert.equal(parsed[1].name, 'Ripple Effect Certified Veteran Employer Grants');
+});
+
+test('parseBatchEntries preserves a plain first-line name when later prose contains a dash', () => {
+  const content = [
+    'The Following Fund:',
+    'Funding for maintainers — including security work and release engineering.',
+    'Deadline: Rolling',
+    'Link: https://example.org/maintenance-fund',
+    'Scan Results Grants:',
+    'Funding for data tooling — including open-source indexers.',
+    'Deadline: Rolling',
+    'Link: https://example.org/scan-results-grants',
+  ].join('\n');
+
+  const parsed = parseBatchEntries(content);
+  assert.equal(parsed.length, 2);
+  assert.equal(parsed[0].name, 'The Following Fund:');
+  assert.equal(parsed[1].name, 'Scan Results Grants:');
+});
+
 test('parseBatchEntries ignores Grok totals lines between concatenated scan blocks', () => {
   const content = [
     'Ripple XRPL Grants Program — Rolling grants for XRPL builders.',
