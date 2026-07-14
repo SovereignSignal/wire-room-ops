@@ -155,7 +155,7 @@ test('buildRunLedger: clean day — scans ok, bridge fresh, agent present, no an
   assert.deepEqual(anomalies, []);
 });
 
-test('buildRunLedger: failed scans produce an anomaly; stale bridge warns without flipping the verdict', async () => {
+test('buildRunLedger: sparse scan failures warn without becoming a production issue', async () => {
   const pool = fakePool();
   pool.queueResponse([{ ok: '39', failed: '2' }]);
   const { deps } = fakeState({
@@ -165,12 +165,37 @@ test('buildRunLedger: failed scans produce an anomaly; stale bridge warns withou
   const { ledger, anomalies } = await buildRunLedger(pool, { date: '2026-07-09' }, deps);
 
   const scans = ledger.lanes.find(l => l.key === 'scans');
-  assert.equal(scans.state, 'fail');
+  assert.equal(scans.state, 'warn');
   assert.equal(scans.detail, 'scans 39✓ 2✗');
   const bridge = ledger.lanes.find(l => l.key === 'bridge');
   assert.equal(bridge.state, 'warn');
-  assert.equal(anomalies.length, 1);
-  assert.match(anomalies[0], /2 failed/);
+  assert.deepEqual(anomalies, []);
+});
+
+test('buildRunLedger: repeated scan failures affecting at least half of attempts produce an anomaly', async () => {
+  const pool = fakePool();
+  pool.queueResponse([{ ok: '2', failed: '3' }]);
+  const { deps } = fakeState({});
+
+  const { ledger, anomalies } = await buildRunLedger(pool, { date: '2026-07-09' }, deps);
+
+  const scans = ledger.lanes.find(l => l.key === 'scans');
+  assert.equal(scans.state, 'fail');
+  assert.equal(scans.detail, 'scans 2✓ 3✗');
+  assert.match(anomalies[0], /3 failed/);
+});
+
+test('buildRunLedger: one failed scan with no successes still produces an anomaly', async () => {
+  const pool = fakePool();
+  pool.queueResponse([{ ok: '0', failed: '1' }]);
+  const { deps } = fakeState({});
+
+  const { ledger, anomalies } = await buildRunLedger(pool, { date: '2026-07-09' }, deps);
+
+  const scans = ledger.lanes.find(l => l.key === 'scans');
+  assert.equal(scans.state, 'fail');
+  assert.equal(scans.detail, 'scans 0✓ 1✗');
+  assert.match(anomalies[0], /1 failed/);
 });
 
 test('buildRunLedger: probe failures degrade to "?" lanes and never throw', async () => {
@@ -227,6 +252,24 @@ test('assembleAndSendDailyDigest: derives dupe-rate anomaly (>60% of >=10) and m
   const extras = sent[0][3];
   assert.ok(extras.anomalies.some(a => a.includes('Forum lane failed')));
   assert.ok(extras.anomalies.some(a => a.includes('High dupe rate')), 'ai/feed is 70% dupes of 20');
+});
+
+test('assembleAndSendDailyDigest: human and chat intake duplicate rates stay telemetry, not production issues', async () => {
+  const sources = async () => ([
+    { wire: 'crypto', source: 'telegram', total: 17, queued: 5, approved: 0, archived: 0, duplicates: 11, parked: 0, signals: 0 },
+    { wire: 'oss', source: 'telegram-intake', total: 12, queued: 3, approved: 0, archived: 0, duplicates: 9, parked: 0, signals: 0 },
+    { wire: 'ai', source: 'manual-intake', total: 10, queued: 2, approved: 0, archived: 0, duplicates: 8, parked: 0, signals: 0 },
+    { wire: 'crypto', source: 'forum', total: 11, queued: 1, approved: 0, archived: 2, duplicates: 8, parked: 0, signals: 0 },
+  ]);
+  const { deps, sent } = assemblyDeps({ sources });
+
+  await assembleAndSendDailyDigest({}, {}, deps);
+
+  const anomalies = sent[0][3].anomalies;
+  assert.ok(anomalies.some(a => a.includes('crypto/forum')));
+  assert.ok(!anomalies.some(a => a.includes('crypto/telegram')));
+  assert.ok(!anomalies.some(a => a.includes('oss/telegram-intake')));
+  assert.ok(!anomalies.some(a => a.includes('ai/manual-intake')));
 });
 
 test('assembleAndSendDailyDigest: a failed send never advances the watermark', async () => {
