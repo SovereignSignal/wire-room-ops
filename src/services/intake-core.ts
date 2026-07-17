@@ -860,8 +860,9 @@ export function isIntakeStatusLine(text: string): boolean {
   const trimmed = text.trim();
   return /^(?:📥\s*)?Batch received\.\s+Running intake and history checks/i.test(trimmed)
     || /^Intake settled:/i.test(trimmed)
+    || /^Intake saved, checks outstanding:/i.test(trimmed)
     || /^Duplicate:\s+(?:already seen as|exact URL)/i.test(trimmed)
-    || /^(?:[a-z][\w-]*\s+[—–-]\s+)?Captured\s+(?:existing\s+)?(?:[a-z][\w-]*\s+)?entry\s+#\d+\b/i.test(trimmed);
+    || /^(?:(?:[a-z][\w-]*\s+)?[—–-]\s+)?Captured\s+(?:existing\s+)?(?:[a-z][\w-]*\s+)?entry\s+#\d+\b/i.test(trimmed);
 }
 
 function stripBatchControlLines(text: string): string {
@@ -931,7 +932,7 @@ export function parseBatchEntries(text: string): Array<{ name: string; descripti
           block = '';
         }
       }
-      chunks = chunks.filter(c => c.length > 0 && /^Link:\s*.+/im.test(c));
+      chunks = chunks.filter(c => c.length > 0 && /^\s*Link:\s*.+/im.test(c));
 
       if (chunks.length === 0) {
         chunks = cleaned.split(/\n\s*\n/).filter(c => c.trim().length > 0);

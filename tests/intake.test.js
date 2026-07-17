@@ -154,20 +154,39 @@ test('Grok count header does not hide an indented numbered batch from Telegram r
   assert.equal(parsed[1].deadline, 'July 20, 2026');
 });
 
-test('single intake rejects Grok control lines and bot receipts before persistence', async () => {
-  const control = await processIntakeMessage({
-    text: 'Total: 12 results after dedup and filtering.',
-    senderId: 'test',
-  });
-  const receipt = await processIntakeMessage({
-    text: 'ai — Captured ai entry #11826: Total: 12 results after dedup and filtering.',
-    senderId: 'test',
-  });
+test('indented plain-text fields route and parse every unnumbered batch item', () => {
+  const content = [
+    'Alpha Grant — First opportunity.',
+    '   Deadline: August 1, 2026',
+    '   Link: https://example.com/alpha',
+    'Beta Fellowship — Second opportunity.',
+    '   Deadline: August 2, 2026',
+    '   Link: https://example.com/beta',
+  ].join('\n');
 
-  assert.equal(control.status, 'rejected');
-  assert.match(control.errorMessage, /control\/status text/i);
-  assert.equal(receipt.status, 'rejected');
-  assert.match(receipt.errorMessage, /control\/status text/i);
+  assert.equal(isBatchMessage(content), true);
+  const parsed = parseBatchEntries(content);
+  assert.equal(parsed.length, 2);
+  assert.deepEqual(parsed.map(entry => entry.name), ['Alpha Grant', 'Beta Fellowship']);
+  assert.deepEqual(parsed.map(entry => entry.sourceUrl), [
+    'https://example.com/alpha',
+    'https://example.com/beta',
+  ]);
+});
+
+test('single intake rejects Grok control lines and bot receipts before persistence', async () => {
+  const messages = [
+    'Total: 12 results after dedup and filtering.',
+    'ai — Captured ai entry #11826: Total: 12 results after dedup and filtering.',
+    '— Captured existing entry #11826: Total: 12 results after dedup and filtering.',
+    'Intake saved, checks outstanding: ⏳ 12 pending',
+  ];
+
+  for (const text of messages) {
+    const result = await processIntakeMessage({ text, senderId: 'test' });
+    assert.equal(result.status, 'rejected', text);
+    assert.match(result.errorMessage, /control\/status text/i, text);
+  }
 });
 
 test('parseBatchEntries ignores prose before the first plain-text batch item', () => {
