@@ -15,8 +15,8 @@ const DIGEST = {
 };
 
 const FINDS = [
-  { id: 101, name: 'Schmidt Sciences RFP', wire: 'ai', quality_score: 91, amount: '$2M pool', deadline: 'Jul 31', source_url: 'https://x.org/1', curator_route: 'publish', curator_confidence: 'high' },
-  { id: 102, name: 'NLnet Open Call', wire: 'oss', quality_score: 84, amount: null, deadline: null, source_url: null, curator_route: 'source_check', curator_confidence: 'med' },
+  { id: 101, name: 'Schmidt Sciences RFP', wire: 'ai', quality_score: 91, amount: '$2M pool', deadline: 'Jul 31', source_url: 'https://x.org/1', curator_route: 'publish', curator_confidence: 'high', summary: null, recheck_verdict: null, recheck_matched_name: null, recheck_matched_status: null, program_verdict: null, program_history: null },
+  { id: 102, name: 'NLnet Open Call', wire: 'oss', quality_score: 84, amount: null, deadline: null, source_url: null, curator_route: 'source_check', curator_confidence: 'med', summary: null, recheck_verdict: null, recheck_matched_name: null, recheck_matched_status: null, program_verdict: null, program_history: null },
 ];
 
 const LEDGER = {
@@ -120,6 +120,7 @@ test('cards render the summary line and flag recheck updates against prior entri
     amount: null, deadline: null, source_url: 'https://x.org/a', curator_route: null, curator_confidence: null,
     summary: '4-month fully funded research fellowship at Anthropic focused on frontier AI-safety research.',
     recheck_verdict: 'update', recheck_matched_name: 'Anthropic Fellows Program', recheck_matched_status: 'approved',
+    program_verdict: null, program_history: null,
   }];
   const r = renderDailyDigest(DIGEST, 'https://app.example', { freshFinds: finds, totalNewEligible: 1, runLedger: LEDGER });
   assert.match(r.html, /4-month fully funded research fellowship/);
@@ -133,9 +134,24 @@ test('render defenses: deadline label prefix stripped, bare-duration amounts hid
     id: 202, name: 'Tarbell Grants', wire: 'ai', quality_score: 70,
     amount: '3 m', deadline: 'deadline 2026-07-12', source_url: null, curator_route: null, curator_confidence: null,
     summary: null, recheck_verdict: null, recheck_matched_name: null, recheck_matched_status: null,
+    program_verdict: null, program_history: null,
   }];
   const r = renderDailyDigest(DIGEST, 'https://app.example', { freshFinds: finds, totalNewEligible: 1, runLedger: LEDGER });
   assert.match(r.html, /due 2026-07-12/);
   assert.ok(!r.html.includes('due deadline'), 'deadline label must not repeat');
   assert.ok(!r.html.includes('3 m'), 'bare duration is not an amount');
+});
+
+test('cards render program history; new_round gets the round note', () => {
+  const finds = [{
+    id: 301, name: 'Anthropic Fellows Program (Dec 2026 cohort)', wire: 'ai', quality_score: 90,
+    amount: null, deadline: null, source_url: null, curator_route: null, curator_confidence: null,
+    summary: 'Funded AI-safety research fellowship.',
+    recheck_verdict: null, recheck_matched_name: null, recheck_matched_status: null,
+    program_verdict: 'new_round', program_history: 'seen 61× · approved 1× · declined 12× · last declined 2026-07-07',
+  }];
+  const r = renderDailyDigest(DIGEST, 'https://app.example', { freshFinds: finds, totalNewEligible: 1, runLedger: LEDGER });
+  assert.match(r.html, /New round of a known program/);
+  assert.match(r.html, /seen 61×/);
+  assert.match(r.text, /seen 61×/);
 });

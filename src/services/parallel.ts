@@ -16,6 +16,7 @@ import { getBrand } from '../config/brand';
 import { logApiUsage } from './api-usage';
 import { getCachedProvider } from './api-provider';
 import { blockedDomains } from './source-filter';
+import type { ScanUsagePurpose } from '../types/intake';
 
 const PARALLEL_BASE_URL = 'https://api.parallel.ai';
 
@@ -78,11 +79,11 @@ function extractExplicitQueries(promptText: string): string[] | null {
 }
 
 /** Plan 2-3 short keyword queries (3-6 words each) for the Parallel search. */
-async function planQueries(objective: string, wire?: string): Promise<string[]> {
+async function planQueries(objective: string, wire?: string, usagePurpose: ScanUsagePurpose = 'scan'): Promise<string[]> {
   const wireHint = wire ? `The vertical is "${wire}". ` : '';
   const content = await grokChat(
     `${wireHint}Turn this research objective into 2-3 concise web search queries (3-6 keywords each) that will surface NEW grant/funding programs, open application rounds, and major funding news. Return ONLY a JSON array of strings, nothing else.\n\nObjective: ${objective.slice(0, 1200)}`,
-    2000, 'parallel-queries', wire
+    2000, usagePurpose === 'scan-test' ? 'parallel-test-queries' : 'parallel-queries', wire
   );
   if (content) {
     try {
@@ -101,7 +102,7 @@ async function planQueries(objective: string, wire?: string): Promise<string[]> 
 
 export async function executeParallelScan(
   promptText: string,
-  options?: { model?: string; responseFormat?: string | null; outputFormat?: 'text' | 'json'; wire?: string; afterDate?: string }
+  options?: { model?: string; responseFormat?: string | null; outputFormat?: 'text' | 'json'; wire?: string; afterDate?: string; usagePurpose?: ScanUsagePurpose }
 ): Promise<{ content: string; model: string; tokensUsed?: number }> {
   const provider = getCachedProvider('parallel');
   const apiKey = provider?.api_key || process.env.PARALLEL_API_KEY;
@@ -110,9 +111,10 @@ export async function executeParallelScan(
   }
   const baseUrl = provider?.base_url || PARALLEL_BASE_URL;
   const wire = options?.wire;
+  const usagePurpose = options?.usagePurpose || 'scan';
 
   // 1. Queries — operator-supplied (deterministic) or Grok-planned (fallback)
-  const searchQueries = extractExplicitQueries(promptText) || await planQueries(promptText, wire);
+  const searchQueries = extractExplicitQueries(promptText) || await planQueries(promptText, wire, usagePurpose);
 
   // 2. Retrieve (Parallel)
   const today = new Date().toISOString().split('T')[0];
@@ -143,12 +145,12 @@ export async function executeParallelScan(
 
   if (!searchResp.ok) {
     const errorText = await searchResp.text();
-    logApiUsage({ provider: 'parallel', model: 'search', purpose: 'scan', wire, duration_ms: Date.now() - searchStart, success: false, error_message: `${searchResp.status} ${errorText.slice(0, 200)}`.trim() });
+    logApiUsage({ provider: 'parallel', model: 'search', purpose: usagePurpose, wire, duration_ms: Date.now() - searchStart, success: false, error_message: `${searchResp.status} ${errorText.slice(0, 200)}`.trim() });
     throw new Error(`Parallel Search API error: ${searchResp.status} - ${errorText}`);
   }
 
   const searchData = await searchResp.json() as ParallelSearchResponse;
-  logApiUsage({ provider: 'parallel', model: 'search', purpose: 'scan', wire, duration_ms: Date.now() - searchStart, success: true });
+  logApiUsage({ provider: 'parallel', model: 'search', purpose: usagePurpose, wire, duration_ms: Date.now() - searchStart, success: true });
 
   const results = searchData.results || [];
   if (results.length === 0) {
@@ -165,7 +167,12 @@ export async function executeParallelScan(
 
   const extractPrompt = `You are extracting ${getBrand().contentType} from web search results. From the results below, list every distinct grant/funding program, open application round, or major funding announcement. Use ONLY the canonical Source URL shown for each result — never invent URLs. Skip duplicates, closed programs, and pure marketing. If nothing qualifies, return "No results."\n\nFormat each entry exactly:\n${format}\n\nSEARCH RESULTS:\n${resultsBlock}`;
 
-  const extracted = await grokChat(extractPrompt, 6000, 'parallel-extract', wire);
+  const extracted = await grokChat(
+    extractPrompt,
+    6000,
+    usagePurpose === 'scan-test' ? 'parallel-test-extract' : 'parallel-extract',
+    wire,
+  );
   if (!extracted) {
     throw new Error('Parallel scan: Grok extraction returned empty');
   }

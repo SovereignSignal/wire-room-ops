@@ -30,10 +30,11 @@ export async function recordTwitterReads(count: number): Promise<void> {
   await setAppState(key, current + count);
 }
 
-// 'scan' = scan-execution's grok purpose (Tier 2 x_search prompts). 'summarize'
+// 'scan%' = production scans plus Prompt Lab tests. Tests stay out of the
+// production run ledger but still count against the discovery budget. 'summarize'
 // and classification purposes are deliberately excluded — they predate the Watchtower.
 // 'parallel-%' = the Parallel lane's grok planning/extraction inside scan-execution.
-export const WATCHTOWER_GROK_PURPOSE_PATTERNS = ['watchtower%', 'scan', 'parallel-%'];
+export const WATCHTOWER_GROK_PURPOSE_PATTERNS = ['watchtower%', 'scan%', 'parallel-%'];
 
 export async function checkBudget(pool: Pool): Promise<{ allowed: boolean; spentUsd: number; capUsd: number }> {
   const capUsd = config.watchtower.budgetMonthlyUsd;

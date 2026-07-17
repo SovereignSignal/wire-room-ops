@@ -152,6 +152,7 @@ const { buildRunLedger } = require('../src/jobs/daily-digest');
 test('buildRunLedger: clean day — scans ok, bridge fresh, agent present, no anomalies', async () => {
   const pool = fakePool();
   pool.queueResponse([{ ok: '41', failed: '0' }]);
+  pool.queueResponse([{ n: '0' }]); // program gate
   pool.queueResponse([]); // provider outages
   pool.queueResponse([freshCohortRun()]);
   const { deps } = fakeState({
@@ -170,6 +171,7 @@ test('buildRunLedger: clean day — scans ok, bridge fresh, agent present, no an
 test('buildRunLedger: sparse scan failures warn without becoming a production issue', async () => {
   const pool = fakePool();
   pool.queueResponse([{ ok: '39', failed: '2' }]);
+  pool.queueResponse([{ n: '0' }]); // program gate
   pool.queueResponse([]); // provider outages
   pool.queueResponse([freshCohortRun()]);
   const { deps } = fakeState({
@@ -325,9 +327,38 @@ test('getFreshFinds excludes recheck-flagged duplicates and selects the card sum
   assert.match(countSql, /<> 'same_listing'/, 'the totalNew count must apply the same exclusion');
 });
 
+test('buildRunLedger: gate lane appears with 24h auto-dupe count, omitted at zero', async () => {
+  const pool = fakePool();
+  pool.queueResponse([{ ok: '5', failed: '0' }]);   // scans probe
+  pool.queueResponse([{ n: '12' }]);                 // gate probe
+  const { deps } = fakeState({ 'summary-sync:watermark': new Date().toISOString() });
+  const { ledger } = await buildRunLedger(pool, { date: '2026-07-10' }, deps);
+  const gate = ledger.lanes.find(l => l.key === 'gate');
+  assert.equal(gate.detail, 'gate 12 duped');
+  assert.equal(gate.state, 'ok');
+
+  const pool2 = fakePool();
+  pool2.queueResponse([{ ok: '5', failed: '0' }]);
+  pool2.queueResponse([{ n: '0' }]);
+  const r2 = await buildRunLedger(pool2, { date: '2026-07-10' }, deps);
+  assert.ok(!r2.ledger.lanes.some(l => l.key === 'gate'), 'zero → omitted');
+});
+
+test('getFreshFinds selects program history via the programs join', async () => {
+  const pool = fakePool();
+  pool.queueResponse([]);
+  pool.queueResponse([{ total_new: '0' }]);
+  const { deps } = fakeState({ [DIGEST_WATERMARK_KEY]: {} });
+  await getFreshFinds(pool, 8, deps);
+  assert.match(pool.calls[0].sql, /LEFT JOIN programs/);
+  assert.match(pool.calls[0].sql, /program_history/);
+  assert.match(pool.calls[0].sql, /program_verdict/);
+});
+
 test('buildRunLedger: a provider with failures and zero successes flags an account-level outage', async () => {
   const pool = fakePool();
   pool.queueResponse([{ ok: '12', failed: '0' }]);               // scans probe: healthy
+  pool.queueResponse([{ n: '0' }]);                              // gate probe: no auto-dupes this run
   pool.queueResponse([                                            // provider-outage probe
     { provider: 'grok', ok: '0', failed: '120' },
     { provider: 'parallel', ok: '7', failed: '0' },
@@ -337,6 +368,10 @@ test('buildRunLedger: a provider with failures and zero successes flags an accou
   const { deps } = fakeState({ 'summary-sync:watermark': new Date().toISOString() });
 
   const { ledger, anomalies } = await buildRunLedger(pool, { date: '2026-07-11' }, deps);
+
+  const providerSql = pool.calls[2].sql;
+  assert.match(providerSql, /purpose <> 'scan-test'/);
+  assert.match(providerSql, /purpose NOT LIKE 'parallel-test-%'/);
 
   const outage = ledger.lanes.find(l => l.key === 'api:grok');
   assert.equal(outage.state, 'fail');

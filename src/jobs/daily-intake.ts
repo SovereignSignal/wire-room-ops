@@ -37,6 +37,7 @@ import {
 import { findRelatedOpportunity, finalizeExistingEntryDedup, annotateAlternateSource } from '../services/dedup';
 // quality-scorer.ts replaced by LLM scoring in classifier.ts
 import { seedSeenUrlsFromMessages } from '../db';
+import { finalizeProgramForEntry } from '../services/program-identity';
 import type { Classification } from '../services/classifier';
 
 // ============================================================
@@ -348,7 +349,7 @@ export async function runDailyIntake(
       wire: item.wire,
       scanDate: item.scanDate,
       expectedStatus: 'raw',
-    }, config.dedupeWindow);
+    }, config.dedupeWindow, { programGate: true });
 
     if (dedupOutcome.outcome === 'duplicate' || dedupOutcome.outcome === 'seed-conflict') {
       duplicatesFound++;
@@ -375,6 +376,12 @@ export async function runDailyIntake(
       await annotateAlternateSource(pool, entryId, item.result.sourceUrl, relatedResult);
     }
     uniqueEntryIds.push(entryId);
+    // Program identity: record the sighting / create the program (fail-open).
+    await finalizeProgramForEntry(pool, {
+      id: entryId, name: item.result.name, sourceUrl: item.result.sourceUrl,
+      wire: item.wire, deadline: item.result.deadline ?? null,
+      description: item.result.description ?? null,
+    }, dedupOutcome.programResolution ?? null);
 
     // Progress update every 10 entries
     if (duplicatesFound % 10 === 0 && duplicatesFound > 0) {

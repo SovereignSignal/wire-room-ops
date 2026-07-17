@@ -105,6 +105,7 @@ src/
 │   ├── forum-dryrun.ts / forum-run-once.ts / forum-activity-probe.ts   # Forum lane testing/audit
 │   ├── source-feeds-dryrun.ts / source-feeds-run-once.ts               # Feed lane testing
 │   ├── weekly-preview.ts / weekly-run-once.ts / weekly-seed-prior.ts / weekly-send-md.ts  # Weekly issue tooling
+│   ├── program-backfill.ts # Program-identity backfill: one-off corpus canonicalization (--dry-run mode)
 │   └── cleanup-lane-noise.ts / lane-quality-report.ts / queue-dedup-review.ts  # June-2026 one-off audits
 ├── jobs/
 │   ├── account-monitor.ts  # Poll monitored X accounts (orgs + people) for new URLs -> intake
@@ -159,6 +160,7 @@ src/
 │   ├── perplexity.ts     # Perplexity sonar-pro scans
 │   ├── post-generator.ts # claude-sonnet-4-6 generates tweet + Telegram HTML per entry (template fallback)
 │   ├── processor.ts      # Entry processing with retry logic
+│   ├── program-identity.ts # Program canonicalization: resolve entries to canonical programs + the Layer 1.75 dedup gate
 │   ├── scan-stats.ts     # Prompt effectiveness and overlap metrics
 │   ├── scheduler.ts      # node-cron scheduling, DB-driven; daily-digest branch runs the daily fold
 │   ├── scraper.ts        # Firecrawl integration, URL resolution (SSRF-hardened shortener resolution)
@@ -235,6 +237,7 @@ Server-rendered views (login/error only):
 | **Config** | `feeds`, `schedules`, `integration_config` | Wire/schedule/integration config |
 | **API management** | `api_providers`, `api_usage_log`, `model_pricing` | DB-backed API keys, usage tracking, cost estimation |
 | **Identity** | `org_profiles`, `sessions` | Organization tracking + auth sessions |
+| **Programs** | `programs` | Program-identity registry: canonical program per funder (aliases, url_domains, round + decision history); `scan_entries.program_id` links members; fed by the intake gate (dedup Layer 1.75, act-and-report, `actioned_by='program-gate'`) and `src/scripts/program-backfill.ts` |
 | **Legacy** | `grant_entries`, `grok_usage`, `review_queue`, `alembic_version`, `sync_status` | Historical/dormant tables |
 
 ### scan_entries — The Central Table
@@ -280,6 +283,7 @@ INGESTION (raw data)                    THE REFINERY (processing)               
 
 - **`seen_urls`**: Exact URL match. Composite unique on `(normalized_url, wire)`. Handles aggregate URLs (same URL, different entries) via name similarity check.
 - **`seen_names`**: Stores normalized names and tokens for review intelligence and alternate-source detection. Hard duplicate blocking currently relies on URL exact match; fuzzy name blocking is intentionally disabled after false positives.
+- **Program gate (Layer 1.75)**: The `programs` table canonicalizes opportunities by normalized program name (funder is a matching/veto signal, not a uniqueness key; a funder can have many programs), with aliases and url_domains feeding the matcher; same-round duplicates of a known program are demoted (`actioned_by='program-gate'`, act-and-report) in process-raw and daily-intake, but not in the Telegram dumb pipe (see `src/services/program-identity.ts`).
 
 ### Approval Validation Guard
 

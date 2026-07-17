@@ -17,6 +17,7 @@ import { finalizeExistingEntryDedup } from '../services/dedup';
 // quality-scorer.ts replaced by LLM scoring in classifier.ts
 import { classifyEntry } from '../services/classifier';
 import { classifySourceLink } from '../services/source-filter';
+import { finalizeProgramForEntry } from '../services/program-identity';
 
 const BATCH_SIZE = 50;
 
@@ -209,8 +210,10 @@ export async function processRawEntries(pool?: Pool): Promise<{
             continue;
           }
 
-          // Phase 2: repeat the dedup check under the graph lock, claim the
-          // URL, and finalize the raw row in one transaction.
+          // Phase 2: repeat the dedup check under the graph lock, claim the URL,
+          // and finalize the raw row in one transaction. The program-identity
+          // gate (Layer 1.75) runs inside the same atomic check; a same-round
+          // program match is demoted with actioned_by='program-gate'.
           const dedupOutcome = await finalizeExistingEntryDedup(db, {
             id: row.id,
             sourceUrl: row.source_url,
@@ -218,7 +221,7 @@ export async function processRawEntries(pool?: Pool): Promise<{
             wire: row.wire,
             scanDate: row.scan_date,
             expectedStatus: 'raw',
-          }, 14);
+          }, 14, { programGate: true });
           if (dedupOutcome.outcome === 'stale') continue;
           if (dedupOutcome.outcome === 'duplicate' || dedupOutcome.outcome === 'seed-conflict') {
             stats.duplicates++;
@@ -277,6 +280,12 @@ export async function processRawEntries(pool?: Pool): Promise<{
             } catch (classError) {
               console.error(`[ProcessRaw] Classification failed for entry ${row.id}, leaving as UNCHECKED:`, classError);
             }
+            // Program identity: record the sighting / create the program and
+            // stamp metadata.program. Fail-open inside; never blocks the cycle.
+            await finalizeProgramForEntry(db, {
+              id: row.id, name: row.name, sourceUrl: row.source_url, wire: row.wire,
+              description: row.description ?? null,
+            }, dedupOutcome.programResolution ?? null);
 
           stats.processed++;
         } catch (entryError) {

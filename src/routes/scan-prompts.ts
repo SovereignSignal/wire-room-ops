@@ -76,6 +76,7 @@ async function executePromptLabTest(input: {
         model: input.model,
         responseFormat: input.responseFormat,
         outputFormat: input.outputFormat,
+        usagePurpose: 'scan-test',
       });
     }
     if (input.toolType === 'parallel') {
@@ -84,12 +85,14 @@ async function executePromptLabTest(input: {
         responseFormat: input.responseFormat,
         outputFormat: input.outputFormat,
         wire: input.wire,
+        usagePurpose: 'scan-test',
       });
     }
     return executeScanPrompt(input.promptText, {
       model: input.model,
       responseFormat: input.responseFormat,
       toolType: input.toolType,
+      usagePurpose: 'scan-test',
     });
   });
   const parseHint = input.outputFormat === 'json' ? 'json' as const : undefined;

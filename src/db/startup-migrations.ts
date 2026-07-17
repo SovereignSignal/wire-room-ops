@@ -29,6 +29,7 @@ import {
 } from './index';
 import { ensureSessionsTable } from '../services/auth';
 import { ensureOrgProfilesTable } from '../services/org-extractor';
+import { ensureProgramsTable } from '../services/program-identity';
 import { ensureIntegrationConfigTable } from '../services/notion-sync';
 import { ensureEntryActionColumns } from '../services/entry-actions';
 import { ensureApiProviderTables } from '../services/api-provider';
@@ -45,6 +46,7 @@ export const STARTUP_MIGRATIONS: ReadonlyArray<{ name: string; run: () => Promis
   { name: 'schedules', run: ensureScheduleTable },
   { name: 'distribution', run: ensureDistributionTables },
   { name: 'org-profiles', run: ensureOrgProfilesTable },
+  { name: 'programs', run: ensureProgramsTable },
   { name: 'watch-surfaces', run: ensureWatchSurfacesTable },
   { name: 'integration-config', run: ensureIntegrationConfigTable },
   { name: 'entry-action-columns', run: ensureEntryActionColumns },

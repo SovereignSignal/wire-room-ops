@@ -3,6 +3,8 @@
  * These extend the existing wire-room-ops type system.
  */
 
+import type { ProgramResolutionStamp } from '../services/program-identity';
+
 // Wire values are dynamic (driven by feeds table), so we use string
 
 // Which prompt variant produced this result. This list also drives the route
@@ -32,6 +34,10 @@ export function sqlEnumList(values: readonly string[]): string {
 export const TOOL_TYPES = ['x_search', 'web_search', 'perplexity', 'parallel'] as const;
 export type ToolType = typeof TOOL_TYPES[number];
 export const TOOL_TYPES_DB = [...TOOL_TYPES, 'community'] as const;
+
+// Production scan calls feed the daily run ledger. Prompt Lab calls use a
+// separate purpose so experiments cannot create false production incidents.
+export type ScanUsagePurpose = 'scan' | 'scan-test';
 
 // Where a result came from.
 export const SCAN_SOURCES = ['x-scan', 'grok-scout', 'web-search', 'perplexity', 'community', 'telegram', 'telegram-intake', 'manual-intake', 'email', 'forum', 'x-monitor', 'x-list', 'feed', 'claude-code', 'claude-cohort-notion'] as const;
@@ -124,11 +130,13 @@ export interface ScanEntry {
  */
 export interface DedupResult {
   isDuplicate: boolean;
-  matchType: 'url_exact' | 'name_exact' | 'name_fuzzy' | 'url_and_name' | null;
+  matchType: 'url_exact' | 'name_exact' | 'name_fuzzy' | 'program' | null;
   matchedEntryId: number | null;
   matchedEntryName: string | null;
   confidence: number;               // 0-1 confidence in the match
   reason: string;
+  /** Program-identity resolution (Layer 1.75) — present when the gate ran and matched, even on non-duplicate outcomes. */
+  programResolution?: ProgramResolutionStamp | null;
 }
 
 /**
@@ -256,4 +264,3 @@ export interface GeneratedPosts {
   tweet: string;
   telegram: string;
 }
-
