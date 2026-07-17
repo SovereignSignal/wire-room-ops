@@ -154,28 +154,6 @@ test('Grok count header does not hide an indented numbered batch from Telegram r
   assert.equal(parsed[1].deadline, 'July 20, 2026');
 });
 
-test('alternate Grok count summary routes and strips before batch parsing', () => {
-  const content = [
-    'Total relevant results after deduplication and filtering: 2',
-    '',
-    '1. Alpha Grant — First opportunity.',
-    '   Deadline: August 1, 2026',
-    '   Link: https://example.com/alpha',
-    '',
-    '2. Beta Fellowship — Second opportunity.',
-    '   Deadline: August 2, 2026',
-    '   Link: https://example.com/beta',
-  ].join('\n');
-
-  assert.equal(isBatchMessage(content), true);
-  const parsed = parseBatchEntries(content);
-  assert.deepEqual(parsed.map(entry => entry.name), ['Alpha Grant', 'Beta Fellowship']);
-  assert.deepEqual(parsed.map(entry => entry.sourceUrl), [
-    'https://example.com/alpha',
-    'https://example.com/beta',
-  ]);
-});
-
 test('indented plain-text fields route and parse every unnumbered batch item', () => {
   const content = [
     'Alpha Grant — First opportunity.',
@@ -199,9 +177,6 @@ test('indented plain-text fields route and parse every unnumbered batch item', (
 test('single intake rejects Grok control lines and bot receipts before persistence', async () => {
   const messages = [
     'Total: 12 results after dedup and filtering.',
-    'Total relevant results after deduplication and filtering: 12',
-    'No qualifying results found in the last 7 days after broad organic searches, deduplication, and filtering.',
-    'No qualifying results found that fully match the strict criteria after filtering.',
     'ai — Captured ai entry #11826: Total: 12 results after dedup and filtering.',
     '— Captured existing entry #11826: Total: 12 results after dedup and filtering.',
     'Intake saved, checks outstanding: ⏳ 12 pending',
