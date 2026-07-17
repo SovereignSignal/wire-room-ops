@@ -202,7 +202,7 @@ Server-rendered views (login/error only):
 - Classifier prompt: `src/services/classifier.ts` - `buildClassificationPrompt()` function
 - Scan prompts: Stored in `scan_prompts` table, managed via `/api/scan/prompts` CRUD API. Each prompt has `prompt_text` and optional `response_format`.
 
-### Adding an Enum Value (status / scan_source / tool_type / schedule_type)
+### Adding an Enum Value (status / scan_source / prompt_variant / tool_type / schedule_type)
 1. Add the value to the ONE canonical const in `src/types/intake.ts`
 2. Done — DDL CHECK constraints, TS unions, and route validators derive from it
 3. `tests/enum-lockstep.test.js` verifies the wiring; deploy applies the new constraint at boot
@@ -247,7 +247,7 @@ All pipeline data flows through `scan_entries`. Key columns:
 | `classification` | varchar | Gate 2 label: `GRANT`, `NEWS`, `EXPIRED`, `NOISE`, `UNCHECKED` |
 | `quality_score` | integer | 0-100 score from LLM classifier (null on dumb-pipe Telegram/manual intake — the curator stamp is the queue's triage signal) |
 | `wire` | text | Feed vertical (crypto/ai/oss) |
-| `scan_source` | text | Ingestion channel — all 14 allowed values: `x-scan`, `web-search`, `perplexity`, `community`, `telegram`, `telegram-intake`, `manual-intake`, `email`, `forum`, `x-monitor`, `x-list`, `feed`, `claude-code`, `claude-cohort-notion` |
+| `scan_source` | text | Ingestion channel — all 15 allowed values, derived from `SCAN_SOURCES` in `src/types/intake.ts` (including `grok-scout`) |
 | `source_url` | text | Original source link |
 | `metadata` | jsonb | LLM-extracted structured data (amount, deadline, eligibility, summary) + curator stamp + decided-recheck verdict |
 | `org_id` | integer | FK to `org_profiles` (auto-linked on approve) |
