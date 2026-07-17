@@ -108,16 +108,20 @@ test('POST and PUT accept every canonical prompt variant, including S', async ()
 
 test('POST preserves null and empty backward compatibility by omitting variant from persistence', async () => {
   for (const variant of [null, '']) {
+    const createCount = createCalls.length;
     const response = await request('POST', '/api/scan/prompts', createBody(variant));
     assert.equal(response.status, 200, `POST should allow ${JSON.stringify(variant)}`);
+    assert.equal(createCalls.length, createCount + 1, 'valid POST must call createScanPrompt exactly once');
     assert.equal(createCalls.at(-1).variant, undefined);
   }
 });
 
 test('PUT clears null and empty variants by persisting null', async () => {
   for (const variant of [null, '']) {
+    const updateCount = updateCalls.length;
     const response = await request('PUT', `/api/scan/prompts/${PROMPT_ID}`, { variant });
     assert.equal(response.status, 200, `PUT should allow ${JSON.stringify(variant)}`);
+    assert.equal(updateCalls.length, updateCount + 1, 'valid PUT must call updateScanPrompt exactly once');
     assert.equal(updateCalls.at(-1).updates.variant, null);
   }
 });
