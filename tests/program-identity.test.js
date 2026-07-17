@@ -129,7 +129,13 @@ test('historyLine composes the display string', () => {
 
 // ── Task 3: Creation, sighting, canonicalization, finalize ────────────
 
-const { createProgram, recordSighting, canonicalizeBatch, finalizeProgramForEntry } = require('../src/services/program-identity');
+const {
+  createProgram,
+  recordSighting,
+  canonicalizeBatch,
+  finalizeProgramForEntry,
+  parseCanonicalizationContent,
+} = require('../src/services/program-identity');
 
 test('createProgram upserts by normalized_key and returns id', async () => {
   const pool = programPool([{ id: 42 }]);
@@ -166,6 +172,26 @@ test('canonicalizeBatch parses the LLM JSON and survives junk', async () => {
   assert.deepEqual(out, [{ id: 7, org: 'Anthropic', program: 'Anthropic Fellows Program', round_label: 'sept 2026 cohort' }]);
   const bad = await canonicalizeBatch([{ id: 8, name: 'y', description: '' }], async () => ({ ok: false, status: 500, json: async () => ({}) }));
   assert.deepEqual(bad, [], 'LLM failure returns empty, never throws');
+});
+
+test('canonicalization parser accepts digit-string IDs and rejects hallucinated or duplicate IDs', () => {
+  const out = parseCanonicalizationContent(JSON.stringify([
+    { id: '9891', org: ' HTX ', program: 'HTX Genesis Hackathon', round_label: '' },
+    { id: 9891, org: 'Duplicate', program: 'Duplicate', round_label: null },
+    { id: '9999', org: 'Unknown', program: 'Unknown', round_label: null },
+    { id: 'bad', org: 'Bad', program: 'Bad', round_label: null },
+  ]), new Set([9891]));
+  assert.deepEqual(out, [{ id: 9891, org: 'HTX', program: 'HTX Genesis Hackathon', round_label: null }]);
+});
+
+test('canonicalization parser handles fenced, wrapped, and prefaced arrays', () => {
+  const fenced = parseCanonicalizationContent('```json\n[{"id":"7","org":null,"program":"P","round_label":null}]\n```');
+  assert.equal(fenced[0].id, 7);
+  const wrapped = parseCanonicalizationContent('{"results":[{"id":8,"org":"O","program":"P","round_label":null}]}');
+  assert.equal(wrapped[0].id, 8);
+  const prefaced = parseCanonicalizationContent('Here is the result:\n[{"id":9,"org":null,"program":null,"round_label":null}]');
+  assert.equal(prefaced[0].id, 9);
+  assert.throws(() => parseCanonicalizationContent('{"result":"none"}'), /not a JSON array/);
 });
 
 test('finalizeProgramForEntry: resolution present → sighting recorded + metadata.program stamped', async () => {

@@ -317,10 +317,63 @@ export async function recordSighting(
 }
 
 // ── LLM canonicalization (mirrors org-extractor's extractOrgsWithGrok) ──
+export type CanonicalizedProgram = {
+  id: number;
+  org: string | null;
+  program: string | null;
+  round_label: string | null;
+};
+
+const nullableString = (value: unknown): string | null =>
+  typeof value === 'string' && value.trim() ? value.trim() : null;
+
+export function parseCanonicalizationContent(content: string, allowedIds?: Set<number>): CanonicalizedProgram[] {
+  const unfenced = (content || '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(unfenced);
+  } catch {
+    // Some compatible providers prepend a short explanation despite the JSON-only
+    // prompt. Recover only when the content contains one complete JSON array.
+    const start = unfenced.indexOf('[');
+    const end = unfenced.lastIndexOf(']');
+    if (start < 0 || end <= start) throw new Error('Canonicalization response contained no JSON array');
+    parsed = JSON.parse(unfenced.slice(start, end + 1));
+  }
+
+  const rows = Array.isArray(parsed)
+    ? parsed
+    : parsed && typeof parsed === 'object'
+      ? Object.values(parsed as Record<string, unknown>).find(Array.isArray)
+      : null;
+  if (!Array.isArray(rows)) throw new Error('Canonicalization response was not a JSON array');
+
+  const seen = new Set<number>();
+  const output: CanonicalizedProgram[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    const rawId = (row as Record<string, unknown>).id;
+    const id = typeof rawId === 'number'
+      ? rawId
+      : typeof rawId === 'string' && /^\d+$/.test(rawId.trim())
+        ? Number(rawId)
+        : NaN;
+    if (!Number.isSafeInteger(id) || seen.has(id) || (allowedIds && !allowedIds.has(id))) continue;
+    seen.add(id);
+    output.push({
+      id,
+      org: nullableString((row as Record<string, unknown>).org),
+      program: nullableString((row as Record<string, unknown>).program),
+      round_label: nullableString((row as Record<string, unknown>).round_label),
+    });
+  }
+  return output;
+}
+
 export async function canonicalizeBatch(
   entries: Array<{ id: number; name: string; description: string }>,
   fetchImpl: typeof fetch = fetch,
-): Promise<Array<{ id: number; org: string | null; program: string | null; round_label: string | null }>> {
+): Promise<CanonicalizedProgram[]> {
   if (entries.length === 0) return [];
   const start = Date.now();
   const entriesText = entries.map(e => `[ID:${e.id}] "${e.name}" — ${(e.description || '').substring(0, 100)}`).join('\n');
@@ -350,13 +403,9 @@ Return ONLY valid JSON array, no explanation.`;
     if (!response.ok) throw new Error(`grok ${((response as Response).status)}`);
     const data = await (response as Response).json() as { choices?: Array<{ message?: { content?: string } }> };
     const content = data.choices?.[0]?.message?.content || '[]';
-    const cleaned = content.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '').trim();
-    const parsed = JSON.parse(cleaned);
+    const parsed = parseCanonicalizationContent(content, new Set(entries.map(entry => entry.id)));
     logApiUsage({ provider: 'grok', model, purpose: 'program-identity', duration_ms: Date.now() - start });
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter((r: any) => r && typeof r.id === 'number')
-      .map((r: any) => ({ id: r.id, org: r.org ?? null, program: r.program ?? null, round_label: r.round_label ?? null }));
+    return parsed;
   } catch (err) {
     logApiUsage({ provider: 'grok', model, purpose: 'program-identity', duration_ms: Date.now() - start, success: false, error_message: err instanceof Error ? err.message : String(err) });
     return [];
