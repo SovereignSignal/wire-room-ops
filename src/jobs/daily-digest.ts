@@ -13,6 +13,7 @@ import { config } from '../config';
 import { sendDailyDigestEmail } from '../services/email';
 import type { DigestBdLead, ClosingSoonRow } from '../services/email';
 import { runDeadlineDigest } from './deadline-digest';
+import { checkCohortHealth } from './cohort-health';
 
 export interface WireDigestStats {
   wire: string;
@@ -430,6 +431,13 @@ export async function buildRunLedger(
   } catch {
     lanes.push({ key: 'bridge', state: 'warn', detail: 'bridge ?' });
   }
+
+  // cohort: the 05:00 Notion bridge must produce one durable source_run per
+  // day. A missed window becomes an email anomaly and opens a persistent
+  // replay cursor that survives ordinary recovery runs.
+  const cohort = await checkCohortHealth(pool, deps);
+  lanes.push(cohort.lane);
+  anomalies.push(...cohort.anomalies);
 
   // agent — today's brief presence; omitted when no agent ran (that is normal)
   try {
