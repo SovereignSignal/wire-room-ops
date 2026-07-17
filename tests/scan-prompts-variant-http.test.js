@@ -96,12 +96,16 @@ test('POST and PUT accept every canonical prompt variant, including S', async ()
   assert.deepEqual(PROMPT_VARIANTS, ['A', 'B', 'C', 'W', 'P', 'N', 'S']);
 
   for (const variant of PROMPT_VARIANTS) {
+    const createCount = createCalls.length;
     const created = await request('POST', '/api/scan/prompts', createBody(variant));
     assert.equal(created.status, 200, `POST should accept ${variant}`);
+    assert.equal(createCalls.length, createCount + 1, 'canonical POST must call createScanPrompt exactly once');
     assert.equal(createCalls.at(-1).variant, variant);
 
+    const updateCount = updateCalls.length;
     const updated = await request('PUT', `/api/scan/prompts/${PROMPT_ID}`, { variant });
     assert.equal(updated.status, 200, `PUT should accept ${variant}`);
+    assert.equal(updateCalls.length, updateCount + 1, 'canonical PUT must call updateScanPrompt exactly once');
     assert.equal(updateCalls.at(-1).updates.variant, variant);
   }
 });
