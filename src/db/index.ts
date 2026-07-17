@@ -2,7 +2,7 @@ import { Pool } from 'pg';
 import { PROMPT_VARIANTS, SCAN_SOURCES, SCAN_STATUSES, SCHEDULE_TYPES, SURFACE_TYPES, TOOL_TYPES_DB, ScheduleType, sqlEnumList } from '../types/intake';
 import { config } from '../config';
 import { DatabaseEntry } from '../types';
-import type { ToolType, DistributionChannel, DistributionStatus, DistributionConfig, DistributionLog } from '../types/intake';
+import type { PromptVariant, ToolType, DistributionChannel, DistributionStatus, DistributionConfig, DistributionLog } from '../types/intake';
 import { normalizeUrl } from '../utils/url';
 
 let pool: Pool | null = null;
@@ -1215,7 +1215,7 @@ export async function createScanPrompt(params: {
   isActive?: boolean;
   sortOrder?: number;
   toolType?: ToolType;
-  variant?: string;
+  variant?: PromptVariant;
   model?: string;
   outputFormat?: 'text' | 'json';
   intent?: 'discovery' | 'canonical' | 'signal';
@@ -1244,7 +1244,7 @@ export async function createScanPrompt(params: {
 
 export async function updateScanPrompt(
   id: string,
-  updates: Partial<{ wire: string; label: string; promptText: string; responseFormat: string | null; isActive: boolean; sortOrder: number; variant: string | null; toolType: ToolType; model: string | null; outputFormat: 'text' | 'json'; intent: 'discovery' | 'canonical' | 'signal' }>
+  updates: Partial<{ wire: string; label: string; promptText: string; responseFormat: string | null; isActive: boolean; sortOrder: number; variant: PromptVariant | null; toolType: ToolType; model: string | null; outputFormat: 'text' | 'json'; intent: 'discovery' | 'canonical' | 'signal' }>
 ): Promise<ScanPromptRecord | null> {
   const pool = getPool();
   const setClauses: string[] = [];

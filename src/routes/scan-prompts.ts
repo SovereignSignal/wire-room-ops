@@ -161,6 +161,15 @@ router.post('/', async (req: Request, res: Response) => {
     res.status(400).json({ error: `toolType must be one of: ${TOOL_TYPES.join(', ')}` });
     return;
   }
+  if (
+    variant !== undefined
+    && variant !== null
+    && variant !== ''
+    && !(PROMPT_VARIANTS as readonly string[]).includes(variant)
+  ) {
+    res.status(400).json({ error: `variant must be one of: ${PROMPT_VARIANTS.join(', ')}` });
+    return;
+  }
   if (outputFormat && !['text', 'json'].includes(outputFormat)) {
     res.status(400).json({ error: 'outputFormat must be "text" or "json"' });
     return;
@@ -187,7 +196,7 @@ router.post('/', async (req: Request, res: Response) => {
       isActive: isActive ?? true,
       sortOrder: typeof sortOrder === 'number' ? sortOrder : undefined,
       toolType: toolType || 'x_search',
-      variant: variant || undefined,
+      variant: (variant || undefined) as PromptVariant | undefined,
       model: model || undefined,
       outputFormat: outputFormat || undefined,
       intent: intent || undefined,
@@ -226,7 +235,16 @@ router.put('/:id', async (req: Request, res: Response) => {
   if (responseFormat !== undefined) updates.responseFormat = responseFormat || null;
   if (isActive !== undefined) updates.isActive = isActive;
   if (sortOrder !== undefined) updates.sortOrder = sortOrder;
-  if (variant !== undefined) updates.variant = variant;
+  if (variant !== undefined) {
+    if (variant === null || variant === '') {
+      updates.variant = null;
+    } else if (!(PROMPT_VARIANTS as readonly string[]).includes(variant)) {
+      res.status(400).json({ error: `variant must be one of: ${PROMPT_VARIANTS.join(', ')}` });
+      return;
+    } else {
+      updates.variant = variant as PromptVariant;
+    }
+  }
   if (toolType !== undefined) {
     if (!(TOOL_TYPES as readonly string[]).includes(toolType)) {
       res.status(400).json({ error: `toolType must be one of: ${TOOL_TYPES.join(', ')}` });

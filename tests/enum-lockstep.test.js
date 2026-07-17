@@ -58,7 +58,9 @@ test('route validators use the canonical consts', () => {
   assert.ok(!/\[\s*'scan-execution',\s*'forum-scan'/.test(sched), 'literal schedule-type list reintroduced in schedules route');
   const prompts = read('src/routes/scan-prompts.ts');
   assert.ok(prompts.includes('TOOL_TYPES as readonly string[]).includes(toolType)'), 'scan-prompts route must validate via TOOL_TYPES');
+  assert.ok((prompts.match(/PROMPT_VARIANTS as readonly string\[\]\)\.includes\(variant\)/g) || []).length >= 2, 'scan-prompts create and update must validate variant via PROMPT_VARIANTS');
   assert.ok(!/\[\s*'x_search',\s*'web_search',\s*'perplexity'/.test(prompts), 'literal tool-type list reintroduced in scan-prompts route');
+  assert.ok(!/\[\s*'A',\s*'B',\s*'C'/.test(prompts), 'literal prompt-variant list reintroduced in scan-prompts route');
   const entries = read('src/routes/scan-entries.ts');
   assert.ok(entries.includes('PROMPT_VARIANTS.includes(promptVariant)'), 'scan submit route must validate via PROMPT_VARIANTS');
   assert.ok(entries.includes('SCAN_SOURCES.includes(source)'), 'scan submit route must validate via SCAN_SOURCES');
@@ -71,6 +73,8 @@ test('TS unions derive from the consts (typeof X[number])', () => {
     assert.ok(t.includes(`typeof ${name}[number]`), `union for ${name} must derive from the const`);
   }
   const db = read('src/db/index.ts');
+  assert.ok(db.includes('variant?: PromptVariant;'), 'createScanPrompt must use PromptVariant');
+  assert.ok(db.includes('variant: PromptVariant | null;'), 'updateScanPrompt must use PromptVariant');
   assert.ok(db.includes('scheduleType?: ScheduleType;'), 'StoredScheduleConfig must use the shared ScheduleType');
   const sched = read('src/services/scheduler.ts');
   assert.ok(sched.includes('scheduleType?: ScheduleType;'), 'ScheduleConfig must use the shared ScheduleType');
