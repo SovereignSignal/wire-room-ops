@@ -537,6 +537,15 @@ export async function processIntakeMessage(
     return { status: 'rejected', errorMessage: 'Empty message' };
   }
 
+  // Defense in depth for messages that should never become opportunity rows.
+  // Telegram normally routes structured scans through processBatchMessage(),
+  // but a detector miss must not persist a Grok count line or one of this
+  // bot's own receipts as the entry name.
+  const firstLine = text.split('\n').find(line => line.trim().length > 0) || '';
+  if (isBatchControlLine(firstLine) || isIntakeStatusLine(firstLine)) {
+    return { status: 'rejected', errorMessage: 'Intake control/status text is not an opportunity entry' };
+  }
+
   // Extract and validate caller-supplied URLs before any DB or network work.
   const textUrls = extractUrls(text);
   const passedUrls = msg.urls || [];
@@ -801,29 +810,34 @@ export function isBetterBatchSource(candidateUrl: string, existingUrl: string): 
 }
 
 export function isBatchMessage(text: string): boolean {
+  // A leading Grok count line previously hid a numbered batch from every
+  // detector below. Classify the same cleaned content that parseBatchEntries()
+  // will consume so routing and parsing cannot disagree on control lines.
+  const cleaned = stripBatchControlLines(text);
+
   // Numbered list format
-  if (/^\s*1\.\s+\*\*/.test(text)) return true;
-  if (/^\s*1\.\s+\S/.test(text) && /\n\s*2\.\s+/.test(text)) return true;
+  if (/^\s*1\.\s+\*\*/.test(cleaned)) return true;
+  if (/^\s*1\.\s+\S/.test(cleaned) && /\n\s*2\.\s+/.test(cleaned)) return true;
 
   // Bold-name format with literal ** markers
-  const boldEntries = text.match(/^\s*\*\*[^*]+\*\*\s*[—–\-]/gm);
+  const boldEntries = cleaned.match(/^\s*\*\*[^*]+\*\*\s*[—–\-]/gm);
   if (boldEntries && boldEntries.length >= 2) return true;
-  if (boldEntries && boldEntries.length === 1 && /\nLink:\s*https?:\/\//i.test(text)) return true;
+  if (boldEntries && boldEntries.length === 1 && /\n\s*Link:\s*https?:\/\//i.test(cleaned)) return true;
 
   // Markdown link format: [Name](url) — common in newsletters/briefings
-  const mdLinks = text.match(/\[([^\]]{3,})\]\(https?:\/\/[^)]+\)/g);
+  const mdLinks = cleaned.match(/\[([^\]]{3,})\]\(https?:\/\/[^)]+\)/g);
   if (mdLinks && mdLinks.length >= 2) return true;
 
   // Structured format without ** (Telegram renders bold and strips markers):
   // Multiple "Link: <url>" lines = structured batch
-  const linkLines = text.match(/^Link:\s*.+$/gim);
+  const linkLines = cleaned.match(/^\s*Link:\s*.+$/gim);
   if (linkLines && linkLines.length >= 2) return true;
   // Single entry with both Deadline: and Link: (Telegram split of larger batch)
-  if (linkLines && linkLines.length === 1 && /\nDeadline:/i.test(text)) return true;
+  if (linkLines && linkLines.length === 1 && /\n\s*Deadline:/i.test(cleaned)) return true;
 
   // Inline Grok batch format: one full entry per line, e.g.
   // "Name — Description. Deadline: June 7, 2026 Link: https://..."
-  const inlineStructuredLines = text
+  const inlineStructuredLines = cleaned
     .split('\n')
     .filter(line => /^[^\n—–]{3,}\s*[—–]\s+.+\bDeadline:\s+.+\bLink:\s+.+/i.test(line.trim()));
   if (inlineStructuredLines.length >= 2) return true;
@@ -842,15 +856,27 @@ export function isBatchControlLine(text: string): boolean {
   return /^\s*Total:\s*\d+\s+results?\b/i.test(text);
 }
 
-export function parseBatchEntries(text: string): Array<{ name: string; description: string; sourceUrl: string; deadline?: string }> {
-  // Grok count lines can appear at the start, end, or between concatenated
-  // scan blocks. Remove every standalone control line before chunking so it
-  // cannot become the next entry's title.
-  const cleaned = text
+export function isIntakeStatusLine(text: string): boolean {
+  const trimmed = text.trim();
+  return /^(?:📥\s*)?Batch received\.\s+Running intake and history checks/i.test(trimmed)
+    || /^Intake settled:/i.test(trimmed)
+    || /^Duplicate:\s+(?:already seen as|exact URL)/i.test(trimmed)
+    || /^(?:[a-z][\w-]*\s+[—–-]\s+)?Captured\s+(?:existing\s+)?(?:[a-z][\w-]*\s+)?entry\s+#\d+\b/i.test(trimmed);
+}
+
+function stripBatchControlLines(text: string): string {
+  return text
     .split('\n')
     .filter(line => !isBatchControlLine(line))
     .join('\n')
     .trim();
+}
+
+export function parseBatchEntries(text: string): Array<{ name: string; description: string; sourceUrl: string; deadline?: string }> {
+  // Grok count lines can appear at the start, end, or between concatenated
+  // scan blocks. Remove every standalone control line before chunking so it
+  // cannot become the next entry's title.
+  const cleaned = stripBatchControlLines(text);
 
   // Detect format: numbered vs bold-name vs markdown-link
   const isNumbered = /^\s*\d+\.\s+/.test(cleaned);

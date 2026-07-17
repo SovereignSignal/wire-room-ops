@@ -10,8 +10,10 @@ const {
 } = require('../src/services/intake');
 const {
   determinePostClassificationStatus,
+  isBatchMessage,
   normalizeDeadlineForDb,
   parseBatchEntries,
+  processIntakeMessage,
   semanticBatchKey,
 } = require('../src/services/intake-core');
 const { checkDuplicate, findRelatedOpportunity } = require('../src/services/dedup');
@@ -126,6 +128,46 @@ test('parseBatchEntries handles Grok scans with header, t.co links, and via-post
   assert.match(parsed[1].sourceUrl, /^https:\/\/manual\/needs-source\//);
   assert.match(parsed[1].description, /needs source verification/i);
   assert.equal(parsed[2].sourceUrl, 'https://t.co/wPo1P52O9836');
+});
+
+test('Grok count header does not hide an indented numbered batch from Telegram routing', () => {
+  const content = [
+    'Total: 2 results after dedup and filtering.',
+    '',
+    '1. [DARPA Artificial Intelligence Reinforcements (AIR) Program] — AI-capable F-16 research program.',
+    '   Deadline: None listed',
+    '   Link: https://x.com/DARPA/status/2077785604650086860',
+    '',
+    '2. [PIBBSS Fellowship] — Fully funded AI safety fellowship.',
+    '   Deadline: July 20, 2026',
+    '   Link: https://x.com/schoolafrica/status/2078099277016924509',
+  ].join('\n');
+
+  assert.equal(isBatchMessage(content), true);
+  const parsed = parseBatchEntries(content);
+  assert.equal(parsed.length, 2);
+  assert.deepEqual(parsed.map(entry => entry.name), [
+    'DARPA Artificial Intelligence Reinforcements (AIR) Program',
+    'PIBBSS Fellowship',
+  ]);
+  assert.equal(parsed[0].sourceUrl, 'https://x.com/DARPA/status/2077785604650086860');
+  assert.equal(parsed[1].deadline, 'July 20, 2026');
+});
+
+test('single intake rejects Grok control lines and bot receipts before persistence', async () => {
+  const control = await processIntakeMessage({
+    text: 'Total: 12 results after dedup and filtering.',
+    senderId: 'test',
+  });
+  const receipt = await processIntakeMessage({
+    text: 'ai — Captured ai entry #11826: Total: 12 results after dedup and filtering.',
+    senderId: 'test',
+  });
+
+  assert.equal(control.status, 'rejected');
+  assert.match(control.errorMessage, /control\/status text/i);
+  assert.equal(receipt.status, 'rejected');
+  assert.match(receipt.errorMessage, /control\/status text/i);
 });
 
 test('parseBatchEntries ignores prose before the first plain-text batch item', () => {
