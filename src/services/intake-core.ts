@@ -853,7 +853,8 @@ export function isBatchMessage(text: string): boolean {
  *   Markdown:  [Name](url) — Description (newsletters/briefings)
  */
 export function isBatchControlLine(text: string): boolean {
-  return /^\s*Total:\s*\d+\s+results?\b/i.test(text);
+  return /^\s*Total:\s*\d+\s+results?\b/i.test(text)
+    || /^\s*Total(?:\s+relevant)?\s+results?\s+after\s+dedup(?:lication)?\s+and\s+filtering\s*:\s*\d+\b/i.test(text);
 }
 
 export function isIntakeStatusLine(text: string): boolean {
@@ -861,6 +862,7 @@ export function isIntakeStatusLine(text: string): boolean {
   return /^(?:📥\s*)?Batch received\.\s+Running intake and history checks/i.test(trimmed)
     || /^Intake settled:/i.test(trimmed)
     || /^Intake saved, checks outstanding:/i.test(trimmed)
+    || /^No qualifying results found\b/i.test(trimmed)
     || /^Duplicate:\s+(?:already seen as|exact URL)/i.test(trimmed)
     || /^(?:(?:[a-z][\w-]*\s+)?[—–-]\s+)?Captured\s+(?:existing\s+)?(?:[a-z][\w-]*\s+)?entry\s+#\d+\b/i.test(trimmed);
 }
