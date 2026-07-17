@@ -33,6 +33,10 @@ export const TOOL_TYPES = ['x_search', 'web_search', 'perplexity', 'parallel'] a
 export type ToolType = typeof TOOL_TYPES[number];
 export const TOOL_TYPES_DB = [...TOOL_TYPES, 'community'] as const;
 
+// Production scan calls feed the daily run ledger. Prompt Lab calls use a
+// separate purpose so experiments cannot create false production incidents.
+export type ScanUsagePurpose = 'scan' | 'scan-test';
+
 // Where a result came from.
 export const SCAN_SOURCES = ['x-scan', 'web-search', 'perplexity', 'community', 'telegram', 'telegram-intake', 'manual-intake', 'email', 'forum', 'x-monitor', 'x-list', 'feed', 'claude-code', 'claude-cohort-notion'] as const;
 export type ScanSource = typeof SCAN_SOURCES[number];
@@ -257,4 +261,3 @@ export interface GeneratedPosts {
   tweet: string;
   telegram: string;
 }
-

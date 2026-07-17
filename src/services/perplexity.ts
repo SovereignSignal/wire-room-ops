@@ -11,6 +11,7 @@ import { config } from '../config';
 import { getBrand } from '../config/brand';
 import { logApiUsage } from './api-usage';
 import { getCachedProvider } from './api-provider';
+import type { ScanUsagePurpose } from '../types/intake';
 
 const PERPLEXITY_BASE_URL = 'https://api.perplexity.ai';
 
@@ -28,7 +29,7 @@ const DEFAULT_PERPLEXITY_MODEL = 'sonar-pro';
 
 export async function executePerplexityScan(
   promptText: string,
-  options?: { model?: string; responseFormat?: string | null; outputFormat?: 'text' | 'json' }
+  options?: { model?: string; responseFormat?: string | null; outputFormat?: 'text' | 'json'; usagePurpose?: ScanUsagePurpose }
 ): Promise<{ content: string; model: string; tokensUsed?: number }> {
   const provider = getCachedProvider('perplexity');
   const apiKey = provider?.api_key || process.env.PERPLEXITY_API_KEY;
@@ -37,6 +38,7 @@ export async function executePerplexityScan(
   }
 
   const model = options?.model || provider?.default_model || DEFAULT_PERPLEXITY_MODEL;
+  const usagePurpose = options?.usagePurpose || 'scan';
   const baseUrl = provider?.base_url || PERPLEXITY_BASE_URL;
   const start = Date.now();
   const useJson = options?.outputFormat === 'json';
@@ -78,7 +80,7 @@ export async function executePerplexityScan(
 
   if (!response.ok) {
     const errorText = await response.text();
-    logApiUsage({ provider: 'perplexity', model, purpose: 'scan', duration_ms: Date.now() - start, success: false, error_message: `${response.status} ${errorText.slice(0, 200)}`.trim() });
+    logApiUsage({ provider: 'perplexity', model, purpose: usagePurpose, duration_ms: Date.now() - start, success: false, error_message: `${response.status} ${errorText.slice(0, 200)}`.trim() });
     throw new Error(`Perplexity API error: ${response.status} - ${errorText}`);
   }
 
@@ -86,11 +88,16 @@ export async function executePerplexityScan(
 
   const content = data.choices?.[0]?.message?.content;
   if (!content) {
+    logApiUsage({
+      provider: 'perplexity', model, purpose: usagePurpose, duration_ms: Date.now() - start,
+      tokens_in: data.usage?.prompt_tokens, tokens_out: data.usage?.completion_tokens,
+      success: false, error_message: 'Perplexity API returned empty response',
+    });
     throw new Error('Perplexity API returned empty response');
   }
 
   logApiUsage({
-    provider: 'perplexity', model, purpose: 'scan', duration_ms: Date.now() - start,
+    provider: 'perplexity', model, purpose: usagePurpose, duration_ms: Date.now() - start,
     tokens_in: data.usage?.prompt_tokens, tokens_out: data.usage?.completion_tokens,
   });
 

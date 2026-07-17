@@ -391,8 +391,9 @@ export async function buildRunLedger(
     // omit — optional evidence
   }
 
-  // provider outages — a provider with failures and ZERO successes across ALL
-  // purposes in 24h is an account/endpoint-level problem, not a lane problem.
+  // provider outages — a provider with failures and ZERO successes across all
+  // production purposes in 24h is an account/endpoint-level problem. Prompt
+  // Lab traffic stays out so experiments cannot create production incidents.
   // The 2026-07-10 xAI billing block hid behind the scans-only probe above:
   // classify/recheck/discovery were down for a day with no digest signal.
   try {
@@ -402,6 +403,8 @@ export async function buildRunLedger(
              COUNT(*) FILTER (WHERE NOT success) AS failed
       FROM api_usage_log
       WHERE created_at >= NOW() - INTERVAL '24 hours'
+        AND purpose <> 'scan-test'
+        AND purpose NOT LIKE 'parallel-test-%'
       GROUP BY provider`);
     for (const r of rows) {
       const ok = parseInt(r.ok ?? '0', 10);

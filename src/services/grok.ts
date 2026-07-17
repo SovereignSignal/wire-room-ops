@@ -1,7 +1,7 @@
 import { config } from '../config';
 import { getBrand } from '../config/brand';
 import { DatabaseEntry } from '../types';
-import type { ToolType } from '../types/intake';
+import type { ScanUsagePurpose, ToolType } from '../types/intake';
 import { logApiUsage } from './api-usage';
 import { getCachedProvider } from './api-provider';
 import { fetchThreadContext, type ThreadContext } from './x-thread';
@@ -158,12 +158,23 @@ interface ResponsesAPIResponse {
   usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number };
 }
 
+export function supportsGrokSearchTools(model: string): boolean {
+  return /^grok(?:[-_.]|$)/i.test(model.trim());
+}
+
 export async function executeScanPrompt(
   promptText: string,
-  options?: { model?: string; responseFormat?: string | null; toolType?: ToolType }
+  options?: { model?: string; responseFormat?: string | null; toolType?: ToolType; usagePurpose?: ScanUsagePurpose }
 ): Promise<{ content: string; model: string; tokensUsed?: number }> {
   const provider = getCachedProvider('grok');
   const model = options?.model || provider?.default_model || DEFAULT_SCAN_MODEL;
+  const usagePurpose = options?.usagePurpose || 'scan';
+
+  if (!supportsGrokSearchTools(model)) {
+    throw new Error(
+      `x_search/web_search requires an xAI Grok model; the configured model is "${model}". Use Parallel or Perplexity.`
+    );
+  }
 
   // Inject today's date so the model has temporal context for recency filtering
   const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
@@ -193,7 +204,7 @@ export async function executeScanPrompt(
 
   if (!response.ok) {
     const errorText = await response.text();
-    logApiUsage({ provider: 'grok', model, purpose: 'scan', duration_ms: Date.now() - start, success: false, error_message: `${response.status} ${errorText.slice(0, 200)}`.trim() });
+    logApiUsage({ provider: 'grok', model, purpose: usagePurpose, duration_ms: Date.now() - start, success: false, error_message: `${response.status} ${errorText.slice(0, 200)}`.trim() });
     throw new Error(`Grok API error: ${response.status} - ${errorText}`);
   }
 
@@ -212,6 +223,11 @@ export async function executeScanPrompt(
   }
 
   if (!textContent) {
+    logApiUsage({
+      provider: 'grok', model, purpose: usagePurpose, duration_ms: Date.now() - start,
+      tokens_in: data.usage?.input_tokens, tokens_out: data.usage?.output_tokens,
+      success: false, error_message: 'Grok Responses API returned empty text content',
+    });
     throw new Error('Grok Responses API returned empty text content');
   }
 
@@ -220,7 +236,7 @@ export async function executeScanPrompt(
     : undefined;
 
   logApiUsage({
-    provider: 'grok', model, purpose: 'scan', duration_ms: Date.now() - start,
+    provider: 'grok', model, purpose: usagePurpose, duration_ms: Date.now() - start,
     tokens_in: data.usage?.input_tokens, tokens_out: data.usage?.output_tokens,
   });
 

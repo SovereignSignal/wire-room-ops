@@ -308,6 +308,10 @@ test('buildRunLedger: a provider with failures and zero successes flags an accou
 
   const { ledger, anomalies } = await buildRunLedger(pool, { date: '2026-07-11' }, deps);
 
+  const providerSql = pool.calls[2].sql;
+  assert.match(providerSql, /purpose <> 'scan-test'/);
+  assert.match(providerSql, /purpose NOT LIKE 'parallel-test-%'/);
+
   const outage = ledger.lanes.find(l => l.key === 'api:grok');
   assert.equal(outage.state, 'fail');
   assert.match(outage.detail, /120✗/);
