@@ -154,6 +154,66 @@ test('Grok count header does not hide an indented numbered batch from Telegram r
   assert.equal(parsed[1].deadline, 'July 20, 2026');
 });
 
+test('positive Grok count headers route every supported one-result batch form', () => {
+  const cases = [
+    {
+      label: 'plain numbered item with direct URL',
+      text: [
+        'Total relevant results after deduplication and filtering: 1',
+        '1. Solo Infrastructure Grant — Funding for open-source maintainers. https://example.org/solo-infrastructure',
+      ].join('\n'),
+      expectedUrl: 'https://example.org/solo-infrastructure',
+    },
+    {
+      label: 'numbered item with Link and no Deadline',
+      text: [
+        'Total relevant results after deduplication and filtering: 1',
+        '1. Solo Research Fellowship — Support for independent AI safety research.',
+        'Link: https://example.org/solo-fellowship',
+      ].join('\n'),
+      expectedUrl: 'https://example.org/solo-fellowship',
+    },
+    {
+      label: 'inline Deadline and Link row',
+      text: [
+        'Total relevant results after deduplication and filtering: 1',
+        'Solo Public Goods Fund — Grants for protocol tooling. Deadline: August 1, 2026 Link: https://example.org/solo-public-goods',
+      ].join('\n'),
+      expectedUrl: 'https://example.org/solo-public-goods',
+    },
+    {
+      label: 'legacy count header',
+      text: [
+        'Total: 1 result after dedup and filtering.',
+        '1. Solo Legacy Grant — Funding for one qualified project. https://example.org/solo-legacy',
+      ].join('\n'),
+      expectedUrl: 'https://example.org/solo-legacy',
+    },
+  ];
+
+  for (const { label, text, expectedUrl } of cases) {
+    assert.equal(isBatchMessage(text), true, label);
+    const parsed = parseBatchEntries(text);
+    assert.equal(parsed.length, 1, label);
+    assert.equal(parsed[0].sourceUrl, expectedUrl, label);
+  }
+});
+
+test('empty, zero-result, and contradictory count summaries do not route as batches', () => {
+  assert.equal(isBatchMessage('Total relevant results after deduplication and filtering: 1'), false);
+  assert.equal(isBatchMessage([
+    'Total relevant results after deduplication and filtering: 0',
+    'No qualifying results found in this scan.',
+  ].join('\n')), false);
+
+  const contradictory = [
+    'Total relevant results after deduplication and filtering: 1',
+    'No qualifying results found after deduplication and filtering.',
+  ].join('\n');
+  assert.equal(isBatchMessage(contradictory), false);
+  assert.equal(parseBatchEntries(contradictory).length, 0);
+});
+
 test('indented plain-text fields route and parse every unnumbered batch item', () => {
   const content = [
     'Alpha Grant — First opportunity.',
@@ -177,6 +237,9 @@ test('indented plain-text fields route and parse every unnumbered batch item', (
 test('single intake rejects Grok control lines and bot receipts before persistence', async () => {
   const messages = [
     'Total: 12 results after dedup and filtering.',
+    'Total relevant results after deduplication and filtering: 12',
+    'No qualifying results found in this scan.',
+    'No qualifying results found after deduplication and filtering.',
     'ai — Captured ai entry #11826: Total: 12 results after dedup and filtering.',
     '— Captured existing entry #11826: Total: 12 results after dedup and filtering.',
     'Intake saved, checks outstanding: ⏳ 12 pending',
