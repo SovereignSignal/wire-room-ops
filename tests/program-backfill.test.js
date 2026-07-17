@@ -1,7 +1,14 @@
 require('ts-node/register/transpile-only');
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { clusterByKey, resolveChainSafe, chainActionFor } = require('../src/scripts/program-backfill');
+const {
+  clusterByKey,
+  resolveChainSafe,
+  chainActionFor,
+  isSyntheticTestName,
+  selectEligibleClusters,
+  chunkClusters,
+} = require('../src/scripts/program-backfill');
 
 test('clusterByKey groups by normalized program key and skips empty keys', () => {
   const rows = [
@@ -13,6 +20,34 @@ test('clusterByKey groups by normalized program key and skips empty keys', () =>
   const clusters = clusterByKey(rows);
   const sizes = [...clusters.values()].map(v => v.length).sort();
   assert.deepEqual(sizes, [1, 2]);
+});
+
+test('synthetic test exclusion preserves legitimate programs containing Test', () => {
+  assert.equal(isSyntheticTestName('Test'), true);
+  assert.equal(isSyntheticTestName(' Test Program'), true);
+  assert.equal(isSyntheticTestName('Testnet Grants'), false);
+  assert.equal(isSyntheticTestName('Mantle Turing Test'), false);
+  assert.equal(isSyntheticTestName('OAI Resilience Test'), false);
+
+  const clusters = clusterByKey([
+    { id: 1, name: 'Test Program', status: 'approved' },
+    { id: 2, name: 'Test Program 2026', status: 'duplicate' },
+    { id: 3, name: 'Mantle Turing Test', status: 'approved' },
+    { id: 4, name: 'Real Program', status: 'queued' },
+    { id: 5, name: 'Real Program 2026', status: 'queued' },
+    { id: 6, name: 'Undecided Singleton', status: 'queued' },
+  ]);
+  const eligibleNames = selectEligibleClusters(clusters).flatMap(([, members]) => members.map(m => m.name));
+  assert.equal(eligibleNames.includes('Test Program'), false);
+  assert.equal(eligibleNames.includes('Mantle Turing Test'), true);
+  assert.equal(eligibleNames.includes('Real Program'), true);
+  assert.equal(eligibleNames.includes('Undecided Singleton'), false);
+});
+
+test('chunkClusters partitions work into resumable model-sized batches', () => {
+  const chunks = chunkClusters(Array.from({ length: 45 }, (_, i) => i));
+  assert.deepEqual(chunks.map(chunk => chunk.length), [20, 20, 5]);
+  assert.throws(() => chunkClusters([1], 0), /at least 1/);
 });
 
 test('resolveChainSafe: flat chains, deep chains, cycles (real corpus fixture 8804<->8771), orphans', () => {

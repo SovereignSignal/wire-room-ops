@@ -5,16 +5,19 @@
  *   railway run npx ts-node src/scripts/program-backfill.ts
  *
  * 1. Cluster all scan_entries by normalizeProgramKey(name).
- * 2. LLM-canonicalize one representative per multi-member-or-decided cluster.
- * 3. Upsert programs, set scan_entries.program_id, compute counters,
+ * 2. Skip synthetic names beginning with "Test".
+ * 3. LLM-canonicalize and write one 20-cluster chunk at a time so reruns resume
+ *    from the first unlinked cluster.
+ * 4. Upsert programs, set scan_entries.program_id, compute counters,
  *    pick canonical_entry_id (approved > declined > queued, newest).
- * 4. Chain hygiene: repair duplicate_of_id cycles (point every member at the
+ * 5. Chain hygiene: repair duplicate_of_id cycles (point every member at the
  *    smallest id) and give pointer-less duplicates a pointer to their
  *    program's canonical entry when resolvable.
  * Idempotent: entries with program_id set are skipped on re-run.
  */
 import { getPool } from '../db';
 import { normalizeProgramKey, canonicalizeBatch, createProgram } from '../services/program-identity';
+import { getCachedProvider, refreshProviderCache } from '../services/api-provider';
 
 interface BackfillRow {
   id: number;
@@ -34,6 +37,27 @@ export function clusterByKey<T extends { id: number; name: string; status: strin
     clusters.set(key, bucket);
   }
   return clusters;
+}
+
+const DECIDED = new Set(['approved', 'declined', 'duplicate']);
+
+export function isSyntheticTestName(name: string): boolean {
+  return /^test(?:\s|$)/i.test((name || '').trim());
+}
+
+export function selectEligibleClusters<T extends { id: number; name: string; status: string }>(
+  clusters: Map<string, T[]>,
+): Array<[string, T[]]> {
+  return [...clusters.entries()].filter(([, members]) =>
+    !members.every(member => isSyntheticTestName(member.name))
+    && (members.length >= 2 || members.some(member => DECIDED.has(member.status))));
+}
+
+export function chunkClusters<T>(items: T[], size = 20): T[][] {
+  if (size < 1) throw new Error('Chunk size must be at least 1');
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
+  return chunks;
 }
 
 export function resolveChainSafe(pointers: Map<number, number | null>, startId: number): number {
@@ -77,72 +101,82 @@ async function main() {
 
   const unlinked: BackfillRow[] = rows.filter(r => !r.program_id);
   const clusters = clusterByKey(unlinked);
-  const DECIDED = new Set(['approved', 'declined', 'duplicate']);
-  const eligible = [...clusters.entries()].filter(([, members]) =>
-    members.length >= 2 || members.some(m => DECIDED.has(m.status)));
-  console.log(`clusters: ${clusters.size} total, ${eligible.length} eligible (≥2 members or decided)`);
+  const eligible = selectEligibleClusters(clusters);
+  const syntheticSkipped = [...clusters.values()].filter(members =>
+    members.every(member => isSyntheticTestName(member.name))
+    && (members.length >= 2 || members.some(member => DECIDED.has(member.status)))).length;
+  console.log(`clusters: ${clusters.size} total, ${eligible.length} eligible (≥2 members or decided), ${syntheticSkipped} synthetic test clusters skipped`);
   if (dryRun) {
     const top = eligible.sort((a, b) => b[1].length - a[1].length).slice(0, 20);
     for (const [key, members] of top) console.log(`  ${String(members.length).padStart(4)}  ${key}  e.g. "${members[0].name.slice(0, 60)}"`);
   }
 
-  // Canonicalize representatives in chunks of 20
+  // Canonicalize and write each chunk before requesting the next. Because the
+  // query starts from program_id IS NULL, a failed run resumes after the last
+  // committed chunk without repeating earlier model calls.
   const reps = eligible.map(([key, members]) => ({ key, rep: members[0], members }));
-  const canonicalById = new Map<number, { org: string | null; program: string | null; round_label: string | null }>();
-  if (!dryRun) {
-    for (let i = 0; i < reps.length; i += 20) {
-      const chunk = reps.slice(i, i + 20);
-      const out = await canonicalizeBatch(chunk.map(c => ({ id: c.rep.id, name: c.rep.name, description: '' })));
-      for (const o of out) canonicalById.set(o.id, o);
-      console.log(`canonicalized ${Math.min(i + 20, reps.length)}/${reps.length}`);
-    }
-  }
-
   let linked = 0;
   if (!dryRun) {
-    const client = await pool.connect();
-    try {
-      let clusterNum = 0;
-      for (const { rep, members } of reps) {
-        clusterNum++;
-        const canon = canonicalById.get(rep.id);
-        try {
-          await client.query('BEGIN');
-          const programId = await createProgram(client, {
-            name: rep.name, canonicalName: canon?.program ?? null, orgName: canon?.org ?? null,
-            wire: rep.wire ?? null, sourceUrl: rep.source_url ?? null, roundLabel: canon?.round_label ?? null,
-          });
-          const ids = members.map(m => m.id);
-          await client.query(`UPDATE scan_entries SET program_id = $1 WHERE id = ANY($2::int[]) AND program_id IS NULL`, [programId, ids]);
-          // counters + canonical exemplar from members
-          await client.query(
-            `UPDATE programs p SET
-               entry_count = s.total, approved_count = s.approved, declined_count = s.declined,
-               first_seen = s.first_seen, last_seen = s.last_seen,
-               canonical_entry_id = s.exemplar,
-               last_decision = s.last_decision,
-               aliases = (SELECT ARRAY(SELECT DISTINCT unnest(p.aliases || s.names)))
-             FROM (
-               SELECT COUNT(*)::int AS total,
-                      COUNT(*) FILTER (WHERE status = 'approved')::int AS approved,
-                      COUNT(*) FILTER (WHERE status = 'declined')::int AS declined,
-                      MIN(created_at)::date AS first_seen, MAX(created_at)::date AS last_seen,
-                      (ARRAY_AGG(id ORDER BY CASE status WHEN 'approved' THEN 0 WHEN 'declined' THEN 1 WHEN 'queued' THEN 2 ELSE 3 END, created_at DESC))[1] AS exemplar,
-                      (ARRAY_AGG(status || ' ' || updated_at::date ORDER BY updated_at DESC) FILTER (WHERE status IN ('approved','declined')))[1] AS last_decision,
-                      ARRAY_AGG(DISTINCT name) AS names
-               FROM scan_entries WHERE program_id = $1
-             ) s
-             WHERE p.id = $1`, [programId]);
-          await client.query('COMMIT');
-          linked += ids.length;
-        } catch (e) {
-          await client.query('ROLLBACK');
-          throw e;
-        }
-        if (clusterNum % 50 === 0) console.log(`clusters written: ${clusterNum}/${reps.length}`);
+    await refreshProviderCache();
+    const provider = getCachedProvider('grok');
+    if (!provider?.enabled || !provider.api_key || !provider.base_url || !provider.default_model) {
+      throw new Error('Configured grok provider is unavailable; refusing to start the live backfill');
+    }
+    console.log(`canonicalizer: ${provider.default_model} via ${provider.source} provider config`);
+
+    let clusterNum = 0;
+    for (const chunk of chunkClusters(reps)) {
+      const out = await canonicalizeBatch(chunk.map(c => ({ id: c.rep.id, name: c.rep.name, description: '' })));
+      if (out.length === 0) {
+        throw new Error(`Canonicalization returned no results for chunk beginning at cluster ${clusterNum + 1}; refusing fallback-only writes`);
       }
-    } finally {
-      client.release();
+      const canonicalById = new Map(out.map(o => [o.id, o]));
+
+      // Acquire a database client only after the model call. A slow provider
+      // response must not hold an idle production connection.
+      const client = await pool.connect();
+      try {
+        for (const { rep, members } of chunk) {
+          clusterNum++;
+          const canon = canonicalById.get(rep.id);
+          try {
+            await client.query('BEGIN');
+            const programId = await createProgram(client, {
+              name: rep.name, canonicalName: canon?.program ?? null, orgName: canon?.org ?? null,
+              wire: rep.wire ?? null, sourceUrl: rep.source_url ?? null, roundLabel: canon?.round_label ?? null,
+            });
+            const ids = members.map(m => m.id);
+            await client.query(`UPDATE scan_entries SET program_id = $1 WHERE id = ANY($2::int[]) AND program_id IS NULL`, [programId, ids]);
+            // counters + canonical exemplar from members
+            await client.query(
+              `UPDATE programs p SET
+                 entry_count = s.total, approved_count = s.approved, declined_count = s.declined,
+                 first_seen = s.first_seen, last_seen = s.last_seen,
+                 canonical_entry_id = s.exemplar,
+                 last_decision = s.last_decision,
+                 aliases = (SELECT ARRAY(SELECT DISTINCT unnest(p.aliases || s.names)))
+               FROM (
+                 SELECT COUNT(*)::int AS total,
+                        COUNT(*) FILTER (WHERE status = 'approved')::int AS approved,
+                        COUNT(*) FILTER (WHERE status = 'declined')::int AS declined,
+                        MIN(created_at)::date AS first_seen, MAX(created_at)::date AS last_seen,
+                        (ARRAY_AGG(id ORDER BY CASE status WHEN 'approved' THEN 0 WHEN 'declined' THEN 1 WHEN 'queued' THEN 2 ELSE 3 END, created_at DESC))[1] AS exemplar,
+                        (ARRAY_AGG(status || ' ' || updated_at::date ORDER BY updated_at DESC) FILTER (WHERE status IN ('approved','declined')))[1] AS last_decision,
+                        ARRAY_AGG(DISTINCT name) AS names
+                 FROM scan_entries WHERE program_id = $1
+               ) s
+               WHERE p.id = $1`, [programId]);
+            await client.query('COMMIT');
+            linked += ids.length;
+          } catch (e) {
+            await client.query('ROLLBACK');
+            throw e;
+          }
+        }
+      } finally {
+        client.release();
+      }
+      console.log(`canonicalized and wrote ${clusterNum}/${reps.length}`);
     }
     console.log(`programs written; entries linked: ${linked}`);
   }
