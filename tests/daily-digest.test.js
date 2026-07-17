@@ -152,6 +152,7 @@ const { buildRunLedger } = require('../src/jobs/daily-digest');
 test('buildRunLedger: clean day — scans ok, bridge fresh, agent present, no anomalies', async () => {
   const pool = fakePool();
   pool.queueResponse([{ ok: '41', failed: '0' }]);
+  pool.queueResponse([{ n: '0' }]); // program gate
   pool.queueResponse([]); // provider outages
   pool.queueResponse([freshCohortRun()]);
   const { deps } = fakeState({
@@ -170,6 +171,7 @@ test('buildRunLedger: clean day — scans ok, bridge fresh, agent present, no an
 test('buildRunLedger: sparse scan failures warn without becoming a production issue', async () => {
   const pool = fakePool();
   pool.queueResponse([{ ok: '39', failed: '2' }]);
+  pool.queueResponse([{ n: '0' }]); // program gate
   pool.queueResponse([]); // provider outages
   pool.queueResponse([freshCohortRun()]);
   const { deps } = fakeState({
