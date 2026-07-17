@@ -13,11 +13,14 @@ const path = require('node:path');
 
 const read = (rel) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
 const {
-  SCAN_SOURCES, SCAN_STATUSES, SCHEDULE_TYPES, SURFACE_TYPES, TOOL_TYPES, TOOL_TYPES_DB, sqlEnumList,
+  PROMPT_VARIANTS, SCAN_SOURCES, SCAN_STATUSES, SCHEDULE_TYPES, SURFACE_TYPES, TOOL_TYPES, TOOL_TYPES_DB, sqlEnumList,
 } = require('../src/types/intake');
 
 test('canonical consts have the expected shape', () => {
-  assert.equal(SCAN_SOURCES.length, 14);
+  assert.equal(PROMPT_VARIANTS.length, 7);
+  assert.ok(PROMPT_VARIANTS.includes('S'), 'scout prompt variant must stay route and DB valid');
+  assert.equal(SCAN_SOURCES.length, 15);
+  assert.ok(SCAN_SOURCES.includes('grok-scout'), 'Grok Scout must stay a valid ingestion source');
   assert.equal(SCAN_STATUSES.length, 11);
   assert.ok(SCAN_STATUSES.includes('incomplete'), 'the June drift value must stay in the list');
   assert.equal(SCHEDULE_TYPES.length, 5);
@@ -33,12 +36,15 @@ test('db/index.ts builds every CHECK constraint from the canonical consts (no li
   // Interpolations present, with the right multiplicity per column
   assert.ok((db.match(/sqlEnumList\(SCAN_STATUSES\)/g) || []).length >= 3, 'all 3 status CHECK writers must interpolate SCAN_STATUSES');
   assert.ok((db.match(/sqlEnumList\(SCAN_SOURCES\)/g) || []).length >= 1, 'scan_source CHECK must interpolate SCAN_SOURCES');
+  assert.ok((db.match(/sqlEnumList\(PROMPT_VARIANTS\)/g) || []).length >= 4, 'all prompt-variant CHECK writers must interpolate PROMPT_VARIANTS');
   assert.ok((db.match(/sqlEnumList\(SCHEDULE_TYPES\)/g) || []).length >= 2, 'schedule_type normalizer + CHECK must interpolate SCHEDULE_TYPES');
   assert.ok((db.match(/sqlEnumList\(SURFACE_TYPES\)/g) || []).length >= 1, 'surface_type CHECK must interpolate SURFACE_TYPES');
   assert.ok((db.match(/sqlEnumList\(TOOL_TYPES_DB\)/g) || []).length >= 2, 'both tool_type CHECK writers must interpolate TOOL_TYPES_DB');
   // No hand-maintained literal CHECK lists may remain for these columns
   assert.ok(!/CHECK \(status IN \('raw'/.test(db), 'literal status CHECK list reintroduced');
   assert.ok(!/CHECK \(scan_source IN \('x-scan'/.test(db), 'literal scan_source CHECK list reintroduced');
+  assert.ok(!/CHECK \(prompt_variant IN \('A'/.test(db), 'literal prompt_variant CHECK list reintroduced');
+  assert.ok(!/CHECK \(variant IN \('A'/.test(db), 'literal scan_prompts variant CHECK list reintroduced');
   assert.ok(!/CHECK \(schedule_type IN \('scan-execution'/.test(db), 'literal schedule_type CHECK list reintroduced');
   assert.ok(!/CHECK \(surface_type IN \('grants_page'/.test(db), 'literal surface_type CHECK list reintroduced');
   assert.ok(!/CHECK \(tool_type IN \('x_search'/.test(db), 'literal tool_type CHECK list reintroduced');
@@ -53,11 +59,15 @@ test('route validators use the canonical consts', () => {
   const prompts = read('src/routes/scan-prompts.ts');
   assert.ok(prompts.includes('TOOL_TYPES as readonly string[]).includes(toolType)'), 'scan-prompts route must validate via TOOL_TYPES');
   assert.ok(!/\[\s*'x_search',\s*'web_search',\s*'perplexity'/.test(prompts), 'literal tool-type list reintroduced in scan-prompts route');
+  const entries = read('src/routes/scan-entries.ts');
+  assert.ok(entries.includes('PROMPT_VARIANTS.includes(promptVariant)'), 'scan submit route must validate via PROMPT_VARIANTS');
+  assert.ok(entries.includes('SCAN_SOURCES.includes(source)'), 'scan submit route must validate via SCAN_SOURCES');
+  assert.ok(!/\['A', 'B', 'C'\]\.includes\(promptVariant\)/.test(entries), 'literal prompt-variant route validator reintroduced');
 });
 
 test('TS unions derive from the consts (typeof X[number])', () => {
   const t = read('src/types/intake.ts');
-  for (const name of ['SCAN_SOURCES', 'SCAN_STATUSES', 'SCHEDULE_TYPES', 'SURFACE_TYPES', 'TOOL_TYPES']) {
+  for (const name of ['PROMPT_VARIANTS', 'SCAN_SOURCES', 'SCAN_STATUSES', 'SCHEDULE_TYPES', 'SURFACE_TYPES', 'TOOL_TYPES']) {
     assert.ok(t.includes(`typeof ${name}[number]`), `union for ${name} must derive from the const`);
   }
   const db = read('src/db/index.ts');

@@ -1,5 +1,5 @@
 import { Pool } from 'pg';
-import { SCAN_SOURCES, SCAN_STATUSES, SCHEDULE_TYPES, SURFACE_TYPES, TOOL_TYPES_DB, ScheduleType, sqlEnumList } from '../types/intake';
+import { PROMPT_VARIANTS, SCAN_SOURCES, SCAN_STATUSES, SCHEDULE_TYPES, SURFACE_TYPES, TOOL_TYPES_DB, ScheduleType, sqlEnumList } from '../types/intake';
 import { config } from '../config';
 import { DatabaseEntry } from '../types';
 import type { ToolType, DistributionChannel, DistributionStatus, DistributionConfig, DistributionLog } from '../types/intake';
@@ -696,7 +696,7 @@ export async function ensureScanTables(): Promise<void> {
     deadline TEXT,
     deadline_parsed DATE,
     wire TEXT NOT NULL,
-    prompt_variant TEXT NOT NULL CHECK (prompt_variant IN ('A', 'B', 'C', 'N', 'W', 'P', 'S')),
+    prompt_variant TEXT NOT NULL CHECK (prompt_variant IN (${sqlEnumList(PROMPT_VARIANTS)})),
     scan_source TEXT NOT NULL DEFAULT 'x-scan',
     scan_date DATE NOT NULL,
     status TEXT NOT NULL DEFAULT 'raw'
@@ -802,7 +802,7 @@ export async function ensureScanTables(): Promise<void> {
   `);
   await client.query(`
     ALTER TABLE scan_entries ADD CONSTRAINT scan_entries_prompt_variant_check
-      CHECK (prompt_variant IN ('A', 'B', 'C', 'N', 'W', 'P', 'S'))
+      CHECK (prompt_variant IN (${sqlEnumList(PROMPT_VARIANTS)}))
   `);
   await client.query(`
     ALTER TABLE scan_entries ADD COLUMN IF NOT EXISTS submitted_by TEXT
@@ -916,7 +916,7 @@ export async function ensureScanPromptsTable(): Promise<void> {
 
   // Phase 2 migrations: variant column on scan_prompts
   await pool.query(`
-    ALTER TABLE scan_prompts ADD COLUMN IF NOT EXISTS variant TEXT CHECK (variant IN ('A', 'B', 'C'))
+    ALTER TABLE scan_prompts ADD COLUMN IF NOT EXISTS variant TEXT CHECK (variant IN (${sqlEnumList(PROMPT_VARIANTS)}))
   `);
 
   // Phase 2: Allow queue action statuses (skipped, approved, declined).
@@ -948,7 +948,7 @@ export async function ensureScanPromptsTable(): Promise<void> {
   await pool.query(`ALTER TABLE scan_prompts DROP CONSTRAINT IF EXISTS scan_prompts_variant_check`);
   await pool.query(`
     ALTER TABLE scan_prompts ADD CONSTRAINT scan_prompts_variant_check
-      CHECK (variant IN ('A', 'B', 'C', 'W', 'P', 'N', 'S'))
+      CHECK (variant IN (${sqlEnumList(PROMPT_VARIANTS)}))
   `);
 
   // Phase 4 migration: add community_signals JSONB column for external signal metadata

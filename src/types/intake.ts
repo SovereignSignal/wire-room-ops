@@ -5,8 +5,10 @@
 
 // Wire values are dynamic (driven by feeds table), so we use string
 
-// Which prompt variant produced this result
-export type PromptVariant = 'A' | 'B' | 'C' | 'W' | 'P' | 'N' | 'S';
+// Which prompt variant produced this result. This list also drives the route
+// validators and database CHECK constraints.
+export const PROMPT_VARIANTS = ['A', 'B', 'C', 'W', 'P', 'N', 'S'] as const;
+export type PromptVariant = typeof PROMPT_VARIANTS[number];
 
 // Prompt strategy labels (for human readability)
 export type PromptStrategy = 'Action' | 'Landscape' | 'Open Sweep';
@@ -32,7 +34,7 @@ export type ToolType = typeof TOOL_TYPES[number];
 export const TOOL_TYPES_DB = [...TOOL_TYPES, 'community'] as const;
 
 // Where a result came from.
-export const SCAN_SOURCES = ['x-scan', 'web-search', 'perplexity', 'community', 'telegram', 'telegram-intake', 'manual-intake', 'email', 'forum', 'x-monitor', 'x-list', 'feed', 'claude-code', 'claude-cohort-notion'] as const;
+export const SCAN_SOURCES = ['x-scan', 'grok-scout', 'web-search', 'perplexity', 'community', 'telegram', 'telegram-intake', 'manual-intake', 'email', 'forum', 'x-monitor', 'x-list', 'feed', 'claude-code', 'claude-cohort-notion'] as const;
 export type ScanSource = typeof SCAN_SOURCES[number];
 
 // Processing state for scan results as they move through the pipeline:
@@ -70,6 +72,7 @@ export interface RawScanResult {
   sourceUrl: string;          // The X post URL or web page URL
   amount: string | null;      // Dollar amount if mentioned, raw string
   sourcePublishedAt?: string | null;  // ISO date from source (e.g. forum post date)
+  metadata?: Record<string, unknown>; // Producer audit fields persisted as JSONB
 }
 
 /**

@@ -12,7 +12,7 @@
  */
 
 import { Router, Request, Response } from 'express';
-import { TOOL_TYPES } from '../types/intake';
+import { PROMPT_VARIANTS, TOOL_TYPES } from '../types/intake';
 import { getPool, getAllScanPrompts, getScanPromptById, createScanPrompt, updateScanPrompt, deleteScanPrompt, getAllFeeds } from '../db';
 import { rateLimit } from '../middleware/rate-limit';
 import { isValidUuid } from '../utils/validation';
@@ -26,7 +26,7 @@ import { withRetry } from '../services/processor';
 import { buildSubmission } from '../services/intake';
 import { runDailyIntake } from '../jobs/daily-intake';
 import { jobQueue } from '../services/job-queue';
-import type { RawScanResult, ToolType } from '../types/intake';
+import type { PromptVariant, RawScanResult, ToolType } from '../types/intake';
 
 const router = Router();
 
@@ -426,9 +426,10 @@ router.post('/:id/run', async (req: Request, res: Response) => {
     const { results: parsed, strategy: parseStrategy } = parseStructuredOutput(scanResult.content, parseHint);
     const today = new Date().toISOString().split('T')[0];
 
-    // Determine variant
-    const VALID_VARIANTS = ['A', 'B', 'C', 'W', 'P', 'N', 'S'];
-    const variant = (prompt.variant && VALID_VARIANTS.includes(prompt.variant)) ? prompt.variant : 'A';
+    // Determine variant from the same canonical list used by API validation and DB constraints.
+    const variant: PromptVariant = prompt.variant && (PROMPT_VARIANTS as readonly string[]).includes(prompt.variant)
+      ? prompt.variant as PromptVariant
+      : 'A';
 
     // Determine source — keep in lockstep with jobs/scan-execution.ts
     // (parallel runs land as 'web-search'; they were mislabeled 'x-scan' before)

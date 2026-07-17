@@ -156,7 +156,15 @@ export function sanitizeResult(result: RawScanResult): RawScanResult {
     description = '';
   }
 
-  return { name: name.trim(), description, amount, deadline, sourceUrl, sourcePublishedAt: result.sourcePublishedAt };
+  return {
+    name: name.trim(),
+    description,
+    amount,
+    deadline,
+    sourceUrl,
+    sourcePublishedAt: result.sourcePublishedAt,
+    metadata: result.metadata,
+  };
 }
 
 // ============================================================
@@ -411,11 +419,21 @@ function parseJsonOutput(text: string): RawScanResult[] {
   const objStart = cleaned.indexOf('{');
 
   let data: unknown;
+  let sourceManifest: Record<string, unknown> | undefined;
   try {
     if (jsonStart !== -1 && (objStart === -1 || jsonStart < objStart)) {
       data = JSON.parse(cleaned.substring(jsonStart));
     } else if (objStart !== -1) {
       const parsed = JSON.parse(cleaned.substring(objStart));
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const root = parsed as Record<string, unknown>;
+        const manifest = Object.fromEntries(
+          ['producer', 'variant', 'wire', 'run_id', 'generated_at']
+            .filter(key => root[key] !== undefined)
+            .map(key => [key, root[key]])
+        );
+        if (Object.keys(manifest).length > 0) sourceManifest = manifest;
+      }
       if (Array.isArray(parsed)) {
         data = parsed;
       } else if (parsed.results && Array.isArray(parsed.results)) {
@@ -450,6 +468,13 @@ function parseJsonOutput(text: string): RawScanResult[] {
     if (!name && !description) continue;
 
     const published = obj.published || obj.source_published_at || obj.sourcePublishedAt || obj.announced || obj.date_published || obj.last_updated || '';
+    const producerMetadata = Object.fromEntries(
+      ['fit_score', 'fit_reason', 'evidence', 'discovered_via']
+        .filter(key => obj[key] !== undefined)
+        .map(key => [key, obj[key]])
+    );
+    if (sourceManifest) producerMetadata.source_manifest = sourceManifest;
+
     results.push({
       name: stripMarkdownArtifacts(String(name).trim()) || 'Unknown',
       description: stripMarkdownArtifacts(String(description).trim()) || 'Found via X scan',
@@ -457,6 +482,7 @@ function parseJsonOutput(text: string): RawScanResult[] {
       deadline: obj.deadline ? normalizeDeadline(String(obj.deadline)) : null,
       sourceUrl: (() => { const u = String(sourceUrl).trim(); return isUsefulUrl(u) ? u : ''; })(),
       sourcePublishedAt: published ? parsePublishedDate(String(published)) : null,
+      ...(Object.keys(producerMetadata).length > 0 ? { metadata: producerMetadata } : {}),
     });
   }
 
@@ -937,7 +963,7 @@ export function buildSubmission(
   scanDate: string,
   source: ScanSource = 'x-scan'
 ): ScanSubmission {
-  const { results } = parseStructuredOutput(rawText);
+  const { results, strategy } = parseStructuredOutput(rawText);
 
   return {
     wire,
@@ -945,6 +971,8 @@ export function buildSubmission(
     scanDate,
     source,
     results,
+    rawOutput: rawText,
+    parseStrategy: strategy,
   };
 }
 

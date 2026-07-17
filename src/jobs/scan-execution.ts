@@ -11,6 +11,7 @@
  */
 
 import type { Pool } from 'pg';
+import { PROMPT_VARIANTS } from '../types/intake';
 import type {
   PromptVariant,
   ScanSource,
@@ -60,7 +61,7 @@ export interface ScanExecutionResult {
 // Variant inference
 // ============================================================
 
-const VALID_VARIANTS: PromptVariant[] = ['A', 'B', 'C', 'W', 'P', 'N', 'S'];
+const VALID_VARIANTS: readonly PromptVariant[] = PROMPT_VARIANTS;
 const FALLBACK_VARIANTS: PromptVariant[] = ['A', 'B', 'C'];
 
 function resolveVariant(prompt: ScanPromptRecord): PromptVariant {

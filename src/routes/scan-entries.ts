@@ -30,7 +30,7 @@ import { singleEntryAction, bulkEntryAction, ApprovalBlockedError, BulkApprovalB
 import { rewriteEntrySource, linkEntryDuplicate, EntryMaintenanceError } from '../services/entry-maintenance';
 import { buildCuratorStamp } from '../services/curator';
 import { retryDistribution } from '../services/distribution';
-import { SCAN_SOURCES } from '../types/intake';
+import { PROMPT_VARIANTS, SCAN_SOURCES } from '../types/intake';
 
 const router = Router();
 
@@ -65,8 +65,8 @@ router.post('/submit', async (req: Request, res: Response) => {
       res.status(400).json({ error: `Invalid wire "${wire}". Valid: ${validKeys.join(', ')}` });
       return;
     }
-    if (!promptVariant || !['A', 'B', 'C'].includes(promptVariant)) {
-      res.status(400).json({ error: 'promptVariant must be A, B, or C' });
+    if (!promptVariant || !PROMPT_VARIANTS.includes(promptVariant)) {
+      res.status(400).json({ error: `Invalid promptVariant "${promptVariant}". Valid: ${PROMPT_VARIANTS.join(', ')}` });
       return;
     }
     if (!scanDate || !/^\d{4}-\d{2}-\d{2}$/.test(scanDate) || isNaN(Date.parse(scanDate))) {
@@ -129,6 +129,10 @@ router.post('/submit-batch', async (req: Request, res: Response) => {
     }
     if (!rawText || typeof rawText !== 'string' || rawText.trim().length === 0) {
       res.status(400).json({ error: 'rawText is required and must be non-empty' });
+      return;
+    }
+    if (source !== undefined && !SCAN_SOURCES.includes(source)) {
+      res.status(400).json({ error: `Invalid source "${source}". Valid: ${SCAN_SOURCES.join(', ')}` });
       return;
     }
 
