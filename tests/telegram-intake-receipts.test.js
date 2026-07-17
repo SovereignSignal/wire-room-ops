@@ -13,6 +13,7 @@ const {
 const {
   buildIntakeMetadata,
   findTelegramReplayEntry,
+  processBatchMessage,
   telegramReplayPlaceholder,
 } = require('../src/services/intake-core');
 
@@ -203,12 +204,37 @@ test('Telegram replay placeholders and row lookup are stable per update item', a
   const db = {
     query: async (sql, params) => {
       calls.push({ sql, params });
-      return { rows: [{ id: 42 }] };
+      return { rows: [{ id: 42, wire: 'oss' }] };
     },
   };
-  assert.equal(await findTelegramReplayEntry(db, '501', 'single'), 42);
+  assert.deepEqual(await findTelegramReplayEntry(db, '501', 'single'), { id: 42, wire: 'oss' });
   assert.deepEqual(calls[0].params, ['501', 'single']);
   assert.match(calls[0].sql, /channel_item_key/);
+  assert.match(calls[0].sql, /SELECT id, wire/);
+});
+
+test('batch replay reports the persisted wire instead of a placeholder', async t => {
+  const db = require('../src/db');
+  const originalGetAllFeeds = db.getAllFeeds;
+  const originalGetPool = db.getPool;
+  t.after(() => {
+    db.getAllFeeds = originalGetAllFeeds;
+    db.getPool = originalGetPool;
+  });
+
+  db.getAllFeeds = async () => [{ key: 'oss' }];
+  db.getPool = () => ({
+    query: async () => ({ rows: [{ id: 42, wire: 'oss' }] }),
+  });
+
+  const result = await processBatchMessage({
+    text: '1. **Fresh Grant** — Funding for maintainers.\nDeadline: Rolling\nLink: https://example.org/grant',
+    senderId: 'telegram:394395765',
+    channelUpdateId: '501',
+  });
+
+  assert.equal(result.inserted, 1);
+  assert.deepEqual(result.entries, [{ name: 'Fresh Grant', wire: 'oss', id: 42 }]);
 });
 
 test('intake metadata carries Telegram update and message lineage', () => {

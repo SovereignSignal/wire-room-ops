@@ -10,8 +10,10 @@ const {
 } = require('../src/services/intake');
 const {
   determinePostClassificationStatus,
+  isBatchMessage,
   normalizeDeadlineForDb,
   parseBatchEntries,
+  processIntakeMessage,
   semanticBatchKey,
 } = require('../src/services/intake-core');
 const { checkDuplicate, findRelatedOpportunity } = require('../src/services/dedup');
@@ -126,6 +128,122 @@ test('parseBatchEntries handles Grok scans with header, t.co links, and via-post
   assert.match(parsed[1].sourceUrl, /^https:\/\/manual\/needs-source\//);
   assert.match(parsed[1].description, /needs source verification/i);
   assert.equal(parsed[2].sourceUrl, 'https://t.co/wPo1P52O9836');
+});
+
+test('Grok count header does not hide an indented numbered batch from Telegram routing', () => {
+  const content = [
+    'Total: 2 results after dedup and filtering.',
+    '',
+    '1. [DARPA Artificial Intelligence Reinforcements (AIR) Program] — AI-capable F-16 research program.',
+    '   Deadline: None listed',
+    '   Link: https://x.com/DARPA/status/2077785604650086860',
+    '',
+    '2. [PIBBSS Fellowship] — Fully funded AI safety fellowship.',
+    '   Deadline: July 20, 2026',
+    '   Link: https://x.com/schoolafrica/status/2078099277016924509',
+  ].join('\n');
+
+  assert.equal(isBatchMessage(content), true);
+  const parsed = parseBatchEntries(content);
+  assert.equal(parsed.length, 2);
+  assert.deepEqual(parsed.map(entry => entry.name), [
+    'DARPA Artificial Intelligence Reinforcements (AIR) Program',
+    'PIBBSS Fellowship',
+  ]);
+  assert.equal(parsed[0].sourceUrl, 'https://x.com/DARPA/status/2077785604650086860');
+  assert.equal(parsed[1].deadline, 'July 20, 2026');
+});
+
+test('indented plain-text fields route and parse every unnumbered batch item', () => {
+  const content = [
+    'Alpha Grant — First opportunity.',
+    '   Deadline: August 1, 2026',
+    '   Link: https://example.com/alpha',
+    'Beta Fellowship — Second opportunity.',
+    '   Deadline: August 2, 2026',
+    '   Link: https://example.com/beta',
+  ].join('\n');
+
+  assert.equal(isBatchMessage(content), true);
+  const parsed = parseBatchEntries(content);
+  assert.equal(parsed.length, 2);
+  assert.deepEqual(parsed.map(entry => entry.name), ['Alpha Grant', 'Beta Fellowship']);
+  assert.deepEqual(parsed.map(entry => entry.sourceUrl), [
+    'https://example.com/alpha',
+    'https://example.com/beta',
+  ]);
+});
+
+test('single intake rejects Grok control lines and bot receipts before persistence', async () => {
+  const messages = [
+    'Total: 12 results after dedup and filtering.',
+    'ai — Captured ai entry #11826: Total: 12 results after dedup and filtering.',
+    '— Captured existing entry #11826: Total: 12 results after dedup and filtering.',
+    'Intake saved, checks outstanding: ⏳ 12 pending',
+  ];
+
+  for (const text of messages) {
+    const result = await processIntakeMessage({ text, senderId: 'test' });
+    assert.equal(result.status, 'rejected', text);
+    assert.match(result.errorMessage, /control\/status text/i, text);
+  }
+});
+
+test('parseBatchEntries ignores prose before the first plain-text batch item', () => {
+  const content = [
+    'No major new results missed in initial scan, but here is the compiled list of qualifying announcements:',
+    '',
+    'GOAT Network $1M Agent Builder Grants — Grants for agent builders on Bitcoin-secured infrastructure to drive transactions, security, and yield.',
+    'Deadline: None listed',
+    'Link: https://x.com/GOATNetwork/status/2076968094736511177',
+    'Ripple Effect Certified Veteran Employer Grants — $250,000 program awarding $10k grants to veteran-owned businesses.',
+    'Deadline: None listed',
+    'Link: https://x.com/MSBIntel/status/2077013500858450111',
+  ].join('\n');
+
+  const parsed = parseBatchEntries(content);
+  assert.equal(parsed.length, 2);
+  assert.equal(parsed[0].name, 'GOAT Network $1M Agent Builder Grants');
+  assert.match(parsed[0].description, /^Grants for agent builders/);
+  assert.equal(parsed[0].sourceUrl, 'https://x.com/GOATNetwork/status/2076968094736511177');
+  assert.equal(parsed[1].name, 'Ripple Effect Certified Veteran Employer Grants');
+});
+
+test('parseBatchEntries preserves a plain first-line name when later prose contains a dash', () => {
+  const content = [
+    'The Following Fund:',
+    'Funding for maintainers — including security work and release engineering.',
+    'Deadline: Rolling',
+    'Link: https://example.org/maintenance-fund',
+    'Scan Results Grants:',
+    'Funding for data tooling — including open-source indexers.',
+    'Deadline: Rolling',
+    'Link: https://example.org/scan-results-grants',
+  ].join('\n');
+
+  const parsed = parseBatchEntries(content);
+  assert.equal(parsed.length, 2);
+  assert.equal(parsed[0].name, 'The Following Fund:');
+  assert.equal(parsed[1].name, 'Scan Results Grants:');
+});
+
+test('parseBatchEntries ignores Grok totals lines between concatenated scan blocks', () => {
+  const content = [
+    'Ripple XRPL Grants Program — Rolling grants for XRPL builders.',
+    'Deadline: Rolling',
+    'Link: https://x.com/xrp_herald/status/2075497085332279724',
+    'Total: 8 results after dedup and filtering.',
+    'Stacks Endowment Community Grants Round — Community grants for Stacks projects.',
+    'Deadline: July 26, 2026',
+    'Link: https://zeroauthoritydao.com/funding/degrants',
+  ].join('\n');
+
+  const parsed = parseBatchEntries(content);
+  assert.deepEqual(parsed.map(entry => entry.name), [
+    'Ripple XRPL Grants Program',
+    'Stacks Endowment Community Grants Round',
+  ]);
+  assert.equal(parsed[1].sourceUrl, 'https://zeroauthoritydao.com/funding/degrants');
 });
 
 test('parseBatchEntries strips Grok citation suffixes from X status URLs', () => {

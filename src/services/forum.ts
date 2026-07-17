@@ -265,11 +265,18 @@ function formatFeedAmount(item: GrantsFeedItem): string | null {
 /** Map a pre-classified discuss.watch grants item to a RawScanResult. */
 export function grantsFeedItemToRaw(item: GrantsFeedItem): RawScanResult {
   const title = (item.title || item.name || '').trim();
-  const name = (item.program || title).trim().slice(0, 200);
+  // Application threads are distinct grant requests inside one program. Using
+  // the program as their entry name collapses every application into the same
+  // canonical row during name dedup (for example, every Zcash application
+  // became "Zcash Community Grants"). Program launches and RFPs still benefit
+  // from the cleaner extracted program name.
+  const isApplication = item.kind?.trim().toLowerCase() === 'application';
+  const name = (isApplication ? title : (item.program || title)).trim().slice(0, 200);
   const forumLabel = item.protocol ? `${item.protocol} forum` : 'Governance forum';
 
   const parts: string[] = [];
   parts.push(item.excerpt?.trim() ? item.excerpt.trim().slice(0, 280) : title);
+  if (isApplication && item.program?.trim()) parts.push(`Program: ${item.program.trim()}`);
   if (item.status?.trim()) parts.push(`Signal: ${item.status.trim()}`);
   parts.push(`Source: ${forumLabel} (discuss.watch grants feed, ${item.confidence ?? 0}% ${item.kind || 'grant'})`);
 

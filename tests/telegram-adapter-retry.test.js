@@ -132,6 +132,85 @@ test('Telegram adapter suppresses the preliminary batch acknowledgement on a ret
   assert.equal(sends, 0);
 });
 
+test('Telegram adapter keeps the durable receipt retryable until one settled follow up sends', async t => {
+  const db = require('../src/db');
+  const decidedRecheck = require('../src/jobs/decided-recheck');
+  const originalBatchCheck = intakeCore.isBatchMessage;
+  const originalProcessBatch = intakeCore.processBatchMessage;
+  const originalGetPool = db.getPool;
+  const originalRun = decidedRecheck.runDecidedRecheckForIds;
+  const originalFetch = global.fetch;
+  t.after(() => {
+    intakeCore.isBatchMessage = originalBatchCheck;
+    intakeCore.processBatchMessage = originalProcessBatch;
+    db.getPool = originalGetPool;
+    decidedRecheck.runDecidedRecheckForIds = originalRun;
+    global.fetch = originalFetch;
+  });
+
+  let settled = false;
+  const reports = [];
+  intakeCore.isBatchMessage = () => true;
+  intakeCore.processBatchMessage = async () => ({
+    inserted: 1,
+    duplicates: 0,
+    errors: 0,
+    retryableErrors: 0,
+    failed: 0,
+    entries: [{ id: 301, name: 'Fresh Grant', wire: 'oss' }],
+  });
+  db.getPool = () => ({
+    query: async () => ({
+      rows: [{
+        id: 301,
+        status: 'queued',
+        duplicate_of_id: null,
+        duplicate_reason: null,
+        decided_recheck: settled ? { verdict: 'distinct' } : null,
+        duplicate_chain_error: null,
+      }],
+    }),
+  });
+  decidedRecheck.runDecidedRecheckForIds = async () => ({
+    checked: 0,
+    duplicates: 0,
+    updates: 0,
+    distinct: 0,
+    errors: 0,
+  });
+  global.fetch = async (_url, options) => {
+    reports.push(JSON.parse(options.body).text);
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
+
+  const batchUpdate = {
+    ...baseUpdate,
+    message: { ...baseUpdate.message, text: 'batch payload' },
+  };
+  await assert.rejects(
+    handleTelegramUpdate(batchUpdate),
+    error => error instanceof TelegramIntakeRetryableError
+      && /history checks still outstanding/.test(error.message),
+  );
+  assert.equal(reports.length, 1, 'first attempt sends only the acknowledgement');
+  assert.match(reports[0], /Batch received/);
+
+  await assert.rejects(
+    handleTelegramUpdate(batchUpdate, { sendBatchAcknowledgement: false }),
+    TelegramIntakeRetryableError,
+  );
+  assert.equal(reports.length, 1, 'unsettled replays stay silent');
+
+  settled = true;
+  await assert.doesNotReject(
+    handleTelegramUpdate(batchUpdate, { sendBatchAcknowledgement: false }),
+  );
+  assert.equal(reports.length, 2, 'settled replay sends exactly one follow up');
+  assert.match(reports[1], /Intake settled:/);
+  assert.match(reports[1], /1 queued/);
+  assert.doesNotMatch(reports[1], /checks outstanding/);
+});
+
 test('Telegram adapter propagates reply delivery failures for webhook retry', async t => {
   const originalBatchCheck = intakeCore.isBatchMessage;
   const originalProcess = intakeCore.processIntakeMessage;

@@ -2,7 +2,10 @@ require('ts-node/register/transpile-only');
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { formatSettledBatchReport } = require('../src/services/telegram-adapter');
+const {
+  formatSettledBatchReport,
+  hasOutstandingHistoryChecks,
+} = require('../src/services/telegram-adapter');
 
 test('settled batch report uses final database status instead of insert count', () => {
   const batch = {
@@ -82,4 +85,16 @@ test('settled batch report truncates only at complete HTML line boundaries', () 
   assert.match(report, /more results omitted/);
   assert.doesNotMatch(report.replaceAll('&amp;', '').replaceAll('&lt;', '').replaceAll('&gt;', ''), /&/);
   assert.equal((report.match(/<b>/g) || []).length, (report.match(/<\/b>/g) || []).length);
+});
+
+test('history completion detection treats unstamped queued rows as outstanding', () => {
+  const acceptedIds = [201, 202];
+  assert.equal(hasOutstandingHistoryChecks(acceptedIds, [
+    { id: 201, status: 'queued', decided_recheck: { verdict: 'distinct' }, duplicate_chain_error: null },
+    { id: 202, status: 'queued', decided_recheck: null, duplicate_chain_error: null },
+  ]), true);
+  assert.equal(hasOutstandingHistoryChecks(acceptedIds, [
+    { id: 201, status: 'queued', decided_recheck: { verdict: 'distinct' }, duplicate_chain_error: null },
+    { id: 202, status: 'duplicate', decided_recheck: null, duplicate_chain_error: null },
+  ]), false);
 });

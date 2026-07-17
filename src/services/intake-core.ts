@@ -371,10 +371,10 @@ export async function findTelegramReplayEntry(
   db: Queryable,
   updateId?: string,
   itemKey?: string,
-): Promise<number | null> {
+): Promise<{ id: number; wire: string } | null> {
   if (!updateId || !itemKey) return null;
   const existing = await db.query(
-    `SELECT id
+    `SELECT id, wire
      FROM scan_entries
      WHERE scan_source = 'telegram'
        AND metadata->>'channel_update_id' = $1
@@ -383,7 +383,8 @@ export async function findTelegramReplayEntry(
      LIMIT 1`,
     [updateId, itemKey],
   );
-  return existing.rows[0]?.id ?? null;
+  const row = existing.rows[0];
+  return row ? { id: row.id, wire: row.wire } : null;
 }
 
 async function insertEntry(db: Queryable, entry: NewIntakeEntry): Promise<number> {
@@ -536,6 +537,15 @@ export async function processIntakeMessage(
     return { status: 'rejected', errorMessage: 'Empty message' };
   }
 
+  // Defense in depth for messages that should never become opportunity rows.
+  // Telegram normally routes structured scans through processBatchMessage(),
+  // but a detector miss must not persist a Grok count line or one of this
+  // bot's own receipts as the entry name.
+  const firstLine = text.split('\n').find(line => line.trim().length > 0) || '';
+  if (isBatchControlLine(firstLine) || isIntakeStatusLine(firstLine)) {
+    return { status: 'rejected', errorMessage: 'Intake control/status text is not an opportunity entry' };
+  }
+
   // Extract and validate caller-supplied URLs before any DB or network work.
   const textUrls = extractUrls(text);
   const passedUrls = msg.urls || [];
@@ -561,12 +571,12 @@ export async function processIntakeMessage(
     return { status: 'error', errorMessage: 'No active wires configured' };
   }
 
-  const replayEntryId = await findTelegramReplayEntry(getPool(), msg.channelUpdateId, channelItemKey);
-  if (replayEntryId !== null) {
+  const replayEntry = await findTelegramReplayEntry(getPool(), msg.channelUpdateId, channelItemKey);
+  if (replayEntry !== null) {
     return {
       status: 'inserted',
-      entryId: replayEntryId,
-      confirmText: `Captured existing entry #${replayEntryId} from a retried Telegram update`,
+      entryId: replayEntry.id,
+      confirmText: `Captured existing entry #${replayEntry.id} from a retried Telegram update`,
     };
   }
 
@@ -800,29 +810,34 @@ export function isBetterBatchSource(candidateUrl: string, existingUrl: string): 
 }
 
 export function isBatchMessage(text: string): boolean {
+  // A leading Grok count line previously hid a numbered batch from every
+  // detector below. Classify the same cleaned content that parseBatchEntries()
+  // will consume so routing and parsing cannot disagree on control lines.
+  const cleaned = stripBatchControlLines(text);
+
   // Numbered list format
-  if (/^\s*1\.\s+\*\*/.test(text)) return true;
-  if (/^\s*1\.\s+\S/.test(text) && /\n\s*2\.\s+/.test(text)) return true;
+  if (/^\s*1\.\s+\*\*/.test(cleaned)) return true;
+  if (/^\s*1\.\s+\S/.test(cleaned) && /\n\s*2\.\s+/.test(cleaned)) return true;
 
   // Bold-name format with literal ** markers
-  const boldEntries = text.match(/^\s*\*\*[^*]+\*\*\s*[—–\-]/gm);
+  const boldEntries = cleaned.match(/^\s*\*\*[^*]+\*\*\s*[—–\-]/gm);
   if (boldEntries && boldEntries.length >= 2) return true;
-  if (boldEntries && boldEntries.length === 1 && /\nLink:\s*https?:\/\//i.test(text)) return true;
+  if (boldEntries && boldEntries.length === 1 && /\n\s*Link:\s*https?:\/\//i.test(cleaned)) return true;
 
   // Markdown link format: [Name](url) — common in newsletters/briefings
-  const mdLinks = text.match(/\[([^\]]{3,})\]\(https?:\/\/[^)]+\)/g);
+  const mdLinks = cleaned.match(/\[([^\]]{3,})\]\(https?:\/\/[^)]+\)/g);
   if (mdLinks && mdLinks.length >= 2) return true;
 
   // Structured format without ** (Telegram renders bold and strips markers):
   // Multiple "Link: <url>" lines = structured batch
-  const linkLines = text.match(/^Link:\s*.+$/gim);
+  const linkLines = cleaned.match(/^\s*Link:\s*.+$/gim);
   if (linkLines && linkLines.length >= 2) return true;
   // Single entry with both Deadline: and Link: (Telegram split of larger batch)
-  if (linkLines && linkLines.length === 1 && /\nDeadline:/i.test(text)) return true;
+  if (linkLines && linkLines.length === 1 && /\n\s*Deadline:/i.test(cleaned)) return true;
 
   // Inline Grok batch format: one full entry per line, e.g.
   // "Name — Description. Deadline: June 7, 2026 Link: https://..."
-  const inlineStructuredLines = text
+  const inlineStructuredLines = cleaned
     .split('\n')
     .filter(line => /^[^\n—–]{3,}\s*[—–]\s+.+\bDeadline:\s+.+\bLink:\s+.+/i.test(line.trim()));
   if (inlineStructuredLines.length >= 2) return true;
@@ -837,12 +852,32 @@ export function isBatchMessage(text: string): boolean {
  *   Bold:      **Name** — Description / Deadline: X / Link: <url>
  *   Markdown:  [Name](url) — Description (newsletters/briefings)
  */
-export function parseBatchEntries(text: string): Array<{ name: string; description: string; sourceUrl: string; deadline?: string }> {
-  // Strip Grok count headers/footers like "Total: 18 results after dedup...016".
-  const cleaned = text
-    .replace(/^\s*Total:\s*\d+\s+results?[^\n]*(?:\n|$)/i, '')
-    .replace(/\n*Total:\s*\d+\s+results?[^\n]*$/i, '')
+export function isBatchControlLine(text: string): boolean {
+  return /^\s*Total:\s*\d+\s+results?\b/i.test(text);
+}
+
+export function isIntakeStatusLine(text: string): boolean {
+  const trimmed = text.trim();
+  return /^(?:📥\s*)?Batch received\.\s+Running intake and history checks/i.test(trimmed)
+    || /^Intake settled:/i.test(trimmed)
+    || /^Intake saved, checks outstanding:/i.test(trimmed)
+    || /^Duplicate:\s+(?:already seen as|exact URL)/i.test(trimmed)
+    || /^(?:(?:[a-z][\w-]*\s+)?[—–-]\s+)?Captured\s+(?:existing\s+)?(?:[a-z][\w-]*\s+)?entry\s+#\d+\b/i.test(trimmed);
+}
+
+function stripBatchControlLines(text: string): string {
+  return text
+    .split('\n')
+    .filter(line => !isBatchControlLine(line))
+    .join('\n')
     .trim();
+}
+
+export function parseBatchEntries(text: string): Array<{ name: string; description: string; sourceUrl: string; deadline?: string }> {
+  // Grok count lines can appear at the start, end, or between concatenated
+  // scan blocks. Remove every standalone control line before chunking so it
+  // cannot become the next entry's title.
+  const cleaned = stripBatchControlLines(text);
 
   // Detect format: numbered vs bold-name vs markdown-link
   const isNumbered = /^\s*\d+\.\s+/.test(cleaned);
@@ -897,7 +932,7 @@ export function parseBatchEntries(text: string): Array<{ name: string; descripti
           block = '';
         }
       }
-      chunks = chunks.filter(c => c.length > 0 && /^Link:\s*.+/im.test(c));
+      chunks = chunks.filter(c => c.length > 0 && /^\s*Link:\s*.+/im.test(c));
 
       if (chunks.length === 0) {
         chunks = cleaned.split(/\n\s*\n/).filter(c => c.trim().length > 0);
@@ -905,15 +940,36 @@ export function parseBatchEntries(text: string): Array<{ name: string; descripti
     }
   }
 
-  return chunks.map(rawChunk => {
+  return chunks.map((rawChunk, chunkIndex) => {
     // Trim leading blank lines and strip numbered prefix (e.g. "14. " or " 3.  ")
     const chunk = rawChunk.trim();
     const withoutPrefix = chunk.replace(/^\s*\d+\.\s+/, '');
 
+    // Plain-text scans sometimes put prose before the first real item. The
+    // chunker closes blocks on Link: lines, so that prose otherwise becomes
+    // the item's name while the real title supplies its description. When a
+    // later line has the canonical "Name — Description" shape, start there.
+    const unprefixedLines = withoutPrefix.split('\n');
+    const firstLine = unprefixedLines[0]?.trim() || '';
+    const preambleSignals = firstLine.match(
+      /\b(?:scan|results?|matches?|announcements?|findings?|compiled|qualifying)\b/gi,
+    )?.length || 0;
+    const looksLikePreamble = chunkIndex === 0
+      && preambleSignals >= 2
+      && /^(?:no\b|here(?:'s| is| are)\b|the following\b|below (?:is|are)\b|compiled\b|scan\b)/i.test(firstLine);
+    const structuredTitleIndex = looksLikePreamble
+      ? unprefixedLines.findIndex((line, index) =>
+          index > 0 && /^[^—–\n]{3,120}\s*[—–]\s+\S/.test(line.trim()),
+        )
+      : -1;
+    const entryText = structuredTitleIndex > 0
+      ? unprefixedLines.slice(structuredTitleIndex).join('\n').trim()
+      : withoutPrefix;
+
     // Extract name from **bold** or leading text (now without numbered prefix)
-    const boldMatch = withoutPrefix.match(/^\*\*([^*]+)\*\*/);
+    const boldMatch = entryText.match(/^\*\*([^*]+)\*\*/);
     // For non-bold: capture up to em dash, en dash, or newline
-    const plainMatch = withoutPrefix.match(/^([^\n—–]+)/);
+    const plainMatch = entryText.match(/^([^\n—–]+)/);
 
     let rawName: string;
     if (boldMatch) {
@@ -921,7 +977,7 @@ export function parseBatchEntries(text: string): Array<{ name: string; descripti
     } else if (plainMatch) {
       rawName = plainMatch[1].trim();
     } else {
-      rawName = withoutPrefix.split('\n')[0].trim();
+      rawName = entryText.split('\n')[0].trim();
     }
 
     // Strip trailing em-dash description suffix and any leftover numbered prefix
@@ -946,9 +1002,9 @@ export function parseBatchEntries(text: string): Array<{ name: string; descripti
     const deadline = deadlineMatch ? deadlineMatch[1].trim() : undefined;
 
     // Build clean description: name — description text, append deadline if present
-    const descMatch = chunk.match(/\*\*[^*]+\*\*\s*[—–\-]\s*([\s\S]+?)(?:\n(?:Deadline|Link):|\s+Deadline:|\s*$)/)
-      || withoutPrefix.match(/^[^—–]+[—–]\s*([\s\S]+?)(?:\n(?:Deadline|Link):|\s+Deadline:|\s*$)/);
-    let description = descMatch ? descMatch[1].trim() : chunk.replace(/^\d+\.\s*/, '').trim();
+    const descMatch = entryText.match(/\*\*[^*]+\*\*\s*[—–\-]\s*([\s\S]+?)(?:\n(?:Deadline|Link):|\s+Deadline:|\s*$)/)
+      || entryText.match(/^[^—–]+[—–]\s*([\s\S]+?)(?:\n(?:Deadline|Link):|\s+Deadline:|\s*$)/);
+    let description = descMatch ? descMatch[1].trim() : entryText.replace(/^\d+\.\s*/, '').trim();
     if (!hasDirectUrl) {
       description += '\nNeeds source verification: Grok supplied a via-post or missing-link placeholder.';
     }
@@ -957,7 +1013,7 @@ export function parseBatchEntries(text: string): Array<{ name: string; descripti
     }
 
     return { name, description, sourceUrl, deadline };
-  }).filter(e => e.name.length > 2);
+  }).filter(e => e.name.length > 2 && !isBatchControlLine(e.name));
 }
 
 /**
@@ -999,10 +1055,10 @@ export async function processBatchMessage(
       entry.sourceUrl = telegramReplayPlaceholder(msg.channelUpdateId, channelItemKey!);
     }
 
-    const replayEntryId = await findTelegramReplayEntry(getPool(), msg.channelUpdateId, channelItemKey);
-    if (replayEntryId !== null) {
+    const replayEntry = await findTelegramReplayEntry(getPool(), msg.channelUpdateId, channelItemKey);
+    if (replayEntry !== null) {
       result.inserted++;
-      result.entries.push({ name: entry.name, wire: 'existing', id: replayEntryId });
+      result.entries.push({ name: entry.name, wire: replayEntry.wire, id: replayEntry.id });
       continue;
     }
 

@@ -5,6 +5,7 @@
  * DB insert) is delegated to intake-core.ts.
  */
 
+import type { Pool } from 'pg';
 import { config } from '../config';
 import { getPool } from '../db';
 import { runDecidedRecheckForIds } from '../jobs/decided-recheck';
@@ -150,6 +151,44 @@ export interface SettledBatchEntry {
   duplicate_chain_error: unknown | null;
 }
 
+type SettledBatchPool = Pick<Pool, 'query'>;
+
+async function readSettledBatchEntries(
+  pool: SettledBatchPool,
+  acceptedIds: number[],
+): Promise<SettledBatchEntry[]> {
+  if (acceptedIds.length === 0) return [];
+  const result = await pool.query(
+    `SELECT id, status, duplicate_of_id, duplicate_reason,
+            metadata -> 'decided_recheck' AS decided_recheck,
+            metadata -> 'duplicate_chain_error' AS duplicate_chain_error
+     FROM scan_entries
+     WHERE id = ANY($1::bigint[])`,
+    [acceptedIds],
+  );
+  return result.rows as SettledBatchEntry[];
+}
+
+function outstandingHistoryCheckIds(
+  acceptedIds: number[],
+  settledEntries: SettledBatchEntry[],
+): number[] {
+  const settledById = new Map(settledEntries.map(entry => [Number(entry.id), entry]));
+  return acceptedIds.filter(id => {
+    const settled = settledById.get(id);
+    if (!settled) return true;
+    if (settled.status !== 'queued') return false;
+    return !settled.decided_recheck && !settled.duplicate_chain_error;
+  });
+}
+
+export function hasOutstandingHistoryChecks(
+  acceptedIds: number[],
+  settledEntries: SettledBatchEntry[],
+): boolean {
+  return outstandingHistoryCheckIds(acceptedIds, settledEntries).length > 0;
+}
+
 function escapedField(text: string, maxRawLength: number): string {
   const suffix = text.length > maxRawLength ? '…' : '';
   return escapeHtml(text.slice(0, maxRawLength)) + suffix;
@@ -202,7 +241,7 @@ export async function settleHistoryWithinBudget(
   const outcome = await Promise.race([recheck, budget]);
   if (timer) clearTimeout(timer);
   if (outcome === 'pending') {
-    console.warn(`[TelegramAdapter] History check exceeded ${budgetMs}ms; reporting pending state`);
+    console.warn(`[TelegramAdapter] History check exceeded ${budgetMs}ms; requesting receipt retry`);
   }
   return outcome;
 }
@@ -371,17 +410,19 @@ export async function handleTelegramUpdate(
 
     if (acceptedIds.length > 0) {
       try {
-        settled = (await getPool().query(
-          `SELECT id, status, duplicate_of_id, duplicate_reason,
-                  metadata -> 'decided_recheck' AS decided_recheck,
-                  metadata -> 'duplicate_chain_error' AS duplicate_chain_error
-           FROM scan_entries
-           WHERE id = ANY($1::bigint[])`,
-          [acceptedIds],
-        )).rows as SettledBatchEntry[];
+        settled = await readSettledBatchEntries(getPool(), acceptedIds);
       } catch (error) {
         console.error('[TelegramAdapter] Final batch status read failed:', error);
       }
+    }
+
+    if (hasOutstandingHistoryChecks(acceptedIds, settled)) {
+      // Keep the durable receipt retryable without sending a stale partial
+      // result. Telegram replays safely through stable item keys, and the user
+      // receives one follow-up only after every history check has settled.
+      throw new TelegramIntakeRetryableError(
+        `Batch history checks still outstanding for IDs ${acceptedIds.join(',')}`,
+      );
     }
 
     await sendMessage(message.chat.id, formatSettledBatchReport(batch, settled));

@@ -47,6 +47,20 @@ test('grantsFeedItemToRaw falls back to title, formats USD ranges, nulls absent 
   assert.equal(raw.sourcePublishedAt, null);
 });
 
+test('grantsFeedItemToRaw keeps application titles distinct inside one program', () => {
+  const raw = grantsFeedItemToRaw({
+    title: 'Grant Application: Tensor Core Accelerated Proving for Orchard',
+    program: 'Zcash Community Grants',
+    url: 'https://forum.zcashcommunity.com/t/grant-application-tensor-core/56664',
+    protocol: 'Zcash',
+    kind: 'application',
+    confidence: 94,
+  });
+
+  assert.equal(raw.name, 'Grant Application: Tensor Core Accelerated Proving for Orchard');
+  assert.match(raw.description, /Program: Zcash Community Grants/);
+});
+
 // --- fetchGrantsFeedResults (stubbed fetch) ---
 
 function stubFetch(payload, status = 200) {
