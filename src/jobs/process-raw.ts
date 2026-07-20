@@ -8,7 +8,8 @@
  * Entries that pass Gate 1 + dedup always go to 'queued' — human reviews everything.
  * Quality score is still calculated for display but does NOT gate queue entry.
  *
- * Idempotent: safe to run multiple times. Only touches status='raw' entries.
+ * Idempotent: safe to run multiple times. Processes status='raw' entries and
+ * recovers abandoned status='deduped' handoffs after a safety window.
  * Processes in batches of 50 to avoid overwhelming the DB.
  */
 
@@ -20,6 +21,7 @@ import { classifySourceLink } from '../services/source-filter';
 import { finalizeProgramForEntry } from '../services/program-identity';
 
 const BATCH_SIZE = 50;
+const STRANDED_DEDUPED_AGE = '15 minutes';
 
 // Concurrency guard: prevents overlapping runs in single-process Node.js.
 // The boolean check-then-set is atomic within a single event loop tick.
@@ -28,6 +30,32 @@ const BATCH_SIZE = 50;
 let isRunning = false;
 let runStartedAt = 0;
 const MAX_RUN_DURATION_MS = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * `deduped` is a temporary handoff state. A process restart or a downstream
+ * failure after the atomic URL claim can otherwise leave the row invisible
+ * forever because the main worker only consumes `raw` rows. Recover old
+ * handoffs to the normal review queue. Keeping the existing classification,
+ * score, and distributable flag preserves the originating intake contract.
+ *
+ * The age guard stays beyond the worker's maximum normal run time so this
+ * recovery cannot race an active daily-intake classification pass.
+ */
+export async function recoverStrandedDedupedEntries(
+  db: Pick<Pool, 'query'>,
+): Promise<number> {
+  const recovered = await db.query(
+    `UPDATE scan_entries
+     SET status = 'queued',
+         classification = COALESCE(classification, 'UNCHECKED'),
+         updated_at = NOW()
+     WHERE status = 'deduped'
+       AND updated_at < NOW() - $1::interval
+     RETURNING id`,
+    [STRANDED_DEDUPED_AGE],
+  );
+  return recovered.rowCount ?? recovered.rows.length;
+}
 
 /**
  * Gate 1: Completeness check.
@@ -156,6 +184,20 @@ export async function processRawEntries(pool?: Pool): Promise<{
   try {
     // Use provided pool or get default
     const db = pool || (await import('../db')).getPool();
+
+    // Crash recovery for the raw -> deduped -> queued handoff. This is
+    // intentionally fail-open: a recovery probe failure must not stall fresh
+    // raw intake, and the same rows will be retried on the next cycle.
+    try {
+      const recovered = await recoverStrandedDedupedEntries(db);
+      if (recovered > 0) {
+        stats.processed += recovered;
+        stats.queued += recovered;
+        console.warn(`[ProcessRaw] Recovered ${recovered} stranded deduped entr${recovered === 1 ? 'y' : 'ies'} to queue`);
+      }
+    } catch (error) {
+      console.error('[ProcessRaw] Stranded deduped recovery failed; continuing with raw intake:', error);
+    }
 
     // Process in batches until no more raw entries. Every fetched row is added
     // to `attempted` and excluded from later batch queries THIS RUN, so a row

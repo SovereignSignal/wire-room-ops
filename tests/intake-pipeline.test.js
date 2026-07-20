@@ -48,6 +48,22 @@ function routingPool(routes) {
 
 const RAW_BATCH = 'SELECT se.id, se.name';
 
+test('stranded deduped rows are recovered to the review queue after the safety window', async () => {
+  const pool = routingPool([
+    ["WHERE status = 'deduped'", { rows: [{ id: 91 }, { id: 92 }], rowCount: 2 }],
+    [RAW_BATCH, { rows: [] }],
+  ]);
+
+  const stats = await processRawEntries(pool);
+
+  assert.equal(stats.processed, 2);
+  assert.equal(stats.queued, 2);
+  const recovery = pool.calls.find(c => c.sql.includes("classification = COALESCE(classification, 'UNCHECKED')"));
+  assert.ok(recovery, 'deduped recovery update was not issued');
+  assert.match(recovery.sql, /updated_at < NOW\(\) - \$1::interval/);
+  assert.deepEqual(recovery.params, ['15 minutes']);
+});
+
 test('Gate 1: incomplete row is marked incomplete and excluded from the next batch query', async () => {
   let batchCalls = 0;
   const pool = routingPool([
@@ -108,7 +124,8 @@ test('clean row is URL-claimed then queued; classifier failure leaves it queued 
   assert.equal(stats.duplicates, 0);
 
   assert.equal(finalized.at(-1).id, 303, 'entry was not finalized through the atomic dedup path');
-  const queuedUpdate = pool.calls.find(c => c.sql.includes("status = 'queued'") && c.sql.includes("'UNCHECKED'"));
+  const queuedUpdate = pool.calls.find(c => c.sql.includes("status = 'queued'")
+    && c.sql.includes("WHERE id = $1 AND status = 'deduped'"));
   assert.ok(queuedUpdate, 'row was never queued as UNCHECKED');
   assert.deepEqual(queuedUpdate.params, [303]);
 
