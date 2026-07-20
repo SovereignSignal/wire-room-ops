@@ -296,7 +296,7 @@ export async function createProgram(
 export async function recordSighting(
   pool: QueryPool,
   programId: number,
-  entry: { name: string; sourceUrl?: string | null; deadline?: string | null; roundLabel?: string | null },
+  entry: { id?: number; name: string; sourceUrl?: string | null; deadline?: string | null; roundLabel?: string | null },
 ): Promise<void> {
   const dom = domainOf(entry.sourceUrl);
   await pool.query(
@@ -304,6 +304,7 @@ export async function recordSighting(
        aliases = (SELECT ARRAY(SELECT DISTINCT unnest(aliases || ARRAY[$2]::text[]))),
        url_domains = CASE WHEN $3::text IS NULL OR $3 = ANY(url_domains) THEN url_domains ELSE url_domains || ARRAY[$3]::text[] END,
        entry_count = entry_count + 1,
+       canonical_entry_id = COALESCE(canonical_entry_id, $6),
        latest_round_label = COALESCE($4, latest_round_label),
        latest_deadline = CASE
          WHEN NULLIF($5, '') IS NULL THEN latest_deadline
@@ -312,7 +313,7 @@ export async function recordSighting(
        END,
        last_seen = CURRENT_DATE, updated_at = NOW()
      WHERE id = $1`,
-    [programId, entry.name, dom, entry.roundLabel ?? null, entry.deadline ?? null],
+    [programId, entry.name, dom, entry.roundLabel ?? null, entry.deadline ?? null, entry.id ?? null],
   );
 }
 
@@ -431,7 +432,7 @@ export async function finalizeProgramForEntry(
 ): Promise<void> {
   try {
     if (resolution) {
-      await recordSighting(pool, resolution.programId, { name: entry.name, sourceUrl: entry.sourceUrl, deadline: entry.deadline, roundLabel: resolution.roundLabel });
+      await recordSighting(pool, resolution.programId, { id: entry.id, name: entry.name, sourceUrl: entry.sourceUrl, deadline: entry.deadline, roundLabel: resolution.roundLabel });
       const verdict = resolution.confidence >= 0.85 ? resolution.verdict : 'tentative';
       await pool.query(
         `UPDATE scan_entries SET program_id = $2,
@@ -459,6 +460,13 @@ export async function finalizeProgramForEntry(
        WHERE id = $1`,
       [entry.id, programId, JSON.stringify({ id: programId, verdict: 'new_program' })],
     );
+    await recordSighting(pool, programId, {
+      id: entry.id,
+      name: entry.name,
+      sourceUrl: bestUrl,
+      deadline: entry.deadline,
+      roundLabel: canon?.round_label ?? extractRoundLabel(entry.name),
+    });
   } catch (err) {
     console.error(`[ProgramIdentity] finalize failed for entry ${entry.id} (fail-open):`, err instanceof Error ? err.message : err);
   }

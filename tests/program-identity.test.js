@@ -204,6 +204,36 @@ test('finalizeProgramForEntry: resolution present → sighting recorded + metada
   assert.match(sqls, /'program'/); // metadata stamp
 });
 
+test('finalizeProgramForEntry: a new program records its first sighting and canonical entry', async () => {
+  const calls = [];
+  const pool = {
+    calls,
+    async query(sql, params) {
+      calls.push({ sql, params });
+      if (/INSERT INTO programs/.test(sql)) return { rows: [{ id: 42 }] };
+      return { rows: [] };
+    },
+  };
+  const previousFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: true,
+    json: async () => ({ choices: [{ message: { content: '[{"id":501,"org":"BrandCo","program":"BrandCo Grants","round_label":null}]' } }] }),
+  });
+  try {
+    await finalizeProgramForEntry(pool, { id: 501, name: 'BrandCo Grants', wire: 'oss' }, null);
+  } finally {
+    global.fetch = previousFetch;
+  }
+
+  const sighting = calls.find(call => /entry_count = entry_count \+ 1/.test(call.sql));
+  assert.ok(sighting, 'new program must count its first linked entry');
+  assert.match(sighting.sql, /canonical_entry_id = COALESCE\(canonical_entry_id, \$6\)/);
+  assert.equal(sighting.params[5], 501);
+  const linkIndex = calls.findIndex(call => /UPDATE scan_entries SET program_id/.test(call.sql));
+  const sightingIndex = calls.indexOf(sighting);
+  assert.ok(linkIndex >= 0 && sightingIndex > linkIndex, 'count the sighting only after the entry link succeeds');
+});
+
 test('finalizeProgramForEntry: fail-open — a throwing pool never propagates', async () => {
   const pool = { async query() { throw new Error('db down'); } };
   await finalizeProgramForEntry(pool, { id: 1, name: 'x' }, null); // must not throw
