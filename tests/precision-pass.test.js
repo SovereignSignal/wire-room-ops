@@ -57,3 +57,20 @@ test('classification prompt carries the domain-scope gate and in_scope/wire outp
   // The JSON example must include the new fields so the model returns them
   assert.match(prompt, /"in_scope":true,"wire":"oss"/);
 });
+
+test('classifier prompt carries GLM calibration guardrails + GRANT/NEWS boundary (2026-07-21 tune)', () => {
+  const prompt = buildClassificationPrompt({
+    name: 'Some Program',
+    description: 'A program',
+    source_url: 'https://example.org/grants',
+    wire: 'ai',
+  });
+  // GRANT vs NEWS: an open application path forces GRANT even in news framing
+  assert.match(prompt, /GRANT vs NEWS boundary/);
+  assert.match(prompt, /applications are now open/);
+  // Calibration guardrails against GLM penalty-stacking (measured: scores ran
+  // ~12 pts colder than the Grok era, GRANT decided-precision 50%→40%)
+  assert.match(prompt, /Do NOT stack penalties/);
+  assert.match(prompt, /missing details are a source_check signal/);
+  assert.match(prompt, /Organization newness alone is not a hype penalty/);
+});

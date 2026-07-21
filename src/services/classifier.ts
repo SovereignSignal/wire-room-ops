@@ -77,6 +77,8 @@ Classify as exactly one of:
 - NEWS: Article/announcement about funding, org update, or industry signal — not a direct application
 - NOISE: Not relevant (spam, hype/shill content, unrelated, error)
 
+GRANT vs NEWS boundary: if there is an application path that is open now or opens on a stated date (an apply link, "applications are now open", a future deadline), classify GRANT even when the item reads like a news announcement. Reserve NEWS for items with no application path.
+
 ## Quality Score (0-100)
 Score based on INFORMATION VALUE to a professional tracking grants, funding, and industry signals.
 
@@ -100,6 +102,11 @@ Score ranges:
 - 40-59: Moderate — decent source or content but missing key details, or mid-tier org with good info
 - 20-39: Low — unknown source, thin content, small or questionable opportunity
 - 0-19: Noise — hype/shill, spam, irrelevant, or completely empty content
+
+Calibration guardrails (apply AFTER picking a band):
+- Do NOT stack penalties. Pick the band from the entry's strongest credible reading, then adjust once for its weakest element. Subtracting repeatedly for every imperfection produces artificially cold scores.
+- A real, currently-open program with a material amount from a credible organization belongs at 60+ even when some details (eligibility, exact deadline) are missing — missing details are a source_check signal, not a reason to score below 60.
+- Organization newness alone is not a hype penalty. Penalize hype LANGUAGE and unverifiable claims, not recency of the org.
 ${operatorGuidance ? '\n' + operatorGuidance + '\n' : ''}
 ## Operator Route
 Return operator_route separately from classification. Allowed operator_route values: publish | source_check | park | decline | relationship_signal
