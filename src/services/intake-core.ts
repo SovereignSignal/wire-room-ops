@@ -809,10 +809,20 @@ export function isBetterBatchSource(candidateUrl: string, existingUrl: string): 
   return rank(candidateUrl) > rank(existingUrl);
 }
 
+function getBatchControlCount(text: string): number | null {
+  const match = text.match(/^\s*Total:\s*(\d+)\s+results?\b/i)
+    || text.match(/^\s*Total(?:\s+relevant)?\s+results?\s+after\s+dedup(?:lication)?\s+and\s+filtering\s*:\s*(\d+)\b/i);
+  return match ? Number.parseInt(match[1], 10) : null;
+}
+
 export function isBatchMessage(text: string): boolean {
   // A leading Grok count line previously hid a numbered batch from every
   // detector below. Classify the same cleaned content that parseBatchEntries()
   // will consume so routing and parsing cannot disagree on control lines.
+  const declaredResultCount = text
+    .split('\n')
+    .map(getBatchControlCount)
+    .find((count): count is number => count !== null);
   const cleaned = stripBatchControlLines(text);
 
   // Numbered list format
@@ -842,6 +852,12 @@ export function isBatchMessage(text: string): boolean {
     .filter(line => /^[^\n—–]{3,}\s*[—–]\s+.+\bDeadline:\s+.+\bLink:\s+.+/i.test(line.trim()));
   if (inlineStructuredLines.length >= 2) return true;
 
+  // A generated positive count is strong batch context even when only one
+  // opportunity survived deduplication. Route it through the same parser used
+  // for multi-entry scans so the count line cannot make Telegram fall back to
+  // single-entry intake and discard the valid payload.
+  if ((declaredResultCount ?? 0) > 0 && parseBatchEntries(cleaned).length > 0) return true;
+
   return false;
 }
 
@@ -853,7 +869,7 @@ export function isBatchMessage(text: string): boolean {
  *   Markdown:  [Name](url) — Description (newsletters/briefings)
  */
 export function isBatchControlLine(text: string): boolean {
-  return /^\s*Total:\s*\d+\s+results?\b/i.test(text);
+  return getBatchControlCount(text) !== null;
 }
 
 export function isIntakeStatusLine(text: string): boolean {
@@ -861,6 +877,7 @@ export function isIntakeStatusLine(text: string): boolean {
   return /^(?:📥\s*)?Batch received\.\s+Running intake and history checks/i.test(trimmed)
     || /^Intake settled:/i.test(trimmed)
     || /^Intake saved, checks outstanding:/i.test(trimmed)
+    || /^No qualifying results found\b/i.test(trimmed)
     || /^Duplicate:\s+(?:already seen as|exact URL)/i.test(trimmed)
     || /^(?:(?:[a-z][\w-]*\s+)?[—–-]\s+)?Captured\s+(?:existing\s+)?(?:[a-z][\w-]*\s+)?entry\s+#\d+\b/i.test(trimmed);
 }
@@ -868,7 +885,7 @@ export function isIntakeStatusLine(text: string): boolean {
 function stripBatchControlLines(text: string): string {
   return text
     .split('\n')
-    .filter(line => !isBatchControlLine(line))
+    .filter(line => !isBatchControlLine(line) && !isIntakeStatusLine(line))
     .join('\n')
     .trim();
 }
