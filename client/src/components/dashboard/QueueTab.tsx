@@ -8,6 +8,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Button } from '@/components/ui/button';
 import { ExternalLink, CheckCircle, Archive, ChevronDown, EyeOff } from 'lucide-react';
 import { updateEntryWires, fetchWires } from '@/api';
+import { effectiveOperatorRoute, isInScoreBand, visibleSelection } from '@/lib/dashboard-state';
 
 const classificationStyles: Record<string, string> = {
   GRANT: 'border-green-500/50 text-green-400 bg-green-500/10',
@@ -63,7 +64,7 @@ function RouteBadge({ route }: { route?: string }) {
   const style = routeStyles[r] || routeStyles.none;
   const label = routeLabels[r] || r.toUpperCase();
   return (
-    <span title={`operator_route: ${route || 'none'}`} className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-mono font-medium border ${style}`}>
+    <span title={`effective route: ${route || 'none'}`} className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-mono font-medium border ${style}`}>
       {label}
     </span>
   );
@@ -252,10 +253,12 @@ interface QueueTabProps {
   onSingleAction?: (id: string, status: ScanEntry['status']) => void;
   onQuietApprove: (ids: string[]) => void;
   onEntryUpdated?: (id: string, updates: Partial<ScanEntry>) => void;
-  onRefresh?: () => void;
+  total: number;
+  loadingMore: boolean;
+  onLoadMore: () => void;
 }
 
-export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, onSingleAction, onQuietApprove, onEntryUpdated, onRefresh }: QueueTabProps) {
+export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, onSingleAction, onQuietApprove, onEntryUpdated, total, loadingMore, onLoadMore }: QueueTabProps) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [wireFilter, setWireFilter] = useState<string | null>(null);
   const [classificationFilter, setClassificationFilter] = useState<string | null>(null);
@@ -294,13 +297,12 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
       }
       // Operator-route filter (wide-net queue triage)
       if (routeFilter) {
-        const entryRoute = entry.metadata?.operator_route || 'none';
+        const entryRoute = effectiveOperatorRoute(entry.metadata);
         if (entryRoute !== routeFilter) return false;
       }
       // Advanced filters
       if (filters.wire && entry.wire !== filters.wire) return false;
-      if (filters.scoreMin !== null && entry.quality_score < filters.scoreMin) return false;
-      if (filters.scoreMax !== null && entry.quality_score > filters.scoreMax) return false;
+      if (!isInScoreBand(entry.quality_score, filters.scoreMin, filters.scoreMax)) return false;
       
       if (filters.dateStatus !== 'all') {
         const hasDate = !!entry.deadline_parsed;
@@ -315,6 +317,22 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
     });
   }, [entries, filters, wireFilter, classificationFilter, routeFilter]);
 
+  const visibleIds = useMemo(
+    () => new Set(filteredEntries.map(entry => entry.id)),
+    [filteredEntries],
+  );
+  const selectedVisibleIds = useMemo(
+    () => visibleSelection(selectedIds, visibleIds),
+    [selectedIds, visibleIds],
+  );
+
+  useEffect(() => {
+    setSelectedIds(current => {
+      const next = visibleSelection(current, visibleIds);
+      return next.size === current.size ? current : next;
+    });
+  }, [visibleIds]);
+
   const toggleSelect = (id: string) => {
     const newSet = new Set(selectedIds);
     if (newSet.has(id)) {
@@ -326,7 +344,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
   };
 
   const toggleSelectAll = () => {
-    if (selectedIds.size === filteredEntries.length) {
+    if (selectedVisibleIds.size === filteredEntries.length) {
       setSelectedIds(new Set());
     } else {
       setSelectedIds(new Set(filteredEntries.map(e => e.id)));
@@ -334,12 +352,21 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
   };
 
   const handleAction = (status: ScanEntry['status']) => {
-    onUpdateStatus(Array.from(selectedIds), status);
+    const ids = Array.from(selectedVisibleIds);
+    if (ids.length === 0) return;
+    onUpdateStatus(ids, status);
     setSelectedIds(new Set());
   };
 
   return (
-    <div className="space-y-4">
+    <div className={`space-y-4 ${selectedVisibleIds.size > 0 ? 'pb-28 sm:pb-20' : ''}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] font-mono text-muted-foreground">
+        <span>LOADED {entries.length} OF {total} QUEUED</span>
+        {filteredEntries.length !== entries.length && (
+          <span>{filteredEntries.length} MATCH CURRENT FILTERS</span>
+        )}
+      </div>
+
       {/* Quick wire filter buttons + classify action */}
       <div className="flex items-center gap-2 flex-wrap">
         <button
@@ -370,7 +397,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
       </div>
 
       {/* Classification filter */}
-      <div className="flex items-center gap-1.5">
+      <div className="flex items-center gap-1.5 flex-wrap">
         <span className="text-[10px] text-muted-foreground font-mono mr-1">TYPE:</span>
         <button
           onClick={() => setClassificationFilter(null)}
@@ -471,7 +498,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                 <WireSelector wire={entry.wire} wires={entry.wires} entryId={entry.id} onWiresChange={handleWiresChange} availableWires={availableWires} />
               </div>
               <ClassificationBadge classification={entry.classification} />
-              <RouteBadge route={entry.metadata?.operator_route} />
+              <RouteBadge route={effectiveOperatorRoute(entry.metadata)} />
               <RelatedSourceBadge entry={entry} />
               <CuratorBadge curator={entry.metadata?.curator} />
               {entry.source_published_at && (
@@ -490,32 +517,32 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
             </div>
 
             {/* Row 3: Action buttons — always visible, full width */}
-            <div className="flex items-center gap-2 mt-2.5 pt-2 border-t border-border/50" onClick={(e) => e.stopPropagation()}>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-2.5 pt-2 border-t border-border/50" onClick={(e) => e.stopPropagation()}>
               <Button
                 size="sm"
                 onClick={() => (onSingleAction ?? ((id, s) => onUpdateStatus([id], s)))(entry.id, 'approved')}
-                className="flex-1 gap-1.5 bg-status-success/20 text-status-success border border-status-success/30 hover:bg-status-success/30 font-display text-[11px] tracking-wider h-9"
+                className="w-full gap-1.5 bg-status-success/20 text-status-success border border-status-success/30 hover:bg-status-success/30 font-display text-[10px] tracking-wider h-9"
               >
                 <CheckCircle className="w-4 h-4 shrink-0" />
-                OK
+                APPROVE + PUBLISH
               </Button>
               <Button
                 size="sm"
                 onClick={() => onQuietApprove([entry.id])}
                 title="Approve without distributing"
-                className="flex-1 gap-1.5 bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 font-display text-[11px] tracking-wider h-9"
+                className="w-full gap-1.5 bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 font-display text-[10px] tracking-wider h-9"
               >
                 <EyeOff className="w-4 h-4 shrink-0" />
-                Q
+                QUIET APPROVE
               </Button>
               <Button
                 size="sm"
                 variant="secondary"
                 onClick={() => (onSingleAction ?? ((id, s) => onUpdateStatus([id], s)))(entry.id, 'archived')}
-                className="flex-1 gap-1.5 font-display text-[11px] tracking-wider h-9"
+                className="w-full gap-1.5 font-display text-[10px] tracking-wider h-9"
               >
                 <Archive className="w-4 h-4 shrink-0" />
-                SKIP
+                ARCHIVE
               </Button>
             </div>
           </div>
@@ -529,7 +556,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
             <tr>
               <th className="w-[36px] px-2">
                 <Checkbox
-                  checked={selectedIds.size === filteredEntries.length && filteredEntries.length > 0}
+                  checked={selectedVisibleIds.size === filteredEntries.length && filteredEntries.length > 0}
                   onCheckedChange={toggleSelectAll}
                   className="border-primary/50 data-[state=checked]:bg-primary data-[state=checked]:border-primary"
                 />
@@ -559,7 +586,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                   <div className="font-medium text-foreground truncate">{entry.name}</div>
                   <div className="flex items-center gap-1 mt-0.5 flex-wrap">
                     <ClassificationBadge classification={entry.classification} />
-                    <RouteBadge route={entry.metadata?.operator_route} />
+                    <RouteBadge route={effectiveOperatorRoute(entry.metadata)} />
                     <RelatedSourceBadge entry={entry} />
                   </div>
                   {entry.description && (
@@ -644,11 +671,29 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
         </table>
       </div>
 
+      {entries.length < total && (
+        <div className="flex flex-col items-center gap-2 py-2">
+          <Button
+            variant="outline"
+            onClick={onLoadMore}
+            disabled={loadingMore}
+            className="min-w-40 font-display text-[10px] tracking-wider"
+          >
+            {loadingMore ? 'LOADING...' : `LOAD NEXT ${Math.min(100, total - entries.length)}`}
+          </Button>
+          <span className="text-[10px] font-mono text-muted-foreground">
+            Filters apply to the {entries.length} loaded rows.
+          </span>
+        </div>
+      )}
+
       <ActionBar
-        selectedCount={selectedIds.size}
+        selectedCount={selectedVisibleIds.size}
         onApprove={() => handleAction('approved')}
         onQuietApprove={() => {
-          onQuietApprove(Array.from(selectedIds));
+          const ids = Array.from(selectedVisibleIds);
+          if (ids.length === 0) return;
+          onQuietApprove(ids);
           setSelectedIds(new Set());
         }}
         onArchive={() => handleAction('archived')}

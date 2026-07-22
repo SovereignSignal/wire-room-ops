@@ -257,14 +257,14 @@ export function DailyDigestCard() {
         </Button>
         <Button
           onClick={handleSendDigest}
-          disabled={sendingDigest || !recipients.trim()}
+          disabled={sendingDigest || dirty}
           variant="outline"
           size="sm"
           className="gap-1.5 font-display text-[10px] tracking-wider"
-          title="Send the actual daily digest summary right now"
+          title={dirty ? 'Save recipient changes before sending' : 'Send the actual daily digest summary to the saved recipients'}
         >
           {sendingDigest ? <Loader2 className="w-3 h-3 animate-spin" /> : <Mail className="w-3 h-3" />}
-          {sendingDigest ? 'SENDING...' : 'SEND NOW'}
+          {sendingDigest ? 'SENDING...' : dirty ? 'SAVE FIRST' : 'SEND NOW'}
         </Button>
       </div>
     </div>

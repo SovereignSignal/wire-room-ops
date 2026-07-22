@@ -47,6 +47,7 @@ test('diff lane: unchanged page extracts nothing; changed page extracts once and
     getState: st.get, setState: st.set,
   };
   await runRegistryWatch({}, { dryRun: true }, deps);  // baseline hash stored
+  const baselineHash = st.map.get('ws:hash:2');
   assert.equal(extracted, 0);
   await runRegistryWatch({}, { dryRun: true }, deps);  // unchanged
   assert.equal(extracted, 0);
@@ -54,9 +55,11 @@ test('diff lane: unchanged page extracts nothing; changed page extracts once and
   const r = await runRegistryWatch({}, { dryRun: true }, deps); // changed -> extract, but dryRun blocks intake
   assert.equal(extracted, 1);
   assert.equal(r.diff.changed, 1);
+  assert.equal(st.map.get('ws:hash:2'), baselineHash, 'dry-run must leave changed content available for a live intake');
+  assert.equal(st.map.has('ws:seen:2'), false);
 });
 
-test('budget check failure fails CLOSED: change recorded, state advanced, zero extraction, no throw', async () => {
+test('budget check failure fails closed and leaves the changed hash retryable', async () => {
   const st = state();
   let page = '<p>Grants: none open</p>';
   let extracted = 0;
@@ -71,12 +74,80 @@ test('budget check failure fails CLOSED: change recorded, state advanced, zero e
     getState: st.get, setState: st.set,
   };
   await runRegistryWatch({}, { dryRun: true }, deps);  // baseline hash stored
+  const baselineHash = st.map.get('ws:hash:3');
   page = '<p>Grants: OPEN</p>';
   const r = await runRegistryWatch({}, { dryRun: true }, deps); // changed, but budget probe throws
   assert.equal(extracted, 0);                                   // fail closed: no spend
   assert.equal(r.diff.changed, 1);                              // change still counted
   assert.ok(marked.some(m => m.id === 3 && m.changed === true)); // ...and recorded via markChecked
-  assert.equal(st.map.get('ws:hash:3'), require('../src/services/registry-watchers').contentHash(page)); // hash advanced to the new page
+  assert.equal(st.map.get('ws:hash:3'), baselineHash, 'failed budget probe must not consume the page change');
+});
+
+test('rss lane checkpoints fresh URLs only after intake succeeds', async () => {
+  const st = state();
+  const oldItem = { name: 'Old call', description: 'd', url: 'https://retry.org/a', amount: null, deadline: null, publishedAt: null };
+  const newItem = { name: 'New call', description: 'd', url: 'https://retry.org/b', amount: null, deadline: null, publishedAt: null };
+  let items = [oldItem];
+  let failIntake = false;
+  let intakeCalls = 0;
+  const deps = {
+    getDue: async (_p, types) => (types.includes('rss') ? [S(4, 'rss', 'https://retry.org/feed')] : []),
+    fetchSourceImpl: async () => items,
+    intake: async () => {
+      intakeCalls++;
+      if (failIntake) throw new Error('temporary intake outage');
+      return { newUnique: 1 };
+    },
+    mark: async () => {},
+    getState: st.get, setState: st.set,
+  };
+
+  await runRegistryWatch({}, { dryRun: false }, deps); // baseline
+  items = [oldItem, newItem];
+  failIntake = true;
+  await assert.rejects(runRegistryWatch({}, { dryRun: false }, deps), /temporary intake outage/);
+  assert.deepEqual(st.map.get('ws:seen:4').urls, ['https://retry.org/a'], 'failed intake must leave the prior watermark intact');
+
+  failIntake = false;
+  const retried = await runRegistryWatch({}, { dryRun: false }, deps);
+  assert.equal(retried.rss.fresh, 1);
+  assert.equal(intakeCalls, 2, 'the same fresh URL must be retried');
+  assert.deepEqual(st.map.get('ws:seen:4').urls, ['https://retry.org/a', 'https://retry.org/b']);
+});
+
+test('first HTML change submits extracted items and checkpoints hash only after intake', async () => {
+  const st = state();
+  let page = '<p>No grants open</p>';
+  let failIntake = true;
+  const submissions = [];
+  const deps = {
+    getDue: async (_p, types) => (types.includes('grants_page') ? [S(5, 'grants_page', 'https://first-change.org/grants')] : []),
+    fetchPage: async () => page,
+    fetchSourceImpl: async () => [{ name: 'First changed grant', description: 'd', url: 'https://first-change.org/apply', amount: null, deadline: null, publishedAt: null }],
+    intake: async (_pool, subs) => {
+      submissions.push(subs);
+      if (failIntake) throw new Error('intake unavailable');
+      return { newUnique: 1 };
+    },
+    mark: async () => {},
+    budget: async () => ({ allowed: true, spentUsd: 0, capUsd: 20 }),
+    getState: st.get, setState: st.set,
+  };
+
+  await runRegistryWatch({}, { dryRun: false }, deps); // free hash baseline, no extraction
+  const baselineHash = st.map.get('ws:hash:5');
+  page = '<p>Applications now open</p>';
+
+  await assert.rejects(runRegistryWatch({}, { dryRun: false }, deps), /intake unavailable/);
+  assert.equal(submissions[0][0].results[0].sourceUrl, 'https://first-change.org/apply', 'first change must not become a second baseline');
+  assert.equal(st.map.get('ws:hash:5'), baselineHash, 'failed intake must leave the changed hash retryable');
+  assert.equal(st.map.has('ws:seen:5'), false);
+
+  failIntake = false;
+  await runRegistryWatch({}, { dryRun: false }, deps);
+  assert.equal(submissions.length, 2, 'changed page must be retried after intake recovery');
+  assert.equal(st.map.get('ws:hash:5'), require('../src/services/registry-watchers').contentHash(page));
+  assert.deepEqual(st.map.get('ws:seen:5').urls, ['https://first-change.org/apply']);
 });
 
 test('disabled gate returns ran:false without touching deps', async () => {

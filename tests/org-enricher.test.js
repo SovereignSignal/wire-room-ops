@@ -21,8 +21,9 @@ test('parses full enrichment fields and clamps invalids', () => {
   assert.deepEqual(out[1].tags, []);        // non-array -> []
 });
 
-test('parseEnrichmentResponse returns [] on non-JSON / junk', () => {
-  assert.deepEqual(parseEnrichmentResponse('not json'), []);
+test('parseEnrichmentResponse rejects non-JSON, junk, and empty arrays', () => {
+  assert.throws(() => parseEnrichmentResponse('not json'), /JSON array/);
+  assert.throws(() => parseEnrichmentResponse('[]'), /empty/);
 });
 
 test('tags are capped at 5', () => {
@@ -30,10 +31,22 @@ test('tags are capped at 5', () => {
   assert.equal(parseEnrichmentResponse(raw)[0].tags.length, 5);
 });
 
-test('drops items with missing/NaN id', () => {
-  const out = parseEnrichmentResponse(JSON.stringify([{ org_type:'Web2' }, { id: 9, website:'https://x.io' }]));
-  assert.equal(out.length, 1);
+test('accepts numeric-string IDs and rejects unsafe, duplicate, or out-of-batch IDs', () => {
+  const out = parseEnrichmentResponse(JSON.stringify([{ id: '9', website:'https://x.io' }]), new Set([9]));
   assert.equal(out[0].id, 9);
+
+  assert.throws(
+    () => parseEnrichmentResponse(JSON.stringify([{ org_type:'Web2' }, { id: 9 }])),
+    /invalid org id/,
+  );
+  assert.throws(
+    () => parseEnrichmentResponse(JSON.stringify([{ id: 9 }, { id: '9' }])),
+    /duplicate org id 9/,
+  );
+  assert.throws(
+    () => parseEnrichmentResponse(JSON.stringify([{ id: 10 }]), new Set([9])),
+    /outside the submitted batch/,
+  );
 });
 
 test('parseEnrichmentResponse carries operator_read and tolerates its absence', () => {
@@ -43,4 +56,3 @@ test('parseEnrichmentResponse carries operator_read and tolerates its absence', 
   const without = parseEnrichmentResponse(JSON.stringify([{ id: 2, description: 'y', tags: [] }]));
   assert.equal(without[0].operator_read, null);
 });
-

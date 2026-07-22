@@ -92,7 +92,7 @@ export async function getPromptEffectivenessStats(
     FROM prompt_entries
     GROUP BY prompt_id, wire, label, variant
     ORDER BY wire, variant
-  `, [days]);
+  `, params);
 
   const prompts: PromptStats[] = perPromptResult.rows.map(row => {
     const approved = parseInt(row.approved_count, 10);
@@ -125,20 +125,22 @@ export async function getPromptEffectivenessStats(
     };
   });
 
-  // Cross-prompt overlap: count source_urls found by 2+ different prompts
+  // Cross-prompt overlap must include duplicate observations: those rows are
+  // the evidence that two prompts found the same source.
   const overlapParams: (number | string)[] = [days];
   const overlapWireFilter = wire ? `AND wire = $${overlapParams.push(wire)}` : '';
 
   const overlapResult = await pool.query(`
     WITH url_prompts AS (
       SELECT
-        source_url,
+        lower(regexp_replace(regexp_replace(source_url, '^https?://(www\.)?', '', 'i'), '/$', '')) AS normalized_source_url,
         COUNT(DISTINCT COALESCE(prompt_id::TEXT, wire || '_' || prompt_variant)) AS prompt_count
       FROM scan_entries
       WHERE created_at >= NOW() - INTERVAL '1 day' * $1
-        AND status != 'duplicate'
+        AND source_url IS NOT NULL
+        AND btrim(source_url) != ''
         ${overlapWireFilter}
-      GROUP BY source_url
+      GROUP BY normalized_source_url
     )
     SELECT
       COUNT(*) AS total_unique,

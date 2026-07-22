@@ -260,6 +260,7 @@ Optional:
 
 - `APP_URL`
 - `PORT`
+- `STARTUP_LLM_RESCORE_ENABLED` -- opt in to queue-only LLM score repair at startup (default false; may spend API credits)
 - `FROM_EMAIL`
 - `ALLOWED_EMAILS`
 - `TELEGRAM_BOT_TOKEN` -- bot token for channel distribution posting

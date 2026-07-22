@@ -9,7 +9,7 @@
  */
 import type { Pool } from 'pg';
 import { qualifyOpportunities, BdCandidate, QualifiedOpportunity } from '../services/bd-qualifier';
-import { verifyBdOpportunities, bdVerifyAvailable, BdVerifyInput, BdVerifyResult } from '../services/bd-verify';
+import { verifyBdOpportunities, bdVerifyAvailable, isUsableBdVerification, BdVerifyInput, BdVerifyResult } from '../services/bd-verify';
 import { writeLeadsToNotion, LeadRecord } from '../services/bd-leads-notion';
 import { enabledRoleSources, fetchRoleSource, roleMatchesLane, pickFreshRoles, RolePosting } from '../services/bd-roles';
 import { getAppState, setAppState } from '../db';
@@ -118,7 +118,8 @@ export async function runBdLeads(pool: Pool, opts: { days?: number } = {}): Prom
   const { rows } = await pool.query(
     `SELECT id, name, description, wire, source_url, classification
      FROM scan_entries
-     WHERE metadata->>'operator_route' = 'relationship_signal'
+     WHERE COALESCE(metadata->'curator'->>'route', metadata->>'operator_route') = 'relationship_signal'
+       AND status IN ('queued', 'approved')
        AND created_at >= NOW() - ($1::int * INTERVAL '1 day')
      ORDER BY created_at DESC`,
     [days],
@@ -143,7 +144,7 @@ export async function runBdLeads(pool: Pool, opts: { days?: number } = {}): Prom
       const vres = await verifyBdOpportunities(vinputs);
       const vById = new Map<number, BdVerifyResult>();
       for (const v of vres) if (v) vById.set(v.id, v);
-      const verified = pass.filter(c => { const v = vById.get(c.id); return v && v.is_real && v.currently_active; });
+      const verified = pass.filter(c => isUsableBdVerification(vById.get(c.id) || null));
       out.verified = verified.length;
 
       // Dedup by org, keep highest verification confidence

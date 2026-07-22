@@ -8,7 +8,7 @@ export interface ScanEntry {
   description: string;
   wire: string; // primary vertical/beat
   wires?: string[]; // all applicable wires (multi-pick)
-  quality_score: number;
+  quality_score: number | null;
   amount: string;
   deadline: string;
   deadline_parsed: string | null;
@@ -83,6 +83,22 @@ export interface WireCounts {
   approved: number;
   archived: number;
   raw: number;
+}
+
+export interface DashboardDataAvailability {
+  queuedEntries: boolean;
+  approvedEntries: boolean;
+  stats: boolean;
+  feeds: boolean;
+  wireCounts: boolean;
+}
+
+export interface EntryDistributionLog {
+  id: number;
+  entryId: number;
+  channel: string;
+  status: 'pending' | 'success' | 'failed' | 'skipped';
+  createdAt: string;
 }
 
 export interface FilterState {
@@ -209,7 +225,7 @@ export interface ScanPrompt {
   promptText: string;
   responseFormat: string | null;
   variant: string | null;
-  toolType: 'x_search' | 'web_search' | 'perplexity';
+  toolType: 'x_search' | 'web_search' | 'perplexity' | 'parallel';
   model: string | null;
   outputFormat: 'text' | 'json';
   intent: 'discovery' | 'canonical' | 'signal';

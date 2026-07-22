@@ -38,6 +38,7 @@ import { findRelatedOpportunity, finalizeExistingEntryDedup, annotateAlternateSo
 // quality-scorer.ts replaced by LLM scoring in classifier.ts
 import { seedSeenUrlsFromMessages } from '../db';
 import { finalizeProgramForEntry } from '../services/program-identity';
+import type { ProgramResolutionStamp } from '../services/program-identity';
 import type { Classification } from '../services/classifier';
 
 // ============================================================
@@ -337,6 +338,7 @@ export async function runDailyIntake(
   progress('Running deduplication...', 30);
   let duplicatesFound = 0;
   const uniqueEntryIds: number[] = [];
+  const programResolutions = new Map<number, ProgramResolutionStamp | null>();
 
   for (const idx of validIndices) {
     const item = allResults[idx];
@@ -376,12 +378,9 @@ export async function runDailyIntake(
       await annotateAlternateSource(pool, entryId, item.result.sourceUrl, relatedResult);
     }
     uniqueEntryIds.push(entryId);
-    // Program identity: record the sighting / create the program (fail-open).
-    await finalizeProgramForEntry(pool, {
-      id: entryId, name: item.result.name, sourceUrl: item.result.sourceUrl,
-      wire: item.wire, deadline: item.result.deadline ?? null,
-      description: item.result.description ?? null,
-    }, dedupOutcome.programResolution ?? null);
+    // Finalize program identity only after classification establishes domain,
+    // scope, and a validated deadline.
+    programResolutions.set(entryId, dedupOutcome.programResolution ?? null);
 
     // Progress update every 10 entries
     if (duplicatesFound % 10 === 0 && duplicatesFound > 0) {
@@ -399,6 +398,7 @@ export async function runDailyIntake(
   progress('Scoring entries...', 65);
   let totalScore = 0;
   let highQualityCount = 0;
+  let scoredCount = 0;
 
   const { classifyEntry } = await import('../services/classifier');
   const classificationFailures: number[] = [];
@@ -418,7 +418,6 @@ export async function runDailyIntake(
     if (!entry) continue;
 
     // Gate 2: LLM classification + quality scoring (single call)
-    let qualityScore = 0;
     try {
       const classResult = await classifyEntry({
         name: entry.name,
@@ -426,8 +425,10 @@ export async function runDailyIntake(
         source_url: entry.source_url || '',
         wire: entry.wire,
         intent: entry.prompt_intent || undefined,
+        amount: entry.amount,
+        deadlineParsed: entry.deadline_parsed,
+        sourcePublishedAt: entry.source_published_at,
       });
-      qualityScore = classResult.qualityScore;
       const freshnessDecision = applySourceFreshnessGate({
         sourceUrl: entry.source_url,
         sourcePublishedAt: entry.source_published_at,
@@ -461,7 +462,7 @@ export async function runDailyIntake(
            AND source_published_at IS NOT DISTINCT FROM $15
          RETURNING id`,
         [
-          qualityScore,
+          classResult.qualityScore,
           JSON.stringify({ scoreReason: classResult.scoreReason, in_scope: classResult.inScope, detected_wire: classResult.detectedWire }),
           classResult.classification,
           classResult.reason,
@@ -479,11 +480,27 @@ export async function runDailyIntake(
         ]
       );
       if (classified.rowCount !== 1) continue;
+
+      totalScore += classResult.qualityScore;
+      scoredCount++;
+      if (classResult.qualityScore >= 60) highQualityCount++;
+
+      if (classResult.inScope && (classResult.classification === 'GRANT' || classResult.classification === 'EXPIRED')) {
+        await finalizeProgramForEntry(pool, {
+          id: entryId,
+          name: entry.name,
+          sourceUrl: entry.source_url,
+          wire: correctedWire || entry.wire,
+          deadline: entry.deadline_parsed ?? null,
+          description: entry.description ?? null,
+        }, correctedWire ? null : (programResolutions.get(entryId) ?? null));
+      }
     } catch (classError) {
       console.error(`[DailyIntake] Classification failed for entry ${entryId}:`, classError);
-      // Fallback: queue with score 0 only if the semantic snapshot is current.
+      // Preserve the row for retry without turning an unavailable score into a
+      // real zero. The UI and analytics treat NULL as unscored.
       const fallback = await pool.query(
-        `UPDATE scan_entries SET quality_score = 0, status = 'queued'
+        `UPDATE scan_entries SET quality_score = NULL, status = 'queued'
          WHERE id = $1
            AND status = 'deduped'
            AND name IS NOT DISTINCT FROM $2
@@ -496,8 +513,6 @@ export async function runDailyIntake(
       if (fallback.rowCount === 1) classificationFailures.push(entryId);
     }
 
-    totalScore += qualityScore;
-    if (qualityScore >= 60) highQualityCount++;
   }
 
   // Retry failed classifications once
@@ -510,7 +525,7 @@ export async function runDailyIntake(
         await new Promise(resolve => setTimeout(resolve, 2000));
 
         const entryRes = await pool.query(
-          `SELECT se.name, se.description, se.source_url, se.source_published_at,
+          `SELECT se.name, se.description, se.amount, se.source_url, se.source_published_at,
                   se.deadline_parsed, se.wire, sp.intent AS prompt_intent
            FROM scan_entries se
            LEFT JOIN scan_prompts sp ON se.prompt_id = sp.id
@@ -526,6 +541,9 @@ export async function runDailyIntake(
           source_url: entry.source_url || '',
           wire: entry.wire,
           intent: entry.prompt_intent || undefined,
+          amount: entry.amount,
+          deadlineParsed: entry.deadline_parsed,
+          sourcePublishedAt: entry.source_published_at,
         });
         const freshnessDecision = applySourceFreshnessGate({
           sourceUrl: entry.source_url,
@@ -534,6 +552,9 @@ export async function runDailyIntake(
           classification: classResult.classification,
         });
         const retryStatus = freshnessDecision.status;
+        const correctedWire = (classResult.inScope && classResult.detectedWire
+          && ['crypto', 'ai', 'oss'].includes(classResult.detectedWire) && classResult.detectedWire !== entry.wire)
+          ? classResult.detectedWire : null;
         const mergedMetadata = {
           ...classResult.extracted,
           operator_route: classResult.operatorRoute,
@@ -545,7 +566,8 @@ export async function runDailyIntake(
            SET quality_score = $1, quality_breakdown = $2, status = $8,
                classification = $3, classification_reason = $4,
                metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
-               tags = $6
+               tags = $6,
+               wire = COALESCE($15, wire)
            WHERE id = $7
              AND status = 'queued'
              AND name IS NOT DISTINCT FROM $9
@@ -557,7 +579,7 @@ export async function runDailyIntake(
            RETURNING id`,
           [
             classResult.qualityScore,
-            JSON.stringify({ scoreReason: classResult.scoreReason }),
+            JSON.stringify({ scoreReason: classResult.scoreReason, in_scope: classResult.inScope, detected_wire: classResult.detectedWire }),
             classResult.classification,
             classResult.reason,
             JSON.stringify(mergedMetadata),
@@ -570,12 +592,25 @@ export async function runDailyIntake(
             entry.wire,
             entry.deadline_parsed,
             entry.source_published_at,
+            correctedWire,
           ]
         );
         if (retried.rowCount !== 1) continue;
 
+        if (classResult.inScope && (classResult.classification === 'GRANT' || classResult.classification === 'EXPIRED')) {
+          await finalizeProgramForEntry(pool, {
+            id: entryId,
+            name: entry.name,
+            sourceUrl: entry.source_url,
+            wire: correctedWire || entry.wire,
+            deadline: entry.deadline_parsed ?? null,
+            description: entry.description ?? null,
+          }, correctedWire ? null : (programResolutions.get(entryId) ?? null));
+        }
+
         // Update running totals
         totalScore += classResult.qualityScore;
+        scoredCount++;
         if (classResult.qualityScore >= 60) highQualityCount++;
 
         console.log(`[DailyIntake] Retry succeeded for entry ${entryId}: ${classResult.classification} → ${retryStatus} (${classResult.qualityScore})`);
@@ -586,7 +621,7 @@ export async function runDailyIntake(
   }
 
   const avgScore =
-    uniqueEntryIds.length > 0 ? totalScore / uniqueEntryIds.length : 0;
+    scoredCount > 0 ? totalScore / scoredCount : 0;
 
   progress(`Scoring complete: ${highQualityCount} high quality entries`, 85);
 

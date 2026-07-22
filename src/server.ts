@@ -264,36 +264,42 @@ export async function startServer(): Promise<void> {
     console.error('Scheduler initialization failed (non-fatal):', error);
   }
 
-  // Backfill: re-classify + re-score entries using LLM scorer
-  // Runs once on startup, non-blocking. Covers: unclassified entries AND entries
-  // with old keyword-based scores (quality_breakdown not containing scoreReason).
-  setTimeout(async () => {
-    try {
-      const pool = getPool();
-      const toRescore = await pool.query(
-        `SELECT id, name, description, source_url, wire FROM scan_entries
-         WHERE status IN ('queued', 'approved')
-           AND (
-             classification IS NULL
-             OR classification = 'UNCHECKED'
-             OR quality_breakdown IS NULL
-             OR quality_breakdown::text NOT LIKE '%scoreReason%'
-           )
-         ORDER BY created_at DESC
-         LIMIT 500`
-      );
-      if (toRescore.rows.length > 0) {
-        console.log(`[Startup] Re-scoring ${toRescore.rows.length} entries with LLM scorer...`);
-        const { classifyBatch } = await import('./services/classifier');
-        const stats = await classifyBatch(toRescore.rows, pool);
-        console.log(`[Startup] LLM re-score complete: ${stats.classified} scored, ${stats.errors} errors`);
-      } else {
-        console.log('[Startup] All entries already scored with LLM scorer');
+  // Optional queue-only repair. This is off by default because deploys must not
+  // silently spend on LLM calls or mutate approved history.
+  if (config.startup.llmRescoreEnabled) {
+    setTimeout(async () => {
+      try {
+        const pool = getPool();
+        const toRescore = await pool.query(
+          `SELECT id, name, description, source_url, wire, amount,
+                  deadline_parsed AS "deadlineParsed",
+                  source_published_at AS "sourcePublishedAt"
+           FROM scan_entries
+           WHERE status = 'queued'
+             AND (
+               classification IS NULL
+               OR classification = 'UNCHECKED'
+               OR quality_breakdown IS NULL
+               OR quality_breakdown::text NOT LIKE '%scoreReason%'
+             )
+           ORDER BY created_at DESC
+           LIMIT 500`
+        );
+        if (toRescore.rows.length > 0) {
+          console.log(`[Startup] Re-scoring ${toRescore.rows.length} queued entries with LLM scorer...`);
+          const { classifyBatch } = await import('./services/classifier');
+          const stats = await classifyBatch(toRescore.rows, pool);
+          console.log(`[Startup] LLM re-score complete: ${stats.classified} scored, ${stats.errors} errors`);
+        } else {
+          console.log('[Startup] No queued entries require LLM re-score');
+        }
+      } catch (err) {
+        console.error('[Startup] LLM re-score backfill failed (non-fatal):', err);
       }
-    } catch (err) {
-      console.error('[Startup] LLM re-score backfill failed (non-fatal):', err);
-    }
-  }, 10000); // 10s delay — let the server fully start first
+    }, 10000); // 10s delay: let the server fully start first
+  } else {
+    console.log('[Startup] Automatic LLM re-score disabled');
+  }
 
   // Start the summary sync bridge (tele-sum summaries → approved scan_entries)
   try {
@@ -303,7 +309,7 @@ export async function startServer(): Promise<void> {
   }
 
   // Register Telegram intake webhook if configured
-  const intakeToken = getCachedProvider('telegram-intake')?.api_key || config.telegramIntake.botToken;
+  const intakeToken = getCachedProvider('telegram-intake')?.api_key;
   if (intakeToken) {
     try {
       await registerIntakeWebhook();

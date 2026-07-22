@@ -1,4 +1,5 @@
-import { ScanEntry, WireCounts, DbStats, DbTableResponse, ScanPrompt, GrantsIntelSummary, GrantsIntelObservation } from '@/types';
+import { ScanEntry, WireCounts, DbStats, DbTableResponse, ScanPrompt, GrantsIntelSummary, GrantsIntelObservation, EntryDistributionLog } from '@/types';
+import { normalizeQualityScore } from '@/lib/dashboard-state';
 
 const BASE = "/api";
 
@@ -22,14 +23,14 @@ export async function fetchPromptResults(promptId: string, limit = 20): Promise<
       ...e,
       id: String(e.id),
       wire: e.wire || '',
-      quality_score: Number(e.quality_score) || 0,
+      quality_score: normalizeQualityScore(e.quality_score),
     })),
     total: data.total || 0,
   };
 }
 
-export async function fetchEntries(params: { status?: string; wire?: string; limit?: number; minScore?: number; excludeSources?: string } = {}): Promise<ScanEntry[]> {
-  const effectiveParams = { limit: 500, ...params };
+export async function fetchEntries(params: { status?: string; wire?: string; limit?: number; offset?: number; minScore?: number; excludeSources?: string } = {}): Promise<{ entries: ScanEntry[]; total: number }> {
+  const effectiveParams = { limit: 100, offset: 0, ...params };
   const q = new URLSearchParams(
     Object.fromEntries(Object.entries(effectiveParams).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)]))
   ).toString();
@@ -37,12 +38,15 @@ export async function fetchEntries(params: { status?: string; wire?: string; lim
   if (!res.ok) throw new Error(`Failed to fetch entries: ${res.status}`);
   const data = await res.json();
   // Existing API returns { entries, total, count }
-  return (data.entries || []).map((e: any) => ({
-    ...e,
-    id: String(e.id),
-    wire: e.wire || '',
-    quality_score: Number(e.quality_score) || 0,
-  }));
+  return {
+    entries: (data.entries || []).map((e: any) => ({
+      ...e,
+      id: String(e.id),
+      wire: e.wire || '',
+      quality_score: normalizeQualityScore(e.quality_score),
+    })),
+    total: Number(data.total) || 0,
+  };
 }
 
 export async function fetchEntry(id: string): Promise<ScanEntry | null> {
@@ -51,7 +55,13 @@ export async function fetchEntry(id: string): Promise<ScanEntry | null> {
   if (!res.ok) throw new Error(`Failed to fetch entry: ${res.status}`);
   const data = await res.json();
   const e = data.entry;
-  return { ...e, id: String(e.id), wire: e.wire || '', quality_score: Number(e.quality_score) || 0 };
+  return { ...e, id: String(e.id), wire: e.wire || '', quality_score: normalizeQualityScore(e.quality_score) };
+}
+
+export async function fetchEntryDistribution(id: number | string): Promise<EntryDistributionLog[]> {
+  const res = await authFetch(`${BASE}/scan/entries/${encodeURIComponent(id)}/distribution`);
+  if (!res.ok) throw new Error(`Failed to fetch entry distribution: ${res.status}`);
+  return res.json();
 }
 
 // Map our status names to the existing action endpoint verbs
@@ -168,28 +178,21 @@ export async function fetchWires(): Promise<{ key: string; displayName: string; 
 export async function fetchWireCounts(): Promise<WireCounts[]> {
   // Fetch queue depth per wire using /api/scan/status-counts endpoint
   // Called once per wire — aggregate across known wires
-  try {
-    const feeds = await fetchFeeds();
-    const results = await Promise.allSettled(
-      feeds.map(async (f) => {
-        const res = await authFetch(`${BASE}/scan/status-counts?wire=${encodeURIComponent(f.key)}`);
-        if (!res.ok) return null;
-        const data = await res.json();
-        return {
-          wire: f.key,
-          queued: Number(data.counts?.queued) || 0,
-          approved: Number(data.counts?.approved) || 0,
-          archived: Number(data.counts?.archived) || 0,
-          raw: Number(data.counts?.raw) || 0,
-        } as WireCounts;
-      })
-    );
-    return results
-      .filter((r): r is PromiseFulfilledResult<WireCounts | null> => r.status === 'fulfilled' && r.value !== null)
-      .map(r => r.value as WireCounts);
-  } catch {
-    return [];
-  }
+  const feeds = await fetchFeeds();
+  return Promise.all(
+    feeds.map(async (f) => {
+      const res = await authFetch(`${BASE}/scan/status-counts?wire=${encodeURIComponent(f.key)}`);
+      if (!res.ok) throw new Error(`Failed to fetch ${f.key} status counts: ${res.status}`);
+      const data = await res.json();
+      return {
+        wire: f.key,
+        queued: Number(data.counts?.queued) || 0,
+        approved: Number(data.counts?.approved) || 0,
+        archived: Number(data.counts?.archived) || 0,
+        raw: Number(data.counts?.raw) || 0,
+      } as WireCounts;
+    })
+  );
 }
 
 // --- Database introspection API ---
@@ -248,7 +251,7 @@ export async function fetchGrantsIntelSummary(): Promise<GrantsIntelSummary> {
   return res.json();
 }
 
-export async function fetchGrantsIntelObservations(params: { wire?: string; routing?: string; track?: string; limit?: number } = {}): Promise<{ observations: GrantsIntelObservation[]; count: number }> {
+export async function fetchGrantsIntelObservations(params: { wire?: string; routing?: string; track?: string; limit?: number; offset?: number } = {}): Promise<{ observations: GrantsIntelObservation[]; count: number; total: number; limit: number; offset: number }> {
   const q = new URLSearchParams(
     Object.fromEntries(Object.entries(params).filter(([, v]) => v != null && v !== '').map(([k, v]) => [k, String(v)]))
   ).toString();
@@ -269,7 +272,7 @@ export interface ScheduleResponse {
   lookbackDays: number;
   timezone: string;
   wire?: string;
-  scheduleType?: 'scan-execution' | 'forum-scan' | 'daily-digest';
+  scheduleType?: 'scan-execution' | 'forum-scan' | 'daily-digest' | 'account-monitor' | 'source-feeds';
   frequencyHours?: number;
   notifyEmails?: string;
   description?: string;

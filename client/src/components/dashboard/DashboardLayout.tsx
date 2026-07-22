@@ -3,6 +3,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ThemeToggle } from './ThemeToggle';
 import { LogOut, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import type { DashboardHealth } from '@/lib/dashboard-state';
 
 function formatTimeAgo(date: Date): string {
   const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
@@ -22,6 +23,7 @@ interface DashboardLayoutProps {
   lastUpdated: Date | null;
   refreshing: boolean;
   onRefresh: () => void;
+  health: DashboardHealth;
 }
 
 async function handleLogout() {
@@ -37,6 +39,7 @@ export function DashboardLayout({
   lastUpdated,
   refreshing,
   onRefresh,
+  health,
 }: DashboardLayoutProps) {
   // Re-render the "ago" label every 15s so it stays current
   const [, setTick] = useState(0);
@@ -44,6 +47,24 @@ export function DashboardLayout({
     const t = setInterval(() => setTick(n => n + 1), 15_000);
     return () => clearInterval(t);
   }, []);
+
+  const healthConfig = {
+    online: {
+      label: 'ARRAY ONLINE',
+      dot: 'bg-status-success',
+      text: 'text-status-success',
+    },
+    degraded: {
+      label: 'ARRAY DEGRADED',
+      dot: 'bg-status-warning',
+      text: 'text-status-warning',
+    },
+    offline: {
+      label: 'ARRAY OFFLINE',
+      dot: 'bg-status-danger',
+      text: 'text-status-danger',
+    },
+  }[health];
 
   return (
     <div className="min-h-screen">
@@ -64,10 +85,10 @@ export function DashboardLayout({
                 <p className="text-[9px] sm:text-[10px] text-muted-foreground tracking-widest uppercase hidden sm:block">Array Control Station</p>
               </div>
             </div>
-            <div className="flex items-center gap-3 sm:gap-6">
-              <div className="hidden sm:flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-status-success signal-pulse" />
-                <span className="text-xs text-muted-foreground font-mono">ARRAY ONLINE</span>
+            <div className="flex items-center gap-1 sm:gap-6">
+              <div className="flex items-center gap-2" role="status" aria-label={healthConfig.label}>
+                <span className={`w-2 h-2 rounded-full ${healthConfig.dot} ${health === 'online' ? 'signal-pulse' : ''}`} />
+                <span className={`hidden sm:inline text-xs font-mono ${healthConfig.text}`}>{healthConfig.label}</span>
               </div>
               <button
                 onClick={onRefresh}
@@ -102,53 +123,59 @@ export function DashboardLayout({
       <div className="border-b border-border bg-card/50 backdrop-blur-sm">
         <div className="container overflow-x-auto scrollbar-hide">
           <Tabs value={activeTab} onValueChange={onTabChange}>
-            <TabsList className="h-12 bg-transparent border-none gap-1 sm:gap-2 flex-nowrap w-max sm:w-auto">
+            <TabsList className="h-12 bg-transparent border-none gap-0 sm:gap-2 flex-nowrap w-max sm:w-auto">
               <TabsTrigger
                 value="overview"
-                className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-1.5 px-2.5 sm:px-4 font-display text-[10px] sm:text-xs tracking-wider whitespace-nowrap"
+                aria-label="Overview"
+                className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-1.5 px-1.5 sm:px-4 font-display text-[10px] sm:text-xs tracking-wider whitespace-nowrap"
               >
                 <span className="text-sm">👁️</span>
-                OVERVIEW
+                <span className="hidden sm:inline">OVERVIEW</span>
               </TabsTrigger>
               <TabsTrigger
                 value="scans"
-                className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-1.5 px-2.5 sm:px-4 font-display text-[10px] sm:text-xs tracking-wider whitespace-nowrap"
+                aria-label="Scans"
+                className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-1.5 px-1.5 sm:px-4 font-display text-[10px] sm:text-xs tracking-wider whitespace-nowrap"
               >
                 <span className="text-sm">🔍</span>
-                SCANS
+                <span className="hidden sm:inline">SCANS</span>
               </TabsTrigger>
               <TabsTrigger
                 value="queue"
-                className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-1.5 px-2.5 sm:px-4 font-display text-[10px] sm:text-xs tracking-wider whitespace-nowrap"
+                aria-label={`Queue, ${queueCount} items`}
+                className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-1.5 px-1.5 sm:px-4 font-display text-[10px] sm:text-xs tracking-wider whitespace-nowrap"
               >
                 <span className="text-sm">📡</span>
-                QUEUE
+                <span className="hidden sm:inline">QUEUE</span>
                 {queueCount > 0 && (
-                  <span className="ml-1 px-2 py-0.5 text-[10px] rounded bg-primary/20 text-primary font-mono border border-primary/30">
+                  <span className="ml-0.5 px-1 sm:ml-1 sm:px-2 py-0.5 text-[10px] rounded bg-primary/20 text-primary font-mono border border-primary/30">
                     {queueCount}
                   </span>
                 )}
               </TabsTrigger>
               <TabsTrigger
                 value="grants-intel"
-                className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-1.5 px-2.5 sm:px-4 font-display text-[10px] sm:text-xs tracking-wider whitespace-nowrap"
+                aria-label="Grants intelligence"
+                className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-1.5 px-1.5 sm:px-4 font-display text-[10px] sm:text-xs tracking-wider whitespace-nowrap"
               >
                 <span className="text-sm">🧭</span>
-                GRANTS INTEL
+                <span className="hidden sm:inline">GRANTS INTEL</span>
               </TabsTrigger>
               <TabsTrigger
                 value="database"
-                className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-1.5 px-2.5 sm:px-4 font-display text-[10px] sm:text-xs tracking-wider whitespace-nowrap"
+                aria-label="Database"
+                className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-1.5 px-1.5 sm:px-4 font-display text-[10px] sm:text-xs tracking-wider whitespace-nowrap"
               >
                 <span className="text-sm">🗄️</span>
-                DATABASE
+                <span className="hidden sm:inline">DATABASE</span>
               </TabsTrigger>
               <TabsTrigger
                 value="settings"
-                className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-1.5 px-2.5 sm:px-4 font-display text-[10px] sm:text-xs tracking-wider whitespace-nowrap"
+                aria-label="Settings"
+                className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:border-primary/30 border border-transparent gap-1.5 px-1.5 sm:px-4 font-display text-[10px] sm:text-xs tracking-wider whitespace-nowrap"
               >
                 <span className="text-sm">⚙️</span>
-                SETTINGS
+                <span className="hidden sm:inline">SETTINGS</span>
               </TabsTrigger>
             </TabsList>
           </Tabs>

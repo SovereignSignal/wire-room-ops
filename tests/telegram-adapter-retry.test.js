@@ -376,14 +376,17 @@ test('history settlement returns pending when the webhook budget expires', async
   });
 
   db.getPool = () => ({});
+  // Timings are deliberately far apart: the assertion is "returned well before
+  // the recheck completes", and tight margins (50ms task / <40ms bound) flaked
+  // on slow CI runners where event-loop jitter alone exceeds tens of ms.
   decidedRecheck.runDecidedRecheckForIds = async () => {
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await new Promise(resolve => setTimeout(resolve, 300));
     return { checked: 0, duplicates: 0, updates: 0, distinct: 0, errors: 0 };
   };
 
   const startedAt = Date.now();
   const outcome = await settleHistoryWithinBudget([42], 5);
   assert.equal(outcome, 'pending');
-  assert.ok(Date.now() - startedAt < 40);
-  await new Promise(resolve => setTimeout(resolve, 55));
+  assert.ok(Date.now() - startedAt < 250);
+  await new Promise(resolve => setTimeout(resolve, 310));
 });

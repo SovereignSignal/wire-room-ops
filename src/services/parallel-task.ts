@@ -36,12 +36,12 @@ export interface VerifyResult {
 
 function creds(): { apiKey?: string; baseUrl: string } {
   const p = getCachedProvider('parallel');
-  return { apiKey: p?.api_key || process.env.PARALLEL_API_KEY, baseUrl: p?.base_url || PARALLEL_BASE };
+  return { apiKey: p?.api_key || undefined, baseUrl: p?.base_url || PARALLEL_BASE };
 }
 
 export function parallelAvailable(): boolean {
   const p = getCachedProvider('parallel');
-  return Boolean(p?.api_key || process.env.PARALLEL_API_KEY);
+  return Boolean(p?.api_key);
 }
 
 const VERIFY_SCHEMA = {
@@ -106,7 +106,9 @@ async function verifyOne(item: VerifyInput, wire?: string): Promise<VerifyResult
         return s && s.toLowerCase() !== 'n/a' && s.toLowerCase() !== 'null' ? s : null;
       };
       return {
-        is_open: (content as { is_open?: boolean }).is_open !== false,
+        // Verification is a publication gate. Missing or malformed evidence is
+        // unverified, never implicitly open.
+        is_open: (content as { is_open?: boolean }).is_open === true,
         amount: clean((content as { amount?: unknown }).amount),
         deadline: clean((content as { deadline?: unknown }).deadline),
         apply_url: clean((content as { apply_url?: unknown }).apply_url) || item.url,

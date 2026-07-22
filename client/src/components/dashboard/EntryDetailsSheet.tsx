@@ -1,4 +1,6 @@
-import { ScanEntry } from '@/types';
+import { useEffect, useMemo, useState } from 'react';
+import { EntryDistributionLog, ScanEntry } from '@/types';
+import { fetchEntryDistribution } from '@/api';
 
 function isXUrl(url: string): boolean {
   try { const h = new URL(url).hostname.replace(/^www\./, ''); return h === 'x.com' || h === 'twitter.com'; }
@@ -33,6 +35,26 @@ interface EntryDetailsSheetProps {
 }
 
 export function EntryDetailsSheet({ entry, onClose }: EntryDetailsSheetProps) {
+  const [distributionLogs, setDistributionLogs] = useState<EntryDistributionLog[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    setDistributionLogs([]);
+    if (!entry || entry.status !== 'approved') return () => { active = false; };
+
+    fetchEntryDistribution(entry.id)
+      .then(logs => { if (active) setDistributionLogs(logs); })
+      .catch(() => { /* Without a successful log, the truthful label is Approved. */ });
+
+    return () => { active = false; };
+  }, [entry]);
+
+  const successfulChannels = useMemo(
+    () => [...new Set(distributionLogs.filter(log => log.status === 'success').map(log => log.channel))],
+    [distributionLogs],
+  );
+  const hasPublicationProof = successfulChannels.length > 0;
+
   return (
     <Sheet open={!!entry} onOpenChange={(open) => !open && onClose()}>
       <SheetContent className="w-full sm:max-w-md md:max-w-lg border-l border-border bg-card overflow-y-auto">
@@ -44,7 +66,11 @@ export function EntryDetailsSheet({ entry, onClose }: EntryDetailsSheetProps) {
                 <ScoreBadge score={entry.quality_score} />
                 <div className="ml-auto flex items-center gap-2">
                   {entry.status === 'queued' && <span className="text-xs font-mono px-2 py-1 rounded bg-primary/10 text-primary border border-primary/20">⏳ IN QUEUE</span>}
-                  {entry.status === 'approved' && <span className="text-xs font-mono px-2 py-1 rounded bg-status-success/10 text-status-success border border-status-success/20">✅ PUBLISHED</span>}
+                  {entry.status === 'approved' && (
+                    <span className="text-xs font-mono px-2 py-1 rounded bg-status-success/10 text-status-success border border-status-success/20">
+                      {hasPublicationProof ? '✅ PUBLISHED' : '✓ APPROVED'}
+                    </span>
+                  )}
 
                   {entry.classification && entry.classification !== 'UNCHECKED' && (
                     <span className={`text-xs font-mono px-2 py-1 rounded border ${
@@ -219,13 +245,13 @@ export function EntryDetailsSheet({ entry, onClose }: EntryDetailsSheetProps) {
                 </div>
               )}
 
-              {entry.distribution_channels && entry.distribution_channels.length > 0 && (
+              {successfulChannels.length > 0 && (
                 <div className="glow-card p-4 space-y-3">
                   <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground uppercase tracking-wider border-b border-border pb-2">
                     <Activity className="w-3 h-3" />
                     Distribution
                   </div>
-                  <DistributionBadges channels={entry.distribution_channels} />
+                  <DistributionBadges channels={successfulChannels} />
                 </div>
               )}
             </div>

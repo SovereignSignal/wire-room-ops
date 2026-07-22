@@ -26,7 +26,7 @@
     --secondary-foreground: 200 40% 80%;
 
     --muted: 245 20% 12%;
-    --muted-foreground: 220 15% 50%;
+    --muted-foreground: 220 18% 65%;
 
     --accent: 270 50% 25%;
     --accent-foreground: 200 60% 94%;
@@ -82,7 +82,7 @@
     --secondary-foreground: 220 20% 30%;
 
     --muted: 45 15% 92%;
-    --muted-foreground: 220 10% 45%;
+    --muted-foreground: 220 12% 38%;
 
     --accent: 35 60% 85%;
     --accent-foreground: 220 25% 15%;
@@ -190,7 +190,7 @@
 
   /* Action bar */
   .action-bar {
-    @apply fixed bottom-6 left-1/2 -translate-x-1/2 bg-card/95 backdrop-blur-sm border border-primary/30 rounded px-4 py-3 flex items-center gap-4;
+    @apply fixed z-40 bottom-3 sm:bottom-6 left-1/2 -translate-x-1/2 w-[calc(100%-1rem)] sm:w-auto bg-card/95 backdrop-blur-sm border border-primary/30 rounded px-3 sm:px-4 py-3 flex flex-wrap items-center justify-center gap-2 sm:gap-4;
     box-shadow: 0 4px 20px hsl(0 0% 0% / 0.15);
   }
 
@@ -315,4 +315,15 @@
 }
 .scrollbar-hide::-webkit-scrollbar {
   display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

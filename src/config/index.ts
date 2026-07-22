@@ -50,6 +50,12 @@ export const config = {
   summarize: {
     provider: (process.env.SUMMARIZE_PROVIDER || 'auto') as 'auto' | 'ollama' | 'grok',
   },
+
+  startup: {
+    // Explicit opt-in. Startup must not spend on LLM calls or rewrite queue
+    // intelligence merely because a process was redeployed.
+    llmRescoreEnabled: process.env.STARTUP_LLM_RESCORE_ENABLED === 'true',
+  },
   
   email: {
     resendApiKey: process.env.RESEND_API_KEY || '',

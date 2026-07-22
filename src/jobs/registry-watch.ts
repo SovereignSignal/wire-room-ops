@@ -18,8 +18,9 @@
  *
  * Gates: default OFF (REGISTRY_WATCH_ENABLED, read at call time — the
  * scheduler also guards this; double gate is deliberate) and default dry-run
- * (registryWatchDryRun). Watermarks/hashes/checked-state advance in BOTH
- * modes — dry-run only withholds the intake call, mirroring x-lists.
+ * (registryWatchDryRun). Baselines and no-op checks advance in dry-run. A
+ * changed surface with fresh items advances only after durable intake, so a
+ * dry-run or transient intake failure stays retryable.
  */
 import type { Pool } from 'pg';
 import type { ScanSubmission, RawScanResult } from '../types/intake';
@@ -99,8 +100,13 @@ async function defaultFetchPage(url: string): Promise<string> {
  * surface (or a surface's first-ever content-change extraction) doesn't flood
  * intake with its whole existing backlog.
  */
-function diffSeen(items: FeedItem[], state: SeenState | null, nowIso: string): { fresh: FeedItem[]; baseline: boolean; nextState: SeenState } {
-  const baseline = !state || !Array.isArray(state.urls);
+function diffSeen(
+  items: FeedItem[],
+  state: SeenState | null,
+  nowIso: string,
+  opts: { baselineWhenMissing?: boolean } = {},
+): { fresh: FeedItem[]; baseline: boolean; nextState: SeenState } {
+  const baseline = (opts.baselineWhenMissing ?? true) && (!state || !Array.isArray(state.urls));
   const seen = new Set((state?.urls || []).map(normalizeUrl));
   const batch = new Set<string>();
   const fresh: FeedItem[] = [];
@@ -148,6 +154,12 @@ export async function runRegistryWatch(
   const today = new Date().toISOString().split('T')[0];
   const nowIso = new Date().toISOString();
   const submissions: ScanSubmission[] = [];
+  const pendingDeliveries: Array<{
+    checkpoint: () => Promise<void>;
+    markSuccess: () => Promise<void>;
+    markDeferred: () => Promise<void>;
+    markFailure: () => Promise<void>;
+  }> = [];
 
   // ---- RSS lane ----
   const rssStat: LaneStat = { surfaces: 0, fresh: 0, errors: 0 };
@@ -166,7 +178,6 @@ export async function runRegistryWatch(
       const stateKey = `ws:seen:${surf.id}`;
       const seenState = await getStateImpl<SeenState>(stateKey);
       const { fresh, nextState } = diffSeen(items, seenState, nowIso);
-      await setStateImpl(stateKey, nextState);
 
       if (fresh.length) {
         submissions.push({
@@ -177,9 +188,19 @@ export async function runRegistryWatch(
           submittedBy: `ws-rss:${surf.id}`,
           results: fresh.map(toRaw),
         });
+        pendingDeliveries.push({
+          checkpoint: () => setStateImpl(stateKey, nextState),
+          markSuccess: () => markImpl(pool, surf.id, { changed: true, itemsFound: fresh.length, failed: false }),
+          markDeferred: () => markImpl(pool, surf.id, { changed: true, itemsFound: 0, failed: false }),
+          markFailure: () => markImpl(pool, surf.id, { failed: true }),
+        });
+      } else {
+        // Baselines and clean no-op polls have no downstream durability
+        // dependency, so their seen state can advance immediately.
+        await setStateImpl(stateKey, nextState);
+        await markImpl(pool, surf.id, { changed: false, itemsFound: 0, failed: false });
       }
       rssStat.fresh += fresh.length;
-      await markImpl(pool, surf.id, { changed: fresh.length > 0, itemsFound: fresh.length, failed: false });
     } catch (err) {
       rssStat.errors++;
       await markImpl(pool, surf.id, { failed: true });
@@ -218,12 +239,13 @@ export async function runRegistryWatch(
       await markImpl(pool, surf.id, {});
       continue;
     }
-    await setStateImpl(hashKey, hash);
 
     const baseline = !prevHash;
     if (baseline) {
       // First-ever check of this surface: nothing to diff against yet, so
-      // there's nothing to extract — the hash we just stored *is* the baseline.
+      // there's nothing to extract. Storing only the free page hash avoids a
+      // paid baseline extraction. The first later change is treated as fresh.
+      await setStateImpl(hashKey, hash);
       await markImpl(pool, surf.id, { changed: false });
       continue;
     }
@@ -236,7 +258,8 @@ export async function runRegistryWatch(
         const budget = await budgetImpl(pool);
         budgetAllowed = budget.allowed;
       } catch (err) {
-        // Fail CLOSED: no extraction this run. Note the hash has already advanced, so this change is forfeited (not deferred) — the page must change again to be extracted. Deliberate: misses opportunities rather than risking unmetered spend.
+        // Fail closed on spend and leave the prior hash intact. The same page
+        // change will be retried on the next due run.
         budgetAllowed = false;
         console.warn(`[RegistryWatch] budget check failed — failing closed, no extraction this run: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -249,7 +272,7 @@ export async function runRegistryWatch(
     }
 
     if (extractedThisRun >= extractCap) {
-      console.log(`[RegistryWatch] extraction cap reached (${extractCap}/run) — recording change without extracting`);
+      console.log(`[RegistryWatch] extraction cap reached (${extractCap}/run) — deferring change to the next run`);
       await markImpl(pool, surf.id, { changed: true });
       continue;
     }
@@ -261,8 +284,11 @@ export async function runRegistryWatch(
       const items = await fetchSourceImpl(surfaceToScrapeSource(surf));
       const stateKey = `ws:seen:${surf.id}`;
       const seenState = await getStateImpl<SeenState>(stateKey);
-      const { fresh, nextState } = diffSeen(items, seenState, nowIso);
-      await setStateImpl(stateKey, nextState);
+      // The initial hash baseline deliberately avoids a paid extraction, so
+      // the first actual change must not establish a second seen baseline.
+      // Treat its extracted items as fresh and let intake/dedup decide which
+      // are already known.
+      const { fresh, nextState } = diffSeen(items, seenState, nowIso, { baselineWhenMissing: false });
 
       if (fresh.length) {
         submissions.push({
@@ -273,9 +299,25 @@ export async function runRegistryWatch(
           submittedBy: `ws-diff:${surf.id}`,
           results: fresh.map(toRaw),
         });
+        pendingDeliveries.push({
+          // Write seen state first. If the hash write fails afterward, the
+          // retry re-extracts but does not resubmit already-durable URLs.
+          checkpoint: async () => {
+            await setStateImpl(stateKey, nextState);
+            await setStateImpl(hashKey, hash);
+          },
+          markSuccess: () => markImpl(pool, surf.id, { changed: true, itemsFound: fresh.length, failed: false }),
+          markDeferred: () => markImpl(pool, surf.id, { changed: true, itemsFound: 0, failed: false }),
+          markFailure: () => markImpl(pool, surf.id, { failed: true }),
+        });
+      } else {
+        // Extraction itself completed and produced nothing new, so this
+        // change is durably resolved without an intake call.
+        await setStateImpl(stateKey, nextState);
+        await setStateImpl(hashKey, hash);
+        await markImpl(pool, surf.id, { changed: true, itemsFound: 0, failed: false });
       }
       diffStat.fresh += fresh.length;
-      await markImpl(pool, surf.id, { changed: true, itemsFound: fresh.length });
     } catch (err) {
       diffStat.errors++;
       await markImpl(pool, surf.id, { failed: true });
@@ -287,8 +329,21 @@ export async function runRegistryWatch(
   if (totalFresh > 0) {
     if (dryRun) {
       console.log(`[RegistryWatch] DRY RUN — would submit ${submissions.length} submission(s), ${totalFresh} fresh item(s)`);
+      for (const pending of pendingDeliveries) await pending.markDeferred();
     } else {
-      await intakeImpl(pool, submissions, {});
+      try {
+        await intakeImpl(pool, submissions, {});
+        for (const pending of pendingDeliveries) {
+          await pending.checkpoint();
+          await pending.markSuccess();
+        }
+      } catch (err) {
+        for (const pending of pendingDeliveries) {
+          await pending.markFailure().catch(() => undefined);
+        }
+        logApiUsage({ provider: 'watchtower', model: 'registry-watch', purpose: 'watchtower-registry-run', duration_ms: Date.now() - start, success: false, error_message: err instanceof Error ? err.message : String(err) });
+        throw err;
+      }
     }
   }
 

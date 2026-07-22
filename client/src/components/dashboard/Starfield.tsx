@@ -26,6 +26,7 @@ export function Starfield() {
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
     const resizeCanvas = () => {
       canvas.width = window.innerWidth;
@@ -46,7 +47,7 @@ export function Starfield() {
       }));
     };
 
-    const animate = (time: number) => {
+    const drawFrame = (time: number, advance: boolean) => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       starsRef.current.forEach((star) => {
@@ -75,22 +76,33 @@ export function Starfield() {
         ctx.fill();
 
         // Slow drift
-        star.y += star.speed;
+        if (advance) star.y += star.speed;
         if (star.y > canvas.height + 10) {
           star.y = -10;
           star.x = Math.random() * canvas.width;
         }
       });
 
+    };
+
+    const animate = (time: number) => {
+      drawFrame(time, true);
       animationRef.current = requestAnimationFrame(animate);
     };
 
-    resizeCanvas();
-    window.addEventListener('resize', resizeCanvas);
-    animationRef.current = requestAnimationFrame(animate);
+    const handleResize = () => {
+      resizeCanvas();
+      if (reduceMotion) drawFrame(0, false);
+    };
+
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    if (!reduceMotion) {
+      animationRef.current = requestAnimationFrame(animate);
+    }
 
     return () => {
-      window.removeEventListener('resize', resizeCanvas);
+      window.removeEventListener('resize', handleResize);
       if (animationRef.current) {
         cancelAnimationFrame(animationRef.current);
       }

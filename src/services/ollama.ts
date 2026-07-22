@@ -5,7 +5,6 @@
  * Default model: kimi-k2.5:cloud (cost-effective alternative to Grok for summaries).
  */
 
-import { config } from '../config';
 import { getBrand } from '../config/brand';
 import { DatabaseEntry } from '../types';
 import { logApiUsage } from './api-usage';
@@ -56,7 +55,7 @@ export async function summarizeWithOllama(entry: DatabaseEntry, model?: string):
     .replace('{url}', entry.url);
 
   const provider = getCachedProvider('ollama');
-  const apiKey = provider?.api_key || config.apis.ollama.apiKey;
+  const apiKey = provider?.api_key;
   const baseUrl = provider?.base_url || DEFAULT_OLLAMA_BASE_URL;
   const useModel = model || provider?.default_model || DEFAULT_OLLAMA_MODEL;
   const start = Date.now();
@@ -125,7 +124,7 @@ export async function ollamaAutoSummarize(opts: {
   wire?: string;
 }): Promise<string | null> {
   const provider = getCachedProvider('ollama');
-  const apiKey = provider?.api_key || config.apis.ollama.apiKey;
+  const apiKey = provider?.api_key;
   const baseUrl = provider?.base_url || DEFAULT_OLLAMA_BASE_URL;
   const useModel = provider?.default_model || DEFAULT_OLLAMA_MODEL;
 

@@ -2,7 +2,9 @@
  * API Provider Management — DB-backed credentials with env var fallback.
  *
  * getCachedProvider() is synchronous (reads from in-memory cache).
- * If a DB row exists with a non-empty api_key, it takes precedence over env vars.
+ * Any DB row takes precedence over env vars, including disabled rows and rows
+ * with an empty key. This makes the dashboard's disable switch a real kill
+ * switch instead of allowing callers to fall through to an environment key.
  */
 
 import { getPool } from '../db';
@@ -93,18 +95,11 @@ const PROVIDER_DEFAULTS: Record<string, { displayName: string; envKey: () => str
 
 // ---- In-memory cache ----
 
-let providerCache: Map<string, ProviderConfig> = new Map();
+function buildEnvProviderCache(): Map<string, ProviderConfig> {
+  const cache = new Map<string, ProviderConfig>();
 
-export function getCachedProvider(provider: string): ProviderConfig | null {
-  return providerCache.get(provider) || null;
-}
-
-export async function refreshProviderCache(): Promise<void> {
-  const next = new Map<string, ProviderConfig>();
-
-  // Start with env var defaults for all known providers
   for (const [key, def] of Object.entries(PROVIDER_DEFAULTS)) {
-    next.set(key, {
+    cache.set(key, {
       provider: key,
       display_name: def.displayName,
       api_key: def.envKey(),
@@ -115,7 +110,33 @@ export async function refreshProviderCache(): Promise<void> {
     });
   }
 
-  // Overlay DB rows (non-empty api_key wins)
+  return cache;
+}
+
+// Seed from env immediately so synchronous callers are safe before the async
+// startup refresh completes. A DB refresh replaces these entries atomically.
+let providerCache: Map<string, ProviderConfig> = buildEnvProviderCache();
+
+/** Return the raw cached state, including disabled providers, for settings UI. */
+export function getProviderState(provider: string): ProviderConfig | null {
+  return providerCache.get(provider) || null;
+}
+
+/** True only when a DB row explicitly disables this provider. */
+export function isProviderExplicitlyDisabled(provider: string): boolean {
+  const cached = getProviderState(provider);
+  return cached?.source === 'db' && !cached.enabled;
+}
+
+export function getCachedProvider(provider: string): ProviderConfig | null {
+  const cached = getProviderState(provider);
+  return cached?.enabled ? cached : null;
+}
+
+export async function refreshProviderCache(): Promise<void> {
+  const next = buildEnvProviderCache();
+
+  // Overlay every DB row. Disabled or empty-key rows deliberately mask env.
   try {
     const pool = getPool();
     const { rows } = await pool.query<ProviderRow>(
@@ -123,20 +144,21 @@ export async function refreshProviderCache(): Promise<void> {
     );
 
     for (const row of rows) {
-      if (row.api_key) {
-        next.set(row.provider, {
-          provider: row.provider,
-          display_name: row.display_name,
-          api_key: row.api_key,
-          base_url: row.base_url,
-          default_model: row.default_model,
-          enabled: row.enabled,
-          source: 'db',
-        });
-      }
+      next.set(row.provider, {
+        provider: row.provider,
+        display_name: row.display_name,
+        api_key: row.api_key,
+        base_url: row.base_url,
+        default_model: row.default_model,
+        enabled: row.enabled,
+        source: 'db',
+      });
     }
   } catch (err) {
-    console.error('[ApiProvider] Failed to load providers from DB (using env vars):', err);
+    // Keep the last known cache. Rebuilding from env here could silently undo a
+    // previously loaded DB kill switch during a transient database failure.
+    console.error('[ApiProvider] Failed to load providers from DB (keeping cached state):', err);
+    return;
   }
 
   providerCache = next;
@@ -220,7 +242,9 @@ export async function upsertProvider(
   );
 
   await refreshProviderCache();
-  return providerCache.get(provider)!;
+  const updated = getProviderState(provider);
+  if (!updated) throw new Error(`Provider cache missing after upsert: ${provider}`);
+  return updated;
 }
 
 // ---- Connection test ----
@@ -228,7 +252,11 @@ export async function upsertProvider(
 export async function testProviderConnection(provider: string): Promise<{ success: boolean; latencyMs: number; error?: string }> {
   const cached = getCachedProvider(provider);
   if (!cached || !cached.api_key) {
-    return { success: false, latencyMs: 0, error: 'No API key configured' };
+    return {
+      success: false,
+      latencyMs: 0,
+      error: isProviderExplicitlyDisabled(provider) ? 'Provider is disabled' : 'No API key configured',
+    };
   }
 
   const start = Date.now();

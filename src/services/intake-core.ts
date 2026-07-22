@@ -134,6 +134,11 @@ export interface IntakeResult {
   errorMessage?: string;
 }
 
+export interface IntakeOptions {
+  /** Trusted source-lane wire. Applied only when it matches an active wire. */
+  wireHint?: string;
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Built-in keyword defaults (only used when env var is absent)
 // ────────────────────────────────────────────────────────────────────────────
@@ -527,10 +532,12 @@ export function normalizeDeadlineForDb(value?: string | null, referenceDate = ne
  *
  * @param msg         The channel-agnostic message
  * @param scanSource  The scan_source value for the DB row (default: "manual-intake")
+ * @param options     Optional trusted source-lane hints
  */
 export async function processIntakeMessage(
   msg: IntakeMessage,
   scanSource = 'manual-intake',
+  options: IntakeOptions = {},
 ): Promise<IntakeResult> {
   const text = msg.text.trim();
   if (!text) {
@@ -622,8 +629,13 @@ export async function processIntakeMessage(
 
   const scanDate = new Date().toISOString().slice(0, 10);
 
-  // Detect wire — use scraped content for better keyword matching
-  const wire = detectWire(scrapedContent || text, wires);
+  // Source lanes with an explicit wire assignment should not be reclassified
+  // from sparse post text. Ignore stale/invalid hints and fall back to content
+  // detection so the active feeds table remains the authority.
+  const normalizedWireHint = options.wireHint?.trim().toLowerCase();
+  const wire = normalizedWireHint && wires.includes(normalizedWireHint)
+    ? normalizedWireHint
+    : detectWire(scrapedContent || text, wires);
 
   if (wire) {
     // Dedup check — fail open if dedup service errors
@@ -1213,4 +1225,3 @@ export async function processBatchMessage(
 
   return result;
 }
-

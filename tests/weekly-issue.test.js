@@ -8,6 +8,9 @@ const {
   dedupeItems,
   splitByScore,
   stripPriorIssueItems,
+  parseVerify,
+  isPublishableVerification,
+  assertWeeklyCheckpointAllowed,
 } = require('../src/jobs/weekly-issue');
 
 function sampleBlocks() {
@@ -113,4 +116,40 @@ test('stripPriorIssueItems removes items already in last week\'s issue', () => {
   const out = stripPriorIssueItems(items, prior);
   assert.equal(out.length, 1);
   assert.equal(out[0].name, 'New Grant');
+});
+
+test('verification parsers require an explicit open verdict', () => {
+  const parsed = parseVerify('[{"n":1,"amount":"$10k","deadline":null}]');
+  assert.equal(parsed.get(1).open, false);
+  assert.equal(parseVerify('not-json').size, 0);
+});
+
+test('Parallel verification requires open, cited, usable, medium-or-better evidence', () => {
+  const good = {
+    is_open: true,
+    amount: '$10k',
+    deadline: 'rolling',
+    apply_url: 'https://official.example/apply',
+    citationUrl: 'https://official.example/details',
+    confidence: 'medium',
+  };
+  assert.equal(isPublishableVerification(good, 'https://fallback.example'), true);
+  assert.equal(isPublishableVerification({ ...good, is_open: false }, 'https://fallback.example'), false);
+  assert.equal(isPublishableVerification({ ...good, citationUrl: null }, 'https://fallback.example'), false);
+  assert.equal(isPublishableVerification({ ...good, confidence: 'low' }, 'https://fallback.example'), false);
+  assert.equal(isPublishableVerification({ ...good, apply_url: 'http://official.example/apply' }, 'http://fallback.example'), false);
+});
+
+test('weekly checkpoint requires delivery unless storage is explicitly skipped', () => {
+  assert.doesNotThrow(() => assertWeeklyCheckpointAllowed({ skipEmail: false, skipStore: false, emailed: true, notionLanded: false }));
+  assert.doesNotThrow(() => assertWeeklyCheckpointAllowed({ skipEmail: false, skipStore: false, emailed: false, notionLanded: true }));
+  assert.doesNotThrow(() => assertWeeklyCheckpointAllowed({ skipEmail: true, skipStore: true, emailed: false, notionLanded: false }));
+  assert.throws(
+    () => assertWeeklyCheckpointAllowed({ skipEmail: false, skipStore: false, emailed: false, notionLanded: false }),
+    /delivery failed/,
+  );
+  assert.throws(
+    () => assertWeeklyCheckpointAllowed({ skipEmail: true, skipStore: false, emailed: false, notionLanded: false }),
+    /delivery is skipped/,
+  );
 });

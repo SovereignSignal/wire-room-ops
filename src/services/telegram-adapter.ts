@@ -14,7 +14,7 @@ import { processIntakeMessage, isBatchMessage, processBatchMessage } from './int
 import type { BatchIntakeResult, IntakeResult } from './intake-core';
 
 function getIntakeBotToken(): string {
-  return getCachedProvider('telegram-intake')?.api_key || config.telegramIntake.botToken;
+  return getCachedProvider('telegram-intake')?.api_key || '';
 }
 
 const TELEGRAM_API = 'https://api.telegram.org';
@@ -479,4 +479,3 @@ export async function registerIntakeWebhook(): Promise<void> {
     console.error('[TelegramAdapter] Webhook registration error:', error);
   }
 }
-

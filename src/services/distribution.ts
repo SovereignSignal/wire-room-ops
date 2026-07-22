@@ -5,12 +5,11 @@
  */
 
 import { getDistributionConfigs, getUndistributedEntries, logDistribution, getDistributionLogs, getPool, getEnabledDistributionChannelsForWire, DistributionChannelRecord } from '../db';
-import { config } from '../config';
 import { getCachedProvider } from './api-provider';
 import { generatePosts } from './post-generator';
 
 function getTelegramBotToken(): string {
-  return getCachedProvider('telegram')?.api_key || config.telegram.botToken;
+  return getCachedProvider('telegram')?.api_key || '';
 }
 import { sendChannelMessage } from './telegram-channel';
 import { sendDiscordMessage } from './discord-channel';

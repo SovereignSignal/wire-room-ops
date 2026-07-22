@@ -194,6 +194,7 @@ export async function resolveProgram(
     const keys = [p.normalized_key, ...(p.aliases || []).map(normalizeProgramKey)];
     const orgAgrees = candOrg && p.org_name ? norm(p.org_name) === candOrg || norm(p.org_name).includes(candOrg) || candOrg.includes(norm(p.org_name)) : null;
     const urlBoost = Boolean(candDomain && ((p.url_domains || []).includes(candDomain) || domainOf(p.canonical_url) === candDomain));
+    const wireMismatch = Boolean(candidate.wire && p.wire && candidate.wire !== p.wire);
 
     let pass: ProgramMatch['pass'] | null = null;
     if (keys.includes(key)) pass = 'key';
@@ -205,8 +206,10 @@ export async function resolveProgram(
       if (shared.length >= 2 && shared.length / denom >= 0.6) pass = 'tokens';
     }
     if (!pass) continue;
-    // Org mismatch vetoes fuzzy passes (key match survives — the key IS the identity)
-    if (pass !== 'key' && orgAgrees === false) continue;
+    // A normalized name alone is insufficient when organization identity
+    // disagrees. A shared canonical domain is the only safe override.
+    if (orgAgrees === false && !urlBoost) continue;
+    if (wireMismatch && orgAgrees !== true && !urlBoost) continue;
 
     let confidence = pass === 'key' ? 0.95 : pass === 'substring' ? 0.85 : 0.75;
     if (urlBoost) confidence = Math.min(0.99, confidence + 0.10);
@@ -286,6 +289,7 @@ export async function createProgram(
      VALUES ($1, $2, $3, $4, ARRAY[$5]::text[], $6, CASE WHEN $7::text IS NULL THEN '{}'::text[] ELSE ARRAY[$7]::text[] END, $8, 0, CURRENT_DATE, CURRENT_DATE)
      ON CONFLICT (normalized_key) DO UPDATE SET
        aliases = (SELECT ARRAY(SELECT DISTINCT unnest(programs.aliases || ARRAY[$5]::text[]))),
+       wire = COALESCE(programs.wire, EXCLUDED.wire),
        last_seen = CURRENT_DATE, updated_at = NOW()
      RETURNING id`,
     [canonical, key, data.orgName ?? null, data.wire ?? null, data.name, data.sourceUrl ? normalizeUrl(data.sourceUrl) : null, dom, data.roundLabel ?? null],
@@ -299,6 +303,7 @@ export async function recordSighting(
   entry: { id?: number; name: string; sourceUrl?: string | null; deadline?: string | null; roundLabel?: string | null },
 ): Promise<void> {
   const dom = domainOf(entry.sourceUrl);
+  const deadline = normalizeProgramDeadline(entry.deadline);
   await pool.query(
     `UPDATE programs SET
        aliases = (SELECT ARRAY(SELECT DISTINCT unnest(aliases || ARRAY[$2]::text[]))),
@@ -313,8 +318,48 @@ export async function recordSighting(
        END,
        last_seen = CURRENT_DATE, updated_at = NOW()
      WHERE id = $1`,
-    [programId, entry.name, dom, entry.roundLabel ?? null, entry.deadline ?? null, entry.id ?? null],
+    [programId, entry.name, dom, entry.roundLabel ?? null, deadline, entry.id ?? null],
   );
+}
+
+/** Accept only real ISO calendar dates for the programs.latest_deadline column. */
+export function normalizeProgramDeadline(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed || !/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return null;
+  const parsed = new Date(`${trimmed}T00:00:00Z`);
+  return Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== trimmed
+    ? null
+    : trimmed;
+}
+
+/** Recompute mutable decision history from linked entries, idempotently. */
+export async function refreshProgramCounters(pool: QueryPool, programIds: number[]): Promise<number> {
+  const ids = [...new Set(programIds.filter(Number.isSafeInteger))];
+  if (ids.length === 0) return 0;
+  const { rows } = await pool.query(
+    `WITH stats AS (
+       SELECT program_id,
+              COUNT(*)::int AS total,
+              COUNT(*) FILTER (WHERE status = 'approved')::int AS approved,
+              COUNT(*) FILTER (WHERE status = 'declined')::int AS declined,
+              (ARRAY_AGG(status || ' ' || updated_at::date ORDER BY updated_at DESC)
+                FILTER (WHERE status IN ('approved', 'declined')))[1] AS last_decision
+       FROM scan_entries
+       WHERE program_id = ANY($1::int[])
+       GROUP BY program_id
+     )
+     UPDATE programs p SET
+       entry_count = s.total,
+       approved_count = s.approved,
+       declined_count = s.declined,
+       last_decision = s.last_decision,
+       updated_at = NOW()
+     FROM stats s
+     WHERE p.id = s.program_id
+     RETURNING p.id`,
+    [ids],
+  );
+  return rows.length;
 }
 
 // ── LLM canonicalization (mirrors org-extractor's extractOrgsWithGrok) ──
@@ -389,10 +434,11 @@ Rules:
 Entries:
 ${entriesText}
 
-Return ONLY valid JSON array, no explanation.`;
+  Return ONLY valid JSON array, no explanation.`;
   const provider = getCachedProvider('grok');
-  const apiKey = provider?.api_key || config.apis.grok.apiKey;
-  const baseUrl = provider?.base_url || config.apis.grok.baseUrl;
+  if (!provider?.api_key) return [];
+  const apiKey = provider.api_key;
+  const baseUrl = provider.base_url || config.apis.grok.baseUrl;
   const model = provider?.default_model || 'grok-4.20-beta-0309-non-reasoning';
   try {
     const response = await fetchImpl(`${baseUrl}/chat/completions`, {
