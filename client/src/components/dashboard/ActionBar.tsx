@@ -1,15 +1,26 @@
 import { Button } from '@/components/ui/button';
-import { CheckCircle, Archive, X, EyeOff } from 'lucide-react';
+import { CheckCircle2, Database, X, XCircle } from 'lucide-react';
+import { getQueueDecision, queueDecisionButtonClass } from './queue-decisions';
+
+const WIRES_DECISION = getQueueDecision('wires');
+const PROGRAMS_DECISION = getQueueDecision('programs');
+const REJECT_DECISION = getQueueDecision('reject');
 
 interface ActionBarProps {
   selectedCount: number;
-  onApprove: () => void;
-  onQuietApprove: () => void;
-  onArchive: () => void;
+  onApproveToWires: () => void;
+  onApproveToPrograms: () => void;
+  onReject: () => void;
   onClear: () => void;
 }
 
-export function ActionBar({ selectedCount, onApprove, onQuietApprove, onArchive, onClear }: ActionBarProps) {
+export function ActionBar({
+  selectedCount,
+  onApproveToWires,
+  onApproveToPrograms,
+  onReject,
+  onClear,
+}: ActionBarProps) {
   if (selectedCount === 0) return null;
 
   return (
@@ -19,38 +30,42 @@ export function ActionBar({ selectedCount, onApprove, onQuietApprove, onArchive,
         <span className="text-muted-foreground font-display text-[10px] tracking-wider uppercase">Selected</span>
       </div>
 
-      <div className="hidden sm:block h-6 w-px bg-border" />
+      <div className="hidden sm:block h-8 w-px bg-border" />
 
-      <div className="flex items-center justify-center gap-2 flex-wrap">
+      <div className="grid grid-cols-3 gap-2 items-stretch w-full sm:w-[500px]">
         <Button
           size="sm"
-          onClick={onApprove}
-          className="gap-1.5 bg-status-success/20 text-status-success border border-status-success/30 hover:bg-status-success/30 font-display text-[10px] tracking-wider"
+          onClick={onApproveToWires}
+          title={WIRES_DECISION.title}
+          aria-label={WIRES_DECISION.label}
+          className={queueDecisionButtonClass(WIRES_DECISION.tone)}
         >
-          <CheckCircle className="w-3.5 h-3.5" />
-          APPROVE + PUBLISH
+          <CheckCircle2 className="w-4 h-4 shrink-0" />
+          {WIRES_DECISION.label}
         </Button>
         <Button
           size="sm"
-          onClick={onQuietApprove}
-          title="Approve without distributing"
-          className="gap-1.5 bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 font-display text-[10px] tracking-wider"
+          onClick={onApproveToPrograms}
+          title={PROGRAMS_DECISION.title}
+          aria-label={PROGRAMS_DECISION.label}
+          className={queueDecisionButtonClass(PROGRAMS_DECISION.tone)}
         >
-          <EyeOff className="w-3.5 h-3.5" />
-          QUIET APPROVE
+          <Database className="w-4 h-4 shrink-0" />
+          {PROGRAMS_DECISION.label}
         </Button>
         <Button
           size="sm"
-          variant="secondary"
-          onClick={onArchive}
-          className="gap-1.5 font-display text-[10px] tracking-wider"
+          onClick={onReject}
+          title={REJECT_DECISION.title}
+          aria-label={REJECT_DECISION.label}
+          className={queueDecisionButtonClass(REJECT_DECISION.tone)}
         >
-          <Archive className="w-3.5 h-3.5" />
-          ARCHIVE
+          <XCircle className="w-4 h-4 shrink-0" />
+          {REJECT_DECISION.label}
         </Button>
       </div>
 
-      <div className="hidden sm:block h-6 w-px bg-border" />
+      <div className="hidden sm:block h-8 w-px bg-border" />
 
       <Button
         size="sm"
