@@ -381,8 +381,8 @@ async function checkNameMatch(
     };
   }
 
-  // First try exact normalized name match — only against approved/queued entries.
-  // Declined/archived entries should not block new submissions.
+  // First try an exact normalized name match against queued or reviewed entries.
+  // Both approval paths and reviewed rejections block a replay; archived rows do not.
   const exactResult = await pool.query(
     `SELECT sn.entry_id, se.name
      FROM seen_names sn
