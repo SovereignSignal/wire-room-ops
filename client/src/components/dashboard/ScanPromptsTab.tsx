@@ -31,6 +31,7 @@ const TOOL_TYPES = [
   { value: 'x_search', label: 'X Search', icon: '🔎' },
   { value: 'web_search', label: 'Web Search', icon: '🌐' },
   { value: 'perplexity', label: 'Perplexity', icon: '🔮' },
+  { value: 'parallel', label: 'Parallel', icon: '⚡' },
 ];
 
 const VARIANTS = ['A', 'B', 'C', 'W', 'P', 'N', 'S'];
@@ -927,7 +928,11 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
                            entry.status === 'declined' ? 'DEC' :
                            entry.status.slice(0, 3).toUpperCase()}
                         </span>
-                        {entry.quality_score > 0 && (
+                        {entry.quality_score === null ? (
+                          <span className="flex-shrink-0 mt-0.5 text-[9px] font-mono text-muted-foreground">
+                            UNSCORED
+                          </span>
+                        ) : (
                           <span className={`flex-shrink-0 mt-0.5 text-[9px] font-mono w-5 text-right ${
                             entry.quality_score >= 70 ? 'text-green-400' :
                             entry.quality_score >= 40 ? 'text-yellow-400' : 'text-muted-foreground'

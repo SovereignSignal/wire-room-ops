@@ -20,6 +20,7 @@ import { createMessageWithFallback } from '../services/anthropic';
 import { scrapeUrl, isScrapableUrl } from '../services/scraper';
 import { sendWeeklyDraftEmail } from '../services/email';
 import { parallelAvailable, verifyOpportunities } from '../services/parallel-task';
+import type { VerifyResult } from '../services/parallel-task';
 import { landWeeklyInPasteLog } from '../services/weekly-notion';
 import { getAppState, setAppState } from '../db';
 
@@ -304,7 +305,7 @@ ITEMS:
 ${lines}`;
 }
 
-function parseVerify(text: string): Map<number, { open: boolean; amount: string | null; deadline: string | null }> {
+export function parseVerify(text: string): Map<number, { open: boolean; amount: string | null; deadline: string | null }> {
   const m = new Map<number, { open: boolean; amount: string | null; deadline: string | null }>();
   try {
     const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
@@ -314,7 +315,9 @@ function parseVerify(text: string): Map<number, { open: boolean; amount: string 
       for (const o of arr) {
         if (o && typeof o.n === 'number') {
           m.set(o.n, {
-            open: o.open !== false,
+            // This parser feeds a public-draft verification gate. Require an
+            // explicit positive verdict instead of treating omissions as open.
+            open: o.open === true,
             amount: typeof o.amount === 'string' && o.amount.toLowerCase() !== 'null' ? o.amount : null,
             deadline: typeof o.deadline === 'string' && o.deadline.toLowerCase() !== 'null' ? o.deadline : null,
           });
@@ -323,6 +326,27 @@ function parseVerify(text: string): Map<number, { open: boolean; amount: string 
     }
   } catch { /* caller handles empty map */ }
   return m;
+}
+
+export function isPublishableVerification(result: VerifyResult | null, fallbackUrl: string): boolean {
+  if (!result || result.is_open !== true) return false;
+  const applyUrl = result.apply_url || fallbackUrl;
+  return /^https:\/\//i.test(applyUrl)
+    && Boolean(result.citationUrl && /^https:\/\//i.test(result.citationUrl))
+    && (result.confidence === 'medium' || result.confidence === 'high');
+}
+
+export function assertWeeklyCheckpointAllowed(input: {
+  skipEmail: boolean;
+  skipStore: boolean;
+  emailed: boolean;
+  notionLanded: boolean;
+}): void {
+  if (input.skipStore) return;
+  if (input.skipEmail) throw new Error('Weekly issue cannot checkpoint when delivery is skipped');
+  if (!input.emailed && !input.notionLanded) {
+    throw new Error('Weekly issue delivery failed: email and Notion both unavailable');
+  }
 }
 
 /**
@@ -355,11 +379,7 @@ async function verifyItems(items: SpineItem[], label: string, cap: number): Prom
     } catch { parsed = null; }
 
     batch.forEach((s, i) => {
-      if (!parsed || parsed.size === 0) {
-        // Judge unavailable: keep only items we actually scraped content for (conservative).
-        if (s.content) verified.push(s.it);
-        return;
-      }
+      if (!parsed || parsed.size === 0) return;
       const v = parsed.get(i + 1);
       if (!v || !v.open) return; // closed / unverifiable → drop
       verified.push({ ...s.it, amount: v.amount || s.it.amount, deadline: v.deadline || s.it.deadline });
@@ -372,8 +392,8 @@ async function verifyItems(items: SpineItem[], label: string, cap: number): Prom
 /**
  * Verify via Parallel Task API — one deep, source-cited Task per item. Returns each
  * confirmed-open item with corrected amount/deadline + a citation URL + confidence.
- * Drops items Parallel marks closed; keeps items whose Task errored as unverified
- * (so a transient API blip never silently loses a real grant).
+ * Drops items Parallel marks closed or cannot verify. Publication candidates
+ * must carry an explicit open verdict, a cited source, and usable confidence.
  */
 async function verifyViaParallel(items: SpineItem[], label: string, cap: number): Promise<SpineItem[]> {
   const toCheck = items.slice(0, cap);
@@ -386,19 +406,24 @@ async function verifyViaParallel(items: SpineItem[], label: string, cap: number)
   let verified = 0, dropped = 0, unverified = 0;
   toCheck.forEach((it, i) => {
     const r = results[i];
-    if (!r) { out.push(it); unverified++; return; }   // Task errored → keep, unverified
-    if (!r.is_open) { dropped++; return; }              // confirmed closed → drop
+    if (!r) { unverified++; return; }
+    const applyUrl = r.apply_url || it.url;
+    if (!isPublishableVerification(r, it.url)) {
+      if (!r.is_open) dropped++;
+      else unverified++;
+      return;
+    }
     verified++;
     out.push({
       ...it,
       amount: r.amount || it.amount,
       deadline: r.deadline || it.deadline,
-      url: r.apply_url || it.url,
+      url: applyUrl,
       citationUrl: r.citationUrl,
       confidence: r.confidence,
     });
   });
-  console.log(`[Weekly] parallel-verify ${label}: ${toCheck.length} checked -> ${verified} verified-open, ${unverified} unverified-kept, ${dropped} dropped`);
+  console.log(`[Weekly] parallel-verify ${label}: ${toCheck.length} checked -> ${verified} verified-open, ${unverified} unverified-dropped, ${dropped} closed`);
   return out;
 }
 
@@ -474,6 +499,7 @@ export async function runWeeklyIssue(
 
   progress('Emailing + landing in Notion Paste Log...', 85);
   let emailed = false;
+  let notionLanded = false;
   if (!options.skipEmail) {
     try {
       await sendWeeklyDraftEmail(markdown, { runDate, spineCount, alsoOpenCount });
@@ -485,14 +511,24 @@ export async function runWeeklyIssue(
     // Land the draft in the Notion Paste Log (rendered rich text → copy into Substack).
     // Fails soft if the integration isn't shared on the Paste Log page yet.
     const land = await landWeeklyInPasteLog(`${runDate} — Grant Wire Weekly — Week ${weekNumber} — Substack paste copy`, markdown);
+    notionLanded = land.ok;
     if (land.ok) console.log(`[Weekly] Landed in Notion Paste Log: ${land.url}`);
     else console.warn(`[Weekly] Notion Paste Log landing skipped: ${land.error} (share the Paste Log page with the Wire Room Ops integration)`);
   }
 
-  // Store as the prior issue for next week's lookback + repeat-dedup, and bump the week number.
+  assertWeeklyCheckpointAllowed({
+    skipEmail: !!options.skipEmail,
+    skipStore: !!options.skipStore,
+    emailed,
+    notionLanded,
+  });
+
+  // Checkpoint only after at least one durable delivery. State write failures
+  // propagate so the scheduler reports an anomaly instead of silently skipping
+  // the issue from next week's window.
   if (!options.skipStore) {
-    try { await setAppState(PRIOR_ISSUE_KEY, { date: runDate, markdown }); } catch { /* non-fatal */ }
-    try { await setAppState(WEEK_NUMBER_KEY, weekNumber); } catch { /* non-fatal */ }
+    await setAppState(PRIOR_ISSUE_KEY, { date: runDate, markdown });
+    await setAppState(WEEK_NUMBER_KEY, weekNumber);
   }
 
   progress('Weekly issue complete', 100);

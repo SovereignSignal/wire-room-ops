@@ -28,7 +28,7 @@ export interface ScheduleConfig {
   timezone: string;
   wire?: string; // Optional wire/feed filter
   scheduleType?: ScheduleType;
-  frequencyHours?: number; // Sub-daily interval (1-23) for scan-execution
+  frequencyHours?: number; // 1-23 is sub-daily; 24 uses the configured daily hour
   notifyEmails?: string; // Comma-separated email recipients
 }
 
@@ -528,15 +528,20 @@ function createJobExecutor(schedule: ScheduleConfig) {
         // ---- Daily CRM cycle (folded — no standalone timers) ----
         // Runs AFTER the digest email so CRM latency can never delay the
         // operator's morning touchpoint. Each step isolated + non-fatal.
-        // Enrichment + contact discovery are gated: their xAI web_search
-        // engine was retired 2026-07-11 (they'd fail every cycle). Notion
-        // sync below stays on so the CRM reflects current org_profiles.
+        // Deterministic derived fields are always refreshed. External
+        // enrichment and contact discovery remain behind the spend gate.
+        try {
+          const { computeDerivedFields } = await import('./org-enricher');
+          await computeDerivedFields();
+          console.log('[Scheduler] Daily CRM: derived fields refreshed');
+        } catch (e) {
+          console.error('[Scheduler] Daily CRM derived-field refresh failed (non-fatal):', e);
+        }
         if (config.crm.enrichEnabled) {
           try {
-            const { enrichBatch, computeDerivedFields } = await import('./org-enricher');
+            const { enrichBatch } = await import('./org-enricher');
             await enrichBatch({ limit: 40 });
-            await computeDerivedFields();
-            console.log('[Scheduler] Daily CRM: org enrichment + derived fields done');
+            console.log('[Scheduler] Daily CRM: org enrichment done');
           } catch (e) {
             console.error('[Scheduler] Daily CRM enrichment failed (non-fatal):', e);
           }

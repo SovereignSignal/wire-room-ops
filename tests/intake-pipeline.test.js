@@ -23,6 +23,12 @@ dedup.finalizeExistingEntryDedup = async (_pool, entry) => {
   return { outcome: 'unique' };
 };
 
+const programIdentity = require('../src/services/program-identity');
+const programFinalizations = [];
+programIdentity.finalizeProgramForEntry = async (_pool, entry, resolution) => {
+  programFinalizations.push({ entry, resolution });
+};
+
 const { processRawEntries } = require('../src/jobs/process-raw');
 
 /** Stub pool that routes by SQL substring, records every call (params deep-
@@ -61,6 +67,11 @@ test('stranded deduped rows are recovered to the review queue after the safety w
   const recovery = pool.calls.find(c => c.sql.includes("classification = COALESCE(classification, 'UNCHECKED')"));
   assert.ok(recovery, 'deduped recovery update was not issued');
   assert.match(recovery.sql, /updated_at < NOW\(\) - \$1::interval/);
+  assert.match(
+    recovery.sql,
+    /duplicate_reason IS DISTINCT FROM 'URL already exists in seed history'/,
+    'terminal seed-history conflicts must stay parked',
+  );
   assert.deepEqual(recovery.params, ['15 minutes']);
 });
 
@@ -153,4 +164,97 @@ test('a poisoned row (registerSeen throws) cannot spin the loop: run terminates,
   const stats = await processRawEntries(pool);
   assert.equal(stats.queued, 0);
   assert.equal(batchCalls, 2, 'loop must stop after the exclusion empties the batch — not refetch the poisoned row');
+});
+
+test('classification evidence reaches Gate 2 and a successful in-scope grant CAS finalizes the corrected program identity', async () => {
+  let batchCalls = 0;
+  let classificationInput;
+  classifier.classifyEntry = async input => {
+    classificationInput = input;
+    return {
+      classification: 'GRANT',
+      reason: 'open and in scope',
+      qualityScore: 82,
+      scoreReason: 'strong evidence',
+      operatorRoute: 'publish',
+      tags: ['grant'],
+      inScope: true,
+      detectedWire: 'ai',
+      extracted: {},
+    };
+  };
+  programFinalizations.length = 0;
+  const row = {
+    id: 505,
+    name: 'AI Safety Compute Grants',
+    description: 'A funded compute program for artificial intelligence safety research teams.',
+    source_url: 'https://example.org/ai-safety-compute',
+    amount: '$100,000',
+    deadline: 'September 1, 2026',
+    deadline_parsed: '2026-09-01',
+    source_published_at: '2026-07-20T12:00:00Z',
+    wire: 'crypto',
+    scan_date: '2026-07-21',
+    prompt_id: null,
+    prompt_intent: 'discovery',
+  };
+  const pool = routingPool([
+    [RAW_BATCH, () => (++batchCalls === 1 ? { rows: [row] } : { rows: [] })],
+    ["WHERE id = $1 AND status = 'deduped'", { rows: [{ id: row.id }], rowCount: 1 }],
+    ['SET classification = $1', { rows: [{ id: row.id }], rowCount: 1 }],
+  ]);
+
+  await processRawEntries(pool);
+
+  assert.equal(classificationInput.amount, '$100,000');
+  assert.equal(classificationInput.deadlineParsed, '2026-09-01');
+  assert.equal(classificationInput.sourcePublishedAt, '2026-07-20T12:00:00Z');
+  assert.equal(programFinalizations.length, 1);
+  assert.equal(programFinalizations[0].entry.wire, 'ai');
+  assert.equal(programFinalizations[0].entry.deadline, '2026-09-01');
+  classifier.classifyEntry = async () => { throw new Error('classifier stubbed out in tests'); };
+});
+
+test('program identity is skipped for NEWS and for a lost classification CAS', async () => {
+  const runCase = async ({ id, classification, rowCount }) => {
+    let batchCalls = 0;
+    classifier.classifyEntry = async () => ({
+      classification,
+      reason: 'test classification',
+      qualityScore: 60,
+      scoreReason: 'test',
+      operatorRoute: 'source_check',
+      tags: [],
+      inScope: true,
+      detectedWire: 'oss',
+      extracted: {},
+    });
+    const row = {
+      id,
+      name: `Program guard ${id}`,
+      description: 'A sufficiently detailed opportunity used to validate the program handoff guard.',
+      source_url: `https://example.org/program-${id}`,
+      amount: null,
+      deadline: null,
+      deadline_parsed: null,
+      source_published_at: null,
+      wire: 'oss',
+      scan_date: '2026-07-21',
+      prompt_id: null,
+      prompt_intent: null,
+    };
+    const pool = routingPool([
+      [RAW_BATCH, () => (++batchCalls === 1 ? { rows: [row] } : { rows: [] })],
+      ["WHERE id = $1 AND status = 'deduped'", { rows: [{ id }], rowCount: 1 }],
+      ['SET classification = $1', { rows: rowCount ? [{ id }] : [], rowCount }],
+    ]);
+    await processRawEntries(pool);
+  };
+
+  programFinalizations.length = 0;
+  await runCase({ id: 506, classification: 'NEWS', rowCount: 1 });
+  await runCase({ id: 507, classification: 'GRANT', rowCount: 0 });
+
+  assert.equal(programFinalizations.length, 0);
+  classifier.classifyEntry = async () => { throw new Error('classifier stubbed out in tests'); };
 });

@@ -22,23 +22,23 @@ export function FilterBar({ filters, onFilterChange, verticals }: FilterBarProps
   };
 
   return (
-    <div className="flex items-center gap-4 p-4 glow-card">
-      <div className="flex items-center gap-2 text-xs text-muted-foreground font-display tracking-wider">
+    <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4 p-4 glow-card min-w-0">
+      <div className="flex items-center gap-2 text-xs text-muted-foreground font-display tracking-wider shrink-0">
         <SlidersHorizontal className="w-4 h-4 text-primary" />
         <span>FILTERS</span>
       </div>
       
-      <div className="h-6 w-px bg-border" />
+      <div className="hidden sm:block h-6 w-px bg-border" />
       
-      <div className="flex items-center gap-4 flex-1">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:flex lg:items-center gap-3 sm:gap-4 flex-1 w-full min-w-0">
         {/* Vertical Filter */}
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Vertical</span>
+        <div className="flex items-center justify-between sm:justify-start gap-2 min-w-0">
+          <span className="text-[10px] text-muted-foreground uppercase tracking-wider shrink-0">Vertical</span>
           <Select 
             value={filters.wire || 'all'} 
             onValueChange={(v) => onFilterChange({ ...filters, wire: v === 'all' ? null : v })}
           >
-            <SelectTrigger className="w-32 h-8 text-xs bg-muted/50 border-border font-mono">
+            <SelectTrigger className="flex-1 min-w-0 sm:flex-none sm:w-32 h-8 text-xs bg-muted/50 border-border font-mono">
               <SelectValue placeholder="All" />
             </SelectTrigger>
             <SelectContent className="bg-card border-border">
@@ -51,8 +51,8 @@ export function FilterBar({ filters, onFilterChange, verticals }: FilterBarProps
         </div>
 
         {/* Score Range Filter */}
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Signal</span>
+        <div className="flex items-center justify-between sm:justify-start gap-2 min-w-0">
+          <span className="text-[10px] text-muted-foreground uppercase tracking-wider shrink-0">Signal</span>
           <Select 
             value={filters.scoreMin?.toString() || 'all'} 
             onValueChange={(v) => {
@@ -67,7 +67,7 @@ export function FilterBar({ filters, onFilterChange, verticals }: FilterBarProps
               }
             }}
           >
-            <SelectTrigger className="w-32 h-8 text-xs bg-muted/50 border-border font-mono">
+            <SelectTrigger className="flex-1 min-w-0 sm:flex-none sm:w-32 h-8 text-xs bg-muted/50 border-border font-mono">
               <SelectValue placeholder="Any" />
             </SelectTrigger>
             <SelectContent className="bg-card border-border">
@@ -80,13 +80,13 @@ export function FilterBar({ filters, onFilterChange, verticals }: FilterBarProps
         </div>
 
         {/* Date Status Filter */}
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Timeline</span>
+        <div className="flex items-center justify-between sm:justify-start gap-2 min-w-0">
+          <span className="text-[10px] text-muted-foreground uppercase tracking-wider shrink-0">Timeline</span>
           <Select 
             value={filters.dateStatus} 
             onValueChange={(v) => onFilterChange({ ...filters, dateStatus: v as FilterState['dateStatus'] })}
           >
-            <SelectTrigger className="w-32 h-8 text-xs bg-muted/50 border-border font-mono">
+            <SelectTrigger className="flex-1 min-w-0 sm:flex-none sm:w-32 h-8 text-xs bg-muted/50 border-border font-mono">
               <SelectValue />
             </SelectTrigger>
             <SelectContent className="bg-card border-border">
@@ -104,7 +104,7 @@ export function FilterBar({ filters, onFilterChange, verticals }: FilterBarProps
           variant="ghost" 
           size="sm" 
           onClick={clearFilters}
-          className="gap-1.5 text-muted-foreground hover:text-foreground font-display text-[10px] tracking-wider"
+          className="gap-1.5 self-start sm:self-auto text-muted-foreground hover:text-foreground font-display text-[10px] tracking-wider"
         >
           <X className="w-3 h-3" />
           CLEAR

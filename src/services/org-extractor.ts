@@ -324,7 +324,7 @@ export async function extractOrgsFromEntries(
   }
 
   // Phase 2: Grok batch extraction for unresolved (chunks of 20)
-  if (needsGrok.length > 0 && config.apis.grok.apiKey) {
+  if (needsGrok.length > 0 && getCachedProvider('grok')?.api_key) {
     const CHUNK_SIZE = 20;
     for (let i = 0; i < needsGrok.length; i += CHUNK_SIZE) {
       const chunk = needsGrok.slice(i, i + CHUNK_SIZE);
@@ -374,7 +374,7 @@ ${entriesText}
 Return ONLY valid JSON array, no explanation.`;
 
   const provider = getCachedProvider('grok');
-  const apiKey = provider?.api_key || config.apis.grok.apiKey;
+  const apiKey = provider?.api_key;
   const baseUrl = provider?.base_url || config.apis.grok.baseUrl;
   const model = provider?.default_model || 'grok-4.20-beta-0309-non-reasoning';
 

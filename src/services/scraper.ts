@@ -1,7 +1,6 @@
-import { config } from '../config';
 import { sleep } from '../utils/async';
 import { logApiUsage } from './api-usage';
-import { getCachedProvider } from './api-provider';
+import { getCachedProvider, isProviderExplicitlyDisabled } from './api-provider';
 
 export interface ScrapeResult {
   success: boolean;
@@ -122,6 +121,18 @@ export async function extractAndResolveUrls(text: string): Promise<Map<string, s
 }
 
 export async function scrapeUrl(url: string): Promise<ScrapeResult> {
+  const provider = getCachedProvider('firecrawl');
+  if (!provider?.api_key) {
+    return {
+      success: false,
+      content: '',
+      url,
+      error: isProviderExplicitlyDisabled('firecrawl')
+        ? 'Firecrawl provider is disabled'
+        : 'Firecrawl API key not configured',
+    };
+  }
+
   let lastError: string | null = null;
 
   for (let attempt = 0; attempt < RETRY_DELAYS.length; attempt++) {
@@ -151,8 +162,9 @@ export async function scrapeUrl(url: string): Promise<ScrapeResult> {
 
 async function scrapeWithFirecrawl(url: string): Promise<ScrapeResult> {
   const provider = getCachedProvider('firecrawl');
-  const apiKey = provider?.api_key || config.apis.firecrawl.apiKey;
-  const baseUrl = provider?.base_url || config.apis.firecrawl.baseUrl;
+  if (!provider?.api_key) throw new Error('Firecrawl provider unavailable');
+  const apiKey = provider.api_key;
+  const baseUrl = provider.base_url || 'https://api.firecrawl.dev/v1';
   const start = Date.now();
 
   const response = await fetch(`${baseUrl}/scrape`, {

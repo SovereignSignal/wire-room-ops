@@ -137,6 +137,7 @@ test('summary-sync inserts URL-backed summary as queued source_check', async () 
   const ins = pool._inserteds[0];
   // status 'queued' and operator_route 'source_check' are SQL literals, not params
   assert.match(ins.sql, /'queued'/i, 'status must be queued');
+  assert.match(ins.sql, /'queued', NULL/i, 'summary bridge rows must remain unscored');
   assert.match(ins.sql, /'source_check'/i, 'operator_route must be source_check');
   assert.match(ins.sql, /RETURNING id/i, 'insert must return id for registerSeen');
   assert.equal(ins.params[0], 'Tarbell Grants for AI Accountability Reporting');

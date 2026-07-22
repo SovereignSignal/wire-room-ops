@@ -124,7 +124,7 @@ test('runXLists: budget blocked skips every list — no fetch calls at all', asy
   assert.deepEqual(result.perList, []);
 });
 
-test('runXLists: dry run fetches, meters, and advances the watermark, but does not submit', async () => {
+test('runXLists: dry run fetches and meters without consuming fresh posts', async () => {
   const tweets = [tweet('203'), tweet('202'), tweet('105')]; // 105 < the '200' watermark below
   const submitCalls = [];
   const setStateCalls = [];
@@ -142,14 +142,39 @@ test('runXLists: dry run fetches, meters, and advances the watermark, but does n
   assert.equal(result.ran, true);
   assert.equal(submitCalls.length, 0, 'dry run must not submit');
   assert.deepEqual(meterCalls, [3, 3], 'metering happens regardless of dry-run');
-  assert.equal(setStateCalls.length, 2, 'watermark still advances in dry-run');
-  for (const call of setStateCalls) assert.equal(call.value, '203');
+  assert.equal(setStateCalls.length, 0, 'dry-run findings must remain available for a later live run');
   for (const row of result.perList) {
     assert.equal(row.baseline, false);
     assert.equal(row.fetched, 3);
     assert.equal(row.fresh, 2, 'ids 203 and 202 are newer than the 200 watermark; 105 is not');
     assert.equal(row.submitted, 0);
   }
+});
+
+test('runXLists: transient intake failure advances only through the durable contiguous prefix and preserves wire', async () => {
+  const tweets = [tweet('203'), tweet('202'), tweet('201')];
+  const submitCalls = [];
+  const setStateCalls = [];
+  const deps = baseDeps({
+    fetchListTweets: async () => ({ tweets, authors: new Map([['a1', 'author']]) }),
+    getState: async () => '200',
+    setState: async (key, value) => setStateCalls.push({ key, value }),
+    submit: async (message, source, options) => {
+      submitCalls.push({ id: message.channelMessageId, source, options });
+      if (message.channelMessageId === '202') return { status: 'error', errorMessage: 'temporary database outage' };
+      return { status: 'inserted' };
+    },
+  });
+
+  const result = await runXLists({}, { dryRun: false }, deps);
+
+  assert.deepEqual(submitCalls.map(c => c.id), ['201', '202', '201', '202'], 'each list must stop before newer tweet 203');
+  assert.ok(submitCalls.every(c => c.source === 'x-list'));
+  assert.deepEqual(submitCalls.map(c => c.options.wireHint), ['crypto', 'crypto', 'ai', 'ai']);
+  assert.equal(setStateCalls.length, 2);
+  assert.ok(setStateCalls.every(c => c.value === '201'), 'watermark must stop at the last durable tweet');
+  assert.ok(result.perList.every(row => row.error === 'temporary database outage'));
+  assert.ok(result.perList.every(row => row.submitted === 1));
 });
 
 test('runXLists: RATE_LIMITED on the first list aborts the run — the second list is never fetched', async () => {

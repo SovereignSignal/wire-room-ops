@@ -34,12 +34,12 @@ export interface BdVerifyResult {
 
 function creds(): { apiKey?: string; baseUrl: string } {
   const p = getCachedProvider('parallel');
-  return { apiKey: p?.api_key || process.env.PARALLEL_API_KEY, baseUrl: p?.base_url || PARALLEL_BASE };
+  return { apiKey: p?.api_key || undefined, baseUrl: p?.base_url || PARALLEL_BASE };
 }
 
 export function bdVerifyAvailable(): boolean {
   const p = getCachedProvider('parallel');
-  return Boolean(p?.api_key || process.env.PARALLEL_API_KEY);
+  return Boolean(p?.api_key);
 }
 
 const BD_SCHEMA = {
@@ -103,7 +103,7 @@ async function verifyOne(item: BdVerifyInput): Promise<BdVerifyResult | null> {
       };
       return {
         id: item.id,
-        is_real: (content as { is_real?: boolean }).is_real !== false,
+        is_real: (content as { is_real?: boolean }).is_real === true,
         currently_active: (content as { currently_active?: boolean }).currently_active === true,
         last_activity: clean((content as { last_activity?: unknown }).last_activity),
         status_summary: clean((content as { status_summary?: unknown }).status_summary),
@@ -115,6 +115,18 @@ async function verifyOne(item: BdVerifyInput): Promise<BdVerifyResult | null> {
   } catch {
     return null;
   }
+}
+
+export function isUsableBdVerification(result: BdVerifyResult | null): result is BdVerifyResult {
+  return Boolean(
+    result
+    && result.is_real === true
+    && result.currently_active === true
+    && result.status_summary
+    && result.citationUrl
+    && /^https:\/\//i.test(result.citationUrl)
+    && (result.confidence === 'medium' || result.confidence === 'high')
+  );
 }
 
 /** Verify a batch via per-item Parallel Tasks with bounded concurrency. */

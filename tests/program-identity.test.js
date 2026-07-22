@@ -1,6 +1,9 @@
 require('ts-node/register/transpile-only');
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const db = require('../src/db');
+const { config } = require('../src/config');
+const { refreshProviderCache } = require('../src/services/api-provider');
 const { normalizeProgramKey } = require('../src/services/program-identity');
 
 // Real corpus variants — one program, one key.
@@ -99,6 +102,26 @@ test('resolveProgram: org mismatch vetoes non-key matches', async () => {
   assert.equal(m, null, 'different org must not fuzzy-match');
 });
 
+test('resolveProgram: org mismatch vetoes an exact normalized-key collision', async () => {
+  const pool = programPool([fakeProgram()]);
+  const m = await resolveProgram(pool, {
+    name: 'Anthropic Fellows Program 2027',
+    orgName: 'OpenAI',
+    wire: 'ai',
+  });
+  assert.equal(m, null);
+});
+
+test('resolveProgram: wire mismatch requires matching org or canonical domain', async () => {
+  const pool = programPool([fakeProgram()]);
+  assert.equal(await resolveProgram(pool, { name: 'Anthropic Fellows Program 2027', wire: 'oss' }), null);
+  assert.ok(await resolveProgram(pool, {
+    name: 'Anthropic Fellows Program 2027',
+    wire: 'oss',
+    sourceUrl: 'https://alignment.anthropic.com/apply',
+  }));
+});
+
 test('resolveProgram: no rows → null', async () => {
   const m = await resolveProgram(programPool([]), { name: 'Brand New Thing Grants' });
   assert.equal(m, null);
@@ -132,6 +155,8 @@ test('historyLine composes the display string', () => {
 const {
   createProgram,
   recordSighting,
+  normalizeProgramDeadline,
+  refreshProgramCounters,
   canonicalizeBatch,
   finalizeProgramForEntry,
   parseCanonicalizationContent,
@@ -163,7 +188,15 @@ test('createProgram disambiguates the key when the same key belongs to a differe
   assert.match(insert.params[1], /--brandco$/, 'key must carry the org disambiguator');
 });
 
-test('canonicalizeBatch parses the LLM JSON and survives junk', async () => {
+test('canonicalizeBatch parses the LLM JSON and survives junk', async (t) => {
+  const previousKey = config.apis.grok.apiKey;
+  config.apis.grok.apiKey = 'unit-test-key';
+  t.mock.method(db, 'getPool', () => ({ query: async () => ({ rows: [] }) }));
+  await refreshProviderCache();
+  t.after(async () => {
+    config.apis.grok.apiKey = previousKey;
+    await refreshProviderCache();
+  });
   const fetchImpl = async () => ({
     ok: true,
     json: async () => ({ choices: [{ message: { content: '[{"id": 7, "org": "Anthropic", "program": "Anthropic Fellows Program", "round_label": "sept 2026 cohort"}]' } }] }),
@@ -245,6 +278,21 @@ test('recordSighting never writes an epoch sentinel into latest_deadline', async
   const sql = pool.calls[0].sql;
   assert.ok(!sql.includes("'1970-01-01'"), 'no epoch sentinel — NULLs must stay NULL');
   assert.match(sql, /latest_deadline = CASE/);
+});
+
+test('recordSighting drops rolling and malformed deadline text before the date cast', async () => {
+  const pool = programPool([]);
+  await recordSighting(pool, 5, { name: 'X', deadline: 'Rolling' });
+  assert.equal(pool.calls[0].params[4], null);
+  assert.equal(normalizeProgramDeadline('2026-02-30'), null);
+  assert.equal(normalizeProgramDeadline('2026-07-21'), '2026-07-21');
+});
+
+test('refreshProgramCounters derives mutable history from linked entries', async () => {
+  const pool = programPool([{ id: 5 }]);
+  assert.equal(await refreshProgramCounters(pool, [5, 5, Number.NaN]), 1);
+  assert.match(pool.calls[0].sql, /approved_count = s\.approved/);
+  assert.deepEqual(pool.calls[0].params, [[5]]);
 });
 
 // ── Task 8: Link introspection ────────────────────────────────────────

@@ -80,6 +80,18 @@ export function filterNewTweets(tweets: ListTweet[], sinceId: string | null): Li
   return tweets.filter(t => { try { return BigInt(t.id) > since; } catch { return false; } });
 }
 
+function sortTweetsOldestFirst(tweets: ListTweet[]): ListTweet[] {
+  return [...tweets].sort((a, b) => {
+    try {
+      const left = BigInt(a.id);
+      const right = BigInt(b.id);
+      return left < right ? -1 : left > right ? 1 : 0;
+    } catch {
+      return a.id.localeCompare(b.id);
+    }
+  });
+}
+
 async function fetchListTweets(
   listId: string,
   token: string,
@@ -146,18 +158,48 @@ export async function runXLists(pool: Pool, opts: { dryRun?: boolean } = {}, dep
       const baseline = !sinceId;
       const fresh = filterNewTweets(tweets, sinceId || null);
       let submitted = 0;
+      let intakeError: string | undefined;
+      let durableThrough: string | null = null;
       if (!baseline && !dryRun) {
-        for (const tweet of fresh) {
+        // Process oldest-first so the watermark always describes one
+        // contiguous durable prefix. A transient error stops newer posts from
+        // being attempted or hidden behind an advanced checkpoint.
+        for (const tweet of sortTweetsOldestFirst(fresh)) {
           const author = (tweet.author_id && authors.get(tweet.author_id)) || 'unknown';
-          const result = await submitImpl(tweetToIntakeMessage(tweet, wire, author), 'x-list');
+          let result;
+          try {
+            result = await submitImpl(
+              tweetToIntakeMessage(tweet, wire, author),
+              'x-list',
+              { wireHint: wire },
+            );
+          } catch (err) {
+            intakeError = err instanceof Error ? err.message : String(err);
+            break;
+          }
           if (result.status === 'inserted') submitted++;
+          if (result.status === 'error') {
+            intakeError = result.errorMessage || `Intake failed for tweet ${tweet.id}`;
+            break;
+          }
+          // Inserted and rejected are both durable outcomes. Rejected inputs
+          // are deterministic duplicates or validation failures and should not
+          // pin the lane forever.
+          durableThrough = tweet.id;
         }
       }
-      if (tweets.length > 0) {
-        await setStateImpl(stateKey, tweets[0].id); // API returns newest first
+      if (baseline && tweets.length > 0) {
+        // First run intentionally establishes history without submitting it.
+        const newest = sortTweetsOldestFirst(tweets).at(-1);
+        if (newest) await setStateImpl(stateKey, newest.id);
+      } else if (durableThrough) {
+        await setStateImpl(stateKey, durableThrough);
       }
-      perList.push({ wire, listId, fetched: tweets.length, fresh: fresh.length, submitted, baseline });
-      console.log(`[XLists] ${wire} (${listId}): ${tweets.length} fetched, ${fresh.length} fresh, ${submitted} submitted${baseline ? ' (baseline run, watermark set)' : ''}${dryRun ? ' [DRY RUN]' : ''}`);
+      perList.push({ wire, listId, fetched: tweets.length, fresh: fresh.length, submitted, baseline, ...(intakeError ? { error: intakeError } : {}) });
+      const dryRunLabel = dryRun
+        ? baseline ? ' [DRY RUN]' : ' [DRY RUN, watermark unchanged]'
+        : '';
+      console.log(`[XLists] ${wire} (${listId}): ${tweets.length} fetched, ${fresh.length} fresh, ${submitted} submitted${baseline ? ' (baseline run, watermark set)' : ''}${dryRunLabel}${intakeError ? ` [INTAKE STOP: ${intakeError}]` : ''}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logApiUsage({ provider: 'twitter', model: 'list-timeline', purpose: 'watchtower-x-list', wire, duration_ms: Date.now() - start, success: false, error_message: msg });

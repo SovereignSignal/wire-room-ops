@@ -17,9 +17,8 @@
  * - tier from entry_count + avg_quality_score rules
  */
 
-import { config } from '../config';
 import { getPool } from '../db';
-import { getCachedProvider } from './api-provider';
+import { getCachedProvider, isProviderExplicitlyDisabled } from './api-provider';
 import { logApiUsage } from './api-usage';
 import { findDeadUrlFields } from './url-verify';
 
@@ -59,55 +58,102 @@ export interface EnrichedOrg {
 // Pure parse/validate function (exported for testing)
 // ============================================================
 
+export class EnrichmentResponseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'EnrichmentResponseError';
+  }
+}
+
+function parseSafeId(value: unknown): number {
+  const normalized = typeof value === 'string' && /^\d+$/.test(value.trim())
+    ? Number(value.trim())
+    : value;
+  if (typeof normalized !== 'number' || !Number.isSafeInteger(normalized) || normalized <= 0) {
+    throw new EnrichmentResponseError('response contains a missing or invalid org id');
+  }
+  return normalized;
+}
+
+function nullableString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function nullableHttpUrl(value: unknown): string | null {
+  const candidate = nullableString(value);
+  if (!candidate) return null;
+  try {
+    const parsed = new URL(candidate);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Parse and validate a raw JSON string returned by Grok enrichment.
- * Strips markdown fences, validates per-field, returns [] on any parse error.
+ * Invalid JSON, empty arrays, unsafe IDs, duplicates, and IDs outside the
+ * submitted batch throw so callers cannot partially write uncertain data.
  */
-export function parseEnrichmentResponse(text: string): EnrichedOrg[] {
+export function parseEnrichmentResponse(
+  text: string,
+  allowedIds?: ReadonlySet<number>,
+): EnrichedOrg[] {
   // Strip markdown code fences
   const stripped = text.replace(/^```[\w]*\n?/m, '').replace(/\n?```$/m, '').trim();
 
   // Extract JSON array
   const arrayMatch = stripped.match(/\[[\s\S]*\]/);
-  if (!arrayMatch) return [];
+  if (!arrayMatch) throw new EnrichmentResponseError('response does not contain a JSON array');
 
   let parsed: unknown[];
   try {
     const result = JSON.parse(arrayMatch[0]);
-    if (!Array.isArray(result)) return [];
+    if (!Array.isArray(result)) throw new EnrichmentResponseError('response JSON must be an array');
     parsed = result;
-  } catch {
-    return [];
+  } catch (err) {
+    if (err instanceof EnrichmentResponseError) throw err;
+    throw new EnrichmentResponseError('response contains malformed JSON');
   }
 
-  return parsed.flatMap((item) => {
+  if (parsed.length === 0) throw new EnrichmentResponseError('response array is empty');
+
+  const seenIds = new Set<number>();
+  return parsed.map((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new EnrichmentResponseError('response contains a non-object item');
+    }
     const o = item as Record<string, unknown>;
+    const id = parseSafeId(o.id);
+    if (seenIds.has(id)) throw new EnrichmentResponseError(`response contains duplicate org id ${id}`);
+    if (allowedIds && !allowedIds.has(id)) {
+      throw new EnrichmentResponseError(`response contains org id ${id} outside the submitted batch`);
+    }
+    seenIds.add(id);
 
-    const isHttpUrl = (v: unknown): boolean =>
-      typeof v === 'string' && v.startsWith('http');
+    const tags = Array.isArray(o.tags)
+      ? [...new Set(o.tags
+        .filter((tag): tag is string => typeof tag === 'string' && tag.trim().length > 0)
+        .map(tag => tag.trim()))].slice(0, 5)
+      : [];
 
-    const id = Number(o['id']);
-    if (Number.isNaN(id)) return [];
-
-    return [{
+    return {
       id,
-      org_type: typeof o['org_type'] === 'string' && VALID_ORG_TYPES.includes(o['org_type'])
-        ? o['org_type']
+      org_type: typeof o.org_type === 'string' && VALID_ORG_TYPES.includes(o.org_type.trim())
+        ? o.org_type.trim()
         : null,
-      source_type: typeof o['source_type'] === 'string' && VALID_SOURCE_TYPES.includes(o['source_type'])
-        ? o['source_type']
+      source_type: typeof o.source_type === 'string' && VALID_SOURCE_TYPES.includes(o.source_type.trim())
+        ? o.source_type.trim()
         : null,
-      website: isHttpUrl(o['website']) ? (o['website'] as string) : null,
-      twitter: isHttpUrl(o['twitter']) ? (o['twitter'] as string) : null,
-      github_url: isHttpUrl(o['github_url']) ? (o['github_url'] as string) : null,
-      description: typeof o['description'] === 'string' ? o['description'] : null,
-      tags: Array.isArray(o['tags'])
-        ? (o['tags'] as unknown[]).slice(0, 5).map(String)
-        : [],
-      last_signal: typeof o['last_signal'] === 'string' ? o['last_signal'] : null,
-      operator_read: typeof o['operator_read'] === 'string' ? o['operator_read'] : null,
-      source: isHttpUrl(o['source']) ? (o['source'] as string) : null,
-    }];
+      website: nullableHttpUrl(o.website),
+      twitter: nullableHttpUrl(o.twitter),
+      github_url: nullableHttpUrl(o.github_url),
+      description: nullableString(o.description),
+      tags,
+      last_signal: nullableString(o.last_signal),
+      operator_read: nullableString(o.operator_read),
+      source: nullableHttpUrl(o.source),
+    };
   });
 }
 
@@ -136,18 +182,24 @@ export async function enrichOrgs(
   orgs: Array<{ id: number; name: string; wires: string[]; entry_count: number }>
 ): Promise<Map<number, EnrichedOrg>> {
   const results = new Map<number, EnrichedOrg>();
+  if (orgs.length === 0) return results;
 
-  const provider = getCachedProvider('grok');
-  const apiKey = provider?.api_key || config.apis.grok.apiKey;
-
-  if (!apiKey) {
-    console.warn('[OrgEnricher] No Grok API key — skipping enrichment');
-    return results;
+  const allowedIds = new Set(orgs.map(org => org.id));
+  if (allowedIds.size !== orgs.length || [...allowedIds].some(id => !Number.isSafeInteger(id) || id <= 0)) {
+    throw new Error('Org enrichment input contains unsafe or duplicate IDs');
   }
 
+  const provider = getCachedProvider('grok');
+  if (!provider?.api_key) {
+    throw new Error(isProviderExplicitlyDisabled('grok')
+      ? 'Grok provider is disabled'
+      : 'Grok API key not configured');
+  }
+  const apiKey = provider.api_key;
+
   // Strip trailing /v1 to build the Responses API URL (mirrors grok.ts line 176)
-  const baseUrl = (provider?.base_url || config.apis.grok.baseUrl).replace(/\/v1$/, '');
-  const model = provider?.default_model || ENRICH_MODEL;
+  const baseUrl = (provider.base_url || 'https://api.x.ai/v1').replace(/\/v1$/, '');
+  const model = provider.default_model || ENRICH_MODEL;
 
   const orgList = orgs.map((o, i) =>
     `${i + 1}. [ID:${o.id}] "${o.name}" (wires: ${o.wires.join(', ')}, entries: ${o.entry_count})`
@@ -205,7 +257,17 @@ ${orgList}`;
     throw new Error(`Grok returned ${response.status}: ${errorText}`);
   }
 
-  const data = await response.json() as ResponsesAPIResponse;
+  let data: ResponsesAPIResponse;
+  try {
+    data = await response.json() as ResponsesAPIResponse;
+  } catch {
+    const error = new EnrichmentResponseError('malformed Grok API response JSON');
+    logApiUsage({
+      provider: 'grok', model, purpose: 'org-enrichment', duration_ms: Date.now() - start,
+      success: false, error_message: error.message,
+    });
+    throw error;
+  }
 
   // Extract text from the Responses API output (mirrors grok.ts lines 203-211)
   let content = '';
@@ -219,21 +281,23 @@ ${orgList}`;
     }
   }
 
+  let enriched: EnrichedOrg[];
+  try {
+    enriched = parseEnrichmentResponse(content, allowedIds);
+  } catch (err) {
+    logApiUsage({
+      provider: 'grok', model, purpose: 'org-enrichment', duration_ms: Date.now() - start,
+      tokens_in: data.usage?.input_tokens, tokens_out: data.usage?.output_tokens,
+      success: false,
+      error_message: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
+
   logApiUsage({
     provider: 'grok', model, purpose: 'org-enrichment', duration_ms: Date.now() - start,
     tokens_in: data.usage?.input_tokens, tokens_out: data.usage?.output_tokens,
   });
-
-  if (!content) {
-    console.warn('[OrgEnricher] No text content in Grok Responses API reply');
-    return results;
-  }
-
-  const enriched = parseEnrichmentResponse(content.trim());
-  if (enriched.length === 0) {
-    console.warn('[OrgEnricher] No JSON array in Grok response');
-    return results;
-  }
 
   for (const item of enriched) {
     results.set(item.id, item);
@@ -331,14 +395,12 @@ export async function enrichBatch(opts?: {
         }
       }
 
-      // Mark orgs that weren't in the response as enriched (with no data) to avoid re-processing
-      for (const org of chunk) {
-        if (!enrichments.has(org.id)) {
-          await pool.query(
-            `UPDATE org_profiles SET enriched_at = NOW(), updated_at = NOW() WHERE id = $1 AND enriched_at IS NULL`,
-            [org.id]
-          );
-        }
+      // Partial responses are retryable failures. Leave omitted rows unstamped
+      // so the next enrichment cycle can recover them.
+      const omittedCount = chunk.filter(org => !enrichments.has(org.id)).length;
+      if (omittedCount > 0) {
+        console.warn(`[OrgEnricher] Grok omitted ${omittedCount}/${chunk.length} orgs; leaving them eligible for retry`);
+        stats.errors += omittedCount;
       }
     } catch (err) {
       console.error(`[OrgEnricher] Batch failed:`, err);
@@ -396,6 +458,7 @@ export async function enrichSingleOrg(orgId: number): Promise<void> {
           twitter = COALESCE($4, twitter),
           github_url = COALESCE($5, github_url),
           description = COALESCE($6, description),
+          operator_read = COALESCE($11, operator_read),
           tags = CASE WHEN array_length($7::text[],1) IS NULL THEN tags
                       ELSE (SELECT ARRAY(SELECT DISTINCT unnest(COALESCE(tags,'{}') || $7::text[]))) END,
           last_signal = $8,
@@ -407,15 +470,12 @@ export async function enrichSingleOrg(orgId: number): Promise<void> {
           data.org_type, data.source_type, data.website, data.twitter,
           data.github_url, data.description,
           data.tags.length > 0 ? data.tags : null,
-          data.last_signal, data.source, orgId,
+          data.last_signal, data.source, orgId, data.operator_read,
         ]
       );
     } else {
-      // Mark as enriched even if no data returned
-      await pool.query(
-        `UPDATE org_profiles SET enriched_at = NOW(), updated_at = NOW() WHERE id = $1 AND enriched_at IS NULL`,
-        [orgId]
-      );
+      console.warn(`[OrgEnricher] Grok omitted org id=${orgId}; leaving it eligible for retry`);
+      return;
     }
 
     console.log(`[OrgEnricher] Enriched org id=${orgId} "${org.name}"`);

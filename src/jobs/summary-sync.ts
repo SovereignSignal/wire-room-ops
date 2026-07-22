@@ -299,9 +299,8 @@ export async function syncSummariesToScanEntries(
           }
           transactionOutcome = 'skipped';
         } else {
-          // Insert as a queued review candidate. quality_breakdown carries the
-          // operator_route so the queue UI shows it as source_check; metadata
-          // preserves the summary_id bridge key for future idempotency.
+          // Insert as an unscored review candidate. Routing lives in metadata;
+          // a bridge default must never masquerade as a classifier score.
           const inserted = await client.query(`
             INSERT INTO scan_entries (
               name, description, source_url, amount, deadline,
@@ -311,7 +310,7 @@ export async function syncSummariesToScanEntries(
             ) VALUES (
               $1, $2, $3, $4, $5,
               $6, 'N', 'telegram', $7,
-              'queued', 70,
+              'queued', NULL,
               $8, 'UNCHECKED',
               jsonb_build_object('summary_id', $9::text, 'summary_sync', true, 'operator_route', 'source_check', 'source_needs_verification', $10::boolean),
               $11, $12, $10
@@ -324,7 +323,7 @@ export async function syncSummariesToScanEntries(
             deadline,
             wire,
             scanDate,
-            JSON.stringify({ scoreReason: 'Summary sync bridge (tele-sum → scan_entries)', operatorRoute: 'source_check' }),
+            JSON.stringify({ scoreStatus: 'unscored', source: 'summary-sync' }),
             String(row.summary_id),
             !realUrl,
             tags,

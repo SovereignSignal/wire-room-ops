@@ -7,9 +7,10 @@ import { logApiUsage } from './api-usage';
 import { getCachedProvider } from './api-provider';
 
 function getResend(): Resend {
-  // Check provider cache first (Settings > API Providers UI), fall back to env var
+  // The provider cache already contains the environment fallback. A disabled
+  // DB row must remain a real kill switch.
   const provider = getCachedProvider('resend');
-  const apiKey = provider?.api_key || config.email.resendApiKey;
+  const apiKey = provider?.api_key;
   if (!apiKey) {
     throw new Error('Resend API key not configured. Set RESEND_API_KEY or configure via Settings > API Providers.');
   }

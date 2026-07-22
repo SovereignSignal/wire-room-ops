@@ -1,9 +1,8 @@
-import { config } from '../config';
 import { getBrand } from '../config/brand';
 import { DatabaseEntry } from '../types';
 import type { ScanUsagePurpose, ToolType } from '../types/intake';
 import { logApiUsage } from './api-usage';
-import { getCachedProvider } from './api-provider';
+import { getCachedProvider, isProviderExplicitlyDisabled } from './api-provider';
 import { fetchThreadContext, type ThreadContext } from './x-thread';
 import { getPool } from '../db';
 
@@ -46,6 +45,17 @@ interface GrokResponse {
 
 // Default model if none specified - grok-4.20 non-reasoning: ~2x faster than grok-4.1, same quality
 const DEFAULT_GROK_MODEL = 'grok-4.20-beta-0309-non-reasoning';
+const DEFAULT_GROK_BASE_URL = 'https://api.x.ai/v1';
+
+function requireGrokProvider() {
+  const provider = getCachedProvider('grok');
+  if (!provider?.api_key) {
+    throw new Error(isProviderExplicitlyDisabled('grok')
+      ? 'Grok provider is disabled'
+      : 'Grok API key not configured');
+  }
+  return provider;
+}
 
 export async function summarizeWithGrok(entry: DatabaseEntry, model?: string): Promise<string> {
   // Fetch thread context for X.com URLs
@@ -95,10 +105,10 @@ REQUIREMENTS:
       .replace('{url}', entry.url);
   }
 
-  const provider = getCachedProvider('grok');
-  const apiKey = provider?.api_key || config.apis.grok.apiKey;
-  const baseUrl = provider?.base_url || config.apis.grok.baseUrl;
-  const useModel = model || provider?.default_model || DEFAULT_GROK_MODEL;
+  const provider = requireGrokProvider();
+  const apiKey = provider.api_key;
+  const baseUrl = provider.base_url || DEFAULT_GROK_BASE_URL;
+  const useModel = model || provider.default_model || DEFAULT_GROK_MODEL;
   const start = Date.now();
 
   const response = await fetch(`${baseUrl}/chat/completions`, {
@@ -166,8 +176,8 @@ export async function executeScanPrompt(
   promptText: string,
   options?: { model?: string; responseFormat?: string | null; toolType?: ToolType; usagePurpose?: ScanUsagePurpose }
 ): Promise<{ content: string; model: string; tokensUsed?: number }> {
-  const provider = getCachedProvider('grok');
-  const model = options?.model || provider?.default_model || DEFAULT_SCAN_MODEL;
+  const provider = requireGrokProvider();
+  const model = options?.model || provider.default_model || DEFAULT_SCAN_MODEL;
   const usagePurpose = options?.usagePurpose || 'scan';
 
   if (!supportsGrokSearchTools(model)) {
@@ -183,8 +193,8 @@ export async function executeScanPrompt(
     fullPrompt += `\n\nRespond using this format:\n${options.responseFormat}`;
   }
 
-  const apiKey = provider?.api_key || config.apis.grok.apiKey;
-  const baseUrl = (provider?.base_url || config.apis.grok.baseUrl).replace(/\/v1$/, '');
+  const apiKey = provider.api_key;
+  const baseUrl = (provider.base_url || DEFAULT_GROK_BASE_URL).replace(/\/v1$/, '');
   const start = Date.now();
 
   // Use the Responses API with x_search tool for real-time X.com scanning

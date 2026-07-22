@@ -251,7 +251,7 @@ export async function createNotionContact(
  */
 export async function grokWebSearch(prompt: string): Promise<string> {
   const provider = getCachedProvider('grok');
-  const apiKey = provider?.api_key || config.apis.grok.apiKey;
+  const apiKey = provider?.api_key;
   if (!apiKey) throw new Error('[ContactDiscovery] No Grok API key available');
 
   // Strip trailing /v1 to build the Responses API URL (mirrors org-enricher.ts line 147)

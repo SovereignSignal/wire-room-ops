@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ExternalLink, RefreshCw } from 'lucide-react';
+import { AlertTriangle, ExternalLink, RefreshCw } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -48,9 +48,13 @@ export function GrantsIntelTab() {
   const [routing, setRouting] = useState('wire_queue_candidate');
   const [track, setTrack] = useState('all');
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [total, setTotal] = useState(0);
+  const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const [summaryData, observationData] = await Promise.all([
         fetchGrantsIntelSummary(),
@@ -63,14 +67,43 @@ export function GrantsIntelTab() {
       ]);
       setSummary(summaryData);
       setObservations(observationData.observations || []);
+      setTotal(observationData.total || 0);
+    } catch (cause) {
+      console.error('Failed to load grants intelligence:', cause);
+      setError(cause instanceof Error ? cause.message : 'Grants intelligence is unavailable');
     } finally {
       setLoading(false);
     }
   }, [routing, track, wire]);
 
   useEffect(() => {
-    load();
+    setObservations([]);
+    setTotal(0);
+    void load();
   }, [load]);
+
+  const loadMore = useCallback(async () => {
+    if (loadingMore || observations.length >= total) return;
+    setLoadingMore(true);
+    try {
+      const page = await fetchGrantsIntelObservations({
+        wire: wire === 'all' ? undefined : wire,
+        routing: routing === 'all' ? undefined : routing,
+        track: track === 'all' ? undefined : track,
+        limit: 100,
+        offset: observations.length,
+      });
+      setObservations(current => {
+        const seen = new Set(current.map(item => item.id));
+        return [...current, ...page.observations.filter(item => !seen.has(item.id))];
+      });
+      setTotal(page.total || total);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not load more grants intelligence');
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [loadingMore, observations.length, routing, total, track, wire]);
 
   const matchCounts = useMemo(() => {
     return observations.reduce<Record<string, number>>((acc, item) => {
@@ -79,12 +112,8 @@ export function GrantsIntelTab() {
     }, {});
   }, [observations]);
 
-  const pillars = summary?.pillars || {
-    landscape_observations: 0,
-    opportunity_candidates: 0,
-    wire_candidates: 0,
-    writing_inputs: 0,
-  };
+  const pillars = summary?.pillars;
+  const missingValue = loading ? '…' : error ? '—' : 0;
 
   return (
     <div className="space-y-6">
@@ -101,12 +130,58 @@ export function GrantsIntelTab() {
         </Button>
       </div>
 
+      {error && (
+        <div className="rounded-lg border border-status-danger/40 bg-status-danger/10 p-4 flex flex-col sm:flex-row sm:items-center gap-3" role="alert">
+          <div className="flex items-start gap-3 min-w-0">
+            <AlertTriangle className="w-5 h-5 text-status-danger shrink-0 mt-0.5" />
+            <div className="min-w-0">
+              <p className="font-display text-xs tracking-wider text-status-danger">GRANTS INTEL UNAVAILABLE</p>
+              <p className="text-xs text-muted-foreground mt-1 break-words">{error}</p>
+            </div>
+          </div>
+          <Button onClick={load} disabled={loading} variant="outline" size="sm" className="sm:ml-auto shrink-0 gap-2">
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            Retry
+          </Button>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <StatCard label="Landscape map" value={pillars.landscape_observations} note="observations captured" />
-        <StatCard label="Opps + network" value={pillars.opportunity_candidates} note="reviewable signals" />
-        <StatCard label="Wire candidates" value={pillars.wire_candidates} note="possible queue promos" />
-        <StatCard label="Writing inputs" value={pillars.writing_inputs} note="brief/signal material" />
+        <StatCard label="Landscape map" value={pillars?.landscape_observations ?? missingValue} note="observations captured" />
+        <StatCard label="Opps + network" value={pillars?.opportunity_candidates ?? missingValue} note="reviewable signals" />
+        <StatCard label="Wire candidates" value={pillars?.wire_candidates ?? missingValue} note="possible queue promos" />
+        <StatCard label="Writing inputs" value={pillars?.writing_inputs ?? missingValue} note="brief/signal material" />
       </div>
+
+      {summary && summary.sourceRuns.length > 0 && (
+        <div className="rounded-lg border border-border bg-card/70 p-4 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs uppercase tracking-widest text-muted-foreground font-display">Source lanes · 24h</p>
+              <p className="text-xs text-muted-foreground mt-1">Run health and normalized output by source.</p>
+            </div>
+            <span className="text-[10px] font-mono text-muted-foreground">{summary.sourceRuns.length} lane states</span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
+            {summary.sourceRuns.map(run => {
+              const healthy = run.status === 'success' || run.status === 'completed';
+              return (
+                <div key={`${run.track}-${run.source_name}-${run.status}`} className="rounded-md border border-border/70 bg-background/60 px-3 py-2.5 flex items-center gap-3">
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${healthy ? 'bg-status-success' : 'bg-status-danger'}`} aria-label={healthy ? 'healthy' : 'degraded'} />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-medium truncate">{run.source_name}</p>
+                    <p className="text-[10px] text-muted-foreground font-mono">Track {run.track} · {run.runs} run{run.runs === 1 ? '' : 's'} · {run.records_normalized} rows</p>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <p className={`text-[10px] uppercase font-display ${healthy ? 'text-status-success' : 'text-status-danger'}`}>{run.status}</p>
+                    <p className="text-[10px] text-muted-foreground font-mono">{formatDate(run.last_finished)}</p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       <div className="rounded-lg border border-border bg-card/70 p-4 space-y-3">
         <div className="flex flex-col md:flex-row md:items-center gap-3">
@@ -147,6 +222,7 @@ export function GrantsIntelTab() {
           <Badge className={badgeClass('new_to_wire_room')}>new: {matchCounts.new_to_wire_room || 0}</Badge>
           <Badge className={badgeClass('already_in_wire_room')}>already in Wire: {matchCounts.already_in_wire_room || 0}</Badge>
           <Badge className={badgeClass('known_grant_archive')}>archive match: {matchCounts.known_grant_archive || 0}</Badge>
+          <span className="ml-auto text-[10px] text-muted-foreground font-mono self-center">LOADED {observations.length} OF {total}</span>
         </div>
       </div>
 
@@ -166,7 +242,10 @@ export function GrantsIntelTab() {
             {loading && (
               <TableRow><TableCell colSpan={6} className="text-center text-muted-foreground py-8">Loading grants intel...</TableCell></TableRow>
             )}
-            {!loading && observations.length === 0 && (
+            {!loading && error && observations.length === 0 && (
+              <TableRow><TableCell colSpan={6} className="text-center text-status-danger py-8">Grants intelligence is unavailable. Retry above.</TableCell></TableRow>
+            )}
+            {!loading && !error && observations.length === 0 && (
               <TableRow><TableCell colSpan={6} className="text-center text-muted-foreground py-8">No observations match this filter.</TableCell></TableRow>
             )}
             {!loading && observations.map(item => {
@@ -203,6 +282,14 @@ export function GrantsIntelTab() {
             })}
           </TableBody>
         </Table>
+        {observations.length < total && (
+          <div className="border-t border-border p-3 flex justify-center">
+            <Button onClick={loadMore} disabled={loadingMore} variant="outline" size="sm" className="gap-2 font-display text-[10px] tracking-wider">
+              <RefreshCw className={`w-3.5 h-3.5 ${loadingMore ? 'animate-spin' : ''}`} />
+              {loadingMore ? 'LOADING...' : `LOAD NEXT ${Math.min(100, total - observations.length)}`}
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -17,7 +17,7 @@ import { getUsageSummary, getUsageTimeline, getRecentUsage, getModelPricing, ups
 
 const router = Router();
 
-const KNOWN_PROVIDERS = new Set(['grok', 'anthropic', 'firecrawl', 'perplexity', 'resend', 'telegram', 'telegram-intake']);
+const KNOWN_PROVIDERS = new Set(['grok', 'anthropic', 'ollama', 'firecrawl', 'perplexity', 'parallel', 'resend', 'telegram', 'telegram-intake']);
 
 // GET /providers — list all providers (masked keys)
 router.get('/providers', async (_req: Request, res: Response) => {

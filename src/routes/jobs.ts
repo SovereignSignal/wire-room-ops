@@ -141,7 +141,7 @@ router.post('/scan/classify-queue', requireAuth, async (req: Request, res: Respo
     const pool = getPool();
     const wire = req.body?.wire as string | undefined;
 
-    const conditions = [`status IN ('queued', 'approved')`, `(classification IS NULL OR classification = 'UNCHECKED')`];
+    const conditions = [`status = 'queued'`, `(classification IS NULL OR classification = 'UNCHECKED')`];
     const values: any[] = [];
     let paramIndex = 1;
 
@@ -151,7 +151,10 @@ router.post('/scan/classify-queue', requireAuth, async (req: Request, res: Respo
     }
 
     const result = await pool.query(
-      `SELECT id, name, description, source_url, wire FROM scan_entries
+      `SELECT id, name, description, source_url, wire, amount,
+              deadline_parsed AS "deadlineParsed",
+              source_published_at AS "sourcePublishedAt"
+       FROM scan_entries
        WHERE ${conditions.join(' AND ')}
        ORDER BY created_at DESC
        LIMIT 200`,

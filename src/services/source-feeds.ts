@@ -337,7 +337,7 @@ const SCRAPE_SCHEMA_HINT = `[{"name":"<program/RFP name>","description":"<one se
 async function llmExtractOpportunities(markdown: string, source: FeedSource): Promise<FeedItem[]> {
   const provider = getCachedProvider('grok');
   const model = provider?.default_model || 'grok-4.20-beta-0309-non-reasoning';
-  const apiKey = provider?.api_key || config.apis.grok.apiKey;
+  const apiKey = provider?.api_key;
   const baseUrl = provider?.base_url || config.apis.grok.baseUrl;
   if (!apiKey) return [];
   const prompt = `From the following ${source.name} page content, extract every CURRENTLY-OPEN funding opportunity (grant program, RFP, ecosystem fund, fellowship, bounty round) that a builder could apply to. ${source.scrapePrompt || ''}\n\nReturn ONLY a JSON array (no prose, no fences):\n${SCRAPE_SCHEMA_HINT}\nUse absolute URLs (prefix ${source.urlPrefix || source.endpoint} for relative links). If none are clearly open, return [].\n\nPAGE CONTENT:\n${markdown}`;

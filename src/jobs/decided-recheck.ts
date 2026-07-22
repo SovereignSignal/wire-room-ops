@@ -133,7 +133,7 @@ interface Verdict {
 async function judgeCandidates(target: RecheckTarget, candidates: Candidate[]): Promise<Verdict | null> {
   const provider = getCachedProvider('grok');
   const model = provider?.default_model || 'grok-4.20-beta-0309-non-reasoning';
-  const apiKey = provider?.api_key || config.apis.grok.apiKey;
+  const apiKey = provider?.api_key;
   const baseUrl = provider?.base_url || config.apis.grok.baseUrl;
   if (!apiKey) return null;
 

@@ -1,4 +1,3 @@
-import { config } from '../config';
 import { getCachedProvider } from './api-provider';
 
 export interface ModelInfo {
@@ -39,7 +38,7 @@ export async function getGrokModels(): Promise<ModelInfo[]> {
 
   try {
     const provider = getCachedProvider('grok');
-    const apiKey = provider?.api_key || config.apis.grok.apiKey;
+    const apiKey = provider?.api_key;
     if (!apiKey) return getDefaultGrokModels();
     const baseUrl = provider?.base_url || 'https://api.x.ai/v1';
 
@@ -86,7 +85,7 @@ export async function getAnthropicModels(): Promise<ModelInfo[]> {
 
   try {
     const provider = getCachedProvider('anthropic');
-    const apiKey = provider?.api_key || config.apis.anthropic.apiKey;
+    const apiKey = provider?.api_key;
     if (!apiKey) return getDefaultAnthropicModels();
 
     const response = await fetch('https://api.anthropic.com/v1/models', {

@@ -38,8 +38,8 @@ function validateScheduleParams(body: Record<string, any>): string | null {
   if (typeof lookbackDays === 'number' && (lookbackDays < 1 || lookbackDays > 365)) {
     return 'lookbackDays must be between 1 and 365';
   }
-  if (typeof frequencyHours === 'number' && (frequencyHours < 1 || frequencyHours > 23)) {
-    return 'frequencyHours must be between 1 and 23';
+  if (typeof frequencyHours === 'number' && (frequencyHours < 1 || frequencyHours > 24)) {
+    return 'frequencyHours must be between 1 and 24';
   }
   if (notifyEmails !== undefined && typeof notifyEmails !== 'string') {
     return 'notifyEmails must be a comma-separated string of email addresses';

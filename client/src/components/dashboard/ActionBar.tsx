@@ -19,16 +19,16 @@ export function ActionBar({ selectedCount, onApprove, onQuietApprove, onArchive,
         <span className="text-muted-foreground font-display text-[10px] tracking-wider uppercase">Selected</span>
       </div>
 
-      <div className="h-6 w-px bg-border" />
+      <div className="hidden sm:block h-6 w-px bg-border" />
 
-      <div className="flex items-center gap-2">
+      <div className="flex items-center justify-center gap-2 flex-wrap">
         <Button
           size="sm"
           onClick={onApprove}
           className="gap-1.5 bg-status-success/20 text-status-success border border-status-success/30 hover:bg-status-success/30 font-display text-[10px] tracking-wider"
         >
           <CheckCircle className="w-3.5 h-3.5" />
-          APPROVE
+          APPROVE + PUBLISH
         </Button>
         <Button
           size="sm"
@@ -37,7 +37,7 @@ export function ActionBar({ selectedCount, onApprove, onQuietApprove, onArchive,
           className="gap-1.5 bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 font-display text-[10px] tracking-wider"
         >
           <EyeOff className="w-3.5 h-3.5" />
-          QUIET
+          QUIET APPROVE
         </Button>
         <Button
           size="sm"
@@ -50,7 +50,7 @@ export function ActionBar({ selectedCount, onApprove, onQuietApprove, onArchive,
         </Button>
       </div>
 
-      <div className="h-6 w-px bg-border" />
+      <div className="hidden sm:block h-6 w-px bg-border" />
 
       <Button
         size="sm"

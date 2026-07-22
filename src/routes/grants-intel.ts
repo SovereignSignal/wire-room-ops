@@ -57,13 +57,12 @@ function normalizeUrlSql(alias: string): string {
   return `lower(regexp_replace(regexp_replace(coalesce(${alias}, ''), '^https?://(www\\.)?', ''), '/$', ''))`;
 }
 
-async function ensureGrantsIntelTables(): Promise<void> {
+export async function ensureGrantsIntelTables(): Promise<void> {
   await getPool().query(CREATE_TABLES_SQL);
 }
 
 router.get('/summary', async (_req: Request, res: Response) => {
   try {
-    await ensureGrantsIntelTables();
     const pool = getPool();
     const [runs, routing, pillars, recentWire] = await Promise.all([
       pool.query(`
@@ -113,12 +112,12 @@ router.get('/summary', async (_req: Request, res: Response) => {
 
 router.get('/observations', async (req: Request, res: Response) => {
   try {
-    await ensureGrantsIntelTables();
     const pool = getPool();
     const wire = typeof req.query.wire === 'string' ? req.query.wire : '';
     const routing = typeof req.query.routing === 'string' ? req.query.routing : '';
     const track = typeof req.query.track === 'string' ? req.query.track : '';
     const limit = Math.min(parseInt(String(req.query.limit || '100'), 10) || 100, 250);
+    const offset = Math.max(parseInt(String(req.query.offset || '0'), 10) || 0, 0);
 
     const filters: string[] = [`o.observed_at >= NOW() - INTERVAL '7 days'`];
     const params: (string | number)[] = [];
@@ -135,6 +134,9 @@ router.get('/observations', async (req: Request, res: Response) => {
       filters.push(`o.track = $${params.length}`);
     }
     params.push(limit);
+    const limitParam = params.length;
+    params.push(offset);
+    const offsetParam = params.length;
 
     const urlExpr = normalizeUrlSql('l.url');
     const applyUrlExpr = normalizeUrlSql('l.apply_url');
@@ -152,6 +154,7 @@ router.get('/observations', async (req: Request, res: Response) => {
         ORDER BY dedupe_key, observed_at DESC
       )
       SELECT l.*,
+             COUNT(*) OVER()::int AS total_count,
              s.id AS matched_scan_entry_id,
              s.name AS matched_scan_entry_name,
              s.status AS matched_scan_entry_status,
@@ -160,8 +163,15 @@ router.get('/observations', async (req: Request, res: Response) => {
                WHEN s.id IS NOT NULL THEN 'already_in_wire_room'
                WHEN EXISTS (
                  SELECT 1 FROM grant_entries g
-                 WHERE lower(coalesce(g.title, '')) = lower(coalesce(l.title, ''))
-                    OR lower(regexp_replace(regexp_replace(coalesce(g."sourceUrl", ''), '^https?://(www\\.)?', ''), '/$', '')) IN (${normalizeUrlSql('l.url')}, ${normalizeUrlSql('l.apply_url')})
+                 WHERE (
+                       nullif(btrim(g.title), '') IS NOT NULL
+                       AND nullif(btrim(l.title), '') IS NOT NULL
+                       AND lower(g.title) = lower(l.title)
+                     )
+                    OR (
+                      lower(regexp_replace(regexp_replace(coalesce(g."sourceUrl", ''), '^https?://(www\\.)?', ''), '/$', '')) <> ''
+                      AND lower(regexp_replace(regexp_replace(coalesce(g."sourceUrl", ''), '^https?://(www\\.)?', ''), '/$', '')) IN (${normalizeUrlSql('l.url')}, ${normalizeUrlSql('l.apply_url')})
+                    )
                ) THEN 'known_grant_archive'
                ELSE 'new_to_wire_room'
              END AS match_status
@@ -169,8 +179,15 @@ router.get('/observations', async (req: Request, res: Response) => {
       LEFT JOIN LATERAL (
         SELECT s.id, s.name, s.status, s.created_at, s.source_url
         FROM scan_entries s
-        WHERE ${sourceUrlExpr} IN (${urlExpr}, ${applyUrlExpr})
-           OR lower(s.name) = lower(l.title)
+        WHERE (
+                ${sourceUrlExpr} <> ''
+                AND ${sourceUrlExpr} IN (${urlExpr}, ${applyUrlExpr})
+              )
+           OR (
+                nullif(btrim(s.name), '') IS NOT NULL
+                AND nullif(btrim(l.title), '') IS NOT NULL
+                AND lower(s.name) = lower(l.title)
+              )
         ORDER BY s.created_at DESC
         LIMIT 1
       ) s ON true
@@ -178,12 +195,15 @@ router.get('/observations', async (req: Request, res: Response) => {
         CASE l.routing WHEN 'wire_queue_candidate' THEN 0 WHEN 'daily_brief' THEN 1 WHEN 'opportunity_signal' THEN 2 ELSE 3 END,
         l.confidence DESC NULLS LAST,
         l.observed_at DESC
-      LIMIT $${params.length}
+      LIMIT $${limitParam}
+      OFFSET $${offsetParam}
       `,
       params,
     );
 
-    res.json({ observations: result.rows, count: result.rows.length });
+    const total = Number(result.rows[0]?.total_count || 0);
+    const observations = result.rows.map(({ total_count: _totalCount, ...row }) => row);
+    res.json({ observations, count: observations.length, total, limit, offset });
   } catch (error) {
     console.error('Failed to get grants intel observations:', error);
     res.status(500).json({ error: 'Failed to get grants intel observations' });

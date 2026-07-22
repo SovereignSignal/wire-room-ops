@@ -11,10 +11,9 @@
  * Env var: PARALLEL_API_KEY (or via Settings > API Providers, provider 'parallel')
  */
 
-import { config } from '../config';
 import { getBrand } from '../config/brand';
 import { logApiUsage } from './api-usage';
-import { getCachedProvider } from './api-provider';
+import { getCachedProvider, isProviderExplicitlyDisabled } from './api-provider';
 import { blockedDomains } from './source-filter';
 import type { ScanUsagePurpose } from '../types/intake';
 
@@ -38,8 +37,8 @@ interface ParallelSearchResponse {
 
 async function grokChat(prompt: string, maxTokens: number, purpose: string, wire?: string): Promise<string | null> {
   const provider = getCachedProvider('grok');
-  const apiKey = provider?.api_key || config.apis.grok.apiKey;
-  const baseUrl = provider?.base_url || config.apis.grok.baseUrl;
+  const apiKey = provider?.api_key;
+  const baseUrl = provider?.base_url || 'https://api.x.ai/v1';
   const model = provider?.default_model || 'grok-4.20-beta-0309-non-reasoning';
   if (!apiKey) return null;
 
@@ -105,9 +104,16 @@ export async function executeParallelScan(
   options?: { model?: string; responseFormat?: string | null; outputFormat?: 'text' | 'json'; wire?: string; afterDate?: string; usagePurpose?: ScanUsagePurpose }
 ): Promise<{ content: string; model: string; tokensUsed?: number }> {
   const provider = getCachedProvider('parallel');
-  const apiKey = provider?.api_key || process.env.PARALLEL_API_KEY;
+  const apiKey = provider?.api_key;
   if (!apiKey) {
-    throw new Error('Parallel API key not configured — add it via Settings > API Providers or set PARALLEL_API_KEY');
+    throw new Error(isProviderExplicitlyDisabled('parallel')
+      ? 'Parallel provider is disabled'
+      : 'Parallel API key not configured — add it via Settings > API Providers or set PARALLEL_API_KEY');
+  }
+  if (!getCachedProvider('grok')?.api_key) {
+    throw new Error(isProviderExplicitlyDisabled('grok')
+      ? 'Grok provider is disabled; Parallel extraction cannot run'
+      : 'Grok API key not configured; Parallel extraction cannot run');
   }
   const baseUrl = provider?.base_url || PARALLEL_BASE_URL;
   const wire = options?.wire;

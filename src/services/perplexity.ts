@@ -7,10 +7,9 @@
  * Env var: PERPLEXITY_API_KEY
  */
 
-import { config } from '../config';
 import { getBrand } from '../config/brand';
 import { logApiUsage } from './api-usage';
-import { getCachedProvider } from './api-provider';
+import { getCachedProvider, isProviderExplicitlyDisabled } from './api-provider';
 import type { ScanUsagePurpose } from '../types/intake';
 
 const PERPLEXITY_BASE_URL = 'https://api.perplexity.ai';
@@ -32,9 +31,11 @@ export async function executePerplexityScan(
   options?: { model?: string; responseFormat?: string | null; outputFormat?: 'text' | 'json'; usagePurpose?: ScanUsagePurpose }
 ): Promise<{ content: string; model: string; tokensUsed?: number }> {
   const provider = getCachedProvider('perplexity');
-  const apiKey = provider?.api_key || process.env.PERPLEXITY_API_KEY;
+  const apiKey = provider?.api_key;
   if (!apiKey) {
-    throw new Error('Perplexity API key not configured — add it via Settings > API Providers');
+    throw new Error(isProviderExplicitlyDisabled('perplexity')
+      ? 'Perplexity provider is disabled'
+      : 'Perplexity API key not configured — add it via Settings > API Providers');
   }
 
   const model = options?.model || provider?.default_model || DEFAULT_PERPLEXITY_MODEL;

@@ -180,7 +180,7 @@ router.post('/purge-source', async (req: Request, res: Response) => {
   }
 });
 
-// POST /classify-backfill — batch-classify UNCHECKED queued/approved entries
+// POST /classify-backfill — batch-classify UNCHECKED queue entries
 router.post('/classify-backfill', async (req: Request, res: Response) => {
   if (!rateLimit('classify-backfill', 3, 5 * 60 * 1000)) {
     res.status(429).json({ error: 'Backfill recently run. Please wait a few minutes.' });
@@ -192,9 +192,12 @@ router.post('/classify-backfill', async (req: Request, res: Response) => {
     const limit = Math.min(Math.max(Number(req.body?.limit) || 50, 1), 200);
 
     const result = await pool.query(
-      `SELECT id, name, description, source_url, wire FROM scan_entries
-       WHERE classification = 'UNCHECKED' AND status IN ('queued', 'approved')
-       ORDER BY status DESC, created_at DESC
+      `SELECT id, name, description, source_url, wire, amount,
+              deadline_parsed AS "deadlineParsed",
+              source_published_at AS "sourcePublishedAt"
+       FROM scan_entries
+       WHERE classification = 'UNCHECKED' AND status = 'queued'
+       ORDER BY created_at DESC
        LIMIT $1`,
       [limit]
     );

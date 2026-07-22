@@ -15,6 +15,8 @@ import { distributeEntry } from './distribution';
 import { autoSummarizeOnApprove } from './auto-summarize';
 import { extractOrgFromName, upsertOrgProfile, linkEntryToOrg, findSimilarOrg } from './org-extractor';
 import { enrichSingleOrg } from './org-enricher';
+import { refreshProgramCounters } from './program-identity';
+import { config } from '../config';
 
 // --- Types ---
 
@@ -132,9 +134,11 @@ function scheduleApproveSideEffects(
           orgId = await upsertOrgProfile(orgName, row.wire, row.scan_date?.toISOString?.()?.split('T')[0]);
         }
         await linkEntryToOrg(row.id, orgId);
-        await enrichSingleOrg(orgId).catch(err =>
-          console.error(`[OrgEnrich] Failed for entry ${row.id}:`, err)
-        );
+        if (config.crm.enrichEnabled) {
+          await enrichSingleOrg(orgId).catch(err =>
+            console.error(`[OrgEnrich] Failed for entry ${row.id}:`, err)
+          );
+        }
       } catch (err) {
         console.error(`[OrgLink] Failed for entry ${row.id}:`, err);
       }
@@ -191,13 +195,15 @@ export async function singleEntryAction(
   const distributable = opts.quiet ? false : true;
   const result = await pool.query(
     `UPDATE scan_entries SET status = $1, distributable = $2, actioned_by = COALESCE($3, actioned_by), action_reason = COALESCE($4, action_reason), updated_at = NOW() WHERE id = $5
-     RETURNING id, status, wire, name, description, enriched_summary, quality_score, amount, deadline, source_url, org_id, scan_date, tags`,
+     RETURNING id, status, wire, name, description, enriched_summary, quality_score, amount, deadline, source_url, org_id, program_id, scan_date, tags`,
     [newStatus, distributable, opts.actor || null, opts.reason || null, entryId]
   );
 
   if (result.rows.length === 0) {
     throw new Error('Entry not found');
   }
+
+  await refreshProgramCounters(pool, result.rows.map(row => row.program_id).filter((id): id is number => Number.isSafeInteger(id)));
 
   let summaryId: number | null = null;
 
@@ -305,11 +311,12 @@ export async function bulkEntryAction(
   const result = await pool.query(
     `UPDATE scan_entries SET status = $1, distributable = $2, actioned_by = COALESCE($3, actioned_by), action_reason = COALESCE($4, action_reason), updated_at = NOW()
      WHERE id = ANY($5)
-     RETURNING id, status, wire, name, description, enriched_summary, quality_score, amount, deadline, source_url, org_id, scan_date, tags`,
+     RETURNING id, status, wire, name, description, enriched_summary, quality_score, amount, deadline, source_url, org_id, program_id, scan_date, tags`,
     [newStatus, distributable, opts.actor || null, opts.reason || null, entryIds]
   );
 
   const updated = result.rows;
+  await refreshProgramCounters(pool, updated.map(row => row.program_id).filter((id): id is number => Number.isSafeInteger(id)));
   const summaryIds: Record<number, number | null> = {};
 
   // On bulk approve: write each entry to summaries + fire-and-forget side effects
@@ -415,4 +422,3 @@ export async function getQueuedEntries(filters?: {
   );
   return result.rows as ScanEntry[];
 }
-

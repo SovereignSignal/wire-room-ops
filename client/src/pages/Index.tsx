@@ -1,68 +1,102 @@
-import { useState, useEffect, useCallback } from 'react';
+import { lazy, Suspense, useState, useEffect, useCallback } from 'react';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { OverviewTab } from '@/components/dashboard/OverviewTab';
 import { QueueTab } from '@/components/dashboard/QueueTab';
-
-import { DatabaseTab } from '@/components/dashboard/DatabaseTab';
-import { ScanPromptsTab } from '@/components/dashboard/ScanPromptsTab';
-import { SettingsTab } from '@/components/dashboard/SettingsTab';
-import { GrantsIntelTab } from '@/components/dashboard/GrantsIntelTab';
 // ReviewTab removed — approve/decline now inline in QueueTab
 import { Starfield } from '@/components/dashboard/Starfield';
 import { EntryDetailsSheet } from '@/components/dashboard/EntryDetailsSheet';
 import { fetchEntries, fetchEntry, updateEntryStatus, bulkUpdateEntryStatus, quietApproveEntry, bulkQuietApprove, fetchStats, fetchFeeds, fetchWireCounts } from '@/api';
-import { ScanEntry, VerticalStats, WireCounts } from '@/types';
+import { DashboardDataAvailability, ScanEntry, VerticalStats, WireCounts } from '@/types';
 import { useToast } from '@/hooks/use-toast';
+import { dashboardPathForTab, dashboardTabFromPath, deriveDashboardHealth, type DashboardHealth } from '@/lib/dashboard-state';
+
+const DatabaseTab = lazy(() => import('@/components/dashboard/DatabaseTab').then(module => ({ default: module.DatabaseTab })));
+const ScanPromptsTab = lazy(() => import('@/components/dashboard/ScanPromptsTab').then(module => ({ default: module.ScanPromptsTab })));
+const SettingsTab = lazy(() => import('@/components/dashboard/SettingsTab').then(module => ({ default: module.SettingsTab })));
+const GrantsIntelTab = lazy(() => import('@/components/dashboard/GrantsIntelTab').then(module => ({ default: module.GrantsIntelTab })));
+
+const initialAvailability: DashboardDataAvailability = {
+  queuedEntries: false,
+  approvedEntries: false,
+  stats: false,
+  feeds: false,
+  wireCounts: false,
+};
+const QUEUE_PAGE_SIZE = 100;
 
 const Index = () => {
-  const [activeTab, setActiveTab] = useState('overview');
+  const [activeTab, setActiveTab] = useState(() => dashboardTabFromPath(window.location.pathname));
   const [queueEntries, setQueueEntries] = useState<ScanEntry[]>([]);
   const [approvedEntries, setApprovedEntries] = useState<ScanEntry[]>([]);
   const [stats, setStats] = useState<VerticalStats[]>([]);
   const [wireCounts, setWireCounts] = useState<WireCounts[]>([]);
+  const [queueTotal, setQueueTotal] = useState(0);
   const [verticals, setVerticals] = useState<string[]>([]);
   const [selectedEntry, setSelectedEntry] = useState<ScanEntry | null>(null);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [health, setHealth] = useState<DashboardHealth>('offline');
+  const [availability, setAvailability] = useState<DashboardDataAvailability>(initialAvailability);
+  const [loadingMoreQueue, setLoadingMoreQueue] = useState(false);
   const { toast } = useToast();
+
+  const handleTabChange = useCallback((tab: string) => {
+    setActiveTab(tab);
+    const nextPath = dashboardPathForTab(tab);
+    if (window.location.pathname !== nextPath) {
+      window.history.pushState(null, '', nextPath);
+    }
+  }, []);
+
+  useEffect(() => {
+    const handlePopState = () => setActiveTab(dashboardTabFromPath(window.location.pathname));
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
 
   // Digest-email deep link: /queue?entry=<id> opens the entry's details sheet.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const entryId = params.get('entry');
     if (!entryId) return;
-    setActiveTab('queue');
+    handleTabChange('queue');
     fetchEntry(entryId)
       .then(entry => { if (entry) setSelectedEntry(entry); })
       .catch(() => { /* deep link is best-effort; the queue still shows */ });
-  }, []);
+  }, [handleTabChange]);
 
   const loadData = useCallback(async () => {
     try {
       const results = await Promise.allSettled([
-        fetchEntries({ status: 'queued' }),
-        fetchEntries({ status: 'approved' }),
+        fetchEntries({ status: 'queued', limit: QUEUE_PAGE_SIZE, offset: 0 }),
+        fetchEntries({ status: 'approved', limit: 500, offset: 0 }),
         fetchStats(),
         fetchFeeds(),
         fetchWireCounts(),
       ]);
 
       const [queuedR, approvedR, statsR, feedsR, wireCountsR] = results;
-
-      // Check if ALL failed (likely auth issue)
-      const allFailed = results.every(r => r.status === 'rejected');
-      if (allFailed) {
-        // Likely session expired — redirect to login
-        window.location.href = '/';
-        return;
-      }
+      const nextHealth = deriveDashboardHealth(results);
+      setHealth(nextHealth);
+      setAvailability(current => ({
+        queuedEntries: current.queuedEntries || queuedR.status === 'fulfilled',
+        approvedEntries: current.approvedEntries || approvedR.status === 'fulfilled',
+        stats: current.stats || statsR.status === 'fulfilled',
+        feeds: current.feeds || feedsR.status === 'fulfilled',
+        wireCounts: current.wireCounts || wireCountsR.status === 'fulfilled',
+      }));
 
       // Apply successful results, log failures
-      if (queuedR.status === 'fulfilled') setQueueEntries(queuedR.value);
+      if (queuedR.status === 'fulfilled') {
+        setQueueEntries(queuedR.value.entries);
+        setQueueTotal(queuedR.value.total);
+      }
       else console.warn('Failed to load queued entries:', queuedR.reason);
 
-      if (approvedR.status === 'fulfilled') setApprovedEntries(approvedR.value);
+      if (approvedR.status === 'fulfilled') {
+        setApprovedEntries(approvedR.value.entries);
+      }
       else console.warn('Failed to load approved entries:', approvedR.reason);
 
       if (feedsR.status === 'fulfilled') {
@@ -95,12 +129,13 @@ const Index = () => {
         console.warn('Failed to load stats:', statsR.reason);
       }
 
-      // Show toast only if some (but not all) failed
       const failedCount = results.filter(r => r.status === 'rejected').length;
-      if (failedCount > 0) {
-        toast({ title: 'Warning', description: `${failedCount} data source(s) failed to load` });
+      if (nextHealth === 'offline') {
+        toast({ title: 'Dashboard offline', description: 'No dashboard data sources responded' });
+      } else if (failedCount > 0) {
+        toast({ title: 'Dashboard degraded', description: `${failedCount} data source(s) failed to load` });
       }
-      setLastUpdated(new Date());
+      if (nextHealth !== 'offline') setLastUpdated(new Date());
     } catch (err) {
       console.error('Failed to load data:', err);
       toast({ title: 'Error', description: 'Failed to load dashboard data' });
@@ -164,6 +199,28 @@ const Index = () => {
     }
   };
 
+  const handleLoadMoreQueue = async () => {
+    if (loadingMoreQueue || queueEntries.length >= queueTotal) return;
+    setLoadingMoreQueue(true);
+    try {
+      const page = await fetchEntries({
+        status: 'queued',
+        limit: QUEUE_PAGE_SIZE,
+        offset: queueEntries.length,
+      });
+      setQueueEntries(current => {
+        const existing = new Set(current.map(entry => entry.id));
+        return [...current, ...page.entries.filter(entry => !existing.has(entry.id))];
+      });
+      setQueueTotal(page.total);
+    } catch (err) {
+      console.error('Failed to load more queue entries:', err);
+      toast({ title: 'Queue load failed', description: 'Could not load the next queue page' });
+    } finally {
+      setLoadingMoreQueue(false);
+    }
+  };
+
   if (loading) {
     return (
       <>
@@ -185,56 +242,62 @@ const Index = () => {
       <Starfield />
       <DashboardLayout
         activeTab={activeTab}
-        onTabChange={setActiveTab}
-        queueCount={queueEntries.length}
+        onTabChange={handleTabChange}
+        queueCount={availability.queuedEntries ? queueTotal : 0}
         lastUpdated={lastUpdated}
         refreshing={refreshing}
         onRefresh={handleRefresh}
+        health={health}
       >
-        {activeTab === 'scans' && (
-          <ScanPromptsTab verticals={verticals} />
-        )}
-        {activeTab === 'overview' && (
-          <OverviewTab
-            queueEntries={queueEntries}
-            publishedEntries={approvedEntries}
-            queuedCount={wireCounts.reduce((sum, wc) => sum + wc.queued, 0)}
-            approvedCount={wireCounts.reduce((sum, wc) => sum + wc.approved, 0)}
-            totalWires={wireCounts.length}
-            rawCount={wireCounts.reduce((sum, wc) => sum + wc.raw, 0)}
-            stats={stats}
-          />
-        )}
-        {activeTab === 'queue' && (
-          <QueueTab
-            entries={queueEntries}
-            verticals={verticals}
-            onUpdateStatus={handleUpdateStatus}
-            onViewDetails={setSelectedEntry}
-            onSingleAction={(id, status) => handleUpdateStatus([id], status)}
-            onQuietApprove={handleQuietApprove}
-            onEntryUpdated={(id, updates) => {
-              setQueueEntries(prev => prev.map(e => e.id === id ? { ...e, ...updates } : e));
-            }}
-            onRefresh={loadData}
-          />
-        )}
-{activeTab === 'database' && (
-          <DatabaseTab />
-        )}
-        {activeTab === 'settings' && (
-          <SettingsTab
-            verticals={verticals}
-            stats={stats}
-            wireCounts={wireCounts}
-            onNavigateToQueue={(wire) => {
-              setActiveTab('queue');
-            }}
-          />
-        )}
-        {activeTab === 'grants-intel' && (
-          <GrantsIntelTab />
-        )}
+        <Suspense fallback={<div className="glow-card p-8 text-center text-sm font-display tracking-wider text-muted-foreground">LOADING MODULE...</div>}>
+          {activeTab === 'scans' && (
+            <ScanPromptsTab verticals={verticals} />
+          )}
+          {activeTab === 'overview' && (
+            <OverviewTab
+              queueEntries={queueEntries}
+              publishedEntries={approvedEntries}
+              queuedCount={wireCounts.reduce((sum, wc) => sum + wc.queued, 0)}
+              approvedCount={wireCounts.reduce((sum, wc) => sum + wc.approved, 0)}
+              totalWires={wireCounts.length}
+              rawCount={wireCounts.reduce((sum, wc) => sum + wc.raw, 0)}
+              stats={stats}
+              availability={availability}
+            />
+          )}
+          {activeTab === 'queue' && (
+            <QueueTab
+              entries={queueEntries}
+              verticals={verticals}
+              onUpdateStatus={handleUpdateStatus}
+              onViewDetails={setSelectedEntry}
+              onSingleAction={(id, status) => handleUpdateStatus([id], status)}
+              onQuietApprove={handleQuietApprove}
+              onEntryUpdated={(id, updates) => {
+                setQueueEntries(prev => prev.map(e => e.id === id ? { ...e, ...updates } : e));
+              }}
+              total={queueTotal}
+              loadingMore={loadingMoreQueue}
+              onLoadMore={handleLoadMoreQueue}
+            />
+          )}
+          {activeTab === 'database' && (
+            <DatabaseTab />
+          )}
+          {activeTab === 'settings' && (
+            <SettingsTab
+              verticals={verticals}
+              stats={stats}
+              wireCounts={wireCounts}
+              onNavigateToQueue={() => {
+                handleTabChange('queue');
+              }}
+            />
+          )}
+          {activeTab === 'grants-intel' && (
+            <GrantsIntelTab />
+          )}
+        </Suspense>
       </DashboardLayout>
 
       <EntryDetailsSheet

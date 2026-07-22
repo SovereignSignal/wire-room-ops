@@ -18,7 +18,7 @@ import { finalizeExistingEntryDedup } from '../services/dedup';
 // quality-scorer.ts replaced by LLM scoring in classifier.ts
 import { classifyEntry } from '../services/classifier';
 import { classifySourceLink } from '../services/source-filter';
-import { finalizeProgramForEntry } from '../services/program-identity';
+import { finalizeProgramForEntry, normalizeProgramDeadline } from '../services/program-identity';
 
 const BATCH_SIZE = 50;
 const STRANDED_DEDUPED_AGE = '15 minutes';
@@ -37,6 +37,8 @@ const MAX_RUN_DURATION_MS = 10 * 60 * 1000; // 10 minutes
  * forever because the main worker only consumes `raw` rows. Recover old
  * handoffs to the normal review queue. Keeping the existing classification,
  * score, and distributable flag preserves the originating intake contract.
+ * Seed-history URL conflicts also use `deduped`, but they are a terminal park,
+ * not a handoff, and must remain excluded from recovery.
  *
  * The age guard stays beyond the worker's maximum normal run time so this
  * recovery cannot race an active daily-intake classification pass.
@@ -51,6 +53,7 @@ export async function recoverStrandedDedupedEntries(
          updated_at = NOW()
      WHERE status = 'deduped'
        AND updated_at < NOW() - $1::interval
+       AND duplicate_reason IS DISTINCT FROM 'URL already exists in seed history'
      RETURNING id`,
     [STRANDED_DEDUPED_AGE],
   );
@@ -211,6 +214,7 @@ export async function processRawEntries(pool?: Pool): Promise<{
     while (batches++ < MAX_BATCHES) {
       const batch = await db.query(
         `SELECT se.id, se.name, se.description, se.source_url, se.amount, se.deadline,
+                se.deadline_parsed, se.source_published_at,
                 se.wire, se.scan_date, se.prompt_id, sp.intent AS prompt_intent
          FROM scan_entries se
          LEFT JOIN scan_prompts sp ON se.prompt_id = sp.id
@@ -274,7 +278,7 @@ export async function processRawEntries(pool?: Pool): Promise<{
           // Temporarily queue — Gate 2 below may auto-archive based on classification/score.
           const queued = await db.query(
               `UPDATE scan_entries
-               SET quality_score = 0,
+               SET quality_score = NULL,
                    status = 'queued',
                    classification = 'UNCHECKED'
                WHERE id = $1 AND status = 'deduped'
@@ -285,7 +289,7 @@ export async function processRawEntries(pool?: Pool): Promise<{
 
             stats.queued++;
             // Gate 2: LLM classification + quality scoring (single Grok call)
-            // Non-blocking — failure leaves entry as UNCHECKED with score 0
+            // Non-blocking: failure leaves the entry explicitly unscored.
             try {
               const classResult = await classifyEntry({
                 name: row.name,
@@ -293,6 +297,9 @@ export async function processRawEntries(pool?: Pool): Promise<{
                 source_url: row.source_url,
                 wire: row.wire,
                 intent: row.prompt_intent || undefined,
+                amount: row.amount ?? null,
+                deadlineParsed: row.deadline_parsed ?? null,
+                sourcePublishedAt: row.source_published_at ?? null,
               });
               // In-scope items queue for the agent to curate; off-scope items
               // (real opportunities outside crypto/AI/OSS) are archived.
@@ -318,16 +325,28 @@ export async function processRawEntries(pool?: Pool): Promise<{
               });
               if (!classified) {
                 console.log(`[ProcessRaw] Entry ${row.id} changed during classification; preserving operator state`);
+              } else if (
+                classResult.inScope
+                && (classResult.classification === 'GRANT' || classResult.classification === 'EXPIRED')
+              ) {
+                // Program identity is downstream of the classification CAS:
+                // do not create intelligence for stale, off-scope, or news
+                // rows. Use the corrected wire and only a validated ISO date.
+                const deadlineValue = row.deadline_parsed instanceof Date
+                  ? row.deadline_parsed.toISOString().slice(0, 10)
+                  : row.deadline_parsed;
+                await finalizeProgramForEntry(db, {
+                  id: row.id,
+                  name: row.name,
+                  sourceUrl: row.source_url,
+                  wire: correctedWire ?? row.wire,
+                  deadline: normalizeProgramDeadline(deadlineValue),
+                  description: row.description ?? null,
+                }, dedupOutcome.programResolution ?? null);
               }
             } catch (classError) {
               console.error(`[ProcessRaw] Classification failed for entry ${row.id}, leaving as UNCHECKED:`, classError);
             }
-            // Program identity: record the sighting / create the program and
-            // stamp metadata.program. Fail-open inside; never blocks the cycle.
-            await finalizeProgramForEntry(db, {
-              id: row.id, name: row.name, sourceUrl: row.source_url, wire: row.wire,
-              description: row.description ?? null,
-            }, dedupOutcome.programResolution ?? null);
 
           stats.processed++;
         } catch (entryError) {

@@ -9,6 +9,7 @@
 import type { Pool } from 'pg';
 import { processIntakeMessage } from '../services/intake-core';
 import { logApiUsage } from '../services/api-usage';
+import { getAppState, setAppState } from '../db';
 
 const X_API_BASE = 'https://api.twitter.com/2';
 
@@ -37,19 +38,26 @@ async function fetchWithBearer(url: string, token: string): Promise<Response> {
 }
 
 async function getUserId(handle: string, token: string): Promise<string | null> {
-  const resp = await fetchWithBearer(`${X_API_BASE}/users/by/username/${handle}`, token);
-  if (!resp.ok) return null;
+  const resp = await fetchWithBearer(`${X_API_BASE}/users/by/username/${encodeURIComponent(handle)}`, token);
+  if (resp.status === 429) throw new Error('RATE_LIMITED');
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   const data = await resp.json() as { data?: { id: string } };
   return data.data?.id || null;
 }
 
-async function getRecentTweets(userId: string, token: string): Promise<Tweet[]> {
+async function getRecentTweets(userId: string, token: string, sinceId: string | null): Promise<Tweet[]> {
   // max_results=5 (was 10): funder accounts post infrequently; with a daily
   // cadence and dedup, 5 recent tweets per account is plenty and halves reads.
-  const url = `${X_API_BASE}/users/${userId}/tweets?max_results=5&tweet.fields=created_at,entities&expansions=attachments.media_keys`;
+  const params = new URLSearchParams({
+    max_results: '5',
+    'tweet.fields': 'created_at,entities',
+    expansions: 'attachments.media_keys',
+  });
+  if (sinceId) params.set('since_id', sinceId);
+  const url = `${X_API_BASE}/users/${userId}/tweets?${params}`;
   const resp = await fetchWithBearer(url, token);
   if (resp.status === 429) throw new Error('RATE_LIMITED');
-  if (!resp.ok) return [];
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   const data = await resp.json() as { data?: Tweet[] };
   return data.data || [];
 }
@@ -62,7 +70,28 @@ export interface AccountMonitorResult {
   disabled: number;
 }
 
-export async function runAccountMonitor(pool: Pool): Promise<AccountMonitorResult> {
+export interface AccountMonitorDeps {
+  getUserId?: typeof getUserId;
+  getRecentTweets?: typeof getRecentTweets;
+  getState?: typeof getAppState;
+  setState?: typeof setAppState;
+  submit?: typeof processIntakeMessage;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+function sortTweetsOldestFirst(tweets: Tweet[]): Tweet[] {
+  return [...tweets].sort((a, b) => {
+    try {
+      const left = BigInt(a.id);
+      const right = BigInt(b.id);
+      return left < right ? -1 : left > right ? 1 : 0;
+    } catch {
+      return a.id.localeCompare(b.id);
+    }
+  });
+}
+
+export async function runAccountMonitor(pool: Pool, deps: AccountMonitorDeps = {}): Promise<AccountMonitorResult> {
   const token = process.env.X_BEARER_TOKEN;
   if (!token) {
     console.warn('[AccountMonitor] X_BEARER_TOKEN not set, skipping');
@@ -70,6 +99,12 @@ export async function runAccountMonitor(pool: Pool): Promise<AccountMonitorResul
   }
 
   const result: AccountMonitorResult = { processed: 0, submitted: 0, skipped: 0, errors: 0, disabled: 0 };
+  const getUserIdImpl = deps.getUserId ?? getUserId;
+  const getRecentTweetsImpl = deps.getRecentTweets ?? getRecentTweets;
+  const getStateImpl = deps.getState ?? getAppState;
+  const setStateImpl = deps.setState ?? setAppState;
+  const submitImpl = deps.submit ?? processIntakeMessage;
+  const sleepImpl = deps.sleep ?? ((ms: number) => new Promise(resolve => setTimeout(resolve, ms)));
 
   // Get enabled accounts — orgs + the key people behind programs (contacts
   // layer). Cap at 60 (efficiency guard); least-recently-checked first so new
@@ -81,8 +116,6 @@ export async function runAccountMonitor(pool: Pool): Promise<AccountMonitorResul
   const peopleCount = accounts.filter(a => a.kind === 'person').length;
   console.log(`[AccountMonitor] Checking ${accounts.length} accounts (${peopleCount} people, ${accounts.length - peopleCount} orgs)`);
 
-  const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000); // 24h ago
-
   for (const account of accounts) {
     try {
       // Use the cached X user_id; only hit the lookup endpoint the first time.
@@ -90,8 +123,13 @@ export async function runAccountMonitor(pool: Pool): Promise<AccountMonitorResul
       let userId = account.x_user_id;
       if (!userId) {
         const lookupStart = Date.now();
-        userId = await getUserId(account.handle, token);
-        logApiUsage({ provider: 'twitter', model: 'user-lookup', purpose: 'account-monitor', wire: account.wire || undefined, duration_ms: Date.now() - lookupStart, success: !!userId });
+        try {
+          userId = await getUserIdImpl(account.handle, token);
+          logApiUsage({ provider: 'twitter', model: 'user-lookup', purpose: 'account-monitor', wire: account.wire || undefined, duration_ms: Date.now() - lookupStart, success: !!userId });
+        } catch (err) {
+          logApiUsage({ provider: 'twitter', model: 'user-lookup', purpose: 'account-monitor', wire: account.wire || undefined, duration_ms: Date.now() - lookupStart, success: false, error_message: err instanceof Error ? err.message : String(err) });
+          throw err;
+        }
         if (!userId) {
           result.skipped++;
           continue;
@@ -99,33 +137,44 @@ export async function runAccountMonitor(pool: Pool): Promise<AccountMonitorResul
         await pool.query(`UPDATE monitored_accounts SET x_user_id = $1 WHERE id = $2`, [userId, account.id]);
       }
 
+      const stateKey = `xmonitor:since:${account.id}`;
+      const sinceId = await getStateImpl<string>(stateKey);
       const fetchStart = Date.now();
-      const tweets = await getRecentTweets(userId, token);
-      logApiUsage({ provider: 'twitter', model: 'timeline', purpose: 'account-monitor', wire: account.wire || undefined, duration_ms: Date.now() - fetchStart, success: true });
-      const recentTweets = tweets.filter(t => new Date(t.created_at) > cutoff);
+      let tweets: Tweet[];
+      try {
+        tweets = await getRecentTweetsImpl(userId, token, sinceId);
+        logApiUsage({ provider: 'twitter', model: 'timeline', purpose: 'account-monitor', wire: account.wire || undefined, duration_ms: Date.now() - fetchStart, success: true });
+      } catch (err) {
+        logApiUsage({ provider: 'twitter', model: 'timeline', purpose: 'account-monitor', wire: account.wire || undefined, duration_ms: Date.now() - fetchStart, success: false, error_message: err instanceof Error ? err.message : String(err) });
+        throw err;
+      }
 
-      // Update last_checked_at
-      await pool.query(
-        `UPDATE monitored_accounts SET last_checked_at = NOW(), updated_at = NOW() WHERE id = $1`,
-        [account.id]
-      );
-
-      for (const tweet of recentTweets) {
+      let durableThrough: string | null = null;
+      let intakeError: string | null = null;
+      for (const tweet of sortTweetsOldestFirst(tweets)) {
         const urls = tweet.entities?.urls?.map(u => u.expanded_url).filter(u =>
           !u.includes('twitter.com') && !u.includes('x.com') && u.startsWith('http')
         ) || [];
 
         for (const url of urls) {
-          const intakeResult = await processIntakeMessage(
-            {
-              text: `${tweet.text}\n${url}`,
-              urls: [url],
-              senderId: `x-monitor:${account.handle}`,
-              channelMessageId: tweet.id,
-              forwardedFrom: `@${account.handle}`,
-            },
-            'x-monitor'
-          );
+          let intakeResult;
+          try {
+            intakeResult = await submitImpl(
+              {
+                text: `${tweet.text}\n${url}`,
+                urls: [url],
+                senderId: `x-monitor:${account.handle}`,
+                channelMessageId: tweet.id,
+                forwardedFrom: `@${account.handle}`,
+              },
+              'x-monitor',
+              { wireHint: account.wire || undefined },
+            );
+          } catch (err) {
+            intakeError = err instanceof Error ? err.message : String(err);
+            result.errors++;
+            break;
+          }
           // Count actual outcomes — 'submitted' must mean an entry was created,
           // not merely that intake was called (the 2026-06-12 inaugural run
           // reported 120 submitted while every insert failed on the scan_source
@@ -136,15 +185,35 @@ export async function runAccountMonitor(pool: Pool): Promise<AccountMonitorResul
             result.skipped++;
           } else {
             result.errors++;
-            console.error(`[AccountMonitor] Intake error for ${url} (@${account.handle}): ${intakeResult.errorMessage}`);
+            intakeError = intakeResult.errorMessage || `Intake failed for tweet ${tweet.id}`;
+            break;
           }
         }
+        if (intakeError) break;
+        // A tweet with no external URLs is also durably handled: there is
+        // nothing for this lane to submit.
+        durableThrough = tweet.id;
       }
 
+      if (durableThrough) {
+        await setStateImpl(stateKey, durableThrough);
+      }
+
+      if (intakeError) {
+        console.error(`[AccountMonitor] Intake stopped for @${account.handle}: ${intakeError}`);
+        await sleepImpl(1000);
+        continue;
+      }
+
+      // Scheduling metadata advances only after a clean fetch/intake pass.
+      await pool.query(
+        `UPDATE monitored_accounts SET last_checked_at = NOW(), updated_at = NOW() WHERE id = $1`,
+        [account.id]
+      );
       result.processed++;
 
       // Small delay to avoid rate limits
-      await new Promise(r => setTimeout(r, 1000));
+      await sleepImpl(1000);
 
     } catch (err) {
       if (err instanceof Error && err.message === 'RATE_LIMITED') {

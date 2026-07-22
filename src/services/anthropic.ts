@@ -1,12 +1,11 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { config } from '../config';
 import { getBrand } from '../config/brand';
 import { DatabaseEntry } from '../types';
 import { scrapeUrl, isScrapableUrl, truncateContent } from './scraper';
 import type { RawScanResult, ToolType } from '../types/intake';
 import { getAnthropicModels } from './models';
 import { logApiUsage } from './api-usage';
-import { getCachedProvider } from './api-provider';
+import { getCachedProvider, isProviderExplicitlyDisabled } from './api-provider';
 
 // Prompt builders — read brand at call time so env var overrides work without restart
 
@@ -75,7 +74,12 @@ let clientApiKey: string = '';
 
 export function getClient(): Anthropic {
   const provider = getCachedProvider('anthropic');
-  const apiKey = provider?.api_key || config.apis.anthropic.apiKey;
+  if (!provider?.api_key) {
+    throw new Error(isProviderExplicitlyDisabled('anthropic')
+      ? 'Anthropic provider is disabled'
+      : 'Anthropic API key not configured');
+  }
+  const apiKey = provider.api_key;
 
   // Recreate client if key changed (e.g. switched from env to DB)
   if (!client || apiKey !== clientApiKey) {

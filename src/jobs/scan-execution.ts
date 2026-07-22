@@ -55,6 +55,9 @@ export interface ScanExecutionResult {
   intakeSummary: IntakeRunSummary;
   perPrompt: PerPromptResult[];
   totalDurationMs: number;
+  /** True when completed prompt results were durably ingested before an upstream abort. */
+  partial: boolean;
+  partialReason?: string;
 }
 
 // ============================================================
@@ -127,6 +130,7 @@ export async function runScanExecution(
       },
       perPrompt: [],
       totalDurationMs: Date.now() - startTime,
+      partial: false,
     };
   }
 
@@ -278,13 +282,11 @@ export async function runScanExecution(
     }
   }
 
-  // 3. Run intake pipeline on all collected submissions
-  if (fatalError) {
-    throw new Error(`Scan execution aborted: ${fatalError}`);
-  }
-
+  // 3. Run intake pipeline on all collected submissions. A later quota error
+  // must not discard successful, already-paid prompt results. If nothing
+  // completed, preserve the existing all-failed exception contract.
   if (submissions.length === 0 || totalResults === 0) {
-    if (promptsFailed === prompts.length) {
+    if (prompts.length - promptsFailed === 0) {
       const firstError = perPrompt.find((p) => !!p.error)?.error || 'Unknown prompt execution error';
       throw new Error(`All scan prompts failed: ${firstError}`);
     }
@@ -308,6 +310,8 @@ export async function runScanExecution(
       },
       perPrompt,
       totalDurationMs,
+      partial: fatalError !== null,
+      ...(fatalError ? { partialReason: fatalError } : {}),
     };
   }
 
@@ -324,7 +328,7 @@ export async function runScanExecution(
   const totalDurationMs = Date.now() - startTime;
 
   progress(
-    `Scan complete: ${totalResults} results, ${intakeSummary.newUnique} unique, ${intakeSummary.highQualityCount} high quality`,
+    `${fatalError ? 'Scan partial' : 'Scan complete'}: ${totalResults} results, ${intakeSummary.newUnique} unique, ${intakeSummary.highQualityCount} high quality`,
     100
   );
 
@@ -335,5 +339,7 @@ export async function runScanExecution(
     intakeSummary,
     perPrompt,
     totalDurationMs,
+    partial: fatalError !== null,
+    ...(fatalError ? { partialReason: fatalError } : {}),
   };
 }

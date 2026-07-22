@@ -1,4 +1,4 @@
-import { ScanEntry, VerticalStats } from '@/types';
+import { DashboardDataAvailability, ScanEntry, VerticalStats } from '@/types';
 import { ScoreBadge } from './ScoreBadge';
 import { Activity, Clock } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
@@ -11,9 +11,17 @@ interface OverviewTabProps {
   totalWires: number;
   rawCount: number;
   stats: VerticalStats[];
+  availability: DashboardDataAvailability;
 }
 
-export function OverviewTab({ queueEntries, publishedEntries, queuedCount, approvedCount, totalWires, rawCount, stats }: OverviewTabProps) {
+function MetricValue({ available, value }: { available: boolean; value: number }) {
+  if (!available) {
+    return <span className="text-sm font-display tracking-wider text-muted-foreground">UNAVAILABLE</span>;
+  }
+  return <>{value}</>;
+}
+
+export function OverviewTab({ queueEntries, publishedEntries, queuedCount, approvedCount, totalWires, rawCount, stats, availability }: OverviewTabProps) {
   const totalItemsThisWeek = stats.reduce((acc, curr) => acc + curr.items_this_week, 0);
   // Volume-weighted average across wires — a near-empty wire shouldn't swing the
   // number as much as a busy one. Falls back to a simple mean when there's no volume.
@@ -43,7 +51,7 @@ export function OverviewTab({ queueEntries, publishedEntries, queuedCount, appro
             <h3 className="font-display font-semibold text-sm tracking-wider uppercase">INGESTED THIS WEEK</h3>
           </div>
           <div className="text-3xl font-mono font-semibold text-foreground">
-            {totalItemsThisWeek}
+            <MetricValue available={availability.stats} value={totalItemsThisWeek} />
           </div>
         </div>
 
@@ -56,7 +64,7 @@ export function OverviewTab({ queueEntries, publishedEntries, queuedCount, appro
             <h3 className="font-display font-semibold text-sm tracking-wider uppercase">IN QUEUE</h3>
           </div>
           <div className="text-3xl font-mono font-semibold text-foreground">
-            {queuedCount}
+            <MetricValue available={availability.wireCounts} value={queuedCount} />
           </div>
         </div>
 
@@ -69,7 +77,7 @@ export function OverviewTab({ queueEntries, publishedEntries, queuedCount, appro
             <h3 className="font-display font-semibold text-sm tracking-wider uppercase">RAW / INCOMING</h3>
           </div>
           <div className="text-3xl font-mono font-semibold text-foreground">
-            {rawCount}
+            <MetricValue available={availability.wireCounts} value={rawCount} />
           </div>
         </div>
 
@@ -82,7 +90,7 @@ export function OverviewTab({ queueEntries, publishedEntries, queuedCount, appro
             <h3 className="font-display font-semibold text-sm tracking-wider uppercase">APPROVED</h3>
           </div>
           <div className="text-3xl font-mono font-semibold text-foreground">
-            {approvedCount}
+            <MetricValue available={availability.wireCounts} value={approvedCount} />
           </div>
         </div>
       </div>
@@ -98,11 +106,13 @@ export function OverviewTab({ queueEntries, publishedEntries, queuedCount, appro
           <div className="space-y-6">
             <div className="flex justify-between items-center pb-4 border-b border-border">
               <span className="text-sm font-mono text-muted-foreground">Avg Quality</span>
-              <ScoreBadge score={Math.round(avgQuality)} />
+              <ScoreBadge score={availability.stats ? Math.round(avgQuality) : null} />
             </div>
             <div className="flex justify-between items-center">
               <span className="text-sm font-mono text-muted-foreground">Wires active this week</span>
-              <span className="font-mono">{stats.length} / {totalWires}</span>
+              <span className="font-mono">
+                {availability.stats && availability.wireCounts ? `${stats.length} / ${totalWires}` : 'Unavailable'}
+              </span>
             </div>
           </div>
         </div>
@@ -142,9 +152,13 @@ export function OverviewTab({ queueEntries, publishedEntries, queuedCount, appro
                   ))}
                 </tbody>
               </table>
-            ) : (
+            ) : availability.queuedEntries || availability.approvedEntries ? (
               <div className="p-8 text-center text-muted-foreground font-display text-sm tracking-wider">
                 NO RECENT ACTIVITY
+              </div>
+            ) : (
+              <div className="p-8 text-center text-status-danger font-display text-sm tracking-wider">
+                ACTIVITY UNAVAILABLE
               </div>
             )}
           </div>
