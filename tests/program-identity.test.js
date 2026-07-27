@@ -352,3 +352,41 @@ test('maybeScrapeAggregator skips self-links for env-extended aggregator domains
     delete process.env.PROGRAM_AGGREGATOR_DOMAINS;
   }
 });
+
+// ── Task 1: program-type suffix family ──────────────────────────────────
+// Measured 2026-07-27: 1,008 of 4,267 program rows were duplicate identities,
+// 61% of them a suffix spelling ("X Grants" vs "X Grant Program").
+
+test('normalizeProgramKey collapses the program-type suffix family', () => {
+  // Same program, two spellings -> one key
+  assert.equal(
+    normalizeProgramKey('Framework Computer Open Source Sponsorship Program'),
+    normalizeProgramKey('Framework Computer Open Source Sponsorships'),
+  );
+  assert.equal(
+    normalizeProgramKey('Rain Protocol Grant Program'),
+    normalizeProgramKey('Rain Protocol Grants'),
+  );
+  assert.equal(
+    normalizeProgramKey('AI for Individual Rights Grants'),
+    normalizeProgramKey('AI for Individual Rights Fund'),
+  );
+});
+
+test('normalizeProgramKey keeps distinct programs distinct', () => {
+  // A qualifier before the suffix is signal, not noise
+  assert.notEqual(
+    normalizeProgramKey('NGI Zero Commons Fund'),
+    normalizeProgramKey('NGI Zero Core Fund'),
+  );
+  // Suffix stripping must not empty a name that is only a suffix
+  assert.equal(normalizeProgramKey('Grants'), 'grants');
+  assert.equal(normalizeProgramKey('The Fund'), 'thefund');
+});
+
+test('normalizeProgramKey still strips round/cohort/date noise', () => {
+  assert.equal(
+    normalizeProgramKey('Anthropic Fellows Program (Dec 2026 cohort)'),
+    normalizeProgramKey('Anthropic Fellows Program'),
+  );
+});

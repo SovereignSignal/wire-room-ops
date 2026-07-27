@@ -35,10 +35,44 @@ const NOISE_PATTERNS: RegExp[] = [
   /\b\d+(?:st|nd|rd|th)\b/gi,                     // ordinals
 ];
 
+// Program-type suffixes. The SAME program is written "X Grants", "X Grant
+// Program", "X Fund", "X Sponsorships" by different sources; keeping the
+// suffix in the key mints a second identity for each spelling (measured
+// 2026-07-27: 1,008 of 4,267 program rows were duplicate identities, 61% of
+// them exactly this). Stripped only from the END of the name, so a mid-name
+// qualifier ("Commons Fund" vs "Core Fund") still separates two genuinely
+// different programs.
+const PROGRAM_SUFFIX_RE =
+  /\s*\b(?:grants?|programs?|programmes?|funds?|funding|sponsorships?|fellowships?|scholarships?|initiatives?|schemes?|rfps?|awards?)\b\s*$/i;
+
+// A key shorter than this carries no identity — "The Fund" must not reduce
+// to "the" and start colliding with every other stub.
+const MIN_STRIPPED_KEY_LENGTH = 4;
+
+function stripProgramSuffixes(name: string): string {
+  let s = name;
+  // Loop: "Grant Program" and "Grants Fund" stack two suffixes deep.
+  for (let i = 0; i < 3; i++) {
+    const next = s.replace(PROGRAM_SUFFIX_RE, '').trim();
+    if (!next || next === s) break;
+    // Never strip a name down to nothing or to a generic stub — "Grants"
+    // stays "Grants", "The Fund" stays "The Fund".
+    if (next.replace(/[^a-z0-9]/g, '').length < MIN_STRIPPED_KEY_LENGTH) break;
+    s = next;
+  }
+  return s;
+}
+
 export function normalizeProgramKey(name: string): string {
   let s = (name || '').toLowerCase();
   s = s.replace(/\bfund\s*\d+\b/gi, 'fund');
   for (const p of NOISE_PATTERNS) s = s.replace(p, ' ');
+  // Punctuation becomes whitespace BEFORE suffix stripping, so a trailing
+  // "(...)" left behind by noise removal cannot hide the real suffix —
+  // "Fellows Program (Dec 2026 cohort)" must reduce to "fellows", not
+  // "fellowsprogram".
+  s = s.replace(/[^a-z0-9]+/g, ' ').trim();
+  s = stripProgramSuffixes(s);
   return s.replace(/[^a-z0-9]/g, '');
 }
 
