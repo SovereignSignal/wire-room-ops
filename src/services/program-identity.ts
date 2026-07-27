@@ -132,6 +132,39 @@ export async function ensureProgramsTable(): Promise<void> {
 export interface ProgramMatch { program: ProgramRow; confidence: number; pass: 'key' | 'substring' | 'tokens'; urlBoost: boolean }
 
 const norm = (s: string) => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/** Initials of the significant words: "Amazon Web Services" -> "aws". */
+function initialsOf(s: string): string {
+  return (s || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length > 0 && !['of', 'the', 'and', 'for', 'a', 'an'].includes(w))
+    .map(w => w[0])
+    .join('');
+}
+
+/**
+ * Do two org strings name the same funder?
+ *
+ * Sources write the same org as "AWS" and "Amazon Web Services". The
+ * collision guard in createProgram compared raw normalized text and forked
+ * the program key on that difference alone, minting a duplicate program row
+ * with a byte-identical name (production rows #7 / #783). Exact, substring,
+ * and initialism agreement all count as one identity.
+ */
+export function sameOrgIdentity(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  const x = norm(a);
+  const y = norm(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  if (x.includes(y) || y.includes(x)) return true;
+  // Initialism: compare the acronym form of the longer name to the shorter.
+  const [short, long] = x.length <= y.length ? [x, b] : [y, a];
+  const initials = initialsOf(long);
+  return initials.length >= 2 && initials === short;
+}
 const tokensOf = (s: string) => new Set((s || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(t => t.length > 3));
 const domainOf = (url: string | null | undefined): string | null => {
   const m = (url || '').match(/^https?:\/\/(?:www\.)?([^/]+)/i);
@@ -309,12 +342,13 @@ export async function createProgram(
   // genuinely different programs to one key ("Round Table Grants" class).
   // When the existing key-holder belongs to a DIFFERENT org, disambiguate the
   // key with the org instead of merging identities.
-  const orgNorm = data.orgName ? norm(data.orgName) : null;
-  if (orgNorm) {
+  if (data.orgName) {
     const existing = await pool.query(`SELECT org_name FROM programs WHERE normalized_key = $1`, [key]) as { rows: Array<{ org_name: string | null }> };
-    const other = existing.rows[0]?.org_name ? norm(existing.rows[0].org_name) : null;
-    if (other && other !== orgNorm && !other.includes(orgNorm) && !orgNorm.includes(other)) {
-      key = `${key}--${orgNorm}`;
+    const other = existing.rows[0]?.org_name ?? null;
+    // sameOrgIdentity, not string equality: "AWS" and "Amazon Web Services"
+    // are one funder, and treating them as two forked the key.
+    if (other && !sameOrgIdentity(other, data.orgName)) {
+      key = `${key}--${norm(data.orgName)}`;
     }
   }
   const dom = domainOf(data.sourceUrl);
