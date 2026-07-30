@@ -75,7 +75,10 @@ test('assembleIssue repeats the Telegram channel block at top and in the conclus
   const hits = (md.match(/@cryptograntwire/g) || []).length;
   assert.ok(hits >= 2, `expected channel block twice, saw ${hits}`);
   assert.ok(md.includes("That's it for this week!"));
-  assert.ok(md.trimEnd().endsWith('Peace,\nSov'));
+  // The sign-off is no longer the last thing in the issue: the masthead byline
+  // follows it. Still assert the sign-off survives and the byline closes out.
+  assert.ok(md.includes('Peace,\nSov'), 'the sign-off must survive');
+  assert.ok(md.trimEnd().endsWith('just reply.'), 'the byline closes the issue');
 });
 
 test('assembleIssue uses no em or en dashes', () => {
@@ -152,4 +155,29 @@ test('weekly checkpoint requires delivery unless storage is explicitly skipped',
     () => assertWeeklyCheckpointAllowed({ skipEmail: true, skipStore: false, emailed: false, notionLanded: false }),
     /delivery is skipped/,
   );
+});
+
+// The byline is the newsletter's only conversion path. 41 issues held a
+// 26-33% open rate and took zero comments because nothing was actionable.
+test('assembleIssue closes with the funder-side byline and a reply invitation', () => {
+  const md = assembleIssue({
+    weekEnding: 'July 24, 2026',
+    blocks: [{ label: 'AI', featured: [{ name: 'X', url: 'https://x.test', description: 'does a thing.' }], alsoOpen: [] }],
+  });
+
+  assert.match(md, /I'm Sov\. I've run grant programs on the funder side/);
+  assert.match(md, /tens of millions across more than a dozen rounds/);
+  assert.match(md, /just reply\.$/, 'the reply invitation must be the last thing in the issue');
+
+  // All three ecosystems named: a crypto-only byline tells two thirds of the
+  // readers this is not for them.
+  assert.match(md, /crypto, AI and OSS/);
+
+  // Masthead position: after the sign-off, so it reads as author metadata
+  // rather than a pitch inside the letter.
+  assert.ok(md.indexOf("Peace,\nSov") < md.indexOf("I'm Sov."),
+    'the byline belongs after the sign-off');
+
+  // No commercial ask. The point is that it costs the reader nothing.
+  assert.doesNotMatch(md, /\bhire me\b|\brates?\b|book a call|calendly/i);
 });
