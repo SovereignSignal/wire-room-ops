@@ -49,6 +49,7 @@ export interface FeedSource {
   // scrape: an instruction for the LLM extractor describing what opportunities to pull
   scrapePrompt?: string;
   maxItems?: number;           // safety cap per fetch (default 40)
+  timeoutMs?: number;          // per-source fetch fuse; defaults to DEFAULT_TIMEOUT_MS
   // For rest_json/graphql sources whose shape needs URL construction, fallback chains,
   // unit conversion, or filtering that dot-path `fields` can't express. Return null to drop.
   extract?: (item: unknown) => FeedItem | null;
@@ -273,16 +274,32 @@ export async function readJsonBody(r: Response): Promise<unknown> {
   }
 }
 
-async function httpGet(url: string, headers?: Record<string, string>): Promise<Response> {
+/**
+ * Give a fetch failure a readable message and a retry verdict.
+ * Unknown failures default to permanent — retrying something we do not
+ * understand is how a bad config turns into doubled API spend.
+ */
+export function classifyFetchError(err: unknown, timeoutMs: number): FeedFetchError {
+  if (err instanceof FeedFetchError) return err;
+  const name = (err as { name?: string })?.name;
+  if (name === 'TimeoutError' || name === 'AbortError') {
+    return new FeedFetchError(`timeout after ${Math.round(timeoutMs / 1000)}s`, true);
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/^HTTP 5\d\d/.test(msg)) return new FeedFetchError(msg, true);
+  return new FeedFetchError(msg, false);
+}
+
+async function httpGet(url: string, headers?: Record<string, string>, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<Response> {
   return fetch(url, {
     headers: { 'User-Agent': 'wire-room-ops/feeds', Accept: '*/*', ...(headers || {}) },
-    signal: AbortSignal.timeout(20000),
+    signal: AbortSignal.timeout(timeoutMs),
     redirect: 'follow',
   });
 }
 
 async function fetchRss(source: FeedSource): Promise<FeedItem[]> {
-  const r = await httpGet(source.endpoint, source.headers);
+  const r = await httpGet(source.endpoint, source.headers, source.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const xml = await r.text();
   return parseFeed(xml, source).slice(0, source.maxItems || DEFAULT_MAX_ITEMS);
@@ -292,13 +309,13 @@ async function fetchRestJson(source: FeedSource): Promise<FeedItem[]> {
   const init: RequestInit = {
     method: source.httpMethod || 'GET',
     headers: { 'User-Agent': 'wire-room-ops/feeds', Accept: 'application/json', 'Content-Type': 'application/json', ...(source.headers || {}) },
-    signal: AbortSignal.timeout(20000),
+    signal: AbortSignal.timeout(source.timeoutMs ?? DEFAULT_TIMEOUT_MS),
     redirect: 'follow',
   };
   if (source.httpMethod === 'POST' && source.body) init.body = source.body;
   const r = await fetch(source.endpoint, init);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  const data = await r.json();
+  const data = await readJsonBody(r);
   const items = getPath(data, source.itemsPath) ?? data;
   if (!Array.isArray(items)) throw new Error(`itemsPath "${source.itemsPath}" is not an array`);
   return mapItems(items, source);
@@ -309,17 +326,17 @@ async function fetchGraphql(source: FeedSource): Promise<FeedItem[]> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...(source.headers || {}) },
     body: JSON.stringify({ query: source.body }),
-    signal: AbortSignal.timeout(20000),
+    signal: AbortSignal.timeout(source.timeoutMs ?? DEFAULT_TIMEOUT_MS),
   });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  const data = await r.json();
+  const data = await readJsonBody(r);
   const items = getPath(data, source.itemsPath);
   if (!Array.isArray(items)) throw new Error(`itemsPath "${source.itemsPath}" not an array in GraphQL response`);
   return mapItems(items, source);
 }
 
 async function fetchGithubCsv(source: FeedSource): Promise<FeedItem[]> {
-  const r = await httpGet(source.endpoint, source.headers);
+  const r = await httpGet(source.endpoint, source.headers, source.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const text = await r.text();
   const rows = parseCsv(text);
@@ -537,6 +554,9 @@ export const SOURCE_REGISTRY: FeedSource[] = [
     itemsPath: 'programs',
     enabled: true,
     maxItems: 120,
+    // 268KB and ~4s of server think-time — by far the largest payload in the
+    // registry. The 20s default was firing mid-body and reporting it as bad JSON.
+    timeoutMs: 45000,
     extract: (it) => {
       const type = (asStr(getPath(it, 'type')) || '').toLowerCase();
       if (type === 'hackathon' || type === 'vcfund') return null;

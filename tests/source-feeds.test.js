@@ -189,3 +189,39 @@ test('readJsonBody reports invalid JSON when no content-length is present (chunk
     }
   );
 });
+
+const { classifyFetchError, DEFAULT_TIMEOUT_MS } = require('../src/services/source-feeds');
+
+test('classifyFetchError turns an AbortSignal timeout into a readable transient error', () => {
+  // AbortSignal.timeout() rejects with a DOMException named TimeoutError in Node 18+.
+  const err = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+  const out = classifyFetchError(err, 45000);
+  assert.equal(out.transient, true);
+  assert.equal(out.message, 'timeout after 45s');
+});
+
+test('classifyFetchError also handles the AbortError spelling', () => {
+  const err = Object.assign(new Error('aborted'), { name: 'AbortError' });
+  assert.equal(classifyFetchError(err, 20000).message, 'timeout after 20s');
+});
+
+test('classifyFetchError treats 5xx as transient and 4xx as permanent', () => {
+  assert.equal(classifyFetchError(new Error('HTTP 503'), 20000).transient, true);
+  assert.equal(classifyFetchError(new Error('HTTP 404'), 20000).transient, false);
+});
+
+test('classifyFetchError passes a FeedFetchError through unchanged', () => {
+  const original = new FeedFetchError('truncated body: got 10 of 900 bytes', true);
+  assert.equal(classifyFetchError(original, 20000), original);
+});
+
+test('classifyFetchError defaults unknown failures to permanent', () => {
+  const out = classifyFetchError(new Error('itemsPath "programs" is not an array'), 20000);
+  assert.equal(out.transient, false);
+  assert.match(out.message, /itemsPath/);
+});
+
+test('karma-gap gets a longer timeout than the registry default', () => {
+  assert.equal(reg('karma-gap').timeoutMs, 45000);
+  assert.equal(DEFAULT_TIMEOUT_MS, 20000);
+});
