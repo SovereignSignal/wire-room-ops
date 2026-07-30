@@ -6,7 +6,7 @@ const assert = require('node:assert/strict');
 // Unit tests for the source-feeds ingester — pure parse/extract logic, no network.
 // Live endpoint shapes are verified separately via src/scripts/source-feeds-dryrun.ts.
 
-const { parseFeed, SOURCE_REGISTRY } = require('../src/services/source-feeds');
+const { parseFeed, SOURCE_REGISTRY, readJsonBody, FeedFetchError } = require('../src/services/source-feeds');
 
 const reg = (key) => SOURCE_REGISTRY.find(s => s.key === key);
 
@@ -138,4 +138,54 @@ test('Grants.gov factory: builds per-keyword source, raises rows to 100, shared 
   const keep = ai.extract({ title: 'NSF Trailblazer Engineering Impact Award', id: '358001', agencyName: 'National Science Foundation', number: 'NSF 26-502', oppStatus: 'posted' });
   assert.equal(keep.url, 'https://www.grants.gov/search-results-detail/358001');
   assert.equal(ai.extract({ title: 'Maternal Cardiovascular Health Study', id: '9', agencyName: 'NIH' }), null);
+});
+
+// Minimal Response stand-in: only the two members readJsonBody touches.
+function fakeResponse(body, contentLength) {
+  return {
+    headers: { get: (h) => (h.toLowerCase() === 'content-length' && contentLength != null ? String(contentLength) : null) },
+    text: async () => body,
+  };
+}
+
+test('readJsonBody parses a complete JSON body', async () => {
+  const body = JSON.stringify({ programs: [{ name: 'A' }] });
+  const out = await readJsonBody(fakeResponse(body, Buffer.byteLength(body, 'utf8')));
+  assert.deepEqual(out, { programs: [{ name: 'A' }] });
+});
+
+test('readJsonBody reports truncation with byte counts, and marks it transient', async () => {
+  const full = JSON.stringify({ programs: [{ name: 'A' }] });
+  const cut = full.slice(0, 10);
+  await assert.rejects(
+    () => readJsonBody(fakeResponse(cut, Buffer.byteLength(full, 'utf8'))),
+    (err) => {
+      assert.ok(err instanceof FeedFetchError);
+      assert.equal(err.transient, true);
+      assert.match(err.message, /truncated body: got 10 of \d+ bytes/);
+      return true;
+    }
+  );
+});
+
+test('readJsonBody counts BYTES not UTF-16 units — multibyte body is not a false truncation', async () => {
+  // "é" is 1 UTF-16 unit but 2 UTF-8 bytes. A naive text.length check would
+  // see 20 < 25 and wrongly report truncation on a complete body.
+  const body = JSON.stringify({ name: 'Fondation Créé — Zürich' });
+  const bytes = Buffer.byteLength(body, 'utf8');
+  assert.ok(bytes > body.length, 'fixture must actually contain multibyte characters');
+  const out = await readJsonBody(fakeResponse(body, bytes));
+  assert.equal(out.name, 'Fondation Créé — Zürich');
+});
+
+test('readJsonBody reports invalid JSON when no content-length is present (chunked)', async () => {
+  await assert.rejects(
+    () => readJsonBody(fakeResponse('{"programs": [', null)),
+    (err) => {
+      assert.ok(err instanceof FeedFetchError);
+      assert.equal(err.transient, true);
+      assert.match(err.message, /invalid JSON \(14 bytes received\)/);
+      return true;
+    }
+  );
 });

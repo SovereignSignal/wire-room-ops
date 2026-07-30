@@ -232,6 +232,47 @@ function mapJsonItems(items: unknown[], source: FeedSource): FeedItem[] {
 
 const DEFAULT_MAX_ITEMS = 40;
 
+export const DEFAULT_TIMEOUT_MS = 20000;
+
+/**
+ * A feed fetch failure with a retry verdict attached. `transient` means a second
+ * attempt could plausibly succeed (timeout, truncation, 5xx); permanent failures
+ * (4xx, bad config) must not be retried — one of our methods calls a paid API.
+ */
+export class FeedFetchError extends Error {
+  readonly transient: boolean;
+  constructor(message: string, transient: boolean) {
+    super(message);
+    this.name = 'FeedFetchError';
+    this.transient = transient;
+  }
+}
+
+/**
+ * Read a JSON body without letting a truncated response masquerade as bad JSON.
+ *
+ * Compares BYTES, never UTF-16 code units: content-length is a byte count, and any
+ * non-ASCII in the payload makes `text.length` smaller than the byte length on a
+ * perfectly complete body. Comparing the two directly would report a false truncation
+ * on every feed that mentions "Zürich".
+ *
+ * Chunked responses carry no content-length; there only the parse guard applies.
+ */
+export async function readJsonBody(r: Response): Promise<unknown> {
+  const text = await r.text();
+  const received = Buffer.byteLength(text, 'utf8');
+  const header = r.headers.get('content-length');
+  const expected = header ? Number(header) : null;
+  if (expected && Number.isFinite(expected) && received < expected) {
+    throw new FeedFetchError(`truncated body: got ${received} of ${expected} bytes`, true);
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new FeedFetchError(`invalid JSON (${received} bytes received)`, true);
+  }
+}
+
 async function httpGet(url: string, headers?: Record<string, string>): Promise<Response> {
   return fetch(url, {
     headers: { 'User-Agent': 'wire-room-ops/feeds', Accept: '*/*', ...(headers || {}) },
