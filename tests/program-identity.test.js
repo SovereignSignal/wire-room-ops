@@ -65,6 +65,22 @@ function programPool(rows) {
   return { calls, async query(sql, params) { calls.push({ sql, params }); return { rows }; } };
 }
 
+function finalizePool(handler) {
+  const calls = [];
+  const client = {
+    async query(sql, params) {
+      calls.push({ sql, params });
+      return handler(sql, params, calls);
+    },
+    release() { calls.push({ sql: 'RELEASE', params: [] }); },
+  };
+  return {
+    calls,
+    async query(sql, params) { return client.query(sql, params); },
+    async connect() { calls.push({ sql: 'CONNECT', params: [] }); return client; },
+  };
+}
+
 test('resolveProgram: normalized-key exact match = 0.95', async () => {
   const pool = programPool([fakeProgram()]);
   const m = await resolveProgram(pool, { name: 'Anthropic Fellows Program (Dec 2026 cohort)', wire: 'ai' });
@@ -166,6 +182,7 @@ test('createProgram upserts by normalized_key and returns id', async () => {
   const pool = programPool([{ id: 42 }]);
   const id = await createProgram(pool, { name: 'Brand New Grants Round 2', canonicalName: 'Brand New Grants', orgName: 'BrandCo', wire: 'oss', sourceUrl: 'https://brand.co/grants', roundLabel: 'round 2' });
   assert.equal(id, 42);
+  assert.match(pool.calls[0].sql, /pg_advisory_xact_lock/);
   const insert = pool.calls.find(c => /INSERT INTO programs/.test(c.sql));
   assert.ok(insert);
   assert.match(insert.sql, /ON CONFLICT \(normalized_key\)/);
@@ -228,29 +245,41 @@ test('canonicalization parser handles fenced, wrapped, and prefaced arrays', () 
 });
 
 test('finalizeProgramForEntry: resolution present → sighting recorded + metadata.program stamped', async () => {
-  const pool = programPool([]);
+  const pool = finalizePool(async sql => {
+    if (/SELECT program_id FROM scan_entries/.test(sql)) return { rows: [{ program_id: null }] };
+    if (/UPDATE scan_entries SET program_id/.test(sql)) return { rows: [{ id: 500 }] };
+    return { rows: [] };
+  });
   await finalizeProgramForEntry(pool, { id: 500, name: 'X Round 3', wire: 'ai' },
     { programId: 1, confidence: 0.95, verdict: 'same_round', roundLabel: null, historyLine: 'seen 60× · approved 1×' });
   const sqls = pool.calls.map(c => c.sql).join('\n');
+  assert.match(sqls, /BEGIN/);
+  assert.match(sqls, /FOR UPDATE/);
   assert.match(sqls, /UPDATE programs/);
   assert.match(sqls, /program_id = /);
   assert.match(sqls, /'program'/); // metadata stamp
+  assert.match(sqls, /COMMIT/);
+  assert.equal(pool.calls.at(-1).sql, 'RELEASE');
 });
 
 test('finalizeProgramForEntry: a new program records its first sighting and canonical entry', async () => {
-  const calls = [];
-  const pool = {
-    calls,
-    async query(sql, params) {
-      calls.push({ sql, params });
-      if (/INSERT INTO programs/.test(sql)) return { rows: [{ id: 42 }] };
-      return { rows: [] };
-    },
-  };
+  let connected = false;
+  const pool = finalizePool(async sql => {
+    if (/SELECT program_id FROM scan_entries/.test(sql)) return { rows: [{ program_id: null }] };
+    if (/SELECT org_name FROM programs/.test(sql)) return { rows: [] };
+    if (/INSERT INTO programs/.test(sql)) return { rows: [{ id: 42 }] };
+    if (/UPDATE scan_entries SET program_id/.test(sql)) return { rows: [{ id: 501 }] };
+    return { rows: [] };
+  });
+  const originalConnect = pool.connect;
+  pool.connect = async () => { connected = true; return originalConnect(); };
   const previousFetch = global.fetch;
   global.fetch = async () => ({
     ok: true,
-    json: async () => ({ choices: [{ message: { content: '[{"id":501,"org":"BrandCo","program":"BrandCo Grants","round_label":null}]' } }] }),
+    json: async () => {
+      assert.equal(connected, false, 'provider work must finish before a DB connection is acquired');
+      return { choices: [{ message: { content: '[{"id":501,"org":"BrandCo","program":"BrandCo Grants","round_label":null}]' } }] };
+    },
   });
   try {
     await finalizeProgramForEntry(pool, { id: 501, name: 'BrandCo Grants', wire: 'oss' }, null);
@@ -258,13 +287,55 @@ test('finalizeProgramForEntry: a new program records its first sighting and cano
     global.fetch = previousFetch;
   }
 
-  const sighting = calls.find(call => /entry_count = entry_count \+ 1/.test(call.sql));
+  const sighting = pool.calls.find(call => /entry_count = entry_count \+ 1/.test(call.sql));
   assert.ok(sighting, 'new program must count its first linked entry');
   assert.match(sighting.sql, /canonical_entry_id = COALESCE\(canonical_entry_id, \$6\)/);
   assert.equal(sighting.params[5], 501);
-  const linkIndex = calls.findIndex(call => /UPDATE scan_entries SET program_id/.test(call.sql));
-  const sightingIndex = calls.indexOf(sighting);
+  const linkIndex = pool.calls.findIndex(call => /UPDATE scan_entries SET program_id/.test(call.sql));
+  const sightingIndex = pool.calls.indexOf(sighting);
   assert.ok(linkIndex >= 0 && sightingIndex > linkIndex, 'count the sighting only after the entry link succeeds');
+  assert.ok(pool.calls.some(call => call.sql === 'COMMIT'));
+});
+
+test('finalizeProgramForEntry: retrying an existing link does not increment the sighting', async () => {
+  const pool = finalizePool(async sql => {
+    if (/SELECT program_id FROM scan_entries/.test(sql)) return { rows: [{ program_id: 1 }] };
+    return { rows: [] };
+  });
+  await finalizeProgramForEntry(pool, { id: 500, name: 'X Round 3', wire: 'ai' },
+    { programId: 1, confidence: 0.95, verdict: 'same_round', roundLabel: null, historyLine: 'seen 1×' });
+  assert.equal(pool.calls.some(call => /entry_count = entry_count \+ 1/.test(call.sql)), false);
+  assert.ok(pool.calls.some(call => /WHERE id = \$1 AND program_id = \$2/.test(call.sql)));
+  assert.ok(pool.calls.some(call => call.sql === 'COMMIT'));
+});
+
+test('finalizeProgramForEntry: conflicting program link rolls back without mutation', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  const pool = finalizePool(async sql => {
+    if (/SELECT program_id FROM scan_entries/.test(sql)) return { rows: [{ program_id: 2 }] };
+    return { rows: [] };
+  });
+  await finalizeProgramForEntry(pool, { id: 500, name: 'X Round 3', wire: 'ai' },
+    { programId: 1, confidence: 0.95, verdict: 'same_round', roundLabel: null, historyLine: 'seen 1×' });
+  assert.ok(pool.calls.some(call => call.sql === 'ROLLBACK'));
+  assert.equal(pool.calls.some(call => /UPDATE scan_entries|UPDATE programs/.test(call.sql)), false);
+  assert.equal(pool.calls.some(call => call.sql === 'COMMIT'), false);
+});
+
+test('finalizeProgramForEntry: failure after linking rolls back the whole transaction', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  const pool = finalizePool(async sql => {
+    if (/SELECT program_id FROM scan_entries/.test(sql)) return { rows: [{ program_id: null }] };
+    if (/UPDATE scan_entries SET program_id/.test(sql)) return { rows: [{ id: 500 }] };
+    if (/UPDATE programs SET/.test(sql)) throw new Error('sighting failed');
+    return { rows: [] };
+  });
+  await finalizeProgramForEntry(pool, { id: 500, name: 'X Round 3', wire: 'ai' },
+    { programId: 1, confidence: 0.95, verdict: 'same_round', roundLabel: null, historyLine: 'seen 1×' });
+  assert.ok(pool.calls.some(call => /UPDATE scan_entries SET program_id/.test(call.sql)));
+  assert.ok(pool.calls.some(call => call.sql === 'ROLLBACK'));
+  assert.equal(pool.calls.some(call => call.sql === 'COMMIT'), false);
+  assert.equal(pool.calls.at(-1).sql, 'RELEASE');
 });
 
 test('finalizeProgramForEntry: fail-open — a throwing pool never propagates', async () => {
@@ -292,6 +363,10 @@ test('refreshProgramCounters derives mutable history from linked entries', async
   const pool = programPool([{ id: 5 }]);
   assert.equal(await refreshProgramCounters(pool, [5, 5, Number.NaN]), 1);
   assert.match(pool.calls[0].sql, /approved_count = s\.approved/);
+  assert.match(pool.calls[0].sql, /LEFT JOIN scan_entries/);
+  assert.match(pool.calls[0].sql, /canonical_entry_id = s\.exemplar/);
+  assert.match(pool.calls[0].sql, /duplicate_of_id IS NULL/);
+  assert.match(pool.calls[0].sql, /IS DISTINCT FROM/);
   assert.deepEqual(pool.calls[0].params, [[5]]);
 });
 
