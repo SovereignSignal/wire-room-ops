@@ -180,7 +180,7 @@ const Index = () => {
     }
   };
 
-  const handleQuietApprove = async (ids: string[]) => {
+  const handleApproveToPrograms = async (ids: string[]) => {
     try {
       if (ids.length === 1) {
         await quietApproveEntry(ids[0]);
@@ -188,14 +188,14 @@ const Index = () => {
         await bulkQuietApprove(ids);
       }
       toast({
-        title: `${ids.length} item${ids.length > 1 ? 's' : ''} quietly approved`,
-        description: 'Added to database without distribution',
+        title: `Approved to Programs: ${ids.length} item${ids.length > 1 ? 's' : ''}`,
+        description: 'Stored without Wire distribution',
       });
       await loadData();
     } catch (err) {
-      console.error('Failed to quiet approve:', err);
+      console.error('Failed to approve to Programs:', err);
       const msg = err instanceof Error ? err.message : 'Unknown error';
-      toast({ title: 'Approval blocked', description: msg });
+      toast({ title: 'Program approval blocked', description: msg });
     }
   };
 
@@ -272,7 +272,7 @@ const Index = () => {
               onUpdateStatus={handleUpdateStatus}
               onViewDetails={setSelectedEntry}
               onSingleAction={(id, status) => handleUpdateStatus([id], status)}
-              onQuietApprove={handleQuietApprove}
+              onApproveToPrograms={handleApproveToPrograms}
               onEntryUpdated={(id, updates) => {
                 setQueueEntries(prev => prev.map(e => e.id === id ? { ...e, ...updates } : e));
               }}

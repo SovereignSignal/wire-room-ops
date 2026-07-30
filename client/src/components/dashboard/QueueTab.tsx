@@ -6,9 +6,14 @@ import { ActionBar } from './ActionBar';
 import { FilterBar } from './FilterBar';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Button } from '@/components/ui/button';
-import { ExternalLink, CheckCircle, Archive, ChevronDown, EyeOff } from 'lucide-react';
+import { ExternalLink, CheckCircle2, Database, ChevronDown, XCircle } from 'lucide-react';
 import { updateEntryWires, fetchWires } from '@/api';
 import { effectiveOperatorRoute, isInScoreBand, visibleSelection } from '@/lib/dashboard-state';
+import { getQueueDecision, queueDecisionButtonClass } from './queue-decisions';
+
+const WIRES_DECISION = getQueueDecision('wires');
+const PROGRAMS_DECISION = getQueueDecision('programs');
+const REJECT_DECISION = getQueueDecision('reject');
 
 const classificationStyles: Record<string, string> = {
   GRANT: 'border-green-500/50 text-green-400 bg-green-500/10',
@@ -251,14 +256,14 @@ interface QueueTabProps {
   onUpdateStatus: (ids: string[], status: ScanEntry['status']) => void;
   onViewDetails: (entry: ScanEntry) => void;
   onSingleAction?: (id: string, status: ScanEntry['status']) => void;
-  onQuietApprove: (ids: string[]) => void;
+  onApproveToPrograms: (ids: string[]) => void;
   onEntryUpdated?: (id: string, updates: Partial<ScanEntry>) => void;
   total: number;
   loadingMore: boolean;
   onLoadMore: () => void;
 }
 
-export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, onSingleAction, onQuietApprove, onEntryUpdated, total, loadingMore, onLoadMore }: QueueTabProps) {
+export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, onSingleAction, onApproveToPrograms, onEntryUpdated, total, loadingMore, onLoadMore }: QueueTabProps) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [wireFilter, setWireFilter] = useState<string | null>(null);
   const [classificationFilter, setClassificationFilter] = useState<string | null>(null);
@@ -454,8 +459,8 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
 
       <FilterBar filters={filters} onFilterChange={setFilters} verticals={verticals} />
       
-      {/* Mobile card view */}
-      <div className="block md:hidden space-y-2">
+      {/* Card view keeps all decisions visible on mobile and tablet widths. */}
+      <div className="block xl:hidden space-y-2">
         {filteredEntries.length === 0 ? (
           <div className="glow-card p-8 text-center">
             <span className="text-4xl block mb-3 opacity-50">📡</span>
@@ -516,42 +521,46 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
               )}
             </div>
 
-            {/* Row 3: Action buttons — always visible, full width */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-2.5 pt-2 border-t border-border/50" onClick={(e) => e.stopPropagation()}>
+            {/* Row 3: three equal operator decisions */}
+            <div className="grid grid-cols-3 gap-2 mt-2.5 pt-2 border-t border-border/50 items-stretch" onClick={(e) => e.stopPropagation()}>
               <Button
                 size="sm"
-                onClick={() => (onSingleAction ?? ((id, s) => onUpdateStatus([id], s)))(entry.id, 'approved')}
-                className="w-full gap-1.5 bg-status-success/20 text-status-success border border-status-success/30 hover:bg-status-success/30 font-display text-[10px] tracking-wider h-9"
+                onClick={() => (onSingleAction ?? ((id, s) => onUpdateStatus([id], s)))(entry.id, WIRES_DECISION.status)}
+                title={WIRES_DECISION.title}
+                aria-label={WIRES_DECISION.label}
+                className={queueDecisionButtonClass(WIRES_DECISION.tone)}
               >
-                <CheckCircle className="w-4 h-4 shrink-0" />
-                APPROVE + PUBLISH
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                {WIRES_DECISION.label}
               </Button>
               <Button
                 size="sm"
-                onClick={() => onQuietApprove([entry.id])}
-                title="Approve without distributing"
-                className="w-full gap-1.5 bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 font-display text-[10px] tracking-wider h-9"
+                onClick={() => onApproveToPrograms([entry.id])}
+                title={PROGRAMS_DECISION.title}
+                aria-label={PROGRAMS_DECISION.label}
+                className={queueDecisionButtonClass(PROGRAMS_DECISION.tone)}
               >
-                <EyeOff className="w-4 h-4 shrink-0" />
-                QUIET APPROVE
+                <Database className="w-4 h-4 shrink-0" />
+                {PROGRAMS_DECISION.label}
               </Button>
               <Button
                 size="sm"
-                variant="secondary"
-                onClick={() => (onSingleAction ?? ((id, s) => onUpdateStatus([id], s)))(entry.id, 'archived')}
-                className="w-full gap-1.5 font-display text-[10px] tracking-wider h-9"
+                onClick={() => (onSingleAction ?? ((id, s) => onUpdateStatus([id], s)))(entry.id, REJECT_DECISION.status)}
+                title={REJECT_DECISION.title}
+                aria-label={REJECT_DECISION.label}
+                className={queueDecisionButtonClass(REJECT_DECISION.tone)}
               >
-                <Archive className="w-4 h-4 shrink-0" />
-                ARCHIVE
+                <XCircle className="w-4 h-4 shrink-0" />
+                {REJECT_DECISION.label}
               </Button>
             </div>
           </div>
         ))}
       </div>
 
-      {/* Desktop table view */}
-      <div className="hidden md:block glow-card overflow-x-auto overflow-y-visible">
-        <table className="ops-table w-full">
+      {/* Desktop table appears only when its 1080px minimum width fits the container. */}
+      <div className="hidden xl:block glow-card overflow-x-auto overflow-y-visible">
+        <table className="ops-table w-full min-w-[1080px]">
           <thead>
             <tr>
               <th className="w-[36px] px-2">
@@ -563,9 +572,8 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
               </th>
               <th className="px-2">Name</th>
               <th className="w-[112px] px-2">Wire</th>
-              <th className="w-[132px] px-2">Curator</th>
-              <th className="w-[128px] px-2">Src</th>
-              <th className="w-[268px] px-2">Actions</th>
+              <th className="w-[128px] px-2">Source</th>
+              <th className="w-[500px] px-2">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -588,6 +596,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                     <ClassificationBadge classification={entry.classification} />
                     <RouteBadge route={effectiveOperatorRoute(entry.metadata)} />
                     <RelatedSourceBadge entry={entry} />
+                    <CuratorBadge curator={entry.metadata?.curator} />
                   </div>
                   {entry.description && (
                     <ExpandableDescription text={entry.description} />
@@ -607,9 +616,6 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                 </td>
                 <td className="px-2" onClick={(e) => e.stopPropagation()}>
                   <WireSelector wire={entry.wire} wires={entry.wires} entryId={entry.id} onWiresChange={handleWiresChange} availableWires={availableWires} />
-                </td>
-                <td className="px-2">
-                  <CuratorBadge curator={entry.metadata?.curator} />
                 </td>
                 <td className="px-2" onClick={(e) => e.stopPropagation()}>
                   {(() => {
@@ -632,29 +638,33 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
                   })()}
                 </td>
                 <td className="px-2 py-2" onClick={(e) => e.stopPropagation()}>
-                  <div className="flex items-center gap-2">
+                  <div className="grid grid-cols-3 gap-2 items-stretch">
                     <button
-                      onClick={() => (onSingleAction ?? ((id, s) => onUpdateStatus([id], s)))(entry.id, 'approved')}
-                      title="Approve & distribute to channels"
-                      className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg border border-status-success/45 bg-status-success/15 text-status-success text-[11px] font-display font-bold uppercase tracking-wider transition-all hover:bg-status-success/25 hover:border-status-success/70 hover:shadow-[0_0_14px_hsl(var(--status-success)/0.4)] active:scale-95"
+                      onClick={() => (onSingleAction ?? ((id, s) => onUpdateStatus([id], s)))(entry.id, WIRES_DECISION.status)}
+                      title={WIRES_DECISION.title}
+                      aria-label={WIRES_DECISION.label}
+                      className={queueDecisionButtonClass(WIRES_DECISION.tone)}
                     >
-                      <CheckCircle className="w-4 h-4" />
-                      Approve
+                      <CheckCircle2 className="w-4 h-4 shrink-0" />
+                      {WIRES_DECISION.label}
                     </button>
                     <button
-                      onClick={() => onQuietApprove([entry.id])}
-                      title="Quiet approve — keep in DB, do not distribute"
-                      className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border border-primary/35 bg-primary/[0.07] text-primary text-[11px] font-display font-semibold uppercase tracking-wider transition-all hover:bg-primary/18 hover:border-primary/60 hover:shadow-[0_0_12px_hsl(var(--primary)/0.3)] active:scale-95"
+                      onClick={() => onApproveToPrograms([entry.id])}
+                      title={PROGRAMS_DECISION.title}
+                      aria-label={PROGRAMS_DECISION.label}
+                      className={queueDecisionButtonClass(PROGRAMS_DECISION.tone)}
                     >
-                      <EyeOff className="w-4 h-4" />
-                      Quiet
+                      <Database className="w-4 h-4 shrink-0" />
+                      {PROGRAMS_DECISION.label}
                     </button>
                     <button
-                      onClick={() => (onSingleAction ?? ((id, s) => onUpdateStatus([id], s)))(entry.id, 'archived')}
-                      title="Skip / Archive"
-                      className="inline-flex items-center justify-center h-9 w-9 rounded-lg border border-border/80 bg-transparent text-muted-foreground transition-all hover:bg-muted hover:text-foreground hover:border-border active:scale-95"
+                      onClick={() => (onSingleAction ?? ((id, s) => onUpdateStatus([id], s)))(entry.id, REJECT_DECISION.status)}
+                      title={REJECT_DECISION.title}
+                      aria-label={REJECT_DECISION.label}
+                      className={queueDecisionButtonClass(REJECT_DECISION.tone)}
                     >
-                      <Archive className="w-4 h-4" />
+                      <XCircle className="w-4 h-4 shrink-0" />
+                      {REJECT_DECISION.label}
                     </button>
                   </div>
                 </td>
@@ -662,7 +672,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
             ))}
             {filteredEntries.length === 0 && (
               <tr>
-                <td colSpan={6} className="text-center py-12 text-muted-foreground font-display text-sm tracking-wider">
+                <td colSpan={5} className="text-center py-12 text-muted-foreground font-display text-sm tracking-wider">
                   NO ITEMS MATCH FILTERS
                 </td>
               </tr>
@@ -689,14 +699,14 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
 
       <ActionBar
         selectedCount={selectedVisibleIds.size}
-        onApprove={() => handleAction('approved')}
-        onQuietApprove={() => {
+        onApproveToWires={() => handleAction(WIRES_DECISION.status)}
+        onApproveToPrograms={() => {
           const ids = Array.from(selectedVisibleIds);
           if (ids.length === 0) return;
-          onQuietApprove(ids);
+          onApproveToPrograms(ids);
           setSelectedIds(new Set());
         }}
-        onArchive={() => handleAction('archived')}
+        onReject={() => handleAction(REJECT_DECISION.status)}
         onClear={() => setSelectedIds(new Set())}
       />
     </div>
