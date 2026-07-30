@@ -225,3 +225,49 @@ test('karma-gap gets a longer timeout than the registry default', () => {
   assert.equal(reg('karma-gap').timeoutMs, 45000);
   assert.equal(DEFAULT_TIMEOUT_MS, 20000);
 });
+
+const { fetchSourceWithTransientRetry } = require('../src/jobs/source-feeds');
+
+const noSleep = async () => {};
+const src = { key: 'k', name: 'K', wire: 'crypto', method: 'rest_json', endpoint: 'https://x', enabled: true };
+
+test('transient failure is retried once and can succeed', async () => {
+  let calls = 0;
+  const items = await fetchSourceWithTransientRetry(src, async () => {
+    calls++;
+    if (calls === 1) throw new FeedFetchError('truncated body: got 10 of 900 bytes', true);
+    return [{ name: 'A', description: '', url: 'https://x/a', amount: null, deadline: null, publishedAt: null }];
+  }, noSleep);
+  assert.equal(calls, 2);
+  assert.equal(items.length, 1);
+});
+
+test('permanent failure is NOT retried — a paid scrape must not run twice', async () => {
+  let calls = 0;
+  await assert.rejects(
+    () => fetchSourceWithTransientRetry(src, async () => { calls++; throw new Error('HTTP 404'); }, noSleep),
+    (err) => { assert.equal(err.message, 'HTTP 404'); assert.equal(err.transient, false); return true; }
+  );
+  assert.equal(calls, 1, 'permanent failures must be attempted exactly once');
+});
+
+test('a transient failure twice surfaces the second error', async () => {
+  let calls = 0;
+  await assert.rejects(
+    () => fetchSourceWithTransientRetry(src, async () => {
+      calls++;
+      throw Object.assign(new Error('aborted'), { name: 'TimeoutError' });
+    }, noSleep),
+    (err) => { assert.equal(err.message, 'timeout after 20s'); return true; }
+  );
+  assert.equal(calls, 2);
+});
+
+test('retry honours the per-source timeout in its message', async () => {
+  await assert.rejects(
+    () => fetchSourceWithTransientRetry({ ...src, timeoutMs: 45000 }, async () => {
+      throw Object.assign(new Error('aborted'), { name: 'TimeoutError' });
+    }, noSleep),
+    (err) => { assert.equal(err.message, 'timeout after 45s'); return true; }
+  );
+});

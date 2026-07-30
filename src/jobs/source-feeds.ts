@@ -12,11 +12,14 @@ import type { Pool } from 'pg';
 import type { ScanSubmission, RawScanResult, IntakeRunSummary, IntakeJobConfig } from '../types/intake';
 import { getAppState, setAppState } from '../db';
 import { normalizeUrl } from '../utils/url';
+import { sleep } from '../utils/async';
 import { runDailyIntake } from './daily-intake';
 import {
   SOURCE_REGISTRY,
   getEnabledSources,
   fetchSource,
+  classifyFetchError,
+  DEFAULT_TIMEOUT_MS,
   type FeedSource,
   type FeedItem,
 } from '../services/source-feeds';
@@ -29,7 +32,7 @@ export interface SourceFeedsOptions {
 }
 
 export interface SourceFeedsResult {
-  perSource: Array<{ key: string; name: string; fetched: number; fresh: number; firstRun: boolean; error?: string }>;
+  perSource: Array<{ key: string; name: string; fetched: number; fresh: number; firstRun: boolean; error?: string; lastOk?: string | null }>;
   totalFresh: number;
   intakeSummary: IntakeRunSummary;
   durationMs: number;
@@ -49,6 +52,36 @@ function toRaw(it: FeedItem): RawScanResult {
     deadline: it.deadline,
     sourcePublishedAt: it.publishedAt,
   };
+}
+
+/**
+ * One retry, transient failures only.
+ *
+ * Deliberately not `withRetry()`: that helper retries every error, and the
+ * `scrape` method calls Firecrawl (paid). Retrying a permanently-broken scrape
+ * source would double that cost every day, forever.
+ *
+ * fetchImpl/sleepImpl are injectable seams so this is unit-testable without network.
+ */
+export async function fetchSourceWithTransientRetry(
+  source: FeedSource,
+  fetchImpl: (s: FeedSource) => Promise<FeedItem[]> = fetchSource,
+  sleepImpl: (ms: number) => Promise<void> = sleep,
+): Promise<FeedItem[]> {
+  const timeoutMs = source.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  try {
+    return await fetchImpl(source);
+  } catch (err) {
+    const first = classifyFetchError(err, timeoutMs);
+    if (!first.transient) throw first;
+    console.warn(`[Feeds] ${source.key} transient failure (${first.message}) — retrying once`);
+    await sleepImpl(2000);
+    try {
+      return await fetchImpl(source);
+    } catch (err2) {
+      throw classifyFetchError(err2, timeoutMs);
+    }
+  }
 }
 
 export async function runSourceFeeds(
@@ -91,7 +124,7 @@ export async function runSourceFeeds(
     const seen = new Set((state?.urls || []).map(normalizeUrl));
 
     try {
-      const items = await fetchSource(source);
+      const items = await fetchSourceWithTransientRetry(source);
 
       // net-new (unseen URL) + within-run dedup. No publish-age filter: an opportunity
       // posted months ago can still be open (its deadline gates relevance, not its post date).
@@ -146,7 +179,11 @@ export async function runSourceFeeds(
       console.log(`[Feeds] ${source.key}: ${items.length} fetched, ${fresh.length} fresh${capped ? ` (first-run capped to ${FIRST_RUN_LIMIT})` : ''}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      perSource.push({ key: source.key, name: source.name, fetched: 0, fresh: 0, firstRun, error: msg });
+      perSource.push({
+        key: source.key, name: source.name, fetched: 0, fresh: 0, firstRun,
+        error: msg,
+        lastOk: state?.lastRun ?? null,
+      });
       console.warn(`[Feeds] ${source.key} failed: ${msg}`);
     }
   }
