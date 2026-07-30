@@ -76,6 +76,25 @@ const CHANNEL_BULLETS = `- Crypto: [**@cryptograntwire**](https://t.me/cryptogra
 - AI: [**@aigrantwire**](https://t.me/aigrantwire)
 - OSS: [**@ossgrantwire**](https://t.me/ossgrantwire)`;
 
+// Masthead byline, printed after the sign-off so it reads as "about the author"
+// rather than as a pitch inside the letter.
+//
+// Why it exists: across 41 published issues the newsletter held a 26-33% open
+// rate and took ZERO comments, because nothing in it was actionable. ~180
+// qualified readers a week, no way for any of them to become a conversation.
+// This is the door. No rates, no link, no calendar: the ask is "reply", which
+// costs the reader nothing.
+//
+// Placement is deliberate and cheap to change: move this push above the
+// 'Peace,\nSov' line to put it inside the letter instead (warmer, more replies,
+// reads slightly more like a pitch).
+//
+// Keep it free of em and en dashes -- tests/weekly-issue.test.js pins that for
+// the whole issue.
+const BYLINE = `I'm Sov. I've run grant programs on the funder side, moving tens of millions across more than a dozen rounds, and I track every open program in crypto, AI and OSS.
+
+If you're putting an application together and want a read on it before it goes in, just reply.`;
+
 const WIRES: Array<{ key: string; label: 'AI' | 'Crypto' | 'OSS' }> = [
   { key: 'ai', label: 'AI' },
   { key: 'crypto', label: 'Crypto' },
@@ -163,6 +182,7 @@ export function assembleIssue(opts: { weekEnding: string; blocks: WireBlock[] })
   parts.push(CHANNEL_BULLETS);
   parts.push('Hope to see you next time!');
   parts.push('Peace,\nSov');
+  parts.push(BYLINE);
   return parts.join('\n\n');
 }
 
