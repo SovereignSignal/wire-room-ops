@@ -554,8 +554,14 @@ export const SOURCE_REGISTRY: FeedSource[] = [
     itemsPath: 'programs',
     enabled: true,
     maxItems: 120,
-    // 268KB and ~4s of server think-time — by far the largest payload in the
-    // registry. The 20s default was firing mid-body and reporting it as bad JSON.
+    // This API returns 200 + content-encoding: gzip + content-length: 0 + an EMPTY body
+    // when the client sends Accept-Encoding: gzip, which Node's fetch does by default.
+    // Asking for identity encoding returns the full ~268KB payload. Server-side defect;
+    // this is the client-side workaround. Verified 2026-07-30.
+    headers: { 'Accept-Encoding': 'identity' },
+    // 268KB — by far the largest payload in the registry. Generous fuse for a slow
+    // uncompressed transfer; this was NOT the cause of the July 2026 outage (see the
+    // Accept-Encoding note below).
     timeoutMs: 45000,
     extract: (it) => {
       const type = (asStr(getPath(it, 'type')) || '').toLowerCase();

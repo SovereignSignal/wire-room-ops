@@ -226,6 +226,12 @@ test('karma-gap gets a longer timeout than the registry default', () => {
   assert.equal(DEFAULT_TIMEOUT_MS, 20000);
 });
 
+test('karma-gap requests identity encoding — the API returns an empty gzip body otherwise', () => {
+  // Server defect: with Accept-Encoding: gzip (Node fetch's default) this API answers
+  // 200 + content-encoding: gzip + content-length: 0 + empty body. Verified 2026-07-30.
+  assert.equal(reg('karma-gap').headers['Accept-Encoding'], 'identity');
+});
+
 const { fetchSourceWithTransientRetry } = require('../src/jobs/source-feeds');
 
 const noSleep = async () => {};
