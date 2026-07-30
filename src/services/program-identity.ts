@@ -16,6 +16,7 @@ import { getCachedProvider } from './api-provider';
 import { extractOrgFromName } from './org-extractor';
 import { normalizeUrl } from '../utils/url';
 import { scrapeUrl } from './scraper';
+import type { Pool, PoolClient } from 'pg';
 
 // ── Key normalization ───────────────────────────────────────────────────
 // The primary identity key: lowercase alnum with round/cohort/date noise
@@ -226,7 +227,9 @@ export async function maybeScrapeAggregator(
   }
 }
 
-export type QueryPool = { query: (sql: string, params?: unknown[]) => Promise<{ rows: any[] }> };
+export type QueryPool = Pick<Pool, 'query'>;
+export type QueryClient = Pick<PoolClient, 'query' | 'release'>;
+export type TransactionPool = Pick<Pool, 'query' | 'connect'>;
 
 export async function resolveProgram(
   pool: QueryPool,
@@ -338,6 +341,9 @@ export async function createProgram(
 ): Promise<number> {
   const canonical = (data.canonicalName || data.name).trim();
   let key = normalizeProgramKey(canonical) || normalizeProgramKey(data.name);
+  // Production callers create programs inside a transaction. Serializing on
+  // the base key closes the lookup/upsert race for simultaneous org variants.
+  await lockProgramCreationKey(pool, key);
   // Collision guard (Task-1 review finding): noise-stripping can collapse two
   // genuinely different programs to one key ("Round Table Grants" class).
   // When the existing key-holder belongs to a DIFFERENT org, disambiguate the
@@ -400,30 +406,58 @@ export function normalizeProgramDeadline(value: string | null | undefined): stri
     : trimmed;
 }
 
-/** Recompute mutable decision history from linked entries, idempotently. */
+/** Recompute all entry-derived program state, including empty programs, idempotently. */
 export async function refreshProgramCounters(pool: QueryPool, programIds: number[]): Promise<number> {
   const ids = [...new Set(programIds.filter(Number.isSafeInteger))];
   if (ids.length === 0) return 0;
   const { rows } = await pool.query(
-    `WITH stats AS (
-       SELECT program_id,
-              COUNT(*)::int AS total,
-              COUNT(*) FILTER (WHERE status = 'approved')::int AS approved,
-              COUNT(*) FILTER (WHERE status = 'declined')::int AS declined,
-              (ARRAY_AGG(status || ' ' || updated_at::date ORDER BY updated_at DESC)
-                FILTER (WHERE status IN ('approved', 'declined')))[1] AS last_decision
-       FROM scan_entries
-       WHERE program_id = ANY($1::int[])
-       GROUP BY program_id
+    `WITH target AS (
+       SELECT id, canonical_entry_id FROM programs WHERE id = ANY($1::int[])
+     ), stats AS (
+       SELECT t.id AS program_id,
+              COUNT(se.id)::int AS total,
+              COUNT(se.id) FILTER (WHERE se.status = 'approved')::int AS approved,
+              COUNT(se.id) FILTER (WHERE se.status = 'declined')::int AS declined,
+              MIN(se.created_at)::date AS first_seen,
+              MAX(se.created_at)::date AS last_seen,
+              (ARRAY_AGG(se.id ORDER BY
+                 CASE se.status WHEN 'approved' THEN 0 WHEN 'declined' THEN 1 WHEN 'queued' THEN 2 ELSE 3 END,
+                 se.created_at DESC, se.id DESC
+               ) FILTER (WHERE se.status IN ('approved', 'declined', 'queued', 'archived')
+                           AND se.duplicate_of_id IS NULL))[1] AS preferred_exemplar,
+              (ARRAY_AGG(se.status || ' ' || se.updated_at::date ORDER BY se.updated_at DESC, se.id DESC)
+                FILTER (WHERE se.status IN ('approved', 'declined')))[1] AS last_decision
+       FROM target t
+       LEFT JOIN scan_entries se ON se.program_id = t.id
+       GROUP BY t.id
+     ), desired AS (
+       SELECT s.*,
+              CASE WHEN EXISTS (
+                SELECT 1 FROM scan_entries current
+                WHERE current.id = p.canonical_entry_id
+                  AND current.program_id = p.id
+                  AND current.status IN ('approved', 'declined', 'queued', 'archived')
+                  AND current.duplicate_of_id IS NULL
+              ) THEN p.canonical_entry_id ELSE s.preferred_exemplar END AS exemplar
+       FROM stats s
+       JOIN programs p ON p.id = s.program_id
      )
      UPDATE programs p SET
        entry_count = s.total,
        approved_count = s.approved,
        declined_count = s.declined,
+       first_seen = s.first_seen,
+       last_seen = s.last_seen,
+       canonical_entry_id = s.exemplar,
        last_decision = s.last_decision,
        updated_at = NOW()
-     FROM stats s
+     FROM desired s
      WHERE p.id = s.program_id
+       AND (p.entry_count, p.approved_count, p.declined_count,
+            p.first_seen, p.last_seen, p.canonical_entry_id, p.last_decision)
+           IS DISTINCT FROM
+           (s.total, s.approved, s.declined,
+            s.first_seen, s.last_seen, s.exemplar, s.last_decision)
      RETURNING p.id`,
     [ids],
   );
@@ -540,20 +574,38 @@ export type ProgramResolutionStamp = {
  * Fail-open: every failure logs and returns; intake never blocks on identity.
  */
 export async function finalizeProgramForEntry(
-  pool: QueryPool,
+  pool: TransactionPool,
   entry: { id: number; name: string; sourceUrl?: string | null; wire?: string | null; deadline?: string | null; description?: string | null },
   resolution: ProgramResolutionStamp | null,
 ): Promise<void> {
   try {
     if (resolution) {
-      await recordSighting(pool, resolution.programId, { id: entry.id, name: entry.name, sourceUrl: entry.sourceUrl, deadline: entry.deadline, roundLabel: resolution.roundLabel });
       const verdict = resolution.confidence >= 0.85 ? resolution.verdict : 'tentative';
-      await pool.query(
-        `UPDATE scan_entries SET program_id = $2,
-           metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('program', $3::jsonb)
-         WHERE id = $1`,
-        [entry.id, resolution.programId, JSON.stringify({ id: resolution.programId, verdict, confidence: resolution.confidence, round_label: resolution.roundLabel, history: resolution.historyLine })],
-      );
+      const stamp = JSON.stringify({ id: resolution.programId, verdict, confidence: resolution.confidence, round_label: resolution.roundLabel, history: resolution.historyLine });
+      await withProgramTransaction(pool, async client => {
+        const current = await lockEntryProgram(client, entry.id);
+        if (current !== null && current !== resolution.programId) {
+          throw new Error(`entry is already linked to program ${current}, not ${resolution.programId}`);
+        }
+        if (current === resolution.programId) {
+          await client.query(
+            `UPDATE scan_entries SET
+               metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('program', $3::jsonb)
+             WHERE id = $1 AND program_id = $2`,
+            [entry.id, resolution.programId, stamp],
+          );
+          return;
+        }
+        const linked = await client.query(
+          `UPDATE scan_entries SET program_id = $2,
+             metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('program', $3::jsonb)
+           WHERE id = $1 AND program_id IS NULL
+           RETURNING id`,
+          [entry.id, resolution.programId, stamp],
+        );
+        if (linked.rows.length !== 1) throw new Error('entry changed before the program link was written');
+        await recordSighting(client, resolution.programId, { id: entry.id, name: entry.name, sourceUrl: entry.sourceUrl, deadline: entry.deadline, roundLabel: resolution.roundLabel });
+      });
       return;
     }
     // New program: introspect link identity first, then LLM canonicalization
@@ -562,26 +614,73 @@ export async function finalizeProgramForEntry(
     const bestUrl = scraped ?? intro.canonicalUrl ?? entry.sourceUrl ?? null;
     const [canon] = await canonicalizeBatch([{ id: entry.id, name: entry.name, description: '' }]);
     const orgName = intro.orgHint ?? canon?.org ?? extractOrgFromName(entry.name);
-    const programId = await createProgram(pool, {
-      name: entry.name,
-      canonicalName: canon?.program ?? null,
-      orgName, wire: entry.wire ?? null, sourceUrl: bestUrl,
-      roundLabel: canon?.round_label ?? extractRoundLabel(entry.name),
-    });
-    await pool.query(
-      `UPDATE scan_entries SET program_id = $2,
-         metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('program', $3::jsonb)
-       WHERE id = $1`,
-      [entry.id, programId, JSON.stringify({ id: programId, verdict: 'new_program' })],
-    );
-    await recordSighting(pool, programId, {
-      id: entry.id,
-      name: entry.name,
-      sourceUrl: bestUrl,
-      deadline: entry.deadline,
-      roundLabel: canon?.round_label ?? extractRoundLabel(entry.name),
+    const roundLabel = canon?.round_label ?? extractRoundLabel(entry.name);
+    await withProgramTransaction(pool, async client => {
+      await lockProgramCreationKey(client, normalizeProgramKey(canon?.program ?? entry.name));
+      const current = await lockEntryProgram(client, entry.id);
+      if (current !== null) return;
+      const programId = await createProgram(client, {
+        name: entry.name,
+        canonicalName: canon?.program ?? null,
+        orgName, wire: entry.wire ?? null, sourceUrl: bestUrl,
+        roundLabel,
+      });
+      const linked = await client.query(
+        `UPDATE scan_entries SET program_id = $2,
+           metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('program', $3::jsonb)
+         WHERE id = $1 AND program_id IS NULL
+         RETURNING id`,
+        [entry.id, programId, JSON.stringify({ id: programId, verdict: 'new_program' })],
+      );
+      if (linked.rows.length !== 1) throw new Error('entry changed before the program link was written');
+      await recordSighting(client, programId, {
+        id: entry.id,
+        name: entry.name,
+        sourceUrl: bestUrl,
+        deadline: entry.deadline,
+        roundLabel,
+      });
     });
   } catch (err) {
     console.error(`[ProgramIdentity] finalize failed for entry ${entry.id} (fail-open):`, err instanceof Error ? err.message : err);
+  }
+}
+
+async function lockProgramCreationKey(client: QueryPool, normalizedKey: string): Promise<void> {
+  await client.query(
+    `SELECT pg_advisory_xact_lock(hashtext($1))`,
+    [`wire-room-ops:program-key:${normalizedKey}`],
+  );
+}
+
+async function lockEntryProgram(client: QueryPool, entryId: number): Promise<number | null> {
+  const { rows } = await client.query(
+    `SELECT program_id FROM scan_entries WHERE id = $1 FOR UPDATE`,
+    [entryId],
+  );
+  if (rows.length !== 1) throw new Error('entry no longer exists');
+  return rows[0].program_id == null ? null : Number(rows[0].program_id);
+}
+
+async function withProgramTransaction<T>(pool: TransactionPool, work: (client: QueryClient) => Promise<T>): Promise<T> {
+  const client = await pool.connect();
+  let began = false;
+  try {
+    await client.query('BEGIN');
+    began = true;
+    const result = await work(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    if (began) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error('[ProgramIdentity] rollback failed:', rollbackError instanceof Error ? rollbackError.message : rollbackError);
+      }
+    }
+    throw error;
+  } finally {
+    client.release();
   }
 }

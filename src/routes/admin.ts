@@ -19,6 +19,7 @@ import { rateLimit } from '../middleware/rate-limit';
 import { getPool } from '../db';
 import { syncSummariesToScanEntries } from '../jobs/summary-sync';
 import { enrichBatch, computeDerivedFields } from '../services/org-enricher';
+import { purgeSourceEntries } from '../services/source-purge';
 
 const router = Router();
 
@@ -132,51 +133,17 @@ router.post('/purge-source', async (req: Request, res: Response) => {
     return;
   }
 
-  const client = await getPool().connect();
   try {
-    await client.query('BEGIN');
-
-    // Find all entry IDs for this source
-    const { rows } = await client.query(
-      `SELECT id FROM scan_entries WHERE scan_source = $1`,
-      [source]
-    );
-    const ids = rows.map((r: any) => r.id);
-
-    if (ids.length === 0) {
-      await client.query('ROLLBACK');
+    const result = await purgeSourceEntries(getPool(), source);
+    if (result.deleted === 0) {
       res.json({ deleted: 0, message: `No entries found with scan_source = '${source}'` });
       return;
     }
-
-    // Clear all FK references before deleting entries
-    const { rowCount: seenNames } = await client.query(
-      `DELETE FROM seen_names WHERE entry_id = ANY($1)`, [ids]
-    );
-    const { rowCount: seenUrls } = await client.query(
-      `DELETE FROM seen_urls WHERE first_seen_entry_id = ANY($1)`, [ids]
-    );
-    await client.query(
-      `DELETE FROM distribution_logs WHERE entry_id = ANY($1)`, [ids]
-    );
-    // Clear self-referencing duplicate_of_id pointers
-    await client.query(
-      `UPDATE scan_entries SET duplicate_of_id = NULL WHERE duplicate_of_id = ANY($1)`, [ids]
-    );
-    // Delete the entries themselves
-    const { rowCount: deleted } = await client.query(
-      `DELETE FROM scan_entries WHERE scan_source = $1`, [source]
-    );
-
-    await client.query('COMMIT');
-    console.log(`[Admin] Purged ${deleted} entries with scan_source='${source}' (${seenNames} seen_names, ${seenUrls} seen_urls)`);
-    res.json({ deleted, seenNamesRemoved: seenNames, seenUrlsRemoved: seenUrls });
+    console.log(`[Admin] Purged ${result.deleted} entries with scan_source='${source}' and repaired ${result.programsRepaired} programs`);
+    res.json(result);
   } catch (error) {
-    await client.query('ROLLBACK');
     console.error('[Admin] purge-source error:', error);
     res.status(500).json({ error: 'Purge failed' });
-  } finally {
-    client.release();
   }
 });
 
