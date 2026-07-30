@@ -9,6 +9,7 @@
 
 import type { Pool } from 'pg';
 import { getAppState, setAppState } from '../db';
+import { SNAPSHOT_STATE_KEY } from './public-snapshot';
 import { config } from '../config';
 import { sendDailyDigestEmail } from '../services/email';
 import type { DigestBdLead, ClosingSoonRow } from '../services/email';
@@ -561,6 +562,27 @@ export async function buildRunLedger(
     if (runs > 0) lanes.push({ key: 'agent', state: 'ok', detail: `agent ${runs} run${runs === 1 ? '' : 's'}` });
   } catch {
     // omit — agent lane is optional evidence
+  }
+
+  // snapshot — the public Wire Room Live feed is a lane like any other: if it has
+  // gone stale the page is serving old data, and that should surface in the
+  // morning band rather than only in the logs. Omitted entirely when the
+  // publisher is unconfigured, so this adds no noise before it is switched on.
+  try {
+    const last = await deps.getAppState<{ ok?: boolean; at?: string; reason?: string }>(SNAPSHOT_STATE_KEY);
+    if (last && last.reason !== 'unconfigured') {
+      const ageMin = last.at ? (Date.now() - Date.parse(last.at)) / 60000 : Infinity;
+      if (!last.ok) {
+        lanes.push({ key: 'snapshot', state: 'fail', detail: `snapshot ✗ ${last.reason ?? 'error'}` });
+        anomalies.push(`Public snapshot failing (${last.reason ?? 'error'}) — the Wire Room Live page is serving stale data.`);
+      } else if (ageMin > 30) {
+        lanes.push({ key: 'snapshot', state: 'warn', detail: `snapshot ${Math.round(ageMin)}m old` });
+      } else {
+        lanes.push({ key: 'snapshot', state: 'ok', detail: 'snapshot ✓' });
+      }
+    }
+  } catch {
+    lanes.push({ key: 'snapshot', state: 'warn', detail: 'snapshot ?' });
   }
 
   return { ledger: { lanes }, anomalies };
