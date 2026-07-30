@@ -13,6 +13,7 @@ import { startSummarySync, stopSummarySync } from './jobs/summary-sync';
 import { registerIntakeWebhook } from './services/telegram-adapter';
 import { processRawEntries } from './jobs/process-raw';
 import { runDecidedRecheck } from './jobs/decided-recheck';
+import { publishPublicSnapshot } from './jobs/public-snapshot';
 import { refreshProviderCache, getCachedProvider } from './services/api-provider';
 import { runStartupMigrations } from './db/startup-migrations';
 
@@ -333,6 +334,14 @@ export async function startServer(): Promise<void> {
       await runDecidedRecheck(getPool());
     } catch (error) {
       console.error('[DecidedRecheck] Scheduled run failed:', error);
+    }
+    // Public snapshot for the Wire Room Live page. Runs last so it always sees
+    // the state this cycle produced, and is isolated so a push failure can never
+    // stop process-raw or decided-recheck. No new cron — folded into this one.
+    try {
+      await publishPublicSnapshot(getPool());
+    } catch (error) {
+      console.error('[PublicSnapshot] Scheduled run failed:', error);
     }
   };
 

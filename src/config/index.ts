@@ -114,6 +114,15 @@ export const config = {
     allowedUserId: process.env.TELEGRAM_INTAKE_ALLOWED_USER_ID || '394395765',
   },
 
+  publicSnapshot: {
+    // Outbound-only: we PUSH a narrow public projection to a store that serves
+    // it anonymously. Nothing new listens on this app. Unset = publisher no-ops,
+    // so this is safe to deploy before the target exists.
+    pushUrl: process.env.SNAPSHOT_PUSH_URL || '',
+    pushToken: process.env.SNAPSHOT_PUSH_TOKEN || '',
+    telegramBase: process.env.SNAPSHOT_TELEGRAM_BASE || 'https://t.me/thegrantwire',
+  },
+
 };
 
 export function validateConfig(): void {

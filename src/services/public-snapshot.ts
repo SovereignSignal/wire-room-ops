@@ -29,6 +29,45 @@ function bucketKind(status: string): PublicEvent['kind'] | null {
   return null;
 }
 
+const FORBIDDEN_KEYS = new Set([
+  'description', 'quality_score', 'classification', 'operator_route',
+  'actioned_by', 'action_reason', 'org_id', 'metadata', 'operator_read',
+  'contact_email', 'email', 'cost',
+]);
+const MAX_BYTES = 512 * 1024;
+
+/**
+ * Last line of defence before the payload leaves the building. buildPublicSnapshot
+ * is already explicit, but this catches a future edit that reintroduces a spread.
+ * Throws rather than returning a flag: the caller must not be able to ignore it.
+ */
+export function assertSnapshotShape(snap: PublicSnapshot): void {
+  (function walk(node: unknown): void {
+    if (Array.isArray(node)) return node.forEach(walk);
+    if (node && typeof node === 'object') {
+      for (const [k, v] of Object.entries(node)) {
+        if (FORBIDDEN_KEYS.has(k)) throw new Error(`snapshot contains forbidden key: ${k}`);
+        walk(v);
+      }
+    }
+  })(snap);
+
+  for (const e of snap.events) {
+    if (e.item && e.kind !== 'publish') {
+      throw new Error(`only publish events may carry an item (saw ${e.kind})`);
+    }
+    if (e.item) {
+      const keys = Object.keys(e.item).sort().join(',');
+      if (keys !== 'amount,name,url,wire') {
+        throw new Error(`publish item has unexpected fields: ${keys}`);
+      }
+    }
+  }
+
+  const bytes = JSON.stringify(snap).length;
+  if (bytes > MAX_BYTES) throw new Error(`snapshot too large: ${bytes} bytes`);
+}
+
 export function buildPublicSnapshot(input: SnapshotInput, generatedAt: Date): PublicSnapshot {
   const byStatus = new Map(input.funnel.map(r => [r.status, Number(r.n) || 0]));
   const sum = (...keys: string[]) => keys.reduce((t, k) => t + (byStatus.get(k) ?? 0), 0);
