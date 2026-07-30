@@ -352,3 +352,98 @@ test('maybeScrapeAggregator skips self-links for env-extended aggregator domains
     delete process.env.PROGRAM_AGGREGATOR_DOMAINS;
   }
 });
+
+// ── Task 1: program-type suffix family ──────────────────────────────────
+// Measured 2026-07-27: 1,008 of 4,267 program rows were duplicate identities,
+// 61% of them a suffix spelling ("X Grants" vs "X Grant Program").
+
+test('normalizeProgramKey collapses the program-type suffix family', () => {
+  // Same program, two spellings -> one key
+  assert.equal(
+    normalizeProgramKey('Framework Computer Open Source Sponsorship Program'),
+    normalizeProgramKey('Framework Computer Open Source Sponsorships'),
+  );
+  assert.equal(
+    normalizeProgramKey('Rain Protocol Grant Program'),
+    normalizeProgramKey('Rain Protocol Grants'),
+  );
+  assert.equal(
+    normalizeProgramKey('AI for Individual Rights Grants'),
+    normalizeProgramKey('AI for Individual Rights Fund'),
+  );
+});
+
+test('normalizeProgramKey keeps distinct programs distinct', () => {
+  // A qualifier before the suffix is signal, not noise
+  assert.notEqual(
+    normalizeProgramKey('NGI Zero Commons Fund'),
+    normalizeProgramKey('NGI Zero Core Fund'),
+  );
+  // Suffix stripping must not empty a name that is only a suffix
+  assert.equal(normalizeProgramKey('Grants'), 'grants');
+  assert.equal(normalizeProgramKey('The Fund'), 'thefund');
+});
+
+test('normalizeProgramKey still strips round/cohort/date noise', () => {
+  assert.equal(
+    normalizeProgramKey('Anthropic Fellows Program (Dec 2026 cohort)'),
+    normalizeProgramKey('Anthropic Fellows Program'),
+  );
+});
+
+// ── Task 2: org identity in the collision guard ─────────────────────────
+// The guard forks the key when the existing key-holder has a different org
+// STRING. "AWS" vs "Amazon Web Services" is the same funder, and the fork
+// minted program #7 / #783 with byte-identical canonical names.
+
+const { sameOrgIdentity } = require('../src/services/program-identity');
+
+test('sameOrgIdentity treats an acronym and its expansion as one org', () => {
+  assert.equal(sameOrgIdentity('AWS', 'Amazon Web Services'), true);
+  assert.equal(sameOrgIdentity('Amazon Web Services', 'AWS'), true);
+  assert.equal(sameOrgIdentity('OTF', 'Open Technology Fund'), true);
+});
+
+test('sameOrgIdentity keeps unrelated orgs apart', () => {
+  assert.equal(sameOrgIdentity('Gitcoin', 'Optimism'), false);
+  assert.equal(sameOrgIdentity('AWS', 'Google'), false);
+  // A shared initial letter is not an initialism match
+  assert.equal(sameOrgIdentity('AWS', 'Applied Web Standards Group'), false);
+});
+
+test('sameOrgIdentity handles the existing substring and null cases', () => {
+  assert.equal(sameOrgIdentity('Rain Protocol', 'Rain Protocol Foundation'), true);
+  assert.equal(sameOrgIdentity(null, 'Gitcoin'), false);
+  assert.equal(sameOrgIdentity('Gitcoin', null), false);
+  assert.equal(sameOrgIdentity(null, null), false);
+});
+
+test('createProgram does NOT fork the key for an acronym org variant', async () => {
+  const pool = programPool([{ id: 42, org_name: 'Amazon Web Services' }]);
+  await createProgram(pool, {
+    name: 'AWS AI & ML Scholars Program',
+    canonicalName: 'AWS AI & ML Scholars Program',
+    orgName: 'AWS',
+    wire: 'ai',
+    sourceUrl: 'https://aws.amazon.com/scholars',
+    roundLabel: null,
+  });
+  const insert = pool.calls.find(c => /INSERT INTO programs/.test(c.sql));
+  assert.ok(insert);
+  assert.equal(insert.params[1].includes('--'), false,
+    'an acronym/expansion org variant must not disambiguate the key');
+});
+
+test('createProgram STILL forks the key for a genuinely different org', async () => {
+  const pool = programPool([{ id: 42, org_name: 'Optimism' }]);
+  await createProgram(pool, {
+    name: 'Round Table Grants',
+    canonicalName: 'Round Table Grants',
+    orgName: 'Gitcoin',
+    wire: 'crypto',
+    sourceUrl: 'https://gitcoin.co/grants',
+    roundLabel: null,
+  });
+  const insert = pool.calls.find(c => /INSERT INTO programs/.test(c.sql));
+  assert.match(insert.params[1], /--gitcoin$/);
+});
