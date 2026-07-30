@@ -10,6 +10,41 @@
 
 **Spec:** `docs/superpowers/specs/2026-07-29-wire-room-live-design.md`
 
+## Status
+
+**Phase 1 (producer) — COMPLETE, 2026-07-30**, on branch `feat/wire-room-live`.
+465 tests passing (up from a 435 baseline), typecheck clean, nothing deployed.
+
+| Task | Commit |
+|---|---|
+| 1 · types + leak-proof builder | `3fc838a` |
+| 2 · shape and arithmetic tests | `6140027` |
+| 3 · queries + outbound push | `808e684` |
+| 3b · assertion, contract test, digest lane | `4e72ed2` |
+| — · deps injection + end-to-end test | `9e53034` |
+
+**Deviations from plan, and why:**
+
+1. **`assertSnapshotShape` landed in Task 3, not 3b.** Wiring the push first and adding
+   the guard afterwards would have left a window where an unvalidated payload could ship.
+2. **The `unconfigured` result is not recorded to `app_state`.** The plan said to record every
+   outcome. In practice that meant a wasted DB write every 5 minutes forever, for a state that
+   never changes and that the digest explicitly ignores. Found by running the verification step.
+3. **`gatherSnapshotInput` now takes injected `SnapshotDeps`.** The end-to-end test exposed that
+   it accepted a `pool` argument but reached for the *global* pool for the week-number read —
+   identical in production, but inconsistent and untestable.
+4. **Added `tests/public-snapshot-pipeline.test.js`** (not in the plan). Nothing else pinned the
+   query aliases to what the builder reads; a typo'd `AS n` would have surfaced only in production.
+5. **Contract-test regexes needed two fixes**, both false positives on my own source: `EXTRACT(minute
+   FROM created_at)` matched the `FROM <table>` pattern, and a doc comment reading *"no SELECT \*,
+   ever"* matched the `SELECT *` check. The test now strips comments and anchors `FROM` to line starts.
+   Verified by negative control: injecting `SELECT *` and swapping in `org_profiles` each make it fail.
+
+**Phase 2 (consumer) is not started** and is deliberately paused — the visual direction is unsettled.
+Nothing in Phase 1 depends on how the page eventually looks. Note the anchor values in Task 9 name
+backplate **B**; the current candidate is **32-BIT A** (`assets/wire-room-live/room.png`), and its
+measured anchors live in `assets/wire-room-live/prototype-build.py`.
+
 ## Global Constraints
 
 - **Never spread a database row into snapshot output.** Every output object is constructed field by field from an explicit allowlist. This is the single rule the leak test enforces.
