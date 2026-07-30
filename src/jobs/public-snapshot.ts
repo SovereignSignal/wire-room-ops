@@ -10,11 +10,25 @@ export interface PublishResult { ok: boolean; reason?: string; bytes?: number }
 export const SNAPSHOT_STATE_KEY = 'public-snapshot:last';
 
 /**
+ * app_state access is injected rather than imported directly. Without this the
+ * week-number read would reach for the global pool while every other read used
+ * the pool argument — inconsistent, and it makes the gather step untestable.
+ */
+export interface SnapshotDeps {
+  getAppState: typeof getAppState;
+  setAppState: typeof setAppState;
+}
+const defaultDeps: SnapshotDeps = { getAppState, setAppState };
+
+/**
  * Six narrow queries. Every SELECT names its columns — no SELECT *, ever, and
  * only the three tables the projection is allowed to read. tests/public-snapshot-
  * contract.test.js enforces both by reading this file.
  */
-export async function gatherSnapshotInput(pool: Pool): Promise<SnapshotInput> {
+export async function gatherSnapshotInput(
+  pool: Pool,
+  deps: SnapshotDeps = defaultDeps,
+): Promise<SnapshotInput> {
   const [funnel, buckets, publishes, stations, coverage, week] = await Promise.all([
     pool.query(`
       SELECT status, COUNT(*)::int AS n
@@ -54,7 +68,7 @@ export async function gatherSnapshotInput(pool: Pool): Promise<SnapshotInput> {
              COUNT(*) FILTER (WHERE last_checked_at IS NULL
                                  OR last_checked_at < NOW() - INTERVAL '30 days')::int AS dark
       FROM watch_surfaces WHERE status = 'active'`),
-    getAppState<number>('weekly:week-number'),
+    deps.getAppState<number>('weekly:week-number'),
   ]);
 
   return {
@@ -76,9 +90,9 @@ export async function gatherSnapshotInput(pool: Pool): Promise<SnapshotInput> {
 }
 
 /** Persist the outcome so the daily digest can report on it. Never masks the result. */
-async function record(result: PublishResult): Promise<PublishResult> {
+async function record(result: PublishResult, deps: SnapshotDeps): Promise<PublishResult> {
   try {
-    await setAppState(SNAPSHOT_STATE_KEY, { ...result, at: new Date().toISOString() });
+    await deps.setAppState(SNAPSHOT_STATE_KEY, { ...result, at: new Date().toISOString() });
   } catch (error) {
     console.error('[PublicSnapshot] could not record run state:', error);
   }
@@ -89,14 +103,17 @@ async function record(result: PublishResult): Promise<PublishResult> {
  * Gather → build → assert → push. Never throws: the caller runs inside the
  * 5-minute pipeline cycle and a broken publisher must not stop process-raw.
  */
-export async function publishPublicSnapshot(pool: Pool): Promise<PublishResult> {
+export async function publishPublicSnapshot(
+  pool: Pool,
+  deps: SnapshotDeps = defaultDeps,
+): Promise<PublishResult> {
   const { pushUrl, pushToken } = config.publicSnapshot;
   // Not recorded: "unconfigured" never changes, the digest ignores it, and
   // persisting it would mean a wasted app_state write every 5 minutes forever.
   if (!pushUrl || !pushToken) return { ok: false, reason: 'unconfigured' };
 
   try {
-    const input = await gatherSnapshotInput(pool);
+    const input = await gatherSnapshotInput(pool, deps);
     const snapshot = buildPublicSnapshot(input, new Date());
     assertSnapshotShape(snapshot);          // refuse to publish a violating payload
     const body = JSON.stringify(snapshot);
@@ -113,12 +130,12 @@ export async function publishPublicSnapshot(pool: Pool): Promise<PublishResult> 
 
     if (!res.ok) {
       console.error(`[PublicSnapshot] push failed: HTTP ${res.status}`);
-      return record({ ok: false, reason: `http_${res.status}` });
+      return record({ ok: false, reason: `http_${res.status}` }, deps);
     }
     console.log(`[PublicSnapshot] published ${body.length} bytes, ${snapshot.events.length} events`);
-    return record({ ok: true, bytes: body.length });
+    return record({ ok: true, bytes: body.length }, deps);
   } catch (error) {
     console.error('[PublicSnapshot] publish failed:', error);
-    return record({ ok: false, reason: 'exception' });
+    return record({ ok: false, reason: 'exception' }, deps);
   }
 }
