@@ -6,7 +6,7 @@ const assert = require('node:assert/strict');
 
 const {
   isTier12, surfaceToRssSource, surfaceToScrapeSource, overlapsSeedRegistry,
-  normalizeForHash, contentHash,
+  normalizeForHash, contentHash, tierClause,
 } = require('../src/services/registry-watchers');
 
 const s = (over = {}) => ({ id: 7, org_name: 'NLnet Foundation', wire: 'oss', surface_type: 'rss', url: 'https://nlnet.nl/feed.atom', tier: 'Tier 1 - Official', ...over });
@@ -47,4 +47,34 @@ test('normalizeForHash strips tags/whitespace/dynamic noise; contentHash is stab
   assert.notEqual(normalizeForHash(a), '');
   // scripts stripped; text equal after whitespace collapse except the token span
   assert.ok(normalizeForHash(a).includes('Grants open!'));
+});
+
+test('tierClause defaults to Tier 1 only', () => {
+  const sql = tierClause('1');
+  assert.match(sql, /Tier 1%/);
+  assert.equal(/Tier 2%/.test(sql), false);
+});
+
+test('tierClause can include Tier 2', () => {
+  const sql = tierClause('1,2');
+  assert.match(sql, /Tier 1%/);
+  assert.match(sql, /Tier 2%/);
+});
+
+test('tierClause accepts Tier 2 alone', () => {
+  const sql = tierClause('2');
+  assert.match(sql, /Tier 2%/);
+  assert.equal(/Tier 1%/.test(sql), false);
+});
+
+test('tierClause falls back to Tier 1 on empty or garbage input', () => {
+  for (const input of ['', '   ', 'banana']) {
+    const sql = tierClause(input);
+    assert.match(sql, /Tier 1%/, `input ${JSON.stringify(input)} must fall back to Tier 1`);
+    assert.equal(/Tier 2%/.test(sql), false);
+  }
+});
+
+test('tierClause keeps the legacy "Official" spelling in the Tier 1 branch', () => {
+  assert.match(tierClause('1'), /tier = 'Official'/);
 });

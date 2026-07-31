@@ -22,14 +22,33 @@ export function isTier12(tier: string | null): boolean {
   return /^tier ?1\b/i.test(tier) || /^tier ?2\b/i.test(tier) || /^official$/i.test(tier);
 }
 
-/** Due = active tier-1/2 surface of a wanted type, least-recently-checked first. */
-export async function getDueSurfaces(pool: Pool, types: string[], limit: number): Promise<WatchSurface[]> {
+const TIER_1 = `(tier ILIKE 'Tier 1%' OR tier ILIKE 'Tier1%' OR tier = 'Official')`;
+const TIER_2 = `(tier ILIKE 'Tier 2%' OR tier ILIKE 'Tier2%')`;
+
+/**
+ * SQL predicate for the requested tiers. Input is a comma list ("1", "1,2", "2").
+ * Anything unrecognised falls back to Tier 1 — widening coverage is an operator
+ * decision, never the result of a typo in an env var.
+ *
+ * Built from constants only; no caller input reaches the SQL string.
+ */
+export function tierClause(tiers: string): string {
+  const requested = new Set((tiers || '').split(',').map(s => s.trim()).filter(Boolean));
+  const parts: string[] = [];
+  if (requested.has('1')) parts.push(TIER_1);
+  if (requested.has('2')) parts.push(TIER_2);
+  if (parts.length === 0) parts.push(TIER_1);
+  return `(${parts.join(' OR ')})`;
+}
+
+/** Due = active surface (scoped by tiers, default Tier 1) of a wanted type, least-recently-checked first. */
+export async function getDueSurfaces(pool: Pool, types: string[], limit: number, tiers: string = '1'): Promise<WatchSurface[]> {
   const { rows } = await pool.query<WatchSurface & { tier: string | null }>(
     `SELECT id, org_name, wire, surface_type, url, tier
        FROM watch_surfaces
       WHERE status = 'active'
         AND surface_type = ANY($1)
-        AND (tier ILIKE 'Tier 1%' OR tier ILIKE 'Tier1%' OR tier = 'Official' OR tier ILIKE 'Tier 2%' OR tier ILIKE 'Tier2%')
+        AND ${tierClause(tiers)}
         AND (last_checked_at IS NULL OR last_checked_at < NOW() - INTERVAL '20 hours')
       ORDER BY last_checked_at ASC NULLS FIRST
       LIMIT $2`,
