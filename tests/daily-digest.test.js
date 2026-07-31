@@ -240,7 +240,6 @@ function assemblyDeps(overrides = {}) {
       ledger: async () => ({ ledger: { lanes: [{ key: 'scans', state: 'ok', detail: 'scans 5✓' }] }, anomalies: [] }),
       deadlines: async () => ([{ wire: 'ai', entries: [{ id: 9, name: 'EF', wire: 'ai', deadline: '2026-07-12', deadlineParsed: null, amount: null, sourceUrl: 'https://x.org/ef', daysUntil: 3 }], generatedAt: new Date() }]),
       cost: async () => ({ rows: [], total: 1.5 }),
-      sources: async () => ([{ wire: 'ai', source: 'feed', total: 20, queued: 2, approved: 1, archived: 3, duplicates: 14, parked: 0, signals: 0 }]),
       yield_: async () => ([]),
       send: async (...args) => { sent.push(args); },
       advance: async (ids) => { advanced.push(ids); },
@@ -452,10 +451,27 @@ test('yield is counted per lane, so a low-volume wire cannot hide', () => {
   assert.equal(out2.length, 1);
 });
 
+test('the volume floor boundary is inclusive — total === 10 counts', () => {
+  const out = formatYieldAnomalies([{ source: 'x-monitor', total: 10, netNew: 0 }], 3);
+  assert.equal(out.length, 1, 'total === 10 must clear the >= floor');
+});
+
 test('getLaneYield asks for net-new excluding duplicate and deduped', async () => {
   let captured = null;
   const pool = { query: async (sql, params) => { captured = { sql, params }; return { rows: [] }; } };
   await getLaneYield(pool, 3);
   assert.match(captured.sql, /NOT IN \('duplicate',\s*'deduped'\)/);
   assert.deepEqual(captured.params, ['3']);
+});
+
+test('getLaneYield maps the net_new column onto netNew', async () => {
+  const pool = { query: async () => ({ rows: [
+    { source: 'web-search', total: 31, net_new: 1 },
+    { source: 'feed', total: 6, net_new: 4 },
+  ] }) };
+  const rows = await getLaneYield(pool, 3);
+  assert.deepEqual(rows, [
+    { source: 'web-search', total: 31, netNew: 1 },
+    { source: 'feed', total: 6, netNew: 4 },
+  ]);
 });

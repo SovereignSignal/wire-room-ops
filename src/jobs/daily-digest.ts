@@ -219,6 +219,12 @@ export async function getLaneYield(pool: Pool, days: number = 3): Promise<LaneYi
  * A lane that fetched real volume and produced nothing new is the signal worth
  * escalating. This replaces the duplicate-rate anomaly, which fired when dedup
  * was WORKING and carried a per-wire volume floor that hid crypto entirely.
+ *
+ * The 3-day trailing window IS the persistence gate — a lane must be dry
+ * across three consecutive days, not blip once. There is deliberately no
+ * consecutive-run counter, which would require new state. Accepted
+ * consequence: a genuinely quiet low-volume lane that still clears the
+ * volume floor can report once during a slow stretch.
  */
 export function formatYieldAnomalies(rows: LaneYieldRow[], days: number = 3): string[] {
   return rows
@@ -245,6 +251,12 @@ const STALE_SOURCE_DAYS = 2;
  * "1 of 21 sources errored" read identically on day 1 and day 30, which is how
  * Karma GAP stayed dark for three days. Day 1 stays a ledger warning; day 2+ is
  * an issue. Derived from the per-source watermark's lastRun — no new state.
+ *
+ * A source that has never succeeded is reported on its first failure,
+ * bypassing the 2-day rule. This is deliberate — a source with no track
+ * record failing immediately is more suspicious than an established one
+ * blipping — and there is no first-attempted-at timestamp that would let us
+ * grant a grace period without new state.
  */
 export function formatStaleSourceAnomalies(perSource: StaleSourceInput[], now: number = Date.now()): string[] {
   const rows = perSource
@@ -578,7 +590,6 @@ export interface AssembleDigestDeps {
   ledger: typeof buildRunLedger;
   deadlines: typeof runDeadlineDigest;
   cost: typeof getCostRecap;
-  sources: typeof getSourceBreakdown;
   yield_: typeof getLaneYield;
   send: typeof sendDailyDigestEmail;
   advance: (ids: number[]) => Promise<void>;
@@ -590,7 +601,6 @@ const defaultAssembleDeps: AssembleDigestDeps = {
   ledger: buildRunLedger,
   deadlines: runDeadlineDigest,
   cost: getCostRecap,
-  sources: getSourceBreakdown,
   yield_: getLaneYield,
   send: sendDailyDigestEmail,
   advance: (ids) => advanceDigestWatermark(ids),
