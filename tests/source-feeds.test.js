@@ -140,10 +140,19 @@ test('Grants.gov factory: builds per-keyword source, raises rows to 100, shared 
   assert.equal(ai.extract({ title: 'Maternal Cardiovascular Health Study', id: '9', agencyName: 'NIH' }), null);
 });
 
-// Minimal Response stand-in: only the two members readJsonBody touches.
-function fakeResponse(body, contentLength) {
+// Minimal Response stand-in: only the members readJsonBody touches.
+// contentEncoding is optional (third param) so existing call sites (no encoding —
+// i.e. identity) keep working unchanged.
+function fakeResponse(body, contentLength, contentEncoding) {
   return {
-    headers: { get: (h) => (h.toLowerCase() === 'content-length' && contentLength != null ? String(contentLength) : null) },
+    headers: {
+      get: (h) => {
+        const key = h.toLowerCase();
+        if (key === 'content-length') return contentLength != null ? String(contentLength) : null;
+        if (key === 'content-encoding') return contentEncoding != null ? contentEncoding : null;
+        return null;
+      },
+    },
     text: async () => body,
   };
 }
@@ -190,6 +199,31 @@ test('readJsonBody reports invalid JSON when no content-length is present (chunk
   );
 });
 
+// Regression guard for the exact July 2026 outage signature: Karma GAP answered
+// 200 + content-length: 0 + an empty body (identity encoding, nothing to decode).
+test('a zero content-length empty body reports invalid JSON, not truncation', async () => {
+  await assert.rejects(
+    () => readJsonBody(fakeResponse('', 0)),
+    (err) => {
+      assert.ok(err instanceof FeedFetchError);
+      assert.match(err.message, /invalid JSON \(0 bytes received\)/);
+      return true;
+    }
+  );
+});
+
+test('readJsonBody does not report truncation when content-length is a compressed byte count', async () => {
+  // Small JSON envelopes EXPAND under gzip: 33 raw bytes can compress to 48 bytes on
+  // the wire. r.text() returns the DECODED body, so comparing its byte length against
+  // a gzip content-length is comparing different units — the check must be skipped
+  // whenever content-encoding says the body isn't identity.
+  const body = JSON.stringify({ data: { posts: { results: [] } } }); // 33 raw bytes
+  const decodedBytes = Buffer.byteLength(body, 'utf8');
+  const gzippedContentLength = decodedBytes + 15; // simulate gzip expansion (e.g. 48 for 33)
+  const out = await readJsonBody(fakeResponse(body, gzippedContentLength, 'gzip'));
+  assert.deepEqual(out, { data: { posts: { results: [] } } });
+});
+
 const { classifyFetchError, DEFAULT_TIMEOUT_MS } = require('../src/services/source-feeds');
 
 test('classifyFetchError turns an AbortSignal timeout into a readable transient error', () => {
@@ -219,6 +253,32 @@ test('classifyFetchError defaults unknown failures to permanent', () => {
   const out = classifyFetchError(new Error('itemsPath "programs" is not an array'), 20000);
   assert.equal(out.transient, false);
   assert.match(out.message, /itemsPath/);
+});
+
+// undici collapses connection-layer failures into a bare TypeError('fetch failed') /
+// TypeError('terminated'), with the real cause nested in err.cause. classifyFetchError
+// must unwrap it: known-transient causes retry, and the cause code must survive into
+// the message (the alternative — "fetch failed" — is less informative than the JSON
+// parse error it replaced).
+test('classifyFetchError unwraps a connection-reset cause as transient and keeps the code', () => {
+  const err = Object.assign(new Error('fetch failed'), { cause: { code: 'ECONNRESET' } });
+  const out = classifyFetchError(err, 20000);
+  assert.equal(out.transient, true);
+  assert.match(out.message, /ECONNRESET/);
+});
+
+test('classifyFetchError unwraps an unexpected-close cause (terminated) as transient', () => {
+  const err = Object.assign(new Error('terminated'), { cause: { name: 'SocketError', message: 'other side closed' } });
+  const out = classifyFetchError(err, 20000);
+  assert.equal(out.transient, true);
+  assert.match(out.message, /other side closed/);
+});
+
+test('classifyFetchError keeps a DNS failure (ENOTFOUND) permanent — a dead domain must not retry daily', () => {
+  const err = Object.assign(new Error('fetch failed'), { cause: { code: 'ENOTFOUND' } });
+  const out = classifyFetchError(err, 20000);
+  assert.equal(out.transient, false);
+  assert.match(out.message, /ENOTFOUND/);
 });
 
 test('karma-gap gets a longer timeout than the registry default', () => {

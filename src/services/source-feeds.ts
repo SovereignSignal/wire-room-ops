@@ -49,7 +49,10 @@ export interface FeedSource {
   // scrape: an instruction for the LLM extractor describing what opportunities to pull
   scrapePrompt?: string;
   maxItems?: number;           // safety cap per fetch (default 40)
-  timeoutMs?: number;          // per-source fetch fuse; defaults to DEFAULT_TIMEOUT_MS
+  timeoutMs?: number;          // per-source fetch fuse; defaults to DEFAULT_TIMEOUT_MS.
+                                // Only honored by rss/rest_json/graphql/github_csv — the
+                                // scrape method delegates to scrapeUrl(), which hardcodes
+                                // its own 30s timeout; this field is a no-op for scrape sources.
   // For rest_json/graphql sources whose shape needs URL construction, fallback chains,
   // unit conversion, or filtering that dot-path `fields` can't express. Return null to drop.
   extract?: (item: unknown) => FeedItem | null;
@@ -258,13 +261,22 @@ export class FeedFetchError extends Error {
  * on every feed that mentions "Zürich".
  *
  * Chunked responses carry no content-length; there only the parse guard applies.
+ *
+ * When the response is content-encoded (e.g. gzip), `r.text()` returns the DECODED
+ * body, but `content-length` is the on-the-wire (encoded) byte count — the two are in
+ * different units and cannot be compared. Small JSON bodies actually EXPAND under
+ * gzip, so comparing decoded-length against a compressed content-length fires the
+ * truncation check backwards on a perfectly complete "0 results" response. The byte
+ * check only applies when the body was served identity (uncompressed).
  */
 export async function readJsonBody(r: Response): Promise<unknown> {
   const text = await r.text();
   const received = Buffer.byteLength(text, 'utf8');
   const header = r.headers.get('content-length');
   const expected = header ? Number(header) : null;
-  if (expected && Number.isFinite(expected) && received < expected) {
+  const encoding = (r.headers.get('content-encoding') || 'identity').toLowerCase();
+  const comparable = encoding === 'identity';
+  if (comparable && expected && Number.isFinite(expected) && received < expected) {
     throw new FeedFetchError(`truncated body: got ${received} of ${expected} bytes`, true);
   }
   try {
@@ -278,6 +290,14 @@ export async function readJsonBody(r: Response): Promise<unknown> {
  * Give a fetch failure a readable message and a retry verdict.
  * Unknown failures default to permanent — retrying something we do not
  * understand is how a bad config turns into doubled API spend.
+ *
+ * undici collapses every connection-layer failure (DNS, connection reset/refused,
+ * TLS, unexpected socket close) into a bare `TypeError('fetch failed')` or
+ * `TypeError('terminated')`, with the actual cause nested in `err.cause`. Left
+ * unwrapped, these archetypal transient failures would default to permanent and
+ * never retry, and the digest would show the uninformative `fetch failed` instead
+ * of the underlying code. `ENOTFOUND` (dead domain) is deliberately NOT matched —
+ * that must stay permanent so a bad hostname isn't retried forever.
  */
 export function classifyFetchError(err: unknown, timeoutMs: number): FeedFetchError {
   if (err instanceof FeedFetchError) return err;
@@ -287,6 +307,12 @@ export function classifyFetchError(err: unknown, timeoutMs: number): FeedFetchEr
   }
   const msg = err instanceof Error ? err.message : String(err);
   if (/^HTTP 5\d\d/.test(msg)) return new FeedFetchError(msg, true);
+  const cause = (err as { cause?: { code?: string; message?: string } })?.cause;
+  if (msg === 'fetch failed' || msg === 'terminated') {
+    const code = cause?.code || cause?.message || 'network error';
+    const TRANSIENT = /ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|UND_ERR_SOCKET|other side closed/i;
+    return new FeedFetchError(`${msg}: ${code}`, TRANSIENT.test(code));
+  }
   return new FeedFetchError(msg, false);
 }
 
@@ -561,7 +587,7 @@ export const SOURCE_REGISTRY: FeedSource[] = [
     headers: { 'Accept-Encoding': 'identity' },
     // 268KB — by far the largest payload in the registry. Generous fuse for a slow
     // uncompressed transfer; this was NOT the cause of the July 2026 outage (see the
-    // Accept-Encoding note below).
+    // Accept-Encoding note above).
     timeoutMs: 45000,
     extract: (it) => {
       const type = (asStr(getPath(it, 'type')) || '').toLowerCase();
