@@ -19,7 +19,7 @@ import type {
   IntakeRunSummary,
   IntakeJobConfig,
 } from '../types/intake';
-import { getAllScanPrompts, ScanPromptRecord } from '../db';
+import { getAllScanPrompts, ScanPromptRecord, findSeenUrls } from '../db';
 import { executeScanPrompt } from '../services/grok';
 import { executePerplexityScan } from '../services/perplexity';
 import { executeParallelScan } from '../services/parallel';
@@ -179,6 +179,7 @@ export async function runScanExecution(
               outputFormat: prompt.outputFormat,
               wire: prompt.wire,
               afterDate,
+              filterSeenUrls: (urls) => findSeenUrls(pool, urls, prompt.wire),
             });
           }
           return executeScanPrompt(prompt.promptText, {
