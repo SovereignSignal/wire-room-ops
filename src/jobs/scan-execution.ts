@@ -60,6 +60,16 @@ export interface ScanExecutionResult {
   partialReason?: string;
 }
 
+/**
+ * Freshness floor for discovery-intent Parallel scans.
+ *
+ * The Frontier prompts ask for "the last 21 days" in their own text; the floor
+ * was 90, over 4x wider than operator intent, which is a large part of why the
+ * lane re-found the same canonical programs daily. Canonical/signal prompts
+ * still pass no after_date — that would drop long-standing rolling programs.
+ */
+export const DISCOVERY_WINDOW_DAYS = 21;
+
 // ============================================================
 // Variant inference
 // ============================================================
@@ -171,7 +181,7 @@ export async function runScanExecution(
             // Canonical/signal prompts must NOT use after_date (it would drop the pages
             // of long-standing rolling programs that are still open).
             const afterDate = prompt.intent === 'discovery'
-              ? new Date(Date.now() - 90 * 86400000).toISOString().split('T')[0]
+              ? new Date(Date.now() - DISCOVERY_WINDOW_DAYS * 86400000).toISOString().split('T')[0]
               : undefined;
             return executeParallelScan(prompt.promptText, {
               model: prompt.model || undefined,
