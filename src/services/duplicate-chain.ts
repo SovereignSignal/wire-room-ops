@@ -11,6 +11,9 @@ type Queryable = Pick<Pool, 'query'>;
 
 const DUPLICATE_GRAPH_LOCK_KEY = 'wire-room-ops:duplicate-graph';
 
+/** Statuses `resolveDuplicateChain` accepts as a canonical chain terminal. */
+const CANONICAL_PARENT_STATUSES = ['approved', 'declined', 'queued', 'archived'] as const;
+
 /** Serialize graph mutations that can create duplicate edges. Must run in a transaction. */
 export async function lockDuplicateGraph(db: Queryable): Promise<void> {
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1))', [DUPLICATE_GRAPH_LOCK_KEY]);
@@ -51,7 +54,7 @@ export async function resolveDuplicateChain(
     const error = terminal.duplicate_of_id && terminal.depth >= maxDepth ? 'max-depth' : 'dead-end';
     return { id: null, status: terminal.status, depth: terminal.depth, error };
   }
-  if (!['approved', 'declined', 'queued', 'archived'].includes(terminal.status)) {
+  if (!CANONICAL_PARENT_STATUSES.includes(terminal.status)) {
     return { id: null, status: terminal.status, depth: terminal.depth, error: 'invalid-status' };
   }
   return { id: terminal.id, status: terminal.status, depth: terminal.depth, error: null };
@@ -87,12 +90,15 @@ export interface DuplicateDemotionResult {
    *   condition is transient — the caller may retry on a later cycle.
    * - `unresolvable`: the requested parent chain can never yield a valid
    *   canonical (missing parent, dead-end / cycle / max-depth, a non-canonical
-   *   terminal status, or a chain that resolves back to the target). This is a
-   *   PERMANENT data condition — retrying the identical demotion cannot make it
-   *   succeed — so the caller must make forward progress (surface the entry for
-   *   review) rather than retry. Throwing here instead is what produced the
-   *   infinite Telegram webhook retry / 5-minute process-raw loop that PR #86
-   *   spot-fixed for `archived` alone; `unresolvable` closes the whole class.
+   *   terminal status, a chain that resolves back to the target, or — re-read
+   *   after the graph lock — a terminal row that no longer exists or still
+   *   carries its own `duplicate_of_id`, i.e. the resolver accepted it as
+   *   canonical but it is not one). This is a PERMANENT data condition —
+   *   retrying the identical demotion cannot make it succeed — so the caller
+   *   must make forward progress (surface the entry for review) rather than
+   *   retry. Throwing here instead is what produced the infinite Telegram
+   *   webhook retry / 5-minute process-raw loop that PR #86 spot-fixed for
+   *   `archived` alone; `unresolvable` closes the whole class.
    */
   outcome: 'linked' | 'stale' | 'unresolvable';
   canonicalParentId: number | null;
@@ -156,12 +162,23 @@ export async function demoteEntryToDuplicateInTransaction(
     [resolution.id],
   );
   const terminal = terminalResult.rows[0];
-  if (!terminal
-      || !['approved', 'declined', 'queued', 'archived'].includes(terminal.status)
-      || terminal.duplicate_of_id !== null) {
-    throw new Error('Duplicate parent changed before write');
+  if (!terminal) {
+    return { outcome: 'unresolvable', canonicalParentId: null, unresolvableReason: 'terminal-missing' };
+  }
+  // The resolver accepted this row as canonical, but it is not one: either its status is
+  // outside the canonical set, or it still points at a parent of its own. Both are STABLE
+  // properties of the row — the resolver's recursion stops at any non-'duplicate' status, so
+  // an archived row that still carries duplicate_of_id resolves here on every attempt and
+  // fails here on every attempt. Throwing made automatic callers retry that contradiction
+  // forever (entry 13172, 2026-07-31). Permanent conditions must make forward progress.
+  if (!CANONICAL_PARENT_STATUSES.includes(terminal.status) || terminal.duplicate_of_id !== null) {
+    return { outcome: 'unresolvable', canonicalParentId: null, unresolvableReason: 'non-canonical-terminal' };
   }
 
+  // Unlike the check above, this compares two resolutions of the same chain taken moments
+  // apart. A stable row re-resolves identically every time; a mismatch here means the graph
+  // genuinely changed under us between the first resolution and the row lock — a real race,
+  // not a permanent condition — so it keeps throwing and the caller keeps retrying.
   const revalidated = await resolveDuplicateChain(db, opts.requestedParentId);
   if (revalidated.error || revalidated.id !== resolution.id) {
     throw new Error('Duplicate parent changed before write');

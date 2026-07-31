@@ -24,13 +24,19 @@ function fakeDb(overrides = {}) {
       }
       if (/WITH RECURSIVE duplicate_chain/.test(sql)) {
         resolutionCalls += 1;
-        const row = overrides.resolutionRow || {
-          id: 30,
-          status: 'approved',
-          duplicate_of_id: null,
-          depth: 1,
-          cycle: false,
-        };
+        // resolutionRows (plural) lets a test return a DIFFERENT resolution on the
+        // second call — simulating a genuine race between the first resolution and
+        // the revalidation after the row locks. resolutionRow (singular) is the
+        // common case: every call sees the same stable row.
+        const row = overrides.resolutionRows
+          ? overrides.resolutionRows[Math.min(resolutionCalls, overrides.resolutionRows.length) - 1]
+          : (overrides.resolutionRow || {
+              id: 30,
+              status: 'approved',
+              duplicate_of_id: null,
+              depth: 1,
+              cycle: false,
+            });
         return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
       }
       if (/SELECT id, status, duplicate_of_id[\s\S]*WHERE id = \$1[\s\S]*FOR UPDATE/.test(sql)) {
@@ -154,4 +160,63 @@ test('duplicate demotion is unresolvable when the chain resolves back to the tar
   const result = await demoteEntryToDuplicateInTransaction(db, INPUT);
 
   assert.deepEqual(result, { outcome: 'unresolvable', canonicalParentId: null, unresolvableReason: 'self-cycle' });
+});
+
+// ── The 2026-07-31 incident: a terminal the resolver calls canonical, but isn't ────────────
+// resolveDuplicateChain's recursive walk stops at the first row whose status isn't
+// 'duplicate' — it does not check whether that row still carries its own
+// duplicate_of_id. demoteEntryToDuplicateInTransaction re-reads the same row under
+// FOR UPDATE and rejects it when duplicate_of_id is non-null. Both reads see the exact
+// same row every time: the resolver always calls it canonical, the guard always rejects
+// it. That contradiction is a STABLE property of the row (entry 8825: archived,
+// duplicate_of_id=7645), not a race — so it must return `unresolvable`, not throw. A
+// throw here is what stranded entry 13172 in an infinite process-raw retry loop.
+
+test('a terminal that is archived AND still points at a parent is unresolvable, not a retryable throw', async () => {
+  const db = fakeDb({
+    resolutionRow: { id: 30, status: 'archived', duplicate_of_id: 7645, depth: 1, cycle: false },
+    terminalRow: { id: 30, status: 'archived', duplicate_of_id: 7645 },
+  });
+  const result = await demoteEntryToDuplicateInTransaction(db, INPUT);
+
+  assert.deepEqual(result, { outcome: 'unresolvable', canonicalParentId: null, unresolvableReason: 'non-canonical-terminal' });
+  assert.equal(db.resolutionCalls, 1, 'must not reach the revalidation resolve — this is not the race check');
+  assert.equal(db.calls.some(call => /UPDATE scan_entries AS target/.test(call.sql)), false, 'must not mutate the target');
+  assert.equal(db.calls.some(call => /UPDATE seen_urls/.test(call.sql)), false, 'must not reassign URL ownership');
+});
+
+test('duplicate demotion is unresolvable (not thrown) when the terminal row is gone by the time it is re-read under lock', async () => {
+  const db = fakeDb({
+    resolutionRow: { id: 30, status: 'approved', duplicate_of_id: null, depth: 1, cycle: false },
+    terminalRow: null,
+  });
+  const result = await demoteEntryToDuplicateInTransaction(db, INPUT);
+
+  assert.deepEqual(result, { outcome: 'unresolvable', canonicalParentId: null, unresolvableReason: 'terminal-missing' });
+});
+
+test('duplicate demotion still throws when revalidation resolves to a different parent than the first resolution (genuine race)', async () => {
+  const db = fakeDb({
+    resolutionRows: [
+      { id: 30, status: 'approved', duplicate_of_id: null, depth: 1, cycle: false },
+      { id: 40, status: 'approved', duplicate_of_id: null, depth: 1, cycle: false },
+    ],
+    terminalRow: { id: 30, status: 'approved', duplicate_of_id: null },
+  });
+  await assert.rejects(
+    demoteEntryToDuplicateInTransaction(db, INPUT),
+    /Duplicate parent changed before write/,
+  );
+  assert.equal(db.resolutionCalls, 2, 'the race is only detectable because both resolutions ran');
+  assert.equal(db.calls.some(call => /UPDATE scan_entries AS target/.test(call.sql)), false, 'must not mutate the target');
+});
+
+test('duplicate demotion still returns linked for a clean canonical terminal with no parent of its own (happy path unchanged)', async () => {
+  const db = fakeDb({
+    resolutionRow: { id: 30, status: 'declined', duplicate_of_id: null, depth: 1, cycle: false },
+    terminalRow: { id: 30, status: 'declined', duplicate_of_id: null },
+  });
+  const result = await demoteEntryToDuplicateInTransaction(db, INPUT);
+
+  assert.deepEqual(result, { outcome: 'linked', canonicalParentId: 30 });
 });
