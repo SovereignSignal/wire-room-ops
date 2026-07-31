@@ -4,7 +4,7 @@
  *   (omit sourceKey to test all; pass a key like 'karma-gap' to test one)
  */
 
-import { SOURCE_REGISTRY, fetchSource } from '../services/source-feeds';
+import { SOURCE_REGISTRY, fetchSource, classifyFetchError, DEFAULT_TIMEOUT_MS } from '../services/source-feeds';
 
 async function main() {
   const only = process.argv[2];
@@ -25,7 +25,11 @@ async function main() {
       }
       if (items.length > 5) console.log(`   … +${items.length - 5} more`);
     } catch (err) {
-      console.log(`  ❌ ERROR: ${err instanceof Error ? err.message : String(err)}`);
+      // Route through the same classifier production uses, so the dry-run shows the
+      // same readable message an operator would see in the digest (e.g. "timeout after
+      // 45s" instead of "The operation was aborted due to timeout"), not a raw error.
+      const classified = classifyFetchError(err, source.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+      console.log(`  ❌ ERROR: ${classified.message}`);
     }
   }
   console.log('');

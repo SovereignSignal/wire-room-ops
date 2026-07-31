@@ -6,7 +6,7 @@ const assert = require('node:assert/strict');
 // Unit tests for the source-feeds ingester — pure parse/extract logic, no network.
 // Live endpoint shapes are verified separately via src/scripts/source-feeds-dryrun.ts.
 
-const { parseFeed, SOURCE_REGISTRY } = require('../src/services/source-feeds');
+const { parseFeed, SOURCE_REGISTRY, readJsonBody, FeedFetchError } = require('../src/services/source-feeds');
 
 const reg = (key) => SOURCE_REGISTRY.find(s => s.key === key);
 
@@ -138,4 +138,202 @@ test('Grants.gov factory: builds per-keyword source, raises rows to 100, shared 
   const keep = ai.extract({ title: 'NSF Trailblazer Engineering Impact Award', id: '358001', agencyName: 'National Science Foundation', number: 'NSF 26-502', oppStatus: 'posted' });
   assert.equal(keep.url, 'https://www.grants.gov/search-results-detail/358001');
   assert.equal(ai.extract({ title: 'Maternal Cardiovascular Health Study', id: '9', agencyName: 'NIH' }), null);
+});
+
+// Minimal Response stand-in: only the members readJsonBody touches.
+// contentEncoding is optional (third param) so existing call sites (no encoding —
+// i.e. identity) keep working unchanged.
+function fakeResponse(body, contentLength, contentEncoding) {
+  return {
+    headers: {
+      get: (h) => {
+        const key = h.toLowerCase();
+        if (key === 'content-length') return contentLength != null ? String(contentLength) : null;
+        if (key === 'content-encoding') return contentEncoding != null ? contentEncoding : null;
+        return null;
+      },
+    },
+    text: async () => body,
+  };
+}
+
+test('readJsonBody parses a complete JSON body', async () => {
+  const body = JSON.stringify({ programs: [{ name: 'A' }] });
+  const out = await readJsonBody(fakeResponse(body, Buffer.byteLength(body, 'utf8')));
+  assert.deepEqual(out, { programs: [{ name: 'A' }] });
+});
+
+test('readJsonBody reports truncation with byte counts, and marks it transient', async () => {
+  const full = JSON.stringify({ programs: [{ name: 'A' }] });
+  const cut = full.slice(0, 10);
+  await assert.rejects(
+    () => readJsonBody(fakeResponse(cut, Buffer.byteLength(full, 'utf8'))),
+    (err) => {
+      assert.ok(err instanceof FeedFetchError);
+      assert.equal(err.transient, true);
+      assert.match(err.message, /truncated body: got 10 of \d+ bytes/);
+      return true;
+    }
+  );
+});
+
+test('readJsonBody counts BYTES not UTF-16 units — multibyte body is not a false truncation', async () => {
+  // "é" is 1 UTF-16 unit but 2 UTF-8 bytes. A naive text.length check would
+  // see 20 < 25 and wrongly report truncation on a complete body.
+  const body = JSON.stringify({ name: 'Fondation Créé — Zürich' });
+  const bytes = Buffer.byteLength(body, 'utf8');
+  assert.ok(bytes > body.length, 'fixture must actually contain multibyte characters');
+  const out = await readJsonBody(fakeResponse(body, bytes));
+  assert.equal(out.name, 'Fondation Créé — Zürich');
+});
+
+test('readJsonBody reports invalid JSON when no content-length is present (chunked)', async () => {
+  await assert.rejects(
+    () => readJsonBody(fakeResponse('{"programs": [', null)),
+    (err) => {
+      assert.ok(err instanceof FeedFetchError);
+      assert.equal(err.transient, true);
+      assert.match(err.message, /invalid JSON \(14 bytes received\)/);
+      return true;
+    }
+  );
+});
+
+// Regression guard for the exact July 2026 outage signature: Karma GAP answered
+// 200 + content-length: 0 + an empty body (identity encoding, nothing to decode).
+test('a zero content-length empty body reports invalid JSON, not truncation', async () => {
+  await assert.rejects(
+    () => readJsonBody(fakeResponse('', 0)),
+    (err) => {
+      assert.ok(err instanceof FeedFetchError);
+      assert.match(err.message, /invalid JSON \(0 bytes received\)/);
+      return true;
+    }
+  );
+});
+
+test('readJsonBody does not report truncation when content-length is a compressed byte count', async () => {
+  // Small JSON envelopes EXPAND under gzip: 33 raw bytes can compress to 48 bytes on
+  // the wire. r.text() returns the DECODED body, so comparing its byte length against
+  // a gzip content-length is comparing different units — the check must be skipped
+  // whenever content-encoding says the body isn't identity.
+  const body = JSON.stringify({ data: { posts: { results: [] } } }); // 33 raw bytes
+  const decodedBytes = Buffer.byteLength(body, 'utf8');
+  const gzippedContentLength = decodedBytes + 15; // simulate gzip expansion (e.g. 48 for 33)
+  const out = await readJsonBody(fakeResponse(body, gzippedContentLength, 'gzip'));
+  assert.deepEqual(out, { data: { posts: { results: [] } } });
+});
+
+const { classifyFetchError, DEFAULT_TIMEOUT_MS } = require('../src/services/source-feeds');
+
+test('classifyFetchError turns an AbortSignal timeout into a readable transient error', () => {
+  // AbortSignal.timeout() rejects with a DOMException named TimeoutError in Node 18+.
+  const err = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+  const out = classifyFetchError(err, 45000);
+  assert.equal(out.transient, true);
+  assert.equal(out.message, 'timeout after 45s');
+});
+
+test('classifyFetchError also handles the AbortError spelling', () => {
+  const err = Object.assign(new Error('aborted'), { name: 'AbortError' });
+  assert.equal(classifyFetchError(err, 20000).message, 'timeout after 20s');
+});
+
+test('classifyFetchError treats 5xx as transient and 4xx as permanent', () => {
+  assert.equal(classifyFetchError(new Error('HTTP 503'), 20000).transient, true);
+  assert.equal(classifyFetchError(new Error('HTTP 404'), 20000).transient, false);
+});
+
+test('classifyFetchError passes a FeedFetchError through unchanged', () => {
+  const original = new FeedFetchError('truncated body: got 10 of 900 bytes', true);
+  assert.equal(classifyFetchError(original, 20000), original);
+});
+
+test('classifyFetchError defaults unknown failures to permanent', () => {
+  const out = classifyFetchError(new Error('itemsPath "programs" is not an array'), 20000);
+  assert.equal(out.transient, false);
+  assert.match(out.message, /itemsPath/);
+});
+
+// undici collapses connection-layer failures into a bare TypeError('fetch failed') /
+// TypeError('terminated'), with the real cause nested in err.cause. classifyFetchError
+// must unwrap it: known-transient causes retry, and the cause code must survive into
+// the message (the alternative — "fetch failed" — is less informative than the JSON
+// parse error it replaced).
+test('classifyFetchError unwraps a connection-reset cause as transient and keeps the code', () => {
+  const err = Object.assign(new Error('fetch failed'), { cause: { code: 'ECONNRESET' } });
+  const out = classifyFetchError(err, 20000);
+  assert.equal(out.transient, true);
+  assert.match(out.message, /ECONNRESET/);
+});
+
+test('classifyFetchError unwraps an unexpected-close cause (terminated) as transient', () => {
+  const err = Object.assign(new Error('terminated'), { cause: { name: 'SocketError', message: 'other side closed' } });
+  const out = classifyFetchError(err, 20000);
+  assert.equal(out.transient, true);
+  assert.match(out.message, /other side closed/);
+});
+
+test('classifyFetchError keeps a DNS failure (ENOTFOUND) permanent — a dead domain must not retry daily', () => {
+  const err = Object.assign(new Error('fetch failed'), { cause: { code: 'ENOTFOUND' } });
+  const out = classifyFetchError(err, 20000);
+  assert.equal(out.transient, false);
+  assert.match(out.message, /ENOTFOUND/);
+});
+
+test('karma-gap gets a longer timeout than the registry default', () => {
+  assert.equal(reg('karma-gap').timeoutMs, 45000);
+  assert.equal(DEFAULT_TIMEOUT_MS, 20000);
+});
+
+test('karma-gap requests identity encoding — the API returns an empty gzip body otherwise', () => {
+  // Server defect: with Accept-Encoding: gzip (Node fetch's default) this API answers
+  // 200 + content-encoding: gzip + content-length: 0 + empty body. Verified 2026-07-30.
+  assert.equal(reg('karma-gap').headers['Accept-Encoding'], 'identity');
+});
+
+const { fetchSourceWithTransientRetry } = require('../src/jobs/source-feeds');
+
+const noSleep = async () => {};
+const src = { key: 'k', name: 'K', wire: 'crypto', method: 'rest_json', endpoint: 'https://x', enabled: true };
+
+test('transient failure is retried once and can succeed', async () => {
+  let calls = 0;
+  const items = await fetchSourceWithTransientRetry(src, async () => {
+    calls++;
+    if (calls === 1) throw new FeedFetchError('truncated body: got 10 of 900 bytes', true);
+    return [{ name: 'A', description: '', url: 'https://x/a', amount: null, deadline: null, publishedAt: null }];
+  }, noSleep);
+  assert.equal(calls, 2);
+  assert.equal(items.length, 1);
+});
+
+test('permanent failure is NOT retried — a paid scrape must not run twice', async () => {
+  let calls = 0;
+  await assert.rejects(
+    () => fetchSourceWithTransientRetry(src, async () => { calls++; throw new Error('HTTP 404'); }, noSleep),
+    (err) => { assert.equal(err.message, 'HTTP 404'); assert.equal(err.transient, false); return true; }
+  );
+  assert.equal(calls, 1, 'permanent failures must be attempted exactly once');
+});
+
+test('a transient failure twice surfaces the second error', async () => {
+  let calls = 0;
+  await assert.rejects(
+    () => fetchSourceWithTransientRetry(src, async () => {
+      calls++;
+      throw Object.assign(new Error('aborted'), { name: 'TimeoutError' });
+    }, noSleep),
+    (err) => { assert.equal(err.message, 'timeout after 20s'); return true; }
+  );
+  assert.equal(calls, 2);
+});
+
+test('retry honours the per-source timeout in its message', async () => {
+  await assert.rejects(
+    () => fetchSourceWithTransientRetry({ ...src, timeoutMs: 45000 }, async () => {
+      throw Object.assign(new Error('aborted'), { name: 'TimeoutError' });
+    }, noSleep),
+    (err) => { assert.equal(err.message, 'timeout after 45s'); return true; }
+  );
 });
