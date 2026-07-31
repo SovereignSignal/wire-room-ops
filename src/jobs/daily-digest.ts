@@ -188,6 +188,48 @@ export async function getSourceBreakdown(pool: Pool): Promise<SourceBreakdownRow
   return rows;
 }
 
+// ── Stale source anomalies ─────────────────────────────────────────────────
+// Name each failing source and how long it has been failing, escalating at 2+ days.
+
+export interface StaleSourceInput {
+  key: string;
+  error?: string;
+  lastOk?: string | null;
+}
+
+/** A source stale >= this many days is a production issue, not a blip. */
+const STALE_SOURCE_DAYS = 2;
+
+/**
+ * Name each failing source and how long it has been failing.
+ *
+ * "1 of 21 sources errored" read identically on day 1 and day 30, which is how
+ * Karma GAP stayed dark for three days. Day 1 stays a ledger warning; day 2+ is
+ * an issue. Derived from the per-source watermark's lastRun — no new state.
+ */
+export function formatStaleSourceAnomalies(perSource: StaleSourceInput[], now: number = Date.now()): string[] {
+  const rows = perSource
+    .filter(s => s.error)
+    .map(s => {
+      const parsed = s.lastOk ? Date.parse(s.lastOk) : NaN;
+      if (Number.isNaN(parsed)) return { key: s.key, days: null, date: null };
+      return {
+        key: s.key,
+        days: Math.floor((now - parsed) / 86400000),
+        // Format the recorded timestamp itself, never a value recomputed from the
+        // floored day count — those disagree whenever the fetch time of day drifts.
+        date: new Date(parsed).toISOString().split('T')[0],
+      };
+    });
+
+  return rows
+    .filter(r => r.days === null || r.days >= STALE_SOURCE_DAYS)
+    .sort((a, b) => (b.days ?? Infinity) - (a.days ?? Infinity))
+    .map(r => r.days === null
+      ? `Source feeds: ${r.key} failing (never succeeded)`
+      : `Source feeds: ${r.key} failing ${r.days} days (last OK ${r.date})`);
+}
+
 // ── Digest email watermark ─────────────────────────────────────────────────
 // An entry is emailed by the digest at most once (best-effort: no
 // cross-process lock, so concurrent cron + send-now can in rare cases repeat

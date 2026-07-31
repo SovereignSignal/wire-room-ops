@@ -2,7 +2,7 @@ require('ts-node/register/transpile-only');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
-  getFreshFinds, advanceDigestWatermark, pruneEmailedIds, DIGEST_WATERMARK_KEY,
+  getFreshFinds, advanceDigestWatermark, pruneEmailedIds, DIGEST_WATERMARK_KEY, formatStaleSourceAnomalies,
 } = require('../src/jobs/daily-digest');
 
 function fakePool() {
@@ -379,4 +379,39 @@ test('buildRunLedger: a provider with failures and zero successes flags an accou
   assert.equal(ledger.lanes.find(l => l.key === 'api:parallel'), undefined, 'healthy providers add no lane');
   assert.equal(ledger.lanes.find(l => l.key === 'api:firecrawl'), undefined, 'mixed results add no lane');
   assert.match(anomalies.find(a => /grok/.test(a)), /account\/endpoint-level/);
+});
+
+const NOW = Date.parse('2026-07-30T13:00:00Z');
+const daysAgo = (n) => new Date(NOW - n * 86400000).toISOString();
+
+test('a source failing its first day produces no anomaly', () => {
+  const out = formatStaleSourceAnomalies([{ key: 'karma-gap', error: 'timeout after 45s', lastOk: daysAgo(1) }], NOW);
+  assert.deepEqual(out, []);
+});
+
+test('a source failing 2+ days is named with its day count and last-OK date', () => {
+  const out = formatStaleSourceAnomalies([{ key: 'karma-gap', error: 'timeout after 45s', lastOk: daysAgo(3) }], NOW);
+  assert.equal(out.length, 1);
+  assert.match(out[0], /^Source feeds: karma-gap failing 3 days \(last OK 2026-07-27\)$/);
+});
+
+test('healthy sources produce nothing', () => {
+  const out = formatStaleSourceAnomalies([{ key: 'nlnet-news', lastOk: daysAgo(0) }], NOW);
+  assert.deepEqual(out, []);
+});
+
+test('a source that has never succeeded is reported without a date', () => {
+  const out = formatStaleSourceAnomalies([{ key: 'new-src', error: 'HTTP 404', lastOk: null }], NOW);
+  assert.equal(out.length, 1);
+  assert.match(out[0], /^Source feeds: new-src failing \(never succeeded\)$/);
+});
+
+test('multiple stale sources each get their own line, worst first', () => {
+  const out = formatStaleSourceAnomalies([
+    { key: 'a', error: 'x', lastOk: daysAgo(2) },
+    { key: 'b', error: 'x', lastOk: daysAgo(5) },
+  ], NOW);
+  assert.equal(out.length, 2);
+  assert.match(out[0], /^Source feeds: b failing 5 days/);
+  assert.match(out[1], /^Source feeds: a failing 2 days/);
 });
