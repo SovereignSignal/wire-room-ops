@@ -188,6 +188,99 @@ export async function getSourceBreakdown(pool: Pool): Promise<SourceBreakdownRow
   return rows;
 }
 
+export interface LaneYieldRow {
+  source: string;
+  total: number;
+  netNew: number;
+}
+
+/** Below this volume, zero net-new is not evidence of anything. */
+const YIELD_MIN_VOLUME = 10;
+
+/** Human and chat intake re-submit known listings by nature; their yield is not lane health. */
+const NON_AUTOMATED_SOURCES = new Set(['telegram', 'telegram-intake', 'manual-intake']);
+
+/** Net-new (non-duplicate) entries per ingestion lane over a trailing window. */
+export async function getLaneYield(pool: Pool, days: number = 3): Promise<LaneYieldRow[]> {
+  const { rows } = await pool.query<{ source: string; total: number; net_new: number }>(`
+    SELECT
+      COALESCE(scan_source, 'unknown') AS source,
+      COUNT(*)::int AS total,
+      COUNT(*) FILTER (WHERE status NOT IN ('duplicate', 'deduped'))::int AS net_new
+    FROM scan_entries
+    WHERE created_at >= NOW() - ($1 || ' days')::interval
+    GROUP BY 1
+    ORDER BY total DESC
+  `, [String(days)]);
+  return rows.map(r => ({ source: r.source, total: r.total, netNew: r.net_new }));
+}
+
+/**
+ * A lane that fetched real volume and produced nothing new is the signal worth
+ * escalating. This replaces the duplicate-rate anomaly, which fired when dedup
+ * was WORKING and carried a per-wire volume floor that hid crypto entirely.
+ *
+ * The 3-day trailing window IS the persistence gate — a lane must be dry
+ * across three consecutive days, not blip once. There is deliberately no
+ * consecutive-run counter, which would require new state. Accepted
+ * consequence: a genuinely quiet low-volume lane that still clears the
+ * volume floor can report once during a slow stretch.
+ */
+export function formatYieldAnomalies(rows: LaneYieldRow[], days: number = 3): string[] {
+  return rows
+    .filter(r => !NON_AUTOMATED_SOURCES.has(r.source))
+    .filter(r => r.total >= YIELD_MIN_VOLUME && r.netNew === 0)
+    .map(r => `Lane ${r.source}: 0 net-new in ${days} days (${r.total} fetched)`);
+}
+
+// ── Stale source anomalies ─────────────────────────────────────────────────
+// Name each failing source and how long it has been failing, escalating at 2+ days.
+
+export interface StaleSourceInput {
+  key: string;
+  error?: string;
+  lastOk?: string | null;
+}
+
+/** A source stale >= this many days is a production issue, not a blip. */
+const STALE_SOURCE_DAYS = 2;
+
+/**
+ * Name each failing source and how long it has been failing.
+ *
+ * "1 of 21 sources errored" read identically on day 1 and day 30, which is how
+ * Karma GAP stayed dark for three days. Day 1 stays a ledger warning; day 2+ is
+ * an issue. Derived from the per-source watermark's lastRun — no new state.
+ *
+ * A source that has never succeeded is reported on its first failure,
+ * bypassing the 2-day rule. This is deliberate — a source with no track
+ * record failing immediately is more suspicious than an established one
+ * blipping — and there is no first-attempted-at timestamp that would let us
+ * grant a grace period without new state.
+ */
+export function formatStaleSourceAnomalies(perSource: StaleSourceInput[], now: number = Date.now()): string[] {
+  const rows = perSource
+    .filter(s => s.error)
+    .map(s => {
+      const parsed = s.lastOk ? Date.parse(s.lastOk) : NaN;
+      if (Number.isNaN(parsed)) return { key: s.key, days: null, date: null };
+      return {
+        key: s.key,
+        days: Math.floor((now - parsed) / 86400000),
+        // Format the recorded timestamp itself, never a value recomputed from the
+        // floored day count — those disagree whenever the fetch time of day drifts.
+        date: new Date(parsed).toISOString().split('T')[0],
+      };
+    });
+
+  return rows
+    .filter(r => r.days === null || r.days >= STALE_SOURCE_DAYS)
+    .sort((a, b) => (b.days ?? Infinity) - (a.days ?? Infinity))
+    .map(r => r.days === null
+      ? `Source feeds: ${r.key} failing (never succeeded)`
+      : `Source feeds: ${r.key} failing ${r.days} days (last OK ${r.date})`);
+}
+
 // ── Digest email watermark ─────────────────────────────────────────────────
 // An entry is emailed by the digest at most once (best-effort: no
 // cross-process lock, so concurrent cron + send-now can in rare cases repeat
@@ -497,7 +590,7 @@ export interface AssembleDigestDeps {
   ledger: typeof buildRunLedger;
   deadlines: typeof runDeadlineDigest;
   cost: typeof getCostRecap;
-  sources: typeof getSourceBreakdown;
+  yield_: typeof getLaneYield;
   send: typeof sendDailyDigestEmail;
   advance: (ids: number[]) => Promise<void>;
 }
@@ -508,7 +601,7 @@ const defaultAssembleDeps: AssembleDigestDeps = {
   ledger: buildRunLedger,
   deadlines: runDeadlineDigest,
   cost: getCostRecap,
-  sources: getSourceBreakdown,
+  yield_: getLaneYield,
   send: sendDailyDigestEmail,
   advance: (ids) => advanceDigestWatermark(ids),
 };
@@ -556,18 +649,10 @@ export async function assembleAndSendDailyDigest(
   }
 
   try {
-    const breakdown = await deps.sources(pool);
-    // Human and chat intake naturally re-submit already-seen listings. Their
-    // duplicate rate is useful in the source table, but it is not source-lane
-    // health and should not be presented as a production incident.
-    const nonAutomatedSources = new Set(['telegram', 'telegram-intake', 'manual-intake']);
-    for (const row of breakdown) {
-      if (!nonAutomatedSources.has(row.source) && row.total >= 10 && row.duplicates / row.total > 0.6) {
-        anomalies.push(`High dupe rate: ${row.wire}/${row.source} — ${Math.round((row.duplicates / row.total) * 100)}% of ${row.total}`);
-      }
-    }
+    const laneYield = await deps.yield_(pool, 3);
+    anomalies.push(...formatYieldAnomalies(laneYield, 3));
   } catch (e) {
-    console.error('[DailyDigest] Source breakdown failed (non-fatal):', e instanceof Error ? e.message : e);
+    console.error('[DailyDigest] Lane yield check failed (non-fatal):', e instanceof Error ? e.message : e);
   }
 
   await deps.send(digest, config.app.url, opts.recipients, {

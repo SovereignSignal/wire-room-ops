@@ -2,7 +2,7 @@ require('ts-node/register/transpile-only');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
-  getFreshFinds, advanceDigestWatermark, pruneEmailedIds, DIGEST_WATERMARK_KEY,
+  getFreshFinds, advanceDigestWatermark, pruneEmailedIds, DIGEST_WATERMARK_KEY, formatStaleSourceAnomalies,
 } = require('../src/jobs/daily-digest');
 
 function fakePool() {
@@ -240,7 +240,7 @@ function assemblyDeps(overrides = {}) {
       ledger: async () => ({ ledger: { lanes: [{ key: 'scans', state: 'ok', detail: 'scans 5✓' }] }, anomalies: [] }),
       deadlines: async () => ([{ wire: 'ai', entries: [{ id: 9, name: 'EF', wire: 'ai', deadline: '2026-07-12', deadlineParsed: null, amount: null, sourceUrl: 'https://x.org/ef', daysUntil: 3 }], generatedAt: new Date() }]),
       cost: async () => ({ rows: [], total: 1.5 }),
-      sources: async () => ([{ wire: 'ai', source: 'feed', total: 20, queued: 2, approved: 1, archived: 3, duplicates: 14, parked: 0, signals: 0 }]),
+      yield_: async () => ([]),
       send: async (...args) => { sent.push(args); },
       advance: async (ids) => { advanced.push(ids); },
       ...overrides,
@@ -263,30 +263,31 @@ test('assembleAndSendDailyDigest: sends one email and advances the watermark wit
   assert.equal(summary.totalNew, 4);
 });
 
-test('assembleAndSendDailyDigest: derives dupe-rate anomaly (>60% of >=10) and merges lane anomalies', async () => {
-  const { deps, sent } = assemblyDeps();
+test('assembleAndSendDailyDigest: derives a zero-yield lane anomaly and merges lane anomalies', async () => {
+  const yield_ = async () => ([{ source: 'web-search', total: 20, netNew: 0 }]);
+  const { deps, sent } = assemblyDeps({ yield_ });
   await assembleAndSendDailyDigest({}, { laneAnomalies: ['Forum lane failed: x'] }, deps);
   const extras = sent[0][3];
   assert.ok(extras.anomalies.some(a => a.includes('Forum lane failed')));
-  assert.ok(extras.anomalies.some(a => a.includes('High dupe rate')), 'ai/feed is 70% dupes of 20');
+  assert.ok(extras.anomalies.some(a => a.includes('Lane web-search: 0 net-new')), '20 fetched, 0 net-new');
 });
 
-test('assembleAndSendDailyDigest: human and chat intake duplicate rates stay telemetry, not production issues', async () => {
-  const sources = async () => ([
-    { wire: 'crypto', source: 'telegram', total: 17, queued: 5, approved: 0, archived: 0, duplicates: 11, parked: 0, signals: 0 },
-    { wire: 'oss', source: 'telegram-intake', total: 12, queued: 3, approved: 0, archived: 0, duplicates: 9, parked: 0, signals: 0 },
-    { wire: 'ai', source: 'manual-intake', total: 10, queued: 2, approved: 0, archived: 0, duplicates: 8, parked: 0, signals: 0 },
-    { wire: 'crypto', source: 'forum', total: 11, queued: 1, approved: 0, archived: 2, duplicates: 8, parked: 0, signals: 0 },
+test('assembleAndSendDailyDigest: human and chat intake lanes stay out of production issues', async () => {
+  const yield_ = async () => ([
+    { source: 'telegram', total: 17, netNew: 0 },
+    { source: 'telegram-intake', total: 12, netNew: 0 },
+    { source: 'manual-intake', total: 10, netNew: 0 },
+    { source: 'forum', total: 11, netNew: 0 },
   ]);
-  const { deps, sent } = assemblyDeps({ sources });
+  const { deps, sent } = assemblyDeps({ yield_ });
 
   await assembleAndSendDailyDigest({}, {}, deps);
 
   const anomalies = sent[0][3].anomalies;
-  assert.ok(anomalies.some(a => a.includes('crypto/forum')));
-  assert.ok(!anomalies.some(a => a.includes('crypto/telegram')));
-  assert.ok(!anomalies.some(a => a.includes('oss/telegram-intake')));
-  assert.ok(!anomalies.some(a => a.includes('ai/manual-intake')));
+  assert.ok(anomalies.some(a => a.includes('Lane forum')));
+  assert.ok(!anomalies.some(a => a.includes('Lane telegram-intake')));
+  assert.ok(!anomalies.some(a => a.includes('Lane telegram')));
+  assert.ok(!anomalies.some(a => a.includes('Lane manual-intake')));
 });
 
 test('assembleAndSendDailyDigest: a failed send never advances the watermark', async () => {
@@ -379,4 +380,98 @@ test('buildRunLedger: a provider with failures and zero successes flags an accou
   assert.equal(ledger.lanes.find(l => l.key === 'api:parallel'), undefined, 'healthy providers add no lane');
   assert.equal(ledger.lanes.find(l => l.key === 'api:firecrawl'), undefined, 'mixed results add no lane');
   assert.match(anomalies.find(a => /grok/.test(a)), /account\/endpoint-level/);
+});
+
+const NOW = Date.parse('2026-07-30T13:00:00Z');
+const daysAgo = (n) => new Date(NOW - n * 86400000).toISOString();
+
+test('a source failing its first day produces no anomaly', () => {
+  const out = formatStaleSourceAnomalies([{ key: 'karma-gap', error: 'timeout after 45s', lastOk: daysAgo(1) }], NOW);
+  assert.deepEqual(out, []);
+});
+
+test('a source failing 2+ days is named with its day count and last-OK date', () => {
+  const out = formatStaleSourceAnomalies([{ key: 'karma-gap', error: 'timeout after 45s', lastOk: daysAgo(3) }], NOW);
+  assert.equal(out.length, 1);
+  assert.match(out[0], /^Source feeds: karma-gap failing 3 days \(last OK 2026-07-27\)$/);
+});
+
+test('healthy sources produce nothing', () => {
+  const out = formatStaleSourceAnomalies([{ key: 'nlnet-news', lastOk: daysAgo(0) }], NOW);
+  assert.deepEqual(out, []);
+});
+
+test('a source that has never succeeded is reported without a date', () => {
+  const out = formatStaleSourceAnomalies([{ key: 'new-src', error: 'HTTP 404', lastOk: null }], NOW);
+  assert.equal(out.length, 1);
+  assert.match(out[0], /^Source feeds: new-src failing \(never succeeded\)$/);
+});
+
+test('multiple stale sources each get their own line, worst first', () => {
+  const out = formatStaleSourceAnomalies([
+    { key: 'a', error: 'x', lastOk: daysAgo(2) },
+    { key: 'b', error: 'x', lastOk: daysAgo(5) },
+  ], NOW);
+  assert.equal(out.length, 2);
+  assert.match(out[0], /^Source feeds: b failing 5 days/);
+  assert.match(out[1], /^Source feeds: a failing 2 days/);
+});
+
+const { formatYieldAnomalies, getLaneYield } = require('../src/jobs/daily-digest');
+
+test('a lane with zero net-new across the window is an issue', () => {
+  const out = formatYieldAnomalies([{ source: 'web-search', total: 92, netNew: 0 }], 3);
+  assert.equal(out.length, 1);
+  assert.match(out[0], /^Lane web-search: 0 net-new in 3 days \(92 fetched\)$/);
+});
+
+test('a lane producing anything is not an issue', () => {
+  assert.deepEqual(formatYieldAnomalies([{ source: 'web-search', total: 92, netNew: 1 }], 3), []);
+});
+
+test('low-volume lanes are ignored — 0 of 3 is not evidence', () => {
+  assert.deepEqual(formatYieldAnomalies([{ source: 'forum', total: 3, netNew: 0 }], 3), []);
+});
+
+test('human intake lanes never produce a yield anomaly', () => {
+  const rows = [
+    { source: 'telegram', total: 40, netNew: 0 },
+    { source: 'manual-intake', total: 30, netNew: 0 },
+    { source: 'telegram-intake', total: 20, netNew: 0 },
+  ];
+  assert.deepEqual(formatYieldAnomalies(rows, 3), []);
+});
+
+test('yield is counted per lane, so a low-volume wire cannot hide', () => {
+  // The retired dupe-rate rule had a per-wire total>=10 floor, which is how
+  // crypto's 100% duplicate rate stayed out of the Jul 30 email.
+  const out = formatYieldAnomalies([{ source: 'x-monitor', total: 7, netNew: 0 }], 3);
+  assert.deepEqual(out, [], 'below the volume floor');
+  const out2 = formatYieldAnomalies([{ source: 'x-monitor', total: 12, netNew: 0 }], 3);
+  assert.equal(out2.length, 1);
+});
+
+test('the volume floor boundary is inclusive — total === 10 counts', () => {
+  const out = formatYieldAnomalies([{ source: 'x-monitor', total: 10, netNew: 0 }], 3);
+  assert.equal(out.length, 1, 'total === 10 must clear the >= floor');
+});
+
+test('getLaneYield asks for net-new excluding duplicate and deduped', async () => {
+  let captured = null;
+  const pool = { query: async (sql, params) => { captured = { sql, params }; return { rows: [] }; } };
+  await getLaneYield(pool, 3);
+  assert.match(captured.sql, /NOT IN \('duplicate',\s*'deduped'\)/);
+  assert.deepEqual(captured.params, ['3']);
+});
+
+test('getLaneYield maps the net_new column onto netNew', async () => {
+  const pool = { query: async () => ({ rows: [
+    { source: 'web-search', total: 31, net_new: 1 },
+    { source: 'feed', total: 6, net_new: 4 },
+  ] }) };
+  const rows = await getLaneYield(pool, 3);
+  assert.deepEqual(rows, [
+    { source: 'web-search', total: 31, netNew: 1 },
+    { source: 'feed', total: 6, netNew: 4 },
+  ]);
 });

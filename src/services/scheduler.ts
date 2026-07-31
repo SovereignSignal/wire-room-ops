@@ -10,7 +10,7 @@ import { runBdLeads } from '../jobs/bd-leads';
 import { config } from '../config';
 import { sendTestAlertEmail, sendScheduledJobFailureEmail } from './email';
 import { runCsvExport } from '../jobs/csv-export';
-import { assembleAndSendDailyDigest } from '../jobs/daily-digest';
+import { assembleAndSendDailyDigest, formatStaleSourceAnomalies } from '../jobs/daily-digest';
 import { runAccountMonitor } from '../jobs/account-monitor';
 import { ensureScheduleTable, getAllSchedules, getScheduleById, createSchedule, updateSchedule, deleteSchedule as dbDeleteSchedule, StoredScheduleConfig, ensureFeedsTable, ensureScanTables, ensureScanPromptsTable, ensureDistributionTables, getPool } from '../db';
 import { getActiveWires } from './intake-core';
@@ -430,7 +430,7 @@ function createJobExecutor(schedule: ScheduleConfig) {
           const sf = await runSourceFeeds(pool, {});
           const failed = sf.perSource.filter(s => s.error).length;
           console.log(`[Scheduler] Daily source feeds: ${sf.totalFresh} fresh from ${sf.perSource.length} sources (${failed} errored), ${sf.intakeSummary.newUnique} unique`);
-          if (failed > 0) anomalies.push(`Source feeds: ${failed} of ${sf.perSource.length} sources errored`);
+          anomalies.push(...formatStaleSourceAnomalies(sf.perSource));
           feedsLane = { ok: sf.perSource.length - failed, total: sf.perSource.length };
         } catch (e) {
           console.error('[Scheduler] Daily source feeds failed (non-fatal):', e instanceof Error ? e.message : e);
