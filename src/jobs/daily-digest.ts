@@ -188,6 +188,45 @@ export async function getSourceBreakdown(pool: Pool): Promise<SourceBreakdownRow
   return rows;
 }
 
+export interface LaneYieldRow {
+  source: string;
+  total: number;
+  netNew: number;
+}
+
+/** Below this volume, zero net-new is not evidence of anything. */
+const YIELD_MIN_VOLUME = 10;
+
+/** Human and chat intake re-submit known listings by nature; their yield is not lane health. */
+const NON_AUTOMATED_SOURCES = new Set(['telegram', 'telegram-intake', 'manual-intake']);
+
+/** Net-new (non-duplicate) entries per ingestion lane over a trailing window. */
+export async function getLaneYield(pool: Pool, days: number = 3): Promise<LaneYieldRow[]> {
+  const { rows } = await pool.query<{ source: string; total: number; net_new: number }>(`
+    SELECT
+      COALESCE(scan_source, 'unknown') AS source,
+      COUNT(*)::int AS total,
+      COUNT(*) FILTER (WHERE status NOT IN ('duplicate', 'deduped'))::int AS net_new
+    FROM scan_entries
+    WHERE created_at >= NOW() - ($1 || ' days')::interval
+    GROUP BY 1
+    ORDER BY total DESC
+  `, [String(days)]);
+  return rows.map(r => ({ source: r.source, total: r.total, netNew: r.net_new }));
+}
+
+/**
+ * A lane that fetched real volume and produced nothing new is the signal worth
+ * escalating. This replaces the duplicate-rate anomaly, which fired when dedup
+ * was WORKING and carried a per-wire volume floor that hid crypto entirely.
+ */
+export function formatYieldAnomalies(rows: LaneYieldRow[], days: number = 3): string[] {
+  return rows
+    .filter(r => !NON_AUTOMATED_SOURCES.has(r.source))
+    .filter(r => r.total >= YIELD_MIN_VOLUME && r.netNew === 0)
+    .map(r => `Lane ${r.source}: 0 net-new in ${days} days (${r.total} fetched)`);
+}
+
 // ── Stale source anomalies ─────────────────────────────────────────────────
 // Name each failing source and how long it has been failing, escalating at 2+ days.
 
@@ -540,6 +579,7 @@ export interface AssembleDigestDeps {
   deadlines: typeof runDeadlineDigest;
   cost: typeof getCostRecap;
   sources: typeof getSourceBreakdown;
+  yield_: typeof getLaneYield;
   send: typeof sendDailyDigestEmail;
   advance: (ids: number[]) => Promise<void>;
 }
@@ -551,6 +591,7 @@ const defaultAssembleDeps: AssembleDigestDeps = {
   deadlines: runDeadlineDigest,
   cost: getCostRecap,
   sources: getSourceBreakdown,
+  yield_: getLaneYield,
   send: sendDailyDigestEmail,
   advance: (ids) => advanceDigestWatermark(ids),
 };
@@ -598,18 +639,10 @@ export async function assembleAndSendDailyDigest(
   }
 
   try {
-    const breakdown = await deps.sources(pool);
-    // Human and chat intake naturally re-submit already-seen listings. Their
-    // duplicate rate is useful in the source table, but it is not source-lane
-    // health and should not be presented as a production incident.
-    const nonAutomatedSources = new Set(['telegram', 'telegram-intake', 'manual-intake']);
-    for (const row of breakdown) {
-      if (!nonAutomatedSources.has(row.source) && row.total >= 10 && row.duplicates / row.total > 0.6) {
-        anomalies.push(`High dupe rate: ${row.wire}/${row.source} — ${Math.round((row.duplicates / row.total) * 100)}% of ${row.total}`);
-      }
-    }
+    const laneYield = await deps.yield_(pool, 3);
+    anomalies.push(...formatYieldAnomalies(laneYield, 3));
   } catch (e) {
-    console.error('[DailyDigest] Source breakdown failed (non-fatal):', e instanceof Error ? e.message : e);
+    console.error('[DailyDigest] Lane yield check failed (non-fatal):', e instanceof Error ? e.message : e);
   }
 
   await deps.send(digest, config.app.url, opts.recipients, {
