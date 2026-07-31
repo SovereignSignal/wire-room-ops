@@ -1435,6 +1435,33 @@ export async function getSeenUrlStats(wire?: string): Promise<{ seededCount: num
   };
 }
 
+/**
+ * Which of these URLs has this wire already ingested?
+ *
+ * Returns the ORIGINAL url strings (not the normalized forms) so callers can
+ * filter their own list directly. Several originals can share one normalized
+ * form — tracking params, casing — and all of them are returned on a hit.
+ */
+export async function findSeenUrls(pool: Pool, urls: string[], wire: string): Promise<Set<string>> {
+  if (!urls.length) return new Set();
+  const byNormalized = new Map<string, string[]>();
+  for (const u of urls) {
+    const n = normalizeUrl(u);
+    const bucket = byNormalized.get(n);
+    if (bucket) bucket.push(u);
+    else byNormalized.set(n, [u]);
+  }
+  const { rows } = await pool.query<{ normalized_url: string }>(
+    `SELECT DISTINCT normalized_url FROM seen_urls WHERE normalized_url = ANY($1::text[]) AND wire = $2`,
+    [[...byNormalized.keys()], wire],
+  );
+  const out = new Set<string>();
+  for (const r of rows) {
+    for (const original of byNormalized.get(r.normalized_url) || []) out.add(original);
+  }
+  return out;
+}
+
 export async function getSeenUrlsList(
   opts?: { wire?: string; limit?: number; offset?: number; scope?: 'seed' | 'all' }
 ): Promise<{ urls: any[]; total: number }> {

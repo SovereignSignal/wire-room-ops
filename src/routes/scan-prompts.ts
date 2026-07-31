@@ -25,6 +25,7 @@ import { reviewScanPrompt } from '../services/anthropic';
 import { withRetry } from '../services/processor';
 import { buildSubmission } from '../services/intake';
 import { runDailyIntake } from '../jobs/daily-intake';
+import { DISCOVERY_WINDOW_DAYS } from '../jobs/scan-execution';
 import { jobQueue } from '../services/job-queue';
 import type { PromptVariant, RawScanResult, ToolType } from '../types/intake';
 
@@ -424,7 +425,7 @@ router.post('/:id/run', async (req: Request, res: Response) => {
           // freshness floor; canonical/signal prompts must NOT (it would drop
           // long-standing rolling programs that are still open).
           const afterDate = prompt.intent === 'discovery'
-            ? new Date(Date.now() - 90 * 86400000).toISOString().split('T')[0]
+            ? new Date(Date.now() - DISCOVERY_WINDOW_DAYS * 86400000).toISOString().split('T')[0]
             : undefined;
           return executeParallelScan(prompt.promptText, {
             model: prompt.model || undefined,

@@ -101,7 +101,7 @@ async function planQueries(objective: string, wire?: string, usagePurpose: ScanU
 
 export async function executeParallelScan(
   promptText: string,
-  options?: { model?: string; responseFormat?: string | null; outputFormat?: 'text' | 'json'; wire?: string; afterDate?: string; usagePurpose?: ScanUsagePurpose }
+  options?: { model?: string; responseFormat?: string | null; outputFormat?: 'text' | 'json'; wire?: string; afterDate?: string; usagePurpose?: ScanUsagePurpose; filterSeenUrls?: (urls: string[]) => Promise<Set<string>> }
 ): Promise<{ content: string; model: string; tokensUsed?: number }> {
   const provider = getCachedProvider('parallel');
   const apiKey = provider?.api_key;
@@ -158,7 +158,25 @@ export async function executeParallelScan(
   const searchData = await searchResp.json() as ParallelSearchResponse;
   logApiUsage({ provider: 'parallel', model: 'search', purpose: usagePurpose, wire, duration_ms: Date.now() - searchStart, success: true });
 
-  const results = searchData.results || [];
+  let results = searchData.results || [];
+
+  // Early dedup: the lane re-searches a rolling window daily, so most results are
+  // already ingested. Dropping them here saves the Grok extraction AND the
+  // downstream classify — downstream dedup remains the backstop for the rest.
+  if (options?.filterSeenUrls && results.length > 0) {
+    try {
+      const seen = await options.filterSeenUrls(results.map(r => r.url));
+      const before = results.length;
+      results = results.filter(r => !seen.has(r.url));
+      if (before !== results.length) {
+        console.log(`[Parallel] early-dedup: ${before - results.length} of ${before} results already seen; ${results.length} to extraction`);
+      }
+    } catch (err) {
+      // Never let the dedup lookup break a scan — fall through with the full set.
+      console.warn('[Parallel] early-dedup lookup failed, proceeding unfiltered:', err instanceof Error ? err.message : err);
+    }
+  }
+
   if (results.length === 0) {
     return { content: '', model: 'parallel-search' };
   }
