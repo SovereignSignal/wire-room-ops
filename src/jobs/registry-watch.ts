@@ -163,7 +163,7 @@ export async function runRegistryWatch(
 
   // ---- RSS lane ----
   const rssStat: LaneStat = { surfaces: 0, fresh: 0, errors: 0 };
-  const rssSurfaces = await getDueImpl(pool, ['rss'], rssCap);
+  const rssSurfaces = await getDueImpl(pool, ['rss'], rssCap, config.watchtower.registryTiers);
   rssStat.surfaces = rssSurfaces.length;
 
   for (const surf of rssSurfaces) {
@@ -210,7 +210,7 @@ export async function runRegistryWatch(
 
   // ---- html_diff lane ----
   const diffStat: LaneStat = { surfaces: 0, fresh: 0, changed: 0, extracted: 0, errors: 0 };
-  const diffSurfaces = await getDueImpl(pool, ['grants_page', 'application'], diffCap);
+  const diffSurfaces = await getDueImpl(pool, ['grants_page', 'application'], diffCap, config.watchtower.registryTiers);
   diffStat.surfaces = diffSurfaces.length;
 
   // Budget is consulted at most once per run, lazily, the first time a page
