@@ -3,6 +3,35 @@
 **Date:** 2026-07-30
 **Origin:** The Jul 30 daily digest reported three production issues. Investigation showed one real outage, one reporting defect, and one structural problem in the scan lane.
 
+> ## Outcome (2026-07-31) — read before trusting the root-cause section
+>
+> All four PRs shipped: #121 (feed reliability), #123 (digest yield reporting),
+> #124 (scan-lane early dedup), #125 (registry-watch tier scope). A fifth, #122,
+> was unplanned — it fixed an infinite retry loop found in the Jul 31 digest.
+>
+> **Both hypotheses this document offers for the Karma GAP outage are WRONG.**
+> It was neither a mid-body timeout nor an upstream truncation. The Karma GAP
+> server answers `200` + `content-encoding: gzip` + `content-length: 0` + an
+> **empty body** whenever the client sends `Accept-Encoding: gzip`, which Node's
+> `fetch` does automatically. `curl` omits that header by default, which is why
+> every manual check during the outage returned the full 268KB and masked the bug.
+> Requesting `Accept-Encoding: identity` for that one source returns the payload.
+>
+> The real cause was only found *because* PRs #121's first three commits made the
+> failure self-describing (`invalid JSON (0 bytes received)` instead of
+> `Unexpected end of JSON input`). The diagnostic work in this spec paid for
+> itself by disproving the spec's own conclusions.
+>
+> Two further latent bugs were caught in review before they ever fired: the byte
+> comparison ignored `content-encoding` (gzip *expands* payloads under ~50 bytes,
+> so a healthy empty result would have been reported as truncated), and every
+> undici network failure was classified permanent with `err.cause` discarded.
+>
+> Verified in production 2026-07-31: `[Feeds] karma-gap: 79 fetched`.
+>
+> One item remains unshipped: the registry-watch rollout (PR D's Task 9). The
+> tier knob is deployed; the lane is still gated OFF.
+
 ## Evidence
 
 All figures verified against production Postgres (`wire-room-db`) and Railway runtime logs on 2026-07-30.
