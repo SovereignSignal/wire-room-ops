@@ -64,6 +64,45 @@ function propFirstMultiSelect(p?: NotionProp): string | null {
   return arr?.[0]?.name || null;
 }
 
+/**
+ * Notion URL columns are hand-edited, and two real failure shapes reached
+ * production before this gate existed (found by the 2026-08-01 Tier 1 dry run):
+ * an annotation pasted after the URL ("https://sam.gov (search DARPA)"), and
+ * two URLs mashed into one field with a "|" separator (Aptos, Starknet).
+ *
+ * Splits on "|", strips one trailing "(annotation)" per fragment, and keeps
+ * only fragments that are well-formed http(s) URLs. Dropped fragments warn so
+ * the Notion field gets fixed rather than silently losing a surface.
+ */
+export function splitSurfaceUrls(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  // Remove whitespace-preceded "(annotation)" groups BEFORE splitting on "|":
+  // the space anchor is what separates a human note ("https://sam.gov (search
+  // DARPA)") from parens that belong to the URL path (".../wiki/Grant_(money)",
+  // no space), and removing first means a "|" INSIDE an annotation can no
+  // longer shear a good URL into two dead fragments.
+  const withoutAnnotations = raw.replace(/\s+\([^)]*\)/g, ' ');
+  const out: string[] = [];
+  for (const fragment of withoutAnnotations.split('|')) {
+    const candidate = fragment.trim();
+    if (!candidate) continue;
+    if (!/^https?:\/\/\S+$/.test(candidate)) {
+      console.warn(`[SurfacesImport] dropping non-URL fragment: "${candidate.slice(0, 80)}"`);
+      continue;
+    }
+    let parsed: URL;
+    try { parsed = new URL(candidate); } catch { continue; }
+    // An annotation stripped down to a bare domain is importable but a poor
+    // hash-diff target (root pages churn on unrelated content) — keep it, and
+    // nudge the operator to fix the Notion field.
+    if (parsed.pathname === '/' && !parsed.search && /\s+\(/.test(raw)) {
+      console.warn(`[SurfacesImport] annotation stripped to bare domain "${candidate}" — verify the Notion URL field`);
+    }
+    out.push(candidate);
+  }
+  return out;
+}
+
 export function mapOrgToSurfaces(page: NotionPage): SurfaceRow[] {
   const props = page.properties || {};
   const name = propTitle(props['Name']);
@@ -73,12 +112,12 @@ export function mapOrgToSurfaces(page: NotionPage): SurfaceRow[] {
   const tier = propSelect(props['Tier']);
   const rows: SurfaceRow[] = [];
   for (const [column, surfaceType] of URL_COLUMN_MAP) {
-    const url = propUrl(props[column]);
-    if (!url) continue;
-    rows.push({
-      org_name: name, wire, surface_type: surfaceType, url, tier,
-      source_of_truth: 'notion-orgs', notion_page_id: page.id,
-    });
+    for (const url of splitSurfaceUrls(propUrl(props[column]))) {
+      rows.push({
+        org_name: name, wire, surface_type: surfaceType, url, tier,
+        source_of_truth: 'notion-orgs', notion_page_id: page.id,
+      });
+    }
   }
   return rows;
 }

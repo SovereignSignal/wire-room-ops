@@ -41,3 +41,62 @@ test('scout seed list is present and well-formed', () => {
     assert.ok(r.org_name && r.url && r.surface_type && r.wire);
   }
 });
+
+// --- URL hygiene (2026-08-01): the Tier 1 dry run surfaced human annotations
+// pasted into Notion URL columns ("https://sam.gov (search DARPA)") and two
+// URLs mashed into one field with a "|" separator. splitSurfaceUrls is the
+// import-time gate that keeps that class out of watch_surfaces.
+
+const { splitSurfaceUrls } = require('../src/scripts/import-watch-surfaces');
+
+test('splitSurfaceUrls passes a clean URL through untouched', () => {
+  assert.deepEqual(splitSurfaceUrls('https://nlnet.nl/propose/'), ['https://nlnet.nl/propose/']);
+});
+
+test('splitSurfaceUrls splits pipe-separated URLs and strips trailing annotations', () => {
+  assert.deepEqual(
+    splitSurfaceUrls('https://a.com/lfm (TGE track) | https://a.com/pay (payments track)'),
+    ['https://a.com/lfm', 'https://a.com/pay'],
+  );
+});
+
+test('splitSurfaceUrls strips a single trailing parenthesized annotation', () => {
+  assert.deepEqual(splitSurfaceUrls('https://sam.gov (search DARPA)'), ['https://sam.gov']);
+});
+
+test('splitSurfaceUrls drops fragments that are not http(s) URLs', () => {
+  assert.deepEqual(splitSurfaceUrls('not a url'), []);
+  assert.deepEqual(splitSurfaceUrls('ftp://files.example.com/x'), []);
+  assert.deepEqual(splitSurfaceUrls(''), []);
+  assert.deepEqual(splitSurfaceUrls(null), []);
+});
+
+test('splitSurfaceUrls rejects a URL with embedded whitespace that is not an annotation', () => {
+  assert.deepEqual(splitSurfaceUrls('https://a.com/x y z'), []);
+});
+
+test('mapOrgToSurfaces yields one row per URL in a multi-URL column', () => {
+  const multi = {
+    id: 'page-2',
+    properties: {
+      'Name': { type: 'title', title: [{ plain_text: 'Starknet Foundation' }] },
+      'Wire': { type: 'multi_select', multi_select: [{ name: 'Crypto' }] },
+      'Application URL': { type: 'url', url: 'https://x.io/seed (early-stage) | https://x.io/growth (later-stage)' },
+    },
+  };
+  const rows = mapOrgToSurfaces(multi);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map(r => r.url).sort(), ['https://x.io/growth', 'https://x.io/seed']);
+  assert.ok(rows.every(r => r.surface_type === 'application'));
+});
+
+test('splitSurfaceUrls preserves parentheses that are part of the URL path (no preceding space)', () => {
+  assert.deepEqual(
+    splitSurfaceUrls('https://en.wikipedia.org/wiki/Grant_(money)'),
+    ['https://en.wikipedia.org/wiki/Grant_(money)'],
+  );
+});
+
+test('splitSurfaceUrls survives a pipe INSIDE an annotation without losing the URL', () => {
+  assert.deepEqual(splitSurfaceUrls('https://sam.gov (search DARPA | NSF)'), ['https://sam.gov']);
+});

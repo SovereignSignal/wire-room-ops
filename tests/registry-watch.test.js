@@ -159,3 +159,72 @@ test('disabled gate returns ran:false without touching deps', async () => {
   assert.equal(r.ran, false);
   process.env.REGISTRY_WATCH_ENABLED = 'true';
 });
+
+// --- Scrape fallback (2026-08-01): OpenAI, Octant, Aptos and Starknet serve
+// their pages to browsers but 403/429/TLS-block a plain fetch from datacenter
+// IPs. The diff lane falls back to a Firecrawl scrape for change-detection
+// content — one paid call per failing surface per run, still capped and
+// budget-gated downstream.
+
+test('diff lane: plain-fetch failure falls back to scrapePage and the surface stays healthy', async () => {
+  const st = state();
+  const marked = [];
+  let scraped = 0;
+  let extracted = 0;
+  let md = '# Grants\nnone open';
+  const deps = {
+    getDue: async (_p, types) => (types.includes('grants_page') ? [S(7, 'grants_page', 'https://blocked.org/grants')] : []),
+    fetchPage: async () => { throw new Error('HTTP 403'); },
+    scrapePage: async () => { scraped++; return md; },
+    fetchSourceImpl: async () => { extracted++; return [{ name: 'G', description: 'd', url: 'https://blocked.org/apply', amount: null, deadline: null, publishedAt: null }]; },
+    intake: async () => { throw new Error('must not intake in dryRun'); },
+    mark: async (_p, id, o) => marked.push({ id, ...o }),
+    budget: async () => ({ allowed: true, spentUsd: 0, capUsd: 20 }),
+    getState: st.get, setState: st.set,
+  };
+  const r1 = await runRegistryWatch({}, { dryRun: true }, deps); // baseline via scrape
+  assert.equal(r1.diff.errors, 0);
+  assert.equal(scraped, 1);
+  assert.ok(st.map.get('ws:hash:7'), 'scraped content must baseline the hash');
+  assert.ok(marked.every(m => m.failed !== true), 'fallback success must not record a failure');
+  md = '# Grants\nOPEN — apply now';
+  const r2 = await runRegistryWatch({}, { dryRun: true }, deps); // changed via scrape
+  assert.equal(r2.diff.changed, 1);
+  assert.equal(extracted, 1);
+});
+
+test('diff lane: when both plain fetch and scrape fail, the surface records a failure', async () => {
+  const st = state();
+  const marked = [];
+  const deps = {
+    getDue: async (_p, types) => (types.includes('grants_page') ? [S(8, 'grants_page', 'https://down.org/grants')] : []),
+    fetchPage: async () => { throw new Error('HTTP 403'); },
+    scrapePage: async () => { throw new Error('scrape failed: Firecrawl API error: 429'); },
+    fetchSourceImpl: async () => [],
+    intake: async () => {},
+    mark: async (_p, id, o) => marked.push({ id, ...o }),
+    getState: st.get, setState: st.set,
+  };
+  const r = await runRegistryWatch({}, { dryRun: true }, deps);
+  assert.equal(r.diff.errors, 1);
+  assert.ok(marked.some(m => m.id === 8 && m.failed === true));
+});
+
+test('diff lane: scrape fallback is capped per run — excess failures fail fast without scraping', async () => {
+  const st = state();
+  let scraped = 0;
+  const surfaces = Array.from({ length: 17 }, (_, i) => S(100 + i, 'grants_page', `https://blocked${i}.org/grants`));
+  const deps = {
+    getDue: async (_p, types) => (types.includes('grants_page') ? surfaces : []),
+    fetchPage: async () => { throw new Error('HTTP 403'); },
+    scrapePage: async () => { scraped++; return '# page'; },
+    fetchSourceImpl: async () => [],
+    intake: async () => {},
+    mark: async () => {},
+    budget: async () => ({ allowed: true, spentUsd: 0, capUsd: 20 }),
+    getState: st.get, setState: st.set,
+  };
+  const r = await runRegistryWatch({}, { dryRun: true }, deps);
+  assert.equal(scraped, 15, 'fallback scrapes must stop at the per-run cap');
+  assert.equal(r.diff.errors, 2, 'surfaces beyond the cap record plain failures');
+});
