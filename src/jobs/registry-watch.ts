@@ -37,6 +37,7 @@ import {
   markChecked,
 } from '../services/registry-watchers';
 import { checkBudget } from '../services/budget-guard';
+import { scrapeUrl } from '../services/scraper';
 import { logApiUsage } from '../services/api-usage';
 import { config } from '../config';
 
@@ -65,6 +66,8 @@ export interface RegistryWatchDeps {
   getDue?: typeof getDueSurfaces;
   fetchSourceImpl?: typeof fetchSource;
   fetchPage?: (url: string) => Promise<string>;
+  /** Fallback content fetch when the plain fetch fails (bot-walled surfaces). */
+  scrapePage?: (url: string) => Promise<string>;
   intake?: typeof runDailyIntake;
   mark?: typeof markChecked;
   getState?: typeof getAppState;
@@ -90,6 +93,20 @@ async function defaultFetchPage(url: string): Promise<string> {
   });
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   return resp.text();
+}
+
+/**
+ * Change-detection content via Firecrawl for surfaces a plain fetch cannot
+ * reach. The 2026-08-01 Tier 1 dry run showed real funders behind bot walls:
+ * OpenAI and Octant 403 datacenter IPs, Aptos and fil.org 429 them, and
+ * starknet.io drops the TLS handshake — all while serving browsers fine.
+ * One paid call per failing surface per run; extraction stays capped and
+ * budget-gated downstream.
+ */
+async function defaultScrapePage(url: string): Promise<string> {
+  const r = await scrapeUrl(url);
+  if (!r.success || !r.content) throw new Error(r.error || 'scrape returned empty content');
+  return r.content;
 }
 
 /**
@@ -139,6 +156,7 @@ export async function runRegistryWatch(
   const getDueImpl = deps.getDue ?? getDueSurfaces;
   const fetchSourceImpl = deps.fetchSourceImpl ?? fetchSource;
   const fetchPageImpl = deps.fetchPage ?? defaultFetchPage;
+  const scrapePageImpl = deps.scrapePage ?? defaultScrapePage;
   const intakeImpl = deps.intake ?? runDailyIntake;
   const markImpl = deps.mark ?? markChecked;
   const getStateImpl = deps.getState ?? getAppState;
@@ -225,10 +243,20 @@ export async function runRegistryWatch(
     try {
       html = await fetchPageImpl(surf.url);
     } catch (err) {
-      diffStat.errors++;
-      await markImpl(pool, surf.id, { failed: true });
-      console.warn(`[RegistryWatch] diff surface ${surf.id} (${surf.org_name}) fetch failed:`, err instanceof Error ? err.message : err);
-      continue;
+      // Bot-walled funder sites reject the plain fetch but serve Firecrawl fine.
+      // NOTE: the hash basis flips between raw HTML and scraped markdown when a
+      // surface transitions between modes — worst case one spurious "changed"
+      // extraction, still capped and budget-gated below.
+      const firstErr = err instanceof Error ? err.message : String(err);
+      try {
+        html = await scrapePageImpl(surf.url);
+        console.log(`[RegistryWatch] diff surface ${surf.id} (${surf.org_name}) plain fetch failed (${firstErr}) — used scrape fallback`);
+      } catch (err2) {
+        diffStat.errors++;
+        await markImpl(pool, surf.id, { failed: true });
+        console.warn(`[RegistryWatch] diff surface ${surf.id} (${surf.org_name}) fetch failed: ${firstErr}; scrape fallback failed:`, err2 instanceof Error ? err2.message : err2);
+        continue;
+      }
     }
 
     const hash = contentHash(html);
