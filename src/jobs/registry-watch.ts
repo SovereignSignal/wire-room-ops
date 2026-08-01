@@ -38,6 +38,7 @@ import {
 } from '../services/registry-watchers';
 import { checkBudget } from '../services/budget-guard';
 import { scrapeUrl } from '../services/scraper';
+import { sleep } from '../utils/async';
 import { logApiUsage } from '../services/api-usage';
 import { config } from '../config';
 
@@ -68,6 +69,8 @@ export interface RegistryWatchDeps {
   fetchPage?: (url: string) => Promise<string>;
   /** Fallback content fetch when the plain fetch fails (bot-walled surfaces). */
   scrapePage?: (url: string) => Promise<string>;
+  /** Rate-limit gap between Firecrawl-bound calls; injectable so tests don't sleep. */
+  pace?: (ms: number) => Promise<void>;
   intake?: typeof runDailyIntake;
   mark?: typeof markChecked;
   getState?: typeof getAppState;
@@ -109,6 +112,16 @@ async function defaultFetchPage(url: string): Promise<string> {
  * cannot stall the daily fold that runs the digest after this lane.
  */
 const SCRAPE_FALLBACK_CAP = 15;
+
+/**
+ * Gap between consecutive Firecrawl-bound calls (fallback scrapes and change
+ * extractions). The free tier measured at ~13 req/min with maxConcurrency 2
+ * during the 2026-08-01 dry run — an unpaced extraction burst 429'd mid-run
+ * and lost surfaces. 6s spacing keeps us near 10/min with headroom for
+ * scrapeUrl's internal retries, at zero dollars. The first call is never
+ * delayed, so a quiet day (no changes, no fallbacks) pays nothing.
+ */
+const FIRECRAWL_PACE_MS = 6000;
 
 async function defaultScrapePage(url: string): Promise<string> {
   const r = await scrapeUrl(url);
@@ -164,6 +177,7 @@ export async function runRegistryWatch(
   const fetchSourceImpl = deps.fetchSourceImpl ?? fetchSource;
   const fetchPageImpl = deps.fetchPage ?? defaultFetchPage;
   const scrapePageImpl = deps.scrapePage ?? defaultScrapePage;
+  const paceImpl = deps.pace ?? sleep;
   const intakeImpl = deps.intake ?? runDailyIntake;
   const markImpl = deps.mark ?? markChecked;
   const getStateImpl = deps.getState ?? getAppState;
@@ -247,6 +261,14 @@ export async function runRegistryWatch(
 
   let scrapeFallbacksUsed = 0;
 
+  // First Firecrawl-bound call goes immediately; each subsequent one waits
+  // FIRECRAWL_PACE_MS so an extraction/fallback burst stays under the
+  // free-tier per-minute limit instead of 429ing mid-run.
+  let firecrawlCalls = 0;
+  const paceFirecrawl = async (): Promise<void> => {
+    if (firecrawlCalls++ > 0) await paceImpl(FIRECRAWL_PACE_MS);
+  };
+
   for (const surf of diffSurfaces) {
     let html: string;
     try {
@@ -265,6 +287,7 @@ export async function runRegistryWatch(
       }
       scrapeFallbacksUsed++;
       try {
+        await paceFirecrawl();
         html = await scrapePageImpl(surf.url);
         console.log(`[RegistryWatch] diff surface ${surf.id} (${surf.org_name}) plain fetch failed (${firstErr}) — used scrape fallback`);
       } catch (err2) {
@@ -325,6 +348,7 @@ export async function runRegistryWatch(
     diffStat.extracted = (diffStat.extracted || 0) + 1;
 
     try {
+      await paceFirecrawl();
       const items = await fetchSourceImpl(surfaceToScrapeSource(surf));
       const stateKey = `ws:seen:${surf.id}`;
       const seenState = await getStateImpl<SeenState>(stateKey);
