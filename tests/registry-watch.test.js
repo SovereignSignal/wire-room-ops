@@ -209,3 +209,22 @@ test('diff lane: when both plain fetch and scrape fail, the surface records a fa
   assert.equal(r.diff.errors, 1);
   assert.ok(marked.some(m => m.id === 8 && m.failed === true));
 });
+
+test('diff lane: scrape fallback is capped per run — excess failures fail fast without scraping', async () => {
+  const st = state();
+  let scraped = 0;
+  const surfaces = Array.from({ length: 17 }, (_, i) => S(100 + i, 'grants_page', `https://blocked${i}.org/grants`));
+  const deps = {
+    getDue: async (_p, types) => (types.includes('grants_page') ? surfaces : []),
+    fetchPage: async () => { throw new Error('HTTP 403'); },
+    scrapePage: async () => { scraped++; return '# page'; },
+    fetchSourceImpl: async () => [],
+    intake: async () => {},
+    mark: async () => {},
+    budget: async () => ({ allowed: true, spentUsd: 0, capUsd: 20 }),
+    getState: st.get, setState: st.set,
+  };
+  const r = await runRegistryWatch({}, { dryRun: true }, deps);
+  assert.equal(scraped, 15, 'fallback scrapes must stop at the per-run cap');
+  assert.equal(r.diff.errors, 2, 'surfaces beyond the cap record plain failures');
+});

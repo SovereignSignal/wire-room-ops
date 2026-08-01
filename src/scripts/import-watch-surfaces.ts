@@ -76,16 +76,28 @@ function propFirstMultiSelect(p?: NotionProp): string | null {
  */
 export function splitSurfaceUrls(raw: string | null | undefined): string[] {
   if (!raw) return [];
+  // Remove whitespace-preceded "(annotation)" groups BEFORE splitting on "|":
+  // the space anchor is what separates a human note ("https://sam.gov (search
+  // DARPA)") from parens that belong to the URL path (".../wiki/Grant_(money)",
+  // no space), and removing first means a "|" INSIDE an annotation can no
+  // longer shear a good URL into two dead fragments.
+  const withoutAnnotations = raw.replace(/\s+\([^)]*\)/g, ' ');
   const out: string[] = [];
-  for (const fragment of raw.split('|')) {
-    const trimmed = fragment.trim();
-    if (!trimmed) continue;
-    const candidate = trimmed.replace(/\s*\([^)]*\)\s*$/, '');
+  for (const fragment of withoutAnnotations.split('|')) {
+    const candidate = fragment.trim();
+    if (!candidate) continue;
     if (!/^https?:\/\/\S+$/.test(candidate)) {
-      console.warn(`[SurfacesImport] dropping non-URL fragment: "${trimmed.slice(0, 80)}"`);
+      console.warn(`[SurfacesImport] dropping non-URL fragment: "${candidate.slice(0, 80)}"`);
       continue;
     }
-    try { new URL(candidate); } catch { continue; }
+    let parsed: URL;
+    try { parsed = new URL(candidate); } catch { continue; }
+    // An annotation stripped down to a bare domain is importable but a poor
+    // hash-diff target (root pages churn on unrelated content) — keep it, and
+    // nudge the operator to fix the Notion field.
+    if (parsed.pathname === '/' && !parsed.search && /\s+\(/.test(raw)) {
+      console.warn(`[SurfacesImport] annotation stripped to bare domain "${candidate}" — verify the Notion URL field`);
+    }
     out.push(candidate);
   }
   return out;

@@ -100,9 +100,16 @@ async function defaultFetchPage(url: string): Promise<string> {
  * reach. The 2026-08-01 Tier 1 dry run showed real funders behind bot walls:
  * OpenAI and Octant 403 datacenter IPs, Aptos and fil.org 429 them, and
  * starknet.io drops the TLS handshake — all while serving browsers fine.
- * One paid call per failing surface per run; extraction stays capped and
- * budget-gated downstream.
+ *
+ * Cost note: scrapeUrl retries internally (up to 3 Firecrawl calls, ~30s
+ * timeout each), so a surface that fails BOTH paths can take ~90s and 3
+ * paid calls. SCRAPE_FALLBACK_CAP bounds the blast radius of a mass-failure
+ * day (network egress issue, Firecrawl outage): beyond the cap, surfaces
+ * fail fast exactly as they did before the fallback existed, so a bad day
+ * cannot stall the daily fold that runs the digest after this lane.
  */
+const SCRAPE_FALLBACK_CAP = 15;
+
 async function defaultScrapePage(url: string): Promise<string> {
   const r = await scrapeUrl(url);
   if (!r.success || !r.content) throw new Error(r.error || 'scrape returned empty content');
@@ -238,6 +245,8 @@ export async function runRegistryWatch(
   let budgetAllowed = true;
   let extractedThisRun = 0;
 
+  let scrapeFallbacksUsed = 0;
+
   for (const surf of diffSurfaces) {
     let html: string;
     try {
@@ -248,6 +257,13 @@ export async function runRegistryWatch(
       // surface transitions between modes — worst case one spurious "changed"
       // extraction, still capped and budget-gated below.
       const firstErr = err instanceof Error ? err.message : String(err);
+      if (scrapeFallbacksUsed >= SCRAPE_FALLBACK_CAP) {
+        diffStat.errors++;
+        await markImpl(pool, surf.id, { failed: true });
+        console.warn(`[RegistryWatch] diff surface ${surf.id} (${surf.org_name}) fetch failed: ${firstErr} (scrape-fallback cap ${SCRAPE_FALLBACK_CAP} reached)`);
+        continue;
+      }
+      scrapeFallbacksUsed++;
       try {
         html = await scrapePageImpl(surf.url);
         console.log(`[RegistryWatch] diff surface ${surf.id} (${surf.org_name}) plain fetch failed (${firstErr}) — used scrape fallback`);

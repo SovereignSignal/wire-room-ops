@@ -89,3 +89,14 @@ test('mapOrgToSurfaces yields one row per URL in a multi-URL column', () => {
   assert.deepEqual(rows.map(r => r.url).sort(), ['https://x.io/growth', 'https://x.io/seed']);
   assert.ok(rows.every(r => r.surface_type === 'application'));
 });
+
+test('splitSurfaceUrls preserves parentheses that are part of the URL path (no preceding space)', () => {
+  assert.deepEqual(
+    splitSurfaceUrls('https://en.wikipedia.org/wiki/Grant_(money)'),
+    ['https://en.wikipedia.org/wiki/Grant_(money)'],
+  );
+});
+
+test('splitSurfaceUrls survives a pipe INSIDE an annotation without losing the URL', () => {
+  assert.deepEqual(splitSurfaceUrls('https://sam.gov (search DARPA | NSF)'), ['https://sam.gov']);
+});
