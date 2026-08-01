@@ -475,3 +475,61 @@ test('getLaneYield maps the net_new column onto netNew', async () => {
     { source: 'feed', total: 6, netNew: 4 },
   ]);
 });
+
+// ── public snapshot lane ────────────────────────────────────────────────────
+// The Wire Room Live page is fed by a publisher inside this app. If it stops,
+// the page silently serves stale data — so publisher health is a digest lane.
+
+const { SNAPSHOT_STATE_KEY } = require('../src/jobs/public-snapshot');
+
+function ledgerFixture(snapshotState) {
+  const pool = fakePool();
+  pool.queueResponse([{ ok: '41', failed: '0' }]);
+  pool.queueResponse([{ n: '0' }]);   // program gate
+  pool.queueResponse([]);             // provider outages
+  pool.queueResponse([freshCohortRun()]);
+  const state = { 'summary-sync:watermark': new Date().toISOString() };
+  if (snapshotState !== undefined) state[SNAPSHOT_STATE_KEY] = snapshotState;
+  const { deps } = fakeState(state);
+  return { pool, deps };
+}
+const runLedger = f => buildRunLedger(f.pool, { date: '2026-07-09', feeds: { ok: 19, total: 19 }, forum: 'ok' }, f.deps);
+
+test('snapshot lane is absent entirely when the publisher has never run', async () => {
+  const { ledger } = await runLedger(ledgerFixture(undefined));
+  assert.equal(ledger.lanes.find(l => l.key === 'snapshot'), undefined,
+    'an unconfigured publisher must add no noise to the band');
+});
+
+test('snapshot lane is absent when the publisher is unconfigured', async () => {
+  const { ledger } = await runLedger(ledgerFixture({ ok: false, reason: 'unconfigured' }));
+  assert.equal(ledger.lanes.find(l => l.key === 'snapshot'), undefined);
+});
+
+test('a healthy recent publish renders an ok lane and no anomaly', async () => {
+  const { ledger, anomalies } = await runLedger(
+    ledgerFixture({ ok: true, bytes: 8123, at: new Date().toISOString() }));
+  const lane = ledger.lanes.find(l => l.key === 'snapshot');
+  assert.equal(lane.state, 'ok');
+  assert.equal(lane.detail, 'snapshot ✓');
+  assert.ok(!anomalies.some(a => /snapshot/i.test(a)));
+});
+
+test('a failing publisher becomes a fail lane AND a production anomaly', async () => {
+  const { ledger, anomalies } = await runLedger(
+    ledgerFixture({ ok: false, reason: 'http_403', at: new Date().toISOString() }));
+  const lane = ledger.lanes.find(l => l.key === 'snapshot');
+  assert.equal(lane.state, 'fail');
+  assert.match(lane.detail, /http_403/);
+  assert.ok(anomalies.some(a => /Wire Room Live/.test(a)),
+    'a broken publisher must reach the operator, not just the logs');
+});
+
+test('a stale-but-successful publish warns without raising an anomaly', async () => {
+  const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+  const { ledger, anomalies } = await runLedger(ledgerFixture({ ok: true, at: twoHoursAgo }));
+  const lane = ledger.lanes.find(l => l.key === 'snapshot');
+  assert.equal(lane.state, 'warn');
+  assert.match(lane.detail, /120m old/);
+  assert.ok(!anomalies.some(a => /snapshot/i.test(a)));
+});

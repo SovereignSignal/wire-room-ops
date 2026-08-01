@@ -1,0 +1,32 @@
+FULL BLEED COMPOSITION: The room FILLS THE ENTIRE IMAGE edge to edge. The floor runs off the bottom edge, the side walls run off the left and right edges, the ceiling structure runs off the top. There is NO black border, NO margin, NO framing box, and the room is NOT a small floating diorama on a dark background. The viewer is inside the space. Every corner of the image is filled.
+
+An isometric cutaway of a modern night-shift intelligence monitoring room — a private command centre, high-tech and clean, NOT an industrial factory. STYLE IS CRITICAL: authentic RETRO PIXEL ART in the style of a 32-bit era isometric strategy or tycoon game (SNES, Amiga, mid-1990s PC). Visible chunky square pixels. Hard-edged blocky shapes with crisp single-pixel highlights and dark outlines. A deliberately LIMITED colour palette, with visible dithering patterns used for gradients and glows instead of smooth blending. NO photorealism, NO soft blur, NO smooth gradients, NO realistic lighting falloff, NO ray-traced reflections — light is rendered as flat blocks of colour and dither patterns, the way a 16- or 32-bit game would draw it. Clean readable silhouettes, charming and hand-crafted, nostalgic game-sprite look, like a beloved retro management game. Think detailed pixel-art diorama, not a rendered 3D scene. Orthographic projection at roughly 30 degrees elevation, fixed camera, wide landscape composition, one continuous interior seen from the front-left.
+
+THE CITY IS A MAJOR ELEMENT: The entire BACK WALL is floor-to-ceiling glass. Beyond it, a vast night-time city stretches into the distance — dense clusters of skyscrapers, thousands of tiny lit windows in cyan and warm amber, red aircraft warning lights blinking on the tallest towers, elevated roads threading between buildings, a dark sky with low cloud catching the city's glow, faint haze and depth. The city should feel enormous, deep and alive, occupying a large portion of the upper half of the image. Thin dark mullions divide the glass. Soft reflections of the room's cyan light on the inside surface of the glass.
+
+LIGHTING AND PALETTE:
+The dominant light is COLD ELECTRIC CYAN (#00eaff), coming from dozens of screens and glowing light strips. It pools on the polished dark floor, rims every edge, and hazes softly in the air.
+One single WARM AMBER (#ffb347) desk lamp at the right provides the only warm light, a contained orange pool contrasting hard against all the cyan.
+Overall exposure: a dark, moody night scene that is nevertheless CLEARLY VISIBLE and readable throughout. Deep shadows in the corners, bright highlights, strong colour contrast. Not a black frame — a beautifully lit night scene.
+Walls deep navy-black (#0b1220), polished near-black floor (#080d17) with subtle reflections.
+
+SCREENS EVERYWHERE — THIS IS A ROOM OF SCREENS, NOT MACHINES: Wall-mounted display arrays, monitors on articulated arms, slim server racks with glowing status strips, small auxiliary panels tucked between them. Dozens of glowing rectangles at many sizes and angles.
+IMPORTANT: every screen shows only ABSTRACT glow — flat blocks of cyan, simple pixel waveform lines, dithered scan lines. NO text, NO numbers, NO letters, NO labelled charts or readable data of any kind on any screen.
+
+THE DATA CHANNEL: A recessed illuminated channel is set into the floor, running horizontally across the room from the far left to the right, glowing bright cyan like a light trench, with a subtle sense of flow travelling left to right. Thin cyan light strips echo it along the wall bases. Near the middle-front of the room, a dark grated recess sits beside the channel, where discarded material would fall — an unlit dark grille in the floor with a faint red glow beneath it.
+
+THREE SCREEN-BANK STATIONS along the room, left to right, unstaffed:
+1. LEFT: an intake station — a slim server rack with glowing cyan status strips and a small parabolic dish antenna mounted on top, with three or four monitors stacked above it on a wall bracket.
+2. MIDDLE-LEFT: a filtering station — a low console with a curved bank of six screens, glowing cyan, one single small RED status light among them, and a dark grated recess in the floor beside it.
+3. MIDDLE-RIGHT: a routing station — three tall narrow screens fanned outward at angles above a compact rack, cyan lit.
+
+THE HUMAN AND THEIR DESK: At the RIGHT side of the room, a large L-shaped desk with a CURVED ARRAY OF SIX MONITORS on articulated arms — a serious multi-monitor workstation, screens at slightly different heights and angles, all glowing softly. A mechanical keyboard, a coffee mug, a warm amber gooseneck lamp casting an orange pool, a comfortable office chair. One person in a dark jacket sits there, seen from behind, small in frame, still and quiet. This is the ONLY person in the room.
+
+TWO EMPTY PANELS FOR LATER USE — CRITICAL:
+- On the upper LEFT wall: one LARGE EMPTY rectangular dark panel with a thin glowing cyan bezel. This panel is completely BLANK, switched off, matte black. Absolutely nothing is displayed on it — no glow, no text, no charts, no bars, no waveform, no reflection. An empty dark screen with a lit border.
+- On the upper wall toward the middle: one SMALLER EMPTY square dark panel with a thin cyan bezel, also completely BLANK and switched off, nothing displayed on it at all.
+These two panels must stand out as the only dark, empty screens in a room otherwise full of glowing ones.
+
+BACKGROUND DETAIL: cable runs and conduit along the walls, a shelf of equipment in shadow, a few pixel-dither haze bands, simple blocky floor reflections.
+
+CRITICAL CONSTRAINTS: Absolutely no text, no letters, no numbers, no words, no logos, no emblems, no symbols, no icons, no signage, no labels, and no user-interface overlays anywhere in the image. Do not put any marking or symbol on any surface. The two designated wall panels must remain entirely empty, dark and switched off.
