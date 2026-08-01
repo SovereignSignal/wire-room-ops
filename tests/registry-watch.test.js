@@ -176,6 +176,7 @@ test('diff lane: plain-fetch failure falls back to scrapePage and the surface st
     getDue: async (_p, types) => (types.includes('grants_page') ? [S(7, 'grants_page', 'https://blocked.org/grants')] : []),
     fetchPage: async () => { throw new Error('HTTP 403'); },
     scrapePage: async () => { scraped++; return md; },
+    pace: async () => {},
     fetchSourceImpl: async () => { extracted++; return [{ name: 'G', description: 'd', url: 'https://blocked.org/apply', amount: null, deadline: null, publishedAt: null }]; },
     intake: async () => { throw new Error('must not intake in dryRun'); },
     mark: async (_p, id, o) => marked.push({ id, ...o }),
@@ -218,6 +219,7 @@ test('diff lane: scrape fallback is capped per run — excess failures fail fast
     getDue: async (_p, types) => (types.includes('grants_page') ? surfaces : []),
     fetchPage: async () => { throw new Error('HTTP 403'); },
     scrapePage: async () => { scraped++; return '# page'; },
+    pace: async () => {},
     fetchSourceImpl: async () => [],
     intake: async () => {},
     mark: async () => {},
@@ -227,4 +229,23 @@ test('diff lane: scrape fallback is capped per run — excess failures fail fast
   const r = await runRegistryWatch({}, { dryRun: true }, deps);
   assert.equal(scraped, 15, 'fallback scrapes must stop at the per-run cap');
   assert.equal(r.diff.errors, 2, 'surfaces beyond the cap record plain failures');
+});
+
+test('diff lane: consecutive Firecrawl calls are paced to respect the free-tier rate limit', async () => {
+  const st = state();
+  const paced = [];
+  const deps = {
+    getDue: async (_p, types) => (types.includes('grants_page') ? [S(30, 'grants_page', 'https://w1.org/g'), S(31, 'grants_page', 'https://w2.org/g')] : []),
+    fetchPage: async () => { throw new Error('HTTP 403'); }, // both surfaces take the scrape fallback
+    scrapePage: async (u) => `# page ${u}`,
+    fetchSourceImpl: async () => [],
+    intake: async () => {},
+    mark: async () => {},
+    budget: async () => ({ allowed: true, spentUsd: 0, capUsd: 20 }),
+    pace: async (ms) => { paced.push(ms); },
+    getState: st.get, setState: st.set,
+  };
+  await runRegistryWatch({}, { dryRun: true }, deps);
+  assert.equal(paced.length, 1, 'second Firecrawl call is paced; the first is not');
+  assert.ok(paced[0] >= 5000, 'pace must be a real rate-limit gap, not a token delay');
 });
