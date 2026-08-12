@@ -118,9 +118,11 @@ async function findCandidates(pool: Pool, target: RecheckTarget): Promise<Candid
            AND (position((SELECT squash FROM t) IN lower(regexp_replace(d.name, '[^a-zA-Z0-9]', '', 'g'))) > 0
              OR position(lower(regexp_replace(d.name, '[^a-zA-Z0-9]', '', 'g')) IN (SELECT squash FROM t)) > 0))
        )
-     ORDER BY domain_match DESC, squash_match DESC, overlap DESC
+     -- cross-wire matches can only hold, never demote — same-wire candidates
+     -- must not be crowded out of the window by cross-wire rows
+     ORDER BY (d.wire = $7) DESC, domain_match DESC, squash_match DESC, overlap DESC
      LIMIT $6`,
-    [target.id, target.name, target.source_url, STOPWORDS, PLATFORM_DOMAINS, MAX_CANDIDATES]
+    [target.id, target.name, target.source_url, STOPWORDS, PLATFORM_DOMAINS, MAX_CANDIDATES, target.wire]
   );
   return result.rows;
 }

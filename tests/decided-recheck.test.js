@@ -114,6 +114,29 @@ test('applyVerdict refuses a stale target semantic snapshot', async () => {
   }
 });
 
+test('applyVerdict: cross-wire same_listing holds the entry queued with a review stamp', async () => {
+  const pool = getPool();
+  const pid = `${process.pid}-${Date.now()}`;
+  const { applyVerdict } = require('../src/jobs/decided-recheck');
+  const approvedId = await insertEntry(pool, `Cross Wire Parent ${pid}`, `https://cross-wire-${pid}.org/program`, 'approved', 'ai');
+  const queuedId = await insertEntry(pool, `Cross Wire Child ${pid}`, `https://x.com/org/status/8${process.pid}`, 'queued', 'oss');
+  try {
+    const target = { id: queuedId, wire: 'oss', name: `Cross Wire Child ${pid}`, description: TEST_DESCRIPTION, source_url: `https://x.com/org/status/8${process.pid}`, deadline: null };
+    const candidates = [{ id: approvedId, wire: 'ai', name: `Cross Wire Parent ${pid}`, status: 'approved', source_url: `https://cross-wire-${pid}.org/program`, decided_date: '2026-06-01', resolve_to: null, overlap: 3, domain_match: false, squash_match: true }];
+    const outcome = await applyVerdict(pool, target, candidates, { matched_id: approvedId, verdict: 'same_listing', confidence: 0.95, reason: 'same program either way' });
+    assert.equal(outcome, 'cross-wire-review');
+
+    const check = await pool.query(`SELECT status, duplicate_of_id, operator_notes, metadata -> 'decided_recheck' AS stamp FROM scan_entries WHERE id = $1`, [queuedId]);
+    assert.equal(check.rows[0].status, 'queued', 'cross-wire match must never demote automatically');
+    assert.equal(check.rows[0].duplicate_of_id, null);
+    assert.match(check.rows[0].operator_notes, /Cross-wire semantic match blocked/);
+    assert.equal(check.rows[0].stamp.cross_wire_blocked, true);
+    assert.equal(check.rows[0].stamp.verdict, 'same_listing');
+  } finally {
+    await pool.query(`DELETE FROM scan_entries WHERE id IN ($1, $2)`, [approvedId, queuedId]);
+  }
+});
+
 test('applyVerdict refuses a stale candidate semantic snapshot', async () => {
   const pool = getPool();
   const pid = `${process.pid}-${Date.now()}`;
