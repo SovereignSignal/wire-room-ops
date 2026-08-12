@@ -55,76 +55,6 @@ export interface ClassificationEntry {
   currentDate?: string | Date;
 }
 
-const LOW_PRECISION_FORMAT_RE = /\b(?:fellowships?|accelerators?|incubators?|competitions?|challenges?|hackathons?|buildathons?|regional|local|credits?|research\s+(?:program|programme|initiative|page))\b/i;
-const APPLICANT_PATH_RE = /\b(?:applications?\s+(?:are|is)\s+(?:now\s+)?open|(?:now\s+)?accepting\s+applications?|apply\s+(?:now|by|at|through|via)|submit\s+(?:an?\s+)?application|application\s+(?:form|portal)\s+(?:is\s+)?(?:open|available|live)|(?:open|current|active)\s+(?:call|request)\s+for\s+proposals|(?:call|request)\s+for\s+proposals\s+(?:is|are)\s+open|rfps?\s+(?:is|are)\s+open)\b/i;
-const APPLICANT_CLOSED_RE = /\b(?:no\s+applications?\s+(?:are|is)\s+open|applications?\s+(?:are|is|remain)\s+(?:now\s+)?closed|not\s+(?:currently\s+)?accepting\s+applications?|no\s+(?:current\s+)?application\s+(?:form|portal)(?:\s+is\s+(?:available|open|live))?|no\s+(?:current\s+)?open\s+(?:call|request)\s+for\s+proposals|application\s+(?:form|portal)\s+(?:is\s+)?unavailable|call\s+(?:is\s+)?closed|deadline\s+(?:has\s+)?passed|closed|ended|expired|archived|not\s+anymore|no\s+longer\s+open)\b/i;
-const AFFIRMED_CAPITAL_RE = /\b(?:allocated|committed|invested|approved|launched|established|funded|earmarked|deployed)\b/i;
-const MATERIAL_VALUE_RE = /(?:[$€£]\s?\d|\b\d+(?:[.,]\d+)?\s*(?:k|m|b|thousand|million|billion)\b)/i;
-const NEGATED_CLAUSE_RE = /\b(?:no|not|without|lacks?|lacking|missing|unavailable|unallocated|closed|ended|expired|archived|cannot|can't|couldn't|could\s+not|did\s+not|has\s+not|unable\s+to|sought|seeking|proposed|requested|planned|planning)\b/i;
-const CAPITAL_SUBJECT_RE = /\b(?:funding|fund|treasury|capital|pool|budget|allocation|amount)\b/i;
-const CAPITAL_UNAVAILABLE_RE = /\b(?:unavailable|unallocated|withdrawn|cancelled|canceled|exhausted|depleted|no\s+longer\s+available|not\s+(?:currently\s+)?available)\b/i;
-
-function evidenceClauses(text: string): string[] {
-  return text.split(/[.!;\n]+|\?+/).map(clause => clause.trim()).filter(Boolean);
-}
-
-function hasCurrentApplicantPath(text: string, sourceUrl: string): boolean {
-  let current: boolean | null = null;
-  for (const clause of evidenceClauses(text)) {
-    if (APPLICANT_CLOSED_RE.test(clause) || NEGATED_CLAUSE_RE.test(clause)) current = false;
-    else if (APPLICANT_PATH_RE.test(clause)) current = true;
-  }
-  if (current !== null) return current;
-  return /\/(?:apply|application)(?:[/?#]|$)/i.test(sourceUrl);
-}
-
-function hasAffirmedStrategicCapital(text: string): boolean {
-  let current: boolean | null = null;
-  for (const clause of evidenceClauses(text)) {
-    if (CAPITAL_SUBJECT_RE.test(clause) && CAPITAL_UNAVAILABLE_RE.test(clause)) {
-      current = false;
-    } else if (AFFIRMED_CAPITAL_RE.test(clause)
-        && MATERIAL_VALUE_RE.test(clause)
-        && !NEGATED_CLAUSE_RE.test(clause)) {
-      current = true;
-    }
-  }
-  return current === true;
-}
-
-/**
- * Deterministic Ready calibration for formats with weak operator agreement.
- * The LLM can still classify the item as a real grant. It cannot recommend
- * publish unless the evidence shows a current applicant path or a material
- * strategic capital signal.
- */
-export function applyReadyCalibration(
-  entry: ClassificationEntry,
-  result: ClassificationResult,
-): ClassificationResult {
-  if (result.operatorRoute !== 'publish') return result;
-
-  // Only source material can authorize the exception. Model-generated reason,
-  // score, and extracted fields may repeat unverified or negated claims.
-  const evidence = [
-    entry.name,
-    entry.description,
-    entry.source_url,
-    entry.amount || '',
-  ].join(' ');
-  if (!LOW_PRECISION_FORMAT_RE.test(evidence)) return result;
-
-  const hasApplicantPath = hasCurrentApplicantPath(evidence, entry.source_url);
-  const hasStrategicCapital = hasAffirmedStrategicCapital(evidence);
-  if (hasApplicantPath || hasStrategicCapital) return result;
-
-  return {
-    ...result,
-    operatorRoute: 'source_check',
-    reason: `${result.reason} Ready calibration: low-precision format lacks a verified applicant path or material strategic capital signal.`,
-  };
-}
-
 export class ClassifierResponseError extends Error {
   constructor(message: string) {
     super(message);
@@ -419,7 +349,7 @@ export async function classifyEntry(entry: ClassificationEntry): Promise<Classif
   const content = data.choices?.[0]?.message?.content;
 
   try {
-    const result = applyReadyCalibration(entry, parseClassificationResponse(content || '', entry));
+    const result = parseClassificationResponse(content || '', entry);
     logApiUsage({
       provider: 'grok', model: classifyModel, purpose: 'classify', wire: entry.wire,
       duration_ms: Date.now() - start,

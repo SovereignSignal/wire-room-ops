@@ -143,6 +143,7 @@ async function judgeCandidates(target: RecheckTarget, candidates: Candidate[]): 
 
 NEW ENTRY:
 Name: ${target.name}
+Wire: ${target.wire}
 Description: ${(target.description || '').slice(0, 400)}
 URL: ${target.source_url}
 Deadline: ${target.deadline || 'unknown'}
@@ -286,26 +287,9 @@ export async function applyVerdict(pool: Pool, target: RecheckTarget, candidates
 
   if (verdict.matched_id !== null && !matched) return 'stale';
 
-  if (verdict.verdict === 'same_listing'
-      && matched
-      && verdict.confidence >= 0.8
-      && matched.wire !== target.wire) {
-    const blockedStamp = { ...stamp, cross_wire_blocked: true };
-    return applyWithFreshVerdictSnapshots(pool, target, matched, async client => {
-      const note = `Cross-wire semantic match blocked: #${target.id} [${target.wire}] matched #${matched.id} [${matched.wire}]. Human review required.`;
-      const result = await client.query(
-        `UPDATE scan_entries SET
-           operator_notes = CONCAT_WS(E'\n', NULLIF(operator_notes, ''), $2::text),
-           metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('decided_recheck', $3::jsonb),
-           updated_at = NOW()
-         WHERE id = $1 AND status = 'queued'
-         RETURNING id`,
-        [target.id, note, JSON.stringify(blockedStamp)],
-      );
-      return result.rowCount === 1 ? 'cross-wire-review' : 'stale';
-    });
-  }
-
+  // Cross-wire candidates are NOT rejected up front: a cross-wire duplicate row
+  // can resolve to a same-wire canonical parent, which is a safe demotion. The
+  // wire gate runs after chain resolution, against the terminal parent.
   if (verdict.verdict === 'same_listing' && matched && verdict.confidence >= 0.8) {
     const client = await pool.connect();
     try {
@@ -407,7 +391,9 @@ export async function applyVerdict(pool: Pool, target: RecheckTarget, candidates
           resolved_parent_id: resolvedId,
           resolved_parent_wire: parent.wire,
         };
-        const note = `Cross-wire semantic match blocked: #${target.id} [${target.wire}] matched #${matched.id} [${matched.wire}] but resolves to terminal #${resolvedId} [${parent.wire}]. Human review required.`;
+        const note = resolvedId === matched.id
+          ? `Cross-wire semantic match blocked: #${target.id} [${target.wire}] matched #${matched.id} [${parent.wire}]. Human review required.`
+          : `Cross-wire semantic match blocked: #${target.id} [${target.wire}] matched #${matched.id} [${matched.wire}] but resolves to terminal #${resolvedId} [${parent.wire}]. Human review required.`;
         const blocked = await client.query(
           `UPDATE scan_entries SET
              operator_notes = CONCAT_WS(E'\n', NULLIF(operator_notes, ''), $2::text),
@@ -658,10 +644,13 @@ export async function sweepSourceLinks(pool: Pool): Promise<number> {
   return flagged;
 }
 
-type RecheckStats = { checked: number; duplicates: number; updates: number; distinct: number; errors: number };
+type RecheckStats = { checked: number; duplicates: number; updates: number; distinct: number; held: number; errors: number };
+
+/** Outcomes that leave the entry queued with a mandatory-human-review note. */
+const HELD_OUTCOMES = new Set(['cross-wire-review', 'canonical-review', 'chain-unresolved']);
 
 async function processRecheckTargets(pool: Pool, targets: RecheckTarget[]): Promise<RecheckStats> {
-  const stats: RecheckStats = { checked: 0, duplicates: 0, updates: 0, distinct: 0, errors: 0 };
+  const stats: RecheckStats = { checked: 0, duplicates: 0, updates: 0, distinct: 0, held: 0, errors: 0 };
 
   for (const target of targets) {
     try {
@@ -681,6 +670,7 @@ async function processRecheckTargets(pool: Pool, targets: RecheckTarget[]): Prom
       const outcome = await applyVerdict(pool, target, candidates, verdict);
       if (outcome === 'duplicate') stats.duplicates++;
       else if (outcome === 'update-noted') stats.updates++;
+      else if (HELD_OUTCOMES.has(outcome)) stats.held++;
       else if (outcome !== 'stale') stats.distinct++;
       if (outcome !== 'stale') stats.checked++;
       console.log(`[DecidedRecheck] #${target.id} "${target.name.slice(0, 50)}" → ${outcome}${verdict.matched_id ? ` (vs #${verdict.matched_id})` : ''}`);
@@ -704,12 +694,12 @@ async function processRecheckTargets(pool: Pool, targets: RecheckTarget[]): Prom
 export async function runDecidedRecheckForIds(pool: Pool, entryIds: number[]): Promise<RecheckStats> {
   const ids = [...new Set(entryIds.filter(Number.isInteger))];
   if (ids.length === 0) {
-    return { checked: 0, duplicates: 0, updates: 0, distinct: 0, errors: 0 };
+    return { checked: 0, duplicates: 0, updates: 0, distinct: 0, held: 0, errors: 0 };
   }
 
   const release = tryStartRecheckRun();
   if (!release) {
-    return { checked: 0, duplicates: 0, updates: 0, distinct: 0, errors: 0 };
+    return { checked: 0, duplicates: 0, updates: 0, distinct: 0, held: 0, errors: 0 };
   }
   try {
     const batch = await pool.query(
@@ -731,9 +721,9 @@ export async function runDecidedRecheckForIds(pool: Pool, entryIds: number[]): P
 export async function runDecidedRecheck(pool: Pool): Promise<RecheckStats> {
   const release = tryStartRecheckRun();
   if (!release) {
-    return { checked: 0, duplicates: 0, updates: 0, distinct: 0, errors: 0 };
+    return { checked: 0, duplicates: 0, updates: 0, distinct: 0, held: 0, errors: 0 };
   }
-  let stats: RecheckStats = { checked: 0, duplicates: 0, updates: 0, distinct: 0, errors: 0 };
+  let stats: RecheckStats = { checked: 0, duplicates: 0, updates: 0, distinct: 0, held: 0, errors: 0 };
 
   try {
     // Phase 0: source-link quality sweep (cheap, independent gating)
@@ -757,7 +747,7 @@ export async function runDecidedRecheck(pool: Pool): Promise<RecheckStats> {
     stats = await processRecheckTargets(pool, batch.rows as RecheckTarget[]);
 
     if (stats.checked > 0 || stats.errors > 0) {
-      console.log(`[DecidedRecheck] Done: ${stats.checked} checked, ${stats.duplicates} duplicates, ${stats.updates} updates noted, ${stats.errors} errors`);
+      console.log(`[DecidedRecheck] Done: ${stats.checked} checked, ${stats.duplicates} duplicates, ${stats.updates} updates noted, ${stats.held} held for review, ${stats.errors} errors`);
     }
   } finally {
     release();

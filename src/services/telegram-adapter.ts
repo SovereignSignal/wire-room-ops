@@ -147,8 +147,14 @@ export interface SettledBatchEntry {
   status: string;
   duplicate_of_id: number | null;
   duplicate_reason: string | null;
-  decided_recheck: { verdict?: string } | null;
+  decided_recheck: { verdict?: string; cross_wire_blocked?: boolean; canonical_parent_blocked?: boolean } | null;
   duplicate_chain_error: unknown | null;
+}
+
+/** Recheck blocked an automatic action and parked the row for human review. */
+function isHeldForReview(settled: SettledBatchEntry): boolean {
+  return Boolean(settled.decided_recheck?.cross_wire_blocked)
+    || Boolean(settled.decided_recheck?.canonical_parent_blocked);
 }
 
 type SettledBatchPool = Pick<Pool, 'query'>;
@@ -256,7 +262,8 @@ export function formatSettledBatchReport(batch: BatchIntakeResult, settledEntrie
     const settled = settledById.get(entry.id!);
     return !settled?.decided_recheck
       || settled.decided_recheck.verdict === 'skipped-error'
-      || Boolean(settled.duplicate_chain_error);
+      || Boolean(settled.duplicate_chain_error)
+      || isHeldForReview(settled);
   });
   const queued = queuedEntries.length - needsCheck.length;
   const duplicates = batch.duplicates + movedToDuplicate;
@@ -306,6 +313,8 @@ export function formatSettledBatchReport(batch: BatchIntakeResult, settledEntrie
       lines.push(`• ⚠️ #${entry.id} [${safeWire}] ${safeName} — history check pending`);
     } else if (settled.status === 'queued' && settled.decided_recheck?.verdict === 'skipped-error') {
       lines.push(`• ⚠️ #${entry.id} [${safeWire}] ${safeName} — history check failed`);
+    } else if (settled.status === 'queued' && isHeldForReview(settled)) {
+      lines.push(`• ⚠️ #${entry.id} [${safeWire}] ${safeName} — duplicate match held for human review`);
     } else if (settled.status === 'queued') {
       lines.push(`• ✅ #${entry.id} [${safeWire}] ${safeName}`);
     } else {

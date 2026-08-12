@@ -181,24 +181,31 @@ test('low-confidence same_listing only stamps metadata', async () => {
 });
 
 test('cross-wire same_listing stays queued for operator review', async () => {
-  const pool = fakePool([], {
-    lockedRows: [
-      {
-        id: TARGET.id,
-        status: 'queued', duplicate_of_id: null,
-        name: TARGET.name, description: TARGET.description,
-        amount: null, deadline: TARGET.deadline,
-        source_url: TARGET.source_url, wire: TARGET.wire,
+  const pool = fakePool(
+    [{ id: 8572, status: 'approved', duplicate_of_id: null, depth: 0, cycle: false }],
+    {
+      lockedRows: [
+        {
+          id: TARGET.id,
+          status: 'queued', duplicate_of_id: null,
+          name: TARGET.name, description: TARGET.description,
+          amount: null, deadline: TARGET.deadline,
+          source_url: TARGET.source_url, wire: TARGET.wire,
+        },
+        {
+          id: 8572,
+          status: 'approved', duplicate_of_id: null,
+          name: 'Anthropic Fellows Program', description: null,
+          amount: null, deadline: null,
+          source_url: 'https://alignment.anthropic.com/x', wire: 'oss',
+        },
+      ],
+      parentRow: {
+        id: 8572, status: 'approved', duplicate_of_id: null,
+        wire: 'oss', source_url: 'https://alignment.anthropic.com/x',
       },
-      {
-        id: 8572,
-        status: 'approved', duplicate_of_id: null,
-        name: 'Anthropic Fellows Program', description: null,
-        amount: null, deadline: null,
-        source_url: 'https://alignment.anthropic.com/x', wire: 'oss',
-      },
-    ],
-  });
+    },
+  );
   const out = await applyVerdict(
     pool,
     TARGET,
@@ -210,6 +217,41 @@ test('cross-wire same_listing stays queued for operator review', async () => {
   assert.equal(pool.calls.some(call => /SET status = 'duplicate'/.test(call.sql)), false);
   const note = pool.calls.find(call => /Cross-wire semantic match blocked/.test(String(call.params?.[1])));
   assert.ok(note, 'operator note should explain the blocked mutation');
+});
+
+test('cross-wire intermediate resolving to a same-wire terminal with the same source demotes', async () => {
+  // A candidate row filed under another wire whose duplicate chain terminates
+  // at a canonical parent on the TARGET's wire is a safe demotion — the wire
+  // gate must judge the terminal parent, not the unresolved candidate.
+  const matched = candidate({ wire: 'crypto', resolve_to: 4200 });
+  const pool = fakePool(
+    [{ id: 4200, status: 'approved', duplicate_of_id: null, depth: 1, cycle: false }],
+    {
+      lockedRows: [
+        {
+          id: TARGET.id, status: 'queued', duplicate_of_id: null,
+          name: TARGET.name, description: TARGET.description,
+          amount: null, deadline: TARGET.deadline,
+          source_url: TARGET.source_url, wire: TARGET.wire,
+        },
+        {
+          id: matched.id, status: 'duplicate', duplicate_of_id: 4200,
+          name: matched.name, description: null,
+          amount: null, deadline: null,
+          source_url: matched.source_url, wire: 'crypto',
+        },
+      ],
+      parentRow: {
+        id: 4200, status: 'approved', duplicate_of_id: null,
+        wire: TARGET.wire, source_url: matched.source_url,
+      },
+    },
+  );
+  const out = await applyVerdict(pool, TARGET, [matched], verdict());
+
+  assert.equal(out, 'duplicate');
+  const update = pool.calls.find(call => /SET status = 'duplicate'/.test(call.sql));
+  assert.equal(update.params[1], 4200);
 });
 
 test('same-wire candidate resolving to a cross-wire terminal stays queued', async () => {

@@ -160,7 +160,7 @@ src/
 │   ├── perplexity.ts     # Perplexity sonar-pro scans
 │   ├── post-generator.ts # claude-sonnet-4-6 generates tweet + Telegram HTML per entry (template fallback)
 │   ├── processor.ts      # Entry processing with retry logic
-│   ├── program-identity.ts # Program canonicalization: resolve entries to canonical programs + the Layer 1.75 dedup gate
+│   ├── program-identity.ts # Program canonicalization: resolve entries to canonical programs + the Layer 1.75 advisory resolver
 │   ├── scan-stats.ts     # Prompt effectiveness and overlap metrics
 │   ├── scheduler.ts      # node-cron scheduling, DB-driven; daily-digest branch runs the daily fold
 │   ├── scraper.ts        # Firecrawl integration, URL resolution (SSRF-hardened shortener resolution)
@@ -283,7 +283,8 @@ INGESTION (raw data)                    THE REFINERY (processing)               
 
 - **`seen_urls`**: Exact URL match. Composite unique on `(normalized_url, wire)`. Handles aggregate URLs (same URL, different entries) via name similarity check.
 - **`seen_names`**: Stores normalized names and tokens for review intelligence and alternate-source detection. Hard duplicate blocking currently relies on URL exact match; fuzzy name blocking is intentionally disabled after false positives.
-- **Program resolver (Layer 1.75)**: The `programs` table supplies advisory program and round context. It does not demote entries. A 53-link audit found that broad program identities could collapse distinct proposals, rounds, calls, and cross-wire events. Exact URL and exact name layers remain the automatic duplicate gates. Decided-recheck also leaves cross-wire semantic matches queued for operator review (see `src/services/program-identity.ts` and `src/jobs/decided-recheck.ts`).
+- **Program resolver (Layer 1.75)**: The `programs` table supplies advisory program and round context. It does not demote entries. A 53-link audit found that broad program identities could collapse distinct proposals, rounds, calls, and cross-wire events. Exact URL and exact name layers remain the automatic duplicate gates. A same-round repeat gets an operator note with the program history (`Program repeat (seen N× …)`), and the digest renders the history via the programs join (see `src/services/program-identity.ts`).
+- **Recheck holds**: decided-recheck blocks automatic demotion when the semantic match is cross-wire (immediate candidate OR resolved terminal parent), when the chain resolves to a canonical parent with a different source, or when the duplicate chain is broken. Held entries STAY QUEUED with a "Human review required" note and a `decided_recheck` hold stamp (`cross_wire_blocked` / `canonical_parent_blocked` / `duplicate_chain_error`). Visibility contract: holds stay visible in the digest's fresh finds (the same_listing exclusion excepts hold stamps), count as `held` in `RecheckStats` (surfaced in the run log, the Telegram intake receipt, and the digest's `held` ledger lane). Do not add a new hold outcome without carrying it through those three surfaces (see `src/jobs/decided-recheck.ts`, `src/jobs/daily-digest.ts`, `src/services/telegram-adapter.ts`).
 
 ### Approval Validation Guard
 

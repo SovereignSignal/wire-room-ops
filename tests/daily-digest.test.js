@@ -321,28 +321,34 @@ test('getFreshFinds excludes recheck-flagged duplicates and selects the card sum
 
   const findsSql = pool.calls[0].sql;
   assert.match(findsSql, /decided_recheck/, 'stamped recheck verdicts must be consulted');
-  assert.match(findsSql, /<> 'same_listing'/, 'flagged same_listing entries must never reach the email');
+  assert.match(findsSql, /= 'same_listing'/, 'flagged same_listing entries must never reach the email');
+  assert.match(findsSql, /cross_wire_blocked/, 'held cross-wire blocks must stay visible for review');
+  assert.match(findsSql, /canonical_parent_blocked/, 'held canonical-parent blocks must stay visible for review');
+  assert.match(findsSql, /duplicate_chain_error/, 'broken-chain holds must stay visible for review');
   assert.match(findsSql, /AS summary/, 'cards need the classifier summary');
   assert.match(findsSql, /recheck_matched_name/, 'update notes need the matched entry name');
   const countSql = pool.calls[1].sql;
-  assert.match(countSql, /<> 'same_listing'/, 'the totalNew count must apply the same exclusion');
+  assert.match(countSql, /= 'same_listing'/, 'the totalNew count must apply the same exclusion');
+  assert.match(countSql, /cross_wire_blocked/, 'the totalNew count must keep held entries visible');
 });
 
-test('buildRunLedger: gate lane appears with 24h auto-dupe count, omitted at zero', async () => {
+test('buildRunLedger: held lane appears with 24h review-hold count, omitted at zero', async () => {
   const pool = fakePool();
   pool.queueResponse([{ ok: '5', failed: '0' }]);   // scans probe
-  pool.queueResponse([{ n: '12' }]);                 // gate probe
+  pool.queueResponse([{ n: '3' }]);                  // held probe
   const { deps } = fakeState({ 'summary-sync:watermark': new Date().toISOString() });
   const { ledger } = await buildRunLedger(pool, { date: '2026-07-10' }, deps);
-  const gate = ledger.lanes.find(l => l.key === 'gate');
-  assert.equal(gate.detail, 'gate 12 duped');
-  assert.equal(gate.state, 'ok');
+  const held = ledger.lanes.find(l => l.key === 'held');
+  assert.equal(held.detail, 'held 3 for review');
+  assert.equal(held.state, 'warn');
+  assert.match(pool.calls[1].sql, /cross_wire_blocked/, 'held probe must count recheck holds');
+  assert.ok(!ledger.lanes.some(l => l.key === 'gate'), 'the retired program-gate lane must not appear');
 
   const pool2 = fakePool();
   pool2.queueResponse([{ ok: '5', failed: '0' }]);
   pool2.queueResponse([{ n: '0' }]);
   const r2 = await buildRunLedger(pool2, { date: '2026-07-10' }, deps);
-  assert.ok(!r2.ledger.lanes.some(l => l.key === 'gate'), 'zero → omitted');
+  assert.ok(!r2.ledger.lanes.some(l => l.key === 'held'), 'zero → omitted');
 });
 
 test('getFreshFinds selects program history via the programs join', async () => {

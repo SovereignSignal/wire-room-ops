@@ -343,8 +343,15 @@ const FRESH_FINDS_SELECT = `
     -- never outlive its watermark entry and reappear as "new"
     AND q.created_at >= NOW() - INTERVAL '60 days'
     -- a stamped same_listing verdict IS a known duplicate even when the
-    -- status demotion didn't fire — never email it
-    AND COALESCE(q.metadata->'decided_recheck'->>'verdict', '') <> 'same_listing'`;
+    -- status demotion didn't fire — never email it. EXCEPT held entries:
+    -- recheck blocks (cross-wire, wrong canonical parent, broken chain) leave
+    -- the row queued precisely so a human reviews it, so it must stay visible.
+    AND NOT (
+      COALESCE(q.metadata->'decided_recheck'->>'verdict', '') = 'same_listing'
+      AND COALESCE(q.metadata->'decided_recheck'->>'cross_wire_blocked', '') <> 'true'
+      AND COALESCE(q.metadata->'decided_recheck'->>'canonical_parent_blocked', '') <> 'true'
+      AND (q.metadata->'duplicate_chain_error') IS NULL
+    )`;
 
 const CURATOR_ORDER = `
   ORDER BY
@@ -412,7 +419,12 @@ export async function getFreshFinds(pool: Pool, limit = 8, deps: WatermarkDeps =
      WHERE status = 'queued'
        AND (deadline_parsed IS NULL OR deadline_parsed >= CURRENT_DATE)
        AND created_at >= NOW() - INTERVAL '60 days'
-       AND COALESCE(metadata->'decided_recheck'->>'verdict', '') <> 'same_listing'
+       AND NOT (
+         COALESCE(metadata->'decided_recheck'->>'verdict', '') = 'same_listing'
+         AND COALESCE(metadata->'decided_recheck'->>'cross_wire_blocked', '') <> 'true'
+         AND COALESCE(metadata->'decided_recheck'->>'canonical_parent_blocked', '') <> 'true'
+         AND (metadata->'duplicate_chain_error') IS NULL
+       )
        AND NOT (id = ANY($1::int[]))`, [excluded]);
   return { finds: rows, totalNew: parseInt(count.rows[0]?.total_new ?? '0', 10), seeded: false, fallback: false };
 }
@@ -482,13 +494,22 @@ export async function buildRunLedger(
     lanes.push({ key: 'scans', state: 'warn', detail: 'scans ?' });
   }
 
-  // gate — program-identity auto-dupes in the last 24h (the "report" half of act-and-report)
+  // held — recheck blocks (cross-wire, wrong canonical parent, broken chain)
+  // that parked a queued entry for mandatory human review in the last 24h.
+  // Replaces the retired program-gate lane: the gate is advisory-only now and
+  // no longer produces actioned_by='program-gate' rows.
   try {
     const { rows } = await pool.query<{ n: string }>(`
       SELECT COUNT(*) AS n FROM scan_entries
-      WHERE actioned_by = 'program-gate' AND updated_at >= NOW() - INTERVAL '24 hours'`);
+      WHERE status = 'queued'
+        AND (
+          metadata->'decided_recheck'->>'cross_wire_blocked' = 'true'
+          OR metadata->'decided_recheck'->>'canonical_parent_blocked' = 'true'
+          OR (metadata->'duplicate_chain_error') IS NOT NULL
+        )
+        AND COALESCE((metadata->'decided_recheck'->>'at')::timestamptz, updated_at) >= NOW() - INTERVAL '24 hours'`);
     const n = parseInt(rows[0]?.n ?? '0', 10);
-    if (n > 0) lanes.push({ key: 'gate', state: 'ok', detail: `gate ${n} duped` });
+    if (n > 0) lanes.push({ key: 'held', state: 'warn', detail: `held ${n} for review` });
   } catch {
     // omit — optional evidence
   }
