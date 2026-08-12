@@ -29,6 +29,7 @@ import { logApiUsage } from '../services/api-usage';
 import { classifySourceLink, type SourceLinkClass } from '../services/source-filter';
 import { lockDuplicateGraph, reassignSeenUrlOwnership, resolveDuplicateChain } from '../services/duplicate-chain';
 import { EntryMaintenanceError, rewriteEntrySource } from '../services/entry-maintenance';
+import { normalizeUrl } from '../services/intake';
 import { config } from '../config';
 
 let isRunning = false;
@@ -59,6 +60,7 @@ const STOPWORDS = [
 
 interface Candidate {
   id: number;
+  wire: string;
   name: string;
   status: string;
   source_url: string;
@@ -89,7 +91,7 @@ async function findCandidates(pool: Pool, target: RecheckTarget): Promise<Candid
            WHERE length(tok) > 3 AND NOT (tok = ANY($4))
          ) AS tokens
      )
-     SELECT d.id, d.name, d.status, d.source_url,
+     SELECT d.id, d.wire, d.name, d.status, d.source_url,
             d.updated_at::date::text AS decided_date,
             CASE WHEN d.status = 'duplicate' THEN d.duplicate_of_id ELSE NULL END AS resolve_to,
             (SELECT COUNT(*)::int FROM unnest(ARRAY(
@@ -116,9 +118,11 @@ async function findCandidates(pool: Pool, target: RecheckTarget): Promise<Candid
            AND (position((SELECT squash FROM t) IN lower(regexp_replace(d.name, '[^a-zA-Z0-9]', '', 'g'))) > 0
              OR position(lower(regexp_replace(d.name, '[^a-zA-Z0-9]', '', 'g')) IN (SELECT squash FROM t)) > 0))
        )
-     ORDER BY domain_match DESC, squash_match DESC, overlap DESC
+     -- cross-wire matches can only hold, never demote — same-wire candidates
+     -- must not be crowded out of the window by cross-wire rows
+     ORDER BY (d.wire = $7) DESC, domain_match DESC, squash_match DESC, overlap DESC
      LIMIT $6`,
-    [target.id, target.name, target.source_url, STOPWORDS, PLATFORM_DOMAINS, MAX_CANDIDATES]
+    [target.id, target.name, target.source_url, STOPWORDS, PLATFORM_DOMAINS, MAX_CANDIDATES, target.wire]
   );
   return result.rows;
 }
@@ -141,12 +145,13 @@ async function judgeCandidates(target: RecheckTarget, candidates: Candidate[]): 
 
 NEW ENTRY:
 Name: ${target.name}
+Wire: ${target.wire}
 Description: ${(target.description || '').slice(0, 400)}
 URL: ${target.source_url}
 Deadline: ${target.deadline || 'unknown'}
 
 PREVIOUS ENTRIES:
-${candidates.map(c => `- id ${c.id} [${c.status}${c.resolve_to ? ` -> #${c.resolve_to}` : ''}, ${c.decided_date}]: ${c.name} | ${c.source_url}`).join('\n')}
+${candidates.map(c => `- id ${c.id} [${c.wire}, ${c.status}${c.resolve_to ? ` -> #${c.resolve_to}` : ''}, ${c.decided_date}]: ${c.name} | ${c.source_url}`).join('\n')}
 
 Verdicts:
 - "same_listing": the NEW entry is the SAME program AND the SAME round/cycle with no material new information. (A tweet about a program vs the program page = same_listing.)
@@ -204,6 +209,7 @@ function candidateSnapshotMatches(row: any, candidate: Candidate): boolean {
     : Number(row.duplicate_of_id);
   return !!row
     && row.status === candidate.status
+    && row.wire === candidate.wire
     && row.name === candidate.name
     && row.source_url === candidate.source_url
     && currentParent === candidate.resolve_to;
@@ -283,6 +289,9 @@ export async function applyVerdict(pool: Pool, target: RecheckTarget, candidates
 
   if (verdict.matched_id !== null && !matched) return 'stale';
 
+  // Cross-wire candidates are NOT rejected up front: a cross-wire duplicate row
+  // can resolve to a same-wire canonical parent, which is a safe demotion. The
+  // wire gate runs after chain resolution, against the terminal parent.
   if (verdict.verdict === 'same_listing' && matched && verdict.confidence >= 0.8) {
     const client = await pool.connect();
     try {
@@ -342,7 +351,7 @@ export async function applyVerdict(pool: Pool, target: RecheckTarget, candidates
 
       // Hold the terminal parent stable through the target mutation and registry move.
       const parentResult = await client.query(
-        `SELECT id, status, duplicate_of_id
+        `SELECT id, status, duplicate_of_id, wire, source_url
          FROM scan_entries
          WHERE id = $1
          FOR UPDATE`,
@@ -377,6 +386,61 @@ export async function applyVerdict(pool: Pool, target: RecheckTarget, candidates
         return stalled.rowCount === 1 ? 'chain-unresolved' : 'stale';
       }
 
+      if (parent.wire !== target.wire) {
+        const blockedStamp = {
+          ...stamp,
+          cross_wire_blocked: true,
+          resolved_parent_id: resolvedId,
+          resolved_parent_wire: parent.wire,
+        };
+        const note = resolvedId === matched.id
+          ? `Cross-wire semantic match blocked: #${target.id} [${target.wire}] matched #${matched.id} [${parent.wire}]. Human review required.`
+          : `Cross-wire semantic match blocked: #${target.id} [${target.wire}] matched #${matched.id} [${matched.wire}] but resolves to terminal #${resolvedId} [${parent.wire}]. Human review required.`;
+        const blocked = await client.query(
+          `UPDATE scan_entries SET
+             operator_notes = CONCAT_WS(E'\n', NULLIF(operator_notes, ''), $2::text),
+             metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('decided_recheck', $3::jsonb),
+             updated_at = NOW()
+           WHERE id = $1 AND status = 'queued'
+           RETURNING id`,
+          [target.id, note, JSON.stringify(blockedStamp)],
+        );
+        await client.query('COMMIT');
+        return blocked.rowCount === 1 ? 'cross-wire-review' : 'stale';
+      }
+
+      // A same-listing verdict was made against the candidate, not against a
+      // different terminal row inherited from its existing duplicate chain.
+      // Different terminal sources therefore fail closed unless the candidate
+      // and terminal have exact normalized source identity.
+      const matchedSource = normalizeUrl(currentMatched.source_url);
+      const parentSource = normalizeUrl(parent.source_url);
+      const validRawSourceClasses: SourceLinkClass[] = ['ok', 'tweet-only', 'shortener'];
+      const hasExactHttpSource = validRawSourceClasses.includes(classifySourceLink(currentMatched.source_url))
+        && validRawSourceClasses.includes(classifySourceLink(parent.source_url))
+        && matchedSource.length > 0
+        && matchedSource === parentSource
+        && /^https?:\/\//i.test(matchedSource);
+      if (resolvedId !== matched.id && !hasExactHttpSource) {
+        const blockedStamp = {
+          ...stamp,
+          canonical_parent_blocked: true,
+          resolved_parent_id: resolvedId,
+        };
+        const note = `Automatic duplicate action blocked: matched #${matched.id} resolves to canonical #${resolvedId} with a different source. Human review required.`;
+        const blocked = await client.query(
+          `UPDATE scan_entries SET
+             operator_notes = CONCAT_WS(E'\n', NULLIF(operator_notes, ''), $2::text),
+             metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('decided_recheck', $3::jsonb),
+             updated_at = NOW()
+           WHERE id = $1 AND status = 'queued'
+           RETURNING id`,
+          [target.id, note, JSON.stringify(blockedStamp)],
+        );
+        await client.query('COMMIT');
+        return blocked.rowCount === 1 ? 'canonical-review' : 'stale';
+      }
+
       const chainNote = resolvedId !== matched.id
         ? `, resolved ${resolution.depth} hop${resolution.depth === 1 ? '' : 's'} to canonical #${resolvedId}`
         : '';
@@ -393,9 +457,10 @@ export async function applyVerdict(pool: Pool, target: RecheckTarget, candidates
              WHERE parent.id = $2
                AND parent.status IN ('approved', 'declined', 'queued')
                AND parent.duplicate_of_id IS NULL
+               AND parent.wire = $5
            )
          RETURNING target.id`,
-        [target.id, resolvedId, reason, JSON.stringify(stamp)],
+        [target.id, resolvedId, reason, JSON.stringify(stamp), target.wire],
       );
       if (result.rowCount !== 1) {
         await client.query('ROLLBACK');
@@ -581,10 +646,13 @@ export async function sweepSourceLinks(pool: Pool): Promise<number> {
   return flagged;
 }
 
-type RecheckStats = { checked: number; duplicates: number; updates: number; distinct: number; errors: number };
+type RecheckStats = { checked: number; duplicates: number; updates: number; distinct: number; held: number; errors: number };
+
+/** Outcomes that leave the entry queued with a mandatory-human-review note. */
+const HELD_OUTCOMES = new Set(['cross-wire-review', 'canonical-review', 'chain-unresolved']);
 
 async function processRecheckTargets(pool: Pool, targets: RecheckTarget[]): Promise<RecheckStats> {
-  const stats: RecheckStats = { checked: 0, duplicates: 0, updates: 0, distinct: 0, errors: 0 };
+  const stats: RecheckStats = { checked: 0, duplicates: 0, updates: 0, distinct: 0, held: 0, errors: 0 };
 
   for (const target of targets) {
     try {
@@ -604,6 +672,7 @@ async function processRecheckTargets(pool: Pool, targets: RecheckTarget[]): Prom
       const outcome = await applyVerdict(pool, target, candidates, verdict);
       if (outcome === 'duplicate') stats.duplicates++;
       else if (outcome === 'update-noted') stats.updates++;
+      else if (HELD_OUTCOMES.has(outcome)) stats.held++;
       else if (outcome !== 'stale') stats.distinct++;
       if (outcome !== 'stale') stats.checked++;
       console.log(`[DecidedRecheck] #${target.id} "${target.name.slice(0, 50)}" → ${outcome}${verdict.matched_id ? ` (vs #${verdict.matched_id})` : ''}`);
@@ -627,12 +696,12 @@ async function processRecheckTargets(pool: Pool, targets: RecheckTarget[]): Prom
 export async function runDecidedRecheckForIds(pool: Pool, entryIds: number[]): Promise<RecheckStats> {
   const ids = [...new Set(entryIds.filter(Number.isInteger))];
   if (ids.length === 0) {
-    return { checked: 0, duplicates: 0, updates: 0, distinct: 0, errors: 0 };
+    return { checked: 0, duplicates: 0, updates: 0, distinct: 0, held: 0, errors: 0 };
   }
 
   const release = tryStartRecheckRun();
   if (!release) {
-    return { checked: 0, duplicates: 0, updates: 0, distinct: 0, errors: 0 };
+    return { checked: 0, duplicates: 0, updates: 0, distinct: 0, held: 0, errors: 0 };
   }
   try {
     const batch = await pool.query(
@@ -654,9 +723,9 @@ export async function runDecidedRecheckForIds(pool: Pool, entryIds: number[]): P
 export async function runDecidedRecheck(pool: Pool): Promise<RecheckStats> {
   const release = tryStartRecheckRun();
   if (!release) {
-    return { checked: 0, duplicates: 0, updates: 0, distinct: 0, errors: 0 };
+    return { checked: 0, duplicates: 0, updates: 0, distinct: 0, held: 0, errors: 0 };
   }
-  let stats: RecheckStats = { checked: 0, duplicates: 0, updates: 0, distinct: 0, errors: 0 };
+  let stats: RecheckStats = { checked: 0, duplicates: 0, updates: 0, distinct: 0, held: 0, errors: 0 };
 
   try {
     // Phase 0: source-link quality sweep (cheap, independent gating)
@@ -680,7 +749,7 @@ export async function runDecidedRecheck(pool: Pool): Promise<RecheckStats> {
     stats = await processRecheckTargets(pool, batch.rows as RecheckTarget[]);
 
     if (stats.checked > 0 || stats.errors > 0) {
-      console.log(`[DecidedRecheck] Done: ${stats.checked} checked, ${stats.duplicates} duplicates, ${stats.updates} updates noted, ${stats.errors} errors`);
+      console.log(`[DecidedRecheck] Done: ${stats.checked} checked, ${stats.duplicates} duplicates, ${stats.updates} updates noted, ${stats.held} held for review, ${stats.errors} errors`);
     }
   } finally {
     release();

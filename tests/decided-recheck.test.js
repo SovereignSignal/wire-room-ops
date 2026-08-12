@@ -60,7 +60,7 @@ test('applyVerdict: update verdict keeps entry queued and adds a note', async ()
   const queuedId = await insertEntry(pool, `Recheck Round Two ${pid}`, `https://recheck-rounds-${pid}.org/round-2`, 'queued');
   try {
     const target = { id: queuedId, wire: 'oss', name: `Recheck Round Two ${pid}`, description: TEST_DESCRIPTION, source_url: `https://recheck-rounds-${pid}.org/round-2`, deadline: null };
-    const candidates = [{ id: approvedId, name: `Recheck Round One ${pid}`, status: 'approved', source_url: `https://recheck-rounds-${pid}.org/round-1`, decided_date: '2026-06-01', resolve_to: null, overlap: 3, domain_match: true, squash_match: false }];
+    const candidates = [{ id: approvedId, wire: 'oss', name: `Recheck Round One ${pid}`, status: 'approved', source_url: `https://recheck-rounds-${pid}.org/round-1`, decided_date: '2026-06-01', resolve_to: null, overlap: 3, domain_match: true, squash_match: false }];
     const outcome = await applyVerdict(pool, target, candidates, { matched_id: approvedId, verdict: 'update', confidence: 0.9, reason: 'new round of the same program' });
     assert.equal(outcome, 'update-noted');
 
@@ -81,7 +81,7 @@ test('applyVerdict: same_listing at high confidence marks duplicate of decided e
   const queuedId = await insertEntry(pool, `Recheck Declined Program ${pid} (tweet)`, `https://x.com/org/status/9${pid}`, 'queued');
   try {
     const target = { id: queuedId, wire: 'oss', name: `Recheck Declined Program ${pid} (tweet)`, description: TEST_DESCRIPTION, source_url: `https://x.com/org/status/9${pid}`, deadline: null };
-    const candidates = [{ id: declinedId, name: `Recheck Declined Program ${pid}`, status: 'declined', source_url: `https://recheck-declined-${pid}.org/`, decided_date: '2026-06-01', resolve_to: null, overlap: 3, domain_match: false, squash_match: true }];
+    const candidates = [{ id: declinedId, wire: 'oss', name: `Recheck Declined Program ${pid}`, status: 'declined', source_url: `https://recheck-declined-${pid}.org/`, decided_date: '2026-06-01', resolve_to: null, overlap: 3, domain_match: false, squash_match: true }];
     const outcome = await applyVerdict(pool, target, candidates, { matched_id: declinedId, verdict: 'same_listing', confidence: 0.95, reason: 'identical listing' });
     assert.equal(outcome, 'duplicate');
 
@@ -114,6 +114,29 @@ test('applyVerdict refuses a stale target semantic snapshot', async () => {
   }
 });
 
+test('applyVerdict: cross-wire same_listing holds the entry queued with a review stamp', async () => {
+  const pool = getPool();
+  const pid = `${process.pid}-${Date.now()}`;
+  const { applyVerdict } = require('../src/jobs/decided-recheck');
+  const approvedId = await insertEntry(pool, `Cross Wire Parent ${pid}`, `https://cross-wire-${pid}.org/program`, 'approved', 'ai');
+  const queuedId = await insertEntry(pool, `Cross Wire Child ${pid}`, `https://x.com/org/status/8${process.pid}`, 'queued', 'oss');
+  try {
+    const target = { id: queuedId, wire: 'oss', name: `Cross Wire Child ${pid}`, description: TEST_DESCRIPTION, source_url: `https://x.com/org/status/8${process.pid}`, deadline: null };
+    const candidates = [{ id: approvedId, wire: 'ai', name: `Cross Wire Parent ${pid}`, status: 'approved', source_url: `https://cross-wire-${pid}.org/program`, decided_date: '2026-06-01', resolve_to: null, overlap: 3, domain_match: false, squash_match: true }];
+    const outcome = await applyVerdict(pool, target, candidates, { matched_id: approvedId, verdict: 'same_listing', confidence: 0.95, reason: 'same program either way' });
+    assert.equal(outcome, 'cross-wire-review');
+
+    const check = await pool.query(`SELECT status, duplicate_of_id, operator_notes, metadata -> 'decided_recheck' AS stamp FROM scan_entries WHERE id = $1`, [queuedId]);
+    assert.equal(check.rows[0].status, 'queued', 'cross-wire match must never demote automatically');
+    assert.equal(check.rows[0].duplicate_of_id, null);
+    assert.match(check.rows[0].operator_notes, /Cross-wire semantic match blocked/);
+    assert.equal(check.rows[0].stamp.cross_wire_blocked, true);
+    assert.equal(check.rows[0].stamp.verdict, 'same_listing');
+  } finally {
+    await pool.query(`DELETE FROM scan_entries WHERE id IN ($1, $2)`, [approvedId, queuedId]);
+  }
+});
+
 test('applyVerdict refuses a stale candidate semantic snapshot', async () => {
   const pool = getPool();
   const pid = `${process.pid}-${Date.now()}`;
@@ -126,7 +149,7 @@ test('applyVerdict refuses a stale candidate semantic snapshot', async () => {
   const queuedId = await insertEntry(pool, queuedName, queuedUrl, 'queued');
   try {
     const target = { id: queuedId, wire: 'oss', name: queuedName, description: TEST_DESCRIPTION, source_url: queuedUrl, deadline: null };
-    const candidates = [{ id: approvedId, name: candidateName, status: 'approved', source_url: candidateUrl, decided_date: '2026-06-01', resolve_to: null, overlap: 2, domain_match: false, squash_match: false }];
+    const candidates = [{ id: approvedId, wire: 'oss', name: candidateName, status: 'approved', source_url: candidateUrl, decided_date: '2026-06-01', resolve_to: null, overlap: 2, domain_match: false, squash_match: false }];
     await pool.query(`UPDATE scan_entries SET name = $2 WHERE id = $1`, [approvedId, `Candidate After Rewrite ${pid}`]);
     const outcome = await applyVerdict(pool, target, candidates, { matched_id: approvedId, verdict: 'update', confidence: 0.9, reason: 'new cycle' });
     assert.equal(outcome, 'stale');

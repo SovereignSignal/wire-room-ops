@@ -14,7 +14,7 @@ test('targeted recheck queries only unique integer submission ids', async () => 
   };
 
   const stats = await runDecidedRecheckForIds(pool, [12, 12, 13, 1.5, Number.NaN]);
-  assert.deepEqual(stats, { checked: 0, duplicates: 0, updates: 0, distinct: 0, errors: 0 });
+  assert.deepEqual(stats, { checked: 0, duplicates: 0, updates: 0, distinct: 0, held: 0, errors: 0 });
   assert.equal(calls.length, 1);
   assert.match(calls[0].sql, /id = ANY\(\$1::bigint\[\]\)/);
   assert.deepEqual(calls[0].params, [[12, 13]]);
@@ -67,7 +67,7 @@ test('a targeted recheck skips instead of waiting behind an active run', async (
   const first = runDecidedRecheckForIds(pool, [21]);
   await started;
   const second = await runDecidedRecheckForIds(pool, [22]);
-  assert.deepEqual(second, { checked: 0, duplicates: 0, updates: 0, distinct: 0, errors: 0 });
+  assert.deepEqual(second, { checked: 0, duplicates: 0, updates: 0, distinct: 0, held: 0, errors: 0 });
   assert.equal(queryCount, 1);
   releaseFirstQuery();
   await first;

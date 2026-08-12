@@ -142,6 +142,8 @@ Return operator_route separately from classification. Allowed operator_route val
 - decline: stale, closed, duplicate, tiny hackathon, hype, spam, or wrong-lane item.
 - relationship_signal: useful BD, landscape, funder, or ecosystem signal, but not a direct Wire post.
 
+LOW-PRECISION FORMAT GATE: fellowships, accelerators, incubators, competitions, challenges, hackathons, buildathons, regional or local events, credit-only offers, and research program pages default to source_check. Use publish only when the evidence shows a current concrete applicant path or a material strategic capital/governance signal. Sponsor prestige and verified existence alone are insufficient.
+
 For Telegram/Grok batch intake, be strict: real academic positions, local scholarships, and generic fellowships are often GRANT by content type but park by operator_route unless they are unusually strategic for grants intelligence. Announcements about awarded funding are usually relationship_signal or park, not publish.
 Also extract if available: amount, deadline, eligibility, summary.
 

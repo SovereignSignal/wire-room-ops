@@ -160,7 +160,7 @@ src/
 │   ├── perplexity.ts     # Perplexity sonar-pro scans
 │   ├── post-generator.ts # claude-sonnet-4-6 generates tweet + Telegram HTML per entry (template fallback)
 │   ├── processor.ts      # Entry processing with retry logic
-│   ├── program-identity.ts # Program canonicalization: resolve entries to canonical programs + the Layer 1.75 dedup gate
+│   ├── program-identity.ts # Program canonicalization: resolve entries to canonical programs + the Layer 1.75 advisory resolver
 │   ├── scan-stats.ts     # Prompt effectiveness and overlap metrics
 │   ├── scheduler.ts      # node-cron scheduling, DB-driven; daily-digest branch runs the daily fold
 │   ├── scraper.ts        # Firecrawl integration, URL resolution (SSRF-hardened shortener resolution)
@@ -237,7 +237,7 @@ Server-rendered views (login/error only):
 | **Config** | `feeds`, `schedules`, `integration_config` | Wire/schedule/integration config |
 | **API management** | `api_providers`, `api_usage_log`, `model_pricing` | DB-backed API keys, usage tracking, cost estimation |
 | **Identity** | `org_profiles`, `sessions` | Organization tracking + auth sessions |
-| **Programs** | `programs` | Program-identity registry: canonical program per funder (aliases, url_domains, round + decision history); `scan_entries.program_id` links members; fed by the intake gate (dedup Layer 1.75, act-and-report, `actioned_by='program-gate'`) and `src/scripts/program-backfill.ts` |
+| **Programs** | `programs` | Program-identity registry: canonical program per funder (aliases, url_domains, round + decision history); `scan_entries.program_id` links members; fed by the advisory intake resolver (Layer 1.75) and `src/scripts/program-backfill.ts` |
 | **Legacy** | `grant_entries`, `grok_usage`, `review_queue`, `alembic_version`, `sync_status` | Historical/dormant tables |
 
 ### scan_entries — The Central Table
@@ -283,7 +283,8 @@ INGESTION (raw data)                    THE REFINERY (processing)               
 
 - **`seen_urls`**: Exact URL match. Composite unique on `(normalized_url, wire)`. Handles aggregate URLs (same URL, different entries) via name similarity check.
 - **`seen_names`**: Stores normalized names and tokens for review intelligence and alternate-source detection. Hard duplicate blocking currently relies on URL exact match; fuzzy name blocking is intentionally disabled after false positives.
-- **Program gate (Layer 1.75)**: The `programs` table canonicalizes opportunities by normalized program name (funder is a matching/veto signal, not a uniqueness key; a funder can have many programs), with aliases and url_domains feeding the matcher; same-round duplicates of a known program are demoted (`actioned_by='program-gate'`, act-and-report) in process-raw and daily-intake, but not in the Telegram dumb pipe (see `src/services/program-identity.ts`).
+- **Program resolver (Layer 1.75)**: The `programs` table supplies advisory program and round context. It does not demote entries. A 53-link audit found that broad program identities could collapse distinct proposals, rounds, calls, and cross-wire events. Exact URL and exact name layers remain the automatic duplicate gates. A same-round repeat gets an operator note with the program history (`Program repeat (seen N× …)`), and the digest renders the history via the programs join (see `src/services/program-identity.ts`).
+- **Recheck holds**: decided-recheck blocks automatic demotion when the semantic match is cross-wire (immediate candidate OR resolved terminal parent), when the chain resolves to a canonical parent with a different source, or when the duplicate chain is broken. Held entries STAY QUEUED with a "Human review required" note and a `decided_recheck` hold stamp (`cross_wire_blocked` / `canonical_parent_blocked` / `duplicate_chain_error`). Visibility contract: holds stay visible in the digest's fresh finds (the same_listing exclusion excepts hold stamps), count as `held` in `RecheckStats` (surfaced in the run log, the Telegram intake receipt, and the digest's `held` ledger lane). Do not add a new hold outcome without carrying it through those three surfaces (see `src/jobs/decided-recheck.ts`, `src/jobs/daily-digest.ts`, `src/services/telegram-adapter.ts`).
 
 ### Approval Validation Guard
 

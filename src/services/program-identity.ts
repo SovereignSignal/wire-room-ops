@@ -596,12 +596,21 @@ export async function finalizeProgramForEntry(
           );
           return;
         }
+        // A same-round repeat used to be auto-demoted by the program gate; now
+        // it stays queued, so the history must reach the operator. The digest
+        // renders metadata.program, but the queue details sheet only shows
+        // operator_notes — write the history there too.
+        const repeatNote = verdict === 'same_round'
+          ? `Program repeat (${resolution.historyLine})${resolution.roundLabel ? ` — round ${resolution.roundLabel}` : ''}. Advisory only: verify before approving.`
+          : null;
         const linked = await client.query(
           `UPDATE scan_entries SET program_id = $2,
-             metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('program', $3::jsonb)
+             metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('program', $3::jsonb),
+             operator_notes = CASE WHEN $4::text IS NULL THEN operator_notes
+               ELSE CONCAT_WS(E'\n', NULLIF(operator_notes, ''), $4::text) END
            WHERE id = $1 AND program_id IS NULL
            RETURNING id`,
-          [entry.id, resolution.programId, stamp],
+          [entry.id, resolution.programId, stamp, repeatNote],
         );
         if (linked.rows.length !== 1) throw new Error('entry changed before the program link was written');
         await recordSighting(client, resolution.programId, { id: entry.id, name: entry.name, sourceUrl: entry.sourceUrl, deadline: entry.deadline, roundLabel: resolution.roundLabel });
