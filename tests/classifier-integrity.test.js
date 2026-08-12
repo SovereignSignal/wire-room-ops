@@ -151,6 +151,22 @@ test('explicitly unavailable forms and closed calls remain source_check', () => 
 test('stale, following-negation, and apply-shaped closed evidence remain source_check', () => {
   const cases = [
     {
+      description: 'No applications are open for this regional fellowship.',
+      source_url: 'https://example.org/fellowship',
+    },
+    {
+      description: 'Applications are open? Not anymore; this regional fellowship ended.',
+      source_url: 'https://example.org/fellowship',
+    },
+    {
+      description: 'Archived 2024 notice: applications are now open for this regional fellowship.',
+      source_url: 'https://example.org/fellowship',
+    },
+    {
+      description: 'A $2M funding pool remains unallocated for this regional accelerator.',
+      source_url: 'https://example.org/accelerator',
+    },
+    {
       description: 'Applications are open? No; this regional AI fellowship closed last month.',
       source_url: 'https://example.org/fellowship',
     },

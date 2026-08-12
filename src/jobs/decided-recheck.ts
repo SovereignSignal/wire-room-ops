@@ -425,8 +425,12 @@ export async function applyVerdict(pool: Pool, target: RecheckTarget, candidates
       // different terminal row inherited from its existing duplicate chain.
       // Different terminal sources therefore fail closed unless the candidate
       // and terminal have exact normalized source identity.
-      if (resolvedId !== matched.id
-          && normalizeUrl(currentMatched.source_url) !== normalizeUrl(parent.source_url)) {
+      const matchedSource = normalizeUrl(currentMatched.source_url);
+      const parentSource = normalizeUrl(parent.source_url);
+      const hasExactHttpSource = matchedSource.length > 0
+        && matchedSource === parentSource
+        && /^https?:\/\//i.test(matchedSource);
+      if (resolvedId !== matched.id && !hasExactHttpSource) {
         const blockedStamp = {
           ...stamp,
           canonical_parent_blocked: true,
