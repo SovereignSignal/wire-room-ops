@@ -85,6 +85,7 @@ function fakePool(
         status: chainRows[0]?.status,
         duplicate_of_id: chainRows[0]?.duplicate_of_id ?? null,
         wire: TARGET.wire,
+        source_url: 'https://alignment.anthropic.com/x',
       };
       return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
     }
@@ -275,17 +276,23 @@ test('all 13 audited decided-recheck cases replay through the mutation gate', as
         source_url: row.source_url,
         deadline: null,
       };
-      const parentId = 900000 + row.id;
+      const candidateId = 900000 + row.id;
+      const terminalId = 800000 + row.id;
+      const isSafe = row.verdict === 'correct duplicate';
       const matched = candidate({
-        id: parentId,
-        wire: row.parent_wire,
-        name: row.parent_name,
-        status: 'approved',
-        source_url: row.parent_url,
-        resolve_to: null,
+        id: candidateId,
+        wire: isSafe ? row.parent_wire : row.wire,
+        name: isSafe ? row.parent_name : row.name,
+        status: isSafe ? 'approved' : 'duplicate',
+        source_url: isSafe ? row.parent_url : row.source_url,
+        resolve_to: isSafe ? null : terminalId,
       });
       const pool = fakePool(
-        [{ id: parentId, status: 'approved', duplicate_of_id: null, depth: 0, cycle: false }],
+        [{
+          id: isSafe ? candidateId : terminalId,
+          status: 'approved', duplicate_of_id: null,
+          depth: isSafe ? 0 : 1, cycle: false,
+        }],
         {
           lockedRows: [
             {
@@ -295,31 +302,36 @@ test('all 13 audited decided-recheck cases replay through the mutation gate', as
               source_url: target.source_url, wire: target.wire,
             },
             {
-              id: parentId, status: 'approved', duplicate_of_id: null,
+              id: candidateId,
+              status: isSafe ? 'approved' : 'duplicate',
+              duplicate_of_id: isSafe ? null : terminalId,
               name: matched.name, description: null,
               amount: null, deadline: null,
               source_url: matched.source_url, wire: matched.wire,
             },
           ],
           parentRow: {
-            id: parentId, status: 'approved', duplicate_of_id: null,
+            id: isSafe ? candidateId : terminalId,
+            status: 'approved', duplicate_of_id: null,
             wire: row.parent_wire,
+            source_url: row.parent_url,
           },
         },
       );
 
-      const isSafe = row.verdict === 'correct duplicate';
       const reviewedVerdict = {
-        matched_id: parentId,
-        verdict: isSafe ? 'same_listing' : 'distinct',
+        matched_id: candidateId,
+        verdict: 'same_listing',
         confidence: 0.99,
         reason: row.verdict,
       };
       const out = await applyVerdict(pool, target, [matched], reviewedVerdict);
-      const expected = !isSafe
-        ? 'distinct'
-        : row.wire === row.parent_wire
+      const expected = isSafe
+        ? row.wire === row.parent_wire
           ? 'duplicate'
+          : 'cross-wire-review'
+        : row.wire === row.parent_wire
+          ? 'canonical-review'
           : 'cross-wire-review';
       assert.equal(out, expected);
       assert.equal(

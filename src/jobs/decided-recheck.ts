@@ -29,6 +29,7 @@ import { logApiUsage } from '../services/api-usage';
 import { classifySourceLink, type SourceLinkClass } from '../services/source-filter';
 import { lockDuplicateGraph, reassignSeenUrlOwnership, resolveDuplicateChain } from '../services/duplicate-chain';
 import { EntryMaintenanceError, rewriteEntrySource } from '../services/entry-maintenance';
+import { normalizeUrl } from '../services/intake';
 import { config } from '../config';
 
 let isRunning = false;
@@ -364,7 +365,7 @@ export async function applyVerdict(pool: Pool, target: RecheckTarget, candidates
 
       // Hold the terminal parent stable through the target mutation and registry move.
       const parentResult = await client.query(
-        `SELECT id, status, duplicate_of_id, wire
+        `SELECT id, status, duplicate_of_id, wire, source_url
          FROM scan_entries
          WHERE id = $1
          FOR UPDATE`,
@@ -418,6 +419,31 @@ export async function applyVerdict(pool: Pool, target: RecheckTarget, candidates
         );
         await client.query('COMMIT');
         return blocked.rowCount === 1 ? 'cross-wire-review' : 'stale';
+      }
+
+      // A same-listing verdict was made against the candidate, not against a
+      // different terminal row inherited from its existing duplicate chain.
+      // Different terminal sources therefore fail closed unless the candidate
+      // and terminal have exact normalized source identity.
+      if (resolvedId !== matched.id
+          && normalizeUrl(currentMatched.source_url) !== normalizeUrl(parent.source_url)) {
+        const blockedStamp = {
+          ...stamp,
+          canonical_parent_blocked: true,
+          resolved_parent_id: resolvedId,
+        };
+        const note = `Automatic duplicate action blocked: matched #${matched.id} resolves to canonical #${resolvedId} with a different source. Human review required.`;
+        const blocked = await client.query(
+          `UPDATE scan_entries SET
+             operator_notes = CONCAT_WS(E'\n', NULLIF(operator_notes, ''), $2::text),
+             metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('decided_recheck', $3::jsonb),
+             updated_at = NOW()
+           WHERE id = $1 AND status = 'queued'
+           RETURNING id`,
+          [target.id, note, JSON.stringify(blockedStamp)],
+        );
+        await client.query('COMMIT');
+        return blocked.rowCount === 1 ? 'canonical-review' : 'stale';
       }
 
       const chainNote = resolvedId !== matched.id

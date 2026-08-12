@@ -148,6 +148,62 @@ test('explicitly unavailable forms and closed calls remain source_check', () => 
   }
 });
 
+test('stale, following-negation, and apply-shaped closed evidence remain source_check', () => {
+  const cases = [
+    {
+      description: 'Applications are open? No; this regional AI fellowship closed last month.',
+      source_url: 'https://example.org/fellowship',
+    },
+    {
+      description: 'Applications are open in the archived 2024 notice, but this regional fellowship is now closed.',
+      source_url: 'https://example.org/fellowship',
+    },
+    {
+      description: 'Applications are closed for this regional AI fellowship.',
+      source_url: 'https://example.org/apply',
+    },
+    {
+      description: 'The funding pool is unavailable; the regional accelerator sought $1M.',
+      source_url: 'https://example.org/accelerator',
+    },
+    {
+      description: 'The treasury did not allocate $2M to this regional competition.',
+      source_url: 'https://example.org/competition',
+    },
+  ];
+  for (const entry of cases) {
+    const calibrated = applyReadyCalibration({
+      name: 'Regional AI Fellowship Competition', wire: 'ai', ...entry,
+    }, {
+      classification: 'GRANT', inScope: true, detectedWire: 'ai',
+      qualityScore: 82, operatorRoute: 'publish', reason: 'Potential opportunity.',
+      scoreReason: 'Strong topic.', tags: [], extracted: {},
+    });
+    assert.equal(calibrated.operatorRoute, 'source_check', entry.description);
+  }
+});
+
+test('a later explicit reopening and affirmed capital allocation may publish', () => {
+  const result = {
+    classification: 'GRANT', inScope: true, detectedWire: 'ai',
+    qualityScore: 85, operatorRoute: 'publish', reason: 'Verified current opportunity.',
+    scoreReason: 'Strong evidence.', tags: [], extracted: {},
+  };
+  const reopened = applyReadyCalibration({
+    name: 'Regional AI Fellowship',
+    description: 'The 2024 round closed. Applications are now open for the 2026 fellowship.',
+    source_url: 'https://example.org/apply', wire: 'ai',
+  }, result);
+  assert.equal(reopened.operatorRoute, 'publish');
+
+  const allocated = applyReadyCalibration({
+    name: 'Regional AI Challenge',
+    description: 'The treasury allocated $2M to the active challenge grant pool.',
+    source_url: 'https://example.org/challenge', wire: 'ai',
+  }, result);
+  assert.equal(allocated.operatorRoute, 'publish');
+});
+
 test('ordinary direct grants are unchanged by Ready calibration', () => {
   const result = {
     classification: 'GRANT', inScope: true, detectedWire: 'oss',

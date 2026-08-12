@@ -57,16 +57,31 @@ export interface ClassificationEntry {
 
 const LOW_PRECISION_FORMAT_RE = /\b(?:fellowships?|accelerators?|incubators?|competitions?|challenges?|hackathons?|buildathons?|regional|local|credits?|research\s+(?:program|programme|initiative|page))\b/i;
 const APPLICANT_PATH_RE = /\b(?:applications?\s+(?:are|is)\s+(?:now\s+)?open|(?:now\s+)?accepting\s+applications?|apply\s+(?:now|by|at|through|via)|submit\s+(?:an?\s+)?application|application\s+(?:form|portal)\s+(?:is\s+)?(?:open|available|live)|(?:open|current|active)\s+(?:call|request)\s+for\s+proposals|(?:call|request)\s+for\s+proposals\s+(?:is|are)\s+open|rfps?\s+(?:is|are)\s+open)\b/i;
-const STRATEGIC_CAPITAL_RE = /\b(?:treasury|allocat(?:e|ed|ion)|commit(?:ment|ted)?|invest(?:ment|ed)?|grant\s+pool|funding\s+pool|public\s+goods|governance\s+funding)\b/i;
+const APPLICANT_CLOSED_RE = /\b(?:applications?\s+(?:are|is|remain)\s+(?:now\s+)?closed|not\s+(?:currently\s+)?accepting\s+applications?|no\s+(?:current\s+)?application\s+(?:form|portal)(?:\s+is\s+(?:available|open|live))?|no\s+(?:current\s+)?open\s+(?:call|request)\s+for\s+proposals|application\s+(?:form|portal)\s+(?:is\s+)?unavailable|call\s+(?:is\s+)?closed|deadline\s+(?:has\s+)?passed|closed|expired|archived|no\s+longer\s+open)\b|\?\s*no\b/i;
+const STRATEGIC_CAPITAL_RE = /\b(?:allocat(?:e|ed|ion)|commit(?:ment|ted)?|invest(?:ment|ed)?|grant\s+pool|funding\s+pool|treasury\s+funding|governance\s+funding)\b/i;
 const MATERIAL_VALUE_RE = /(?:[$€£]\s?\d|\b\d+(?:[.,]\d+)?\s*(?:k|m|b|thousand|million|billion)\b)/i;
-const NEGATED_CONTEXT_RE = /\b(?:no|not|without|lacks?|lacking|missing|unavailable|closed|expired|cannot|can't|couldn't|could\s+not|unable\s+to)\b[^.!?;]{0,40}$/i;
+const NEGATED_CLAUSE_RE = /\b(?:no|not|without|lacks?|lacking|missing|unavailable|closed|expired|archived|cannot|can't|couldn't|could\s+not|did\s+not|has\s+not|unable\s+to|sought|proposed|requested)\b/i;
 
-function hasNonNegatedEvidence(text: string, pattern: RegExp): boolean {
-  const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
-  const globalPattern = new RegExp(pattern.source, flags);
-  for (const match of text.matchAll(globalPattern)) {
-    const prefix = text.slice(Math.max(0, (match.index || 0) - 80), match.index);
-    if (!NEGATED_CONTEXT_RE.test(prefix)) return true;
+function lastMatchEnd(text: string, pattern: RegExp): number {
+  const globalPattern = new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`);
+  let last = -1;
+  for (const match of text.matchAll(globalPattern)) last = (match.index || 0) + match[0].length;
+  return last;
+}
+
+function hasCurrentApplicantPath(text: string, sourceUrl: string): boolean {
+  const lastPositive = lastMatchEnd(text, APPLICANT_PATH_RE);
+  const lastClosed = lastMatchEnd(text, APPLICANT_CLOSED_RE);
+  if (lastPositive >= 0) return lastPositive > lastClosed;
+  return lastClosed < 0 && /\/(?:apply|application)(?:[/?#]|$)/i.test(sourceUrl);
+}
+
+function hasAffirmedStrategicCapital(text: string): boolean {
+  const clauses = text.split(/[.!?;\n]+|,\s+(?=but\b|however\b)/i);
+  for (const clause of clauses) {
+    if (STRATEGIC_CAPITAL_RE.test(clause)
+        && MATERIAL_VALUE_RE.test(clause)
+        && !NEGATED_CLAUSE_RE.test(clause)) return true;
   }
   return false;
 }
@@ -93,10 +108,8 @@ export function applyReadyCalibration(
   ].join(' ');
   if (!LOW_PRECISION_FORMAT_RE.test(evidence)) return result;
 
-  const hasApplicantPath = hasNonNegatedEvidence(evidence, APPLICANT_PATH_RE)
-    || /\/(?:apply|application)(?:[/?#]|$)/i.test(entry.source_url);
-  const hasStrategicCapital = hasNonNegatedEvidence(evidence, STRATEGIC_CAPITAL_RE)
-    && MATERIAL_VALUE_RE.test(evidence);
+  const hasApplicantPath = hasCurrentApplicantPath(evidence, entry.source_url);
+  const hasStrategicCapital = hasAffirmedStrategicCapital(evidence);
   if (hasApplicantPath || hasStrategicCapital) return result;
 
   return {
