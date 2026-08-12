@@ -61,6 +61,8 @@ const APPLICANT_CLOSED_RE = /\b(?:no\s+applications?\s+(?:are|is)\s+open|applica
 const AFFIRMED_CAPITAL_RE = /\b(?:allocated|committed|invested|approved|launched|established|funded|earmarked|deployed)\b/i;
 const MATERIAL_VALUE_RE = /(?:[$€£]\s?\d|\b\d+(?:[.,]\d+)?\s*(?:k|m|b|thousand|million|billion)\b)/i;
 const NEGATED_CLAUSE_RE = /\b(?:no|not|without|lacks?|lacking|missing|unavailable|unallocated|closed|ended|expired|archived|cannot|can't|couldn't|could\s+not|did\s+not|has\s+not|unable\s+to|sought|seeking|proposed|requested|planned|planning)\b/i;
+const CAPITAL_SUBJECT_RE = /\b(?:funding|fund|treasury|capital|pool|budget|allocation|amount)\b/i;
+const CAPITAL_UNAVAILABLE_RE = /\b(?:unavailable|unallocated|withdrawn|cancelled|canceled|exhausted|depleted|no\s+longer\s+available|not\s+(?:currently\s+)?available)\b/i;
 
 function evidenceClauses(text: string): string[] {
   return text.split(/[.!;\n]+|\?+/).map(clause => clause.trim()).filter(Boolean);
@@ -77,12 +79,17 @@ function hasCurrentApplicantPath(text: string, sourceUrl: string): boolean {
 }
 
 function hasAffirmedStrategicCapital(text: string): boolean {
+  let current: boolean | null = null;
   for (const clause of evidenceClauses(text)) {
-    if (AFFIRMED_CAPITAL_RE.test(clause)
+    if (CAPITAL_SUBJECT_RE.test(clause) && CAPITAL_UNAVAILABLE_RE.test(clause)) {
+      current = false;
+    } else if (AFFIRMED_CAPITAL_RE.test(clause)
         && MATERIAL_VALUE_RE.test(clause)
-        && !NEGATED_CLAUSE_RE.test(clause)) return true;
+        && !NEGATED_CLAUSE_RE.test(clause)) {
+      current = true;
+    }
   }
-  return false;
+  return current === true;
 }
 
 /**

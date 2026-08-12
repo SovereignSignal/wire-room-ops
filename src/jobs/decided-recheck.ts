@@ -427,7 +427,10 @@ export async function applyVerdict(pool: Pool, target: RecheckTarget, candidates
       // and terminal have exact normalized source identity.
       const matchedSource = normalizeUrl(currentMatched.source_url);
       const parentSource = normalizeUrl(parent.source_url);
-      const hasExactHttpSource = matchedSource.length > 0
+      const validRawSourceClasses: SourceLinkClass[] = ['ok', 'tweet-only', 'shortener'];
+      const hasExactHttpSource = validRawSourceClasses.includes(classifySourceLink(currentMatched.source_url))
+        && validRawSourceClasses.includes(classifySourceLink(parent.source_url))
+        && matchedSource.length > 0
         && matchedSource === parentSource
         && /^https?:\/\//i.test(matchedSource);
       if (resolvedId !== matched.id && !hasExactHttpSource) {

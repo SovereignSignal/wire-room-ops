@@ -283,6 +283,40 @@ test('same-wire chain without valid source identity stays queued', async () => {
   assert.equal(pool.calls.some(call => /SET status = 'duplicate'/.test(call.sql)), false);
 });
 
+test('same-wire chain with malformed raw HTTP sources stays queued', async t => {
+  for (const source_url of ['https:/host/path', 'http:host/path']) {
+    await t.test(source_url, async () => {
+      const matched = candidate({ status: 'duplicate', source_url, resolve_to: 4200 });
+      const pool = fakePool(
+        [{ id: 4200, status: 'approved', duplicate_of_id: null, depth: 1, cycle: false }],
+        {
+          lockedRows: [
+            {
+              id: TARGET.id, status: 'queued', duplicate_of_id: null,
+              name: TARGET.name, description: TARGET.description,
+              amount: null, deadline: TARGET.deadline,
+              source_url: TARGET.source_url, wire: TARGET.wire,
+            },
+            {
+              id: matched.id, status: 'duplicate', duplicate_of_id: 4200,
+              name: matched.name, description: null,
+              amount: null, deadline: null,
+              source_url, wire: TARGET.wire,
+            },
+          ],
+          parentRow: {
+            id: 4200, status: 'approved', duplicate_of_id: null,
+            wire: TARGET.wire, source_url,
+          },
+        },
+      );
+      const out = await applyVerdict(pool, TARGET, [matched], verdict());
+      assert.equal(out, 'canonical-review');
+      assert.equal(pool.calls.some(call => /SET status = 'duplicate'/.test(call.sql)), false);
+    });
+  }
+});
+
 test('automatic duplicate compare-and-set constrains the terminal wire', async () => {
   const pool = fakePool([{ id: 4200, status: 'approved', duplicate_of_id: null, depth: 2, cycle: false }]);
   const out = await applyVerdict(pool, TARGET, [candidate()], verdict());

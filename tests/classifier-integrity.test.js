@@ -186,6 +186,14 @@ test('stale, following-negation, and apply-shaped closed evidence remain source_
       description: 'The treasury did not allocate $2M to this regional competition.',
       source_url: 'https://example.org/competition',
     },
+    {
+      description: 'The treasury allocated $2M in 2024. The funding is now unavailable.',
+      source_url: 'https://example.org/competition',
+    },
+    {
+      description: 'The treasury allocated $2M in 2024. The pool remains unallocated.',
+      source_url: 'https://example.org/competition',
+    },
   ];
   for (const entry of cases) {
     const calibrated = applyReadyCalibration({
