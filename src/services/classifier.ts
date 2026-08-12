@@ -56,9 +56,20 @@ export interface ClassificationEntry {
 }
 
 const LOW_PRECISION_FORMAT_RE = /\b(?:fellowships?|accelerators?|incubators?|competitions?|challenges?|hackathons?|buildathons?|regional|local|credits?|research\s+(?:program|programme|initiative|page))\b/i;
-const APPLICANT_PATH_RE = /\b(?:apply|applications?\s+(?:are|is|now)?\s*open|application\s+form|submit(?:tal)?|call\s+for\s+proposals|request\s+for\s+proposals|rfps?|eligib(?:le|ility)|deadline)\b/i;
+const APPLICANT_PATH_RE = /\b(?:applications?\s+(?:are|is)\s+(?:now\s+)?open|(?:now\s+)?accepting\s+applications?|apply\s+(?:now|by|at|through|via)|submit\s+(?:an?\s+)?application|application\s+(?:form|portal)\s+(?:is\s+)?(?:open|available|live)|(?:open|current|active)\s+(?:call|request)\s+for\s+proposals|(?:call|request)\s+for\s+proposals\s+(?:is|are)\s+open|rfps?\s+(?:is|are)\s+open)\b/i;
 const STRATEGIC_CAPITAL_RE = /\b(?:treasury|allocat(?:e|ed|ion)|commit(?:ment|ted)?|invest(?:ment|ed)?|grant\s+pool|funding\s+pool|public\s+goods|governance\s+funding)\b/i;
 const MATERIAL_VALUE_RE = /(?:[$€£]\s?\d|\b\d+(?:[.,]\d+)?\s*(?:k|m|b|thousand|million|billion)\b)/i;
+const NEGATED_CONTEXT_RE = /\b(?:no|not|without|lacks?|lacking|missing|unavailable|closed|expired|cannot|can't|couldn't|could\s+not|unable\s+to)\b[^.!?;]{0,40}$/i;
+
+function hasNonNegatedEvidence(text: string, pattern: RegExp): boolean {
+  const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
+  const globalPattern = new RegExp(pattern.source, flags);
+  for (const match of text.matchAll(globalPattern)) {
+    const prefix = text.slice(Math.max(0, (match.index || 0) - 80), match.index);
+    if (!NEGATED_CONTEXT_RE.test(prefix)) return true;
+  }
+  return false;
+}
 
 /**
  * Deterministic Ready calibration for formats with weak operator agreement.
@@ -72,23 +83,19 @@ export function applyReadyCalibration(
 ): ClassificationResult {
   if (result.operatorRoute !== 'publish') return result;
 
+  // Only source material can authorize the exception. Model-generated reason,
+  // score, and extracted fields may repeat unverified or negated claims.
   const evidence = [
     entry.name,
     entry.description,
     entry.source_url,
     entry.amount || '',
-    result.reason,
-    result.scoreReason,
-    result.extracted.amount || '',
-    result.extracted.deadline || '',
-    result.extracted.eligibility || '',
-    result.extracted.summary || '',
   ].join(' ');
   if (!LOW_PRECISION_FORMAT_RE.test(evidence)) return result;
 
-  const hasApplicantPath = APPLICANT_PATH_RE.test(evidence)
+  const hasApplicantPath = hasNonNegatedEvidence(evidence, APPLICANT_PATH_RE)
     || /\/(?:apply|application)(?:[/?#]|$)/i.test(entry.source_url);
-  const hasStrategicCapital = STRATEGIC_CAPITAL_RE.test(evidence)
+  const hasStrategicCapital = hasNonNegatedEvidence(evidence, STRATEGIC_CAPITAL_RE)
     && MATERIAL_VALUE_RE.test(evidence);
   if (hasApplicantPath || hasStrategicCapital) return result;
 

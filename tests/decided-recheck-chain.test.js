@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { applyVerdict, resolveDuplicateChain } = require('../src/jobs/decided-recheck');
+const auditFixture = require('./fixtures/semantic-dedup-audit-2026-08-11.json');
 
 const TARGET = {
   id: 11127,
@@ -83,6 +84,7 @@ function fakePool(
         id: chainRows[0]?.id,
         status: chainRows[0]?.status,
         duplicate_of_id: chainRows[0]?.duplicate_of_id ?? null,
+        wire: TARGET.wire,
       };
       return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
     }
@@ -207,6 +209,125 @@ test('cross-wire same_listing stays queued for operator review', async () => {
   assert.equal(pool.calls.some(call => /SET status = 'duplicate'/.test(call.sql)), false);
   const note = pool.calls.find(call => /Cross-wire semantic match blocked/.test(String(call.params?.[1])));
   assert.ok(note, 'operator note should explain the blocked mutation');
+});
+
+test('same-wire candidate resolving to a cross-wire terminal stays queued', async () => {
+  const pool = fakePool(
+    [{ id: 4200, status: 'approved', duplicate_of_id: null, depth: 2, cycle: false }],
+    { parentRow: { id: 4200, status: 'approved', duplicate_of_id: null, wire: 'crypto' } },
+  );
+  const out = await applyVerdict(pool, TARGET, [candidate()], verdict());
+
+  assert.equal(out, 'cross-wire-review');
+  assert.equal(pool.calls.some(call => /SET status = 'duplicate'/.test(call.sql)), false);
+  const note = pool.calls.find(call => /terminal #4200 \[crypto\]/.test(String(call.params?.[1])));
+  assert.ok(note, 'operator note should identify the cross-wire terminal');
+});
+
+test('inverse same-wire chain also blocks a terminal on another wire', async () => {
+  const cryptoTarget = { ...TARGET, wire: 'crypto' };
+  const pool = fakePool(
+    [{ id: 4200, status: 'approved', duplicate_of_id: null, depth: 2, cycle: false }],
+    {
+      lockedRows: [
+        {
+          id: cryptoTarget.id, status: 'queued', duplicate_of_id: null,
+          name: cryptoTarget.name, description: cryptoTarget.description,
+          amount: null, deadline: cryptoTarget.deadline,
+          source_url: cryptoTarget.source_url, wire: 'crypto',
+        },
+        {
+          id: 8572, status: 'duplicate', duplicate_of_id: 8416,
+          name: 'Anthropic Fellows Program', description: null,
+          amount: null, deadline: null,
+          source_url: 'https://alignment.anthropic.com/x', wire: 'crypto',
+        },
+      ],
+      parentRow: { id: 4200, status: 'approved', duplicate_of_id: null, wire: 'ai' },
+    },
+  );
+  const out = await applyVerdict(pool, cryptoTarget, [candidate({ wire: 'crypto' })], verdict());
+
+  assert.equal(out, 'cross-wire-review');
+  assert.equal(pool.calls.some(call => /SET status = 'duplicate'/.test(call.sql)), false);
+});
+
+test('automatic duplicate compare-and-set constrains the terminal wire', async () => {
+  const pool = fakePool([{ id: 4200, status: 'approved', duplicate_of_id: null, depth: 2, cycle: false }]);
+  const out = await applyVerdict(pool, TARGET, [candidate()], verdict());
+  assert.equal(out, 'duplicate');
+  const update = pool.calls.find(call => /SET status = 'duplicate'/.test(call.sql));
+  assert.match(update.sql, /parent\.wire = \$5/);
+  assert.equal(update.params[4], TARGET.wire);
+});
+
+test('all 13 audited decided-recheck cases replay through the mutation gate', async t => {
+  const rows = auditFixture.rows.filter(row => row.actor === 'decided-recheck');
+  assert.equal(rows.length, 13);
+
+  for (const row of rows) {
+    await t.test(`#${row.id} ${row.verdict}`, async () => {
+      const target = {
+        id: row.id,
+        wire: row.wire,
+        name: row.name,
+        description: `Audited child ${row.id}`,
+        source_url: row.source_url,
+        deadline: null,
+      };
+      const parentId = 900000 + row.id;
+      const matched = candidate({
+        id: parentId,
+        wire: row.parent_wire,
+        name: row.parent_name,
+        status: 'approved',
+        source_url: row.parent_url,
+        resolve_to: null,
+      });
+      const pool = fakePool(
+        [{ id: parentId, status: 'approved', duplicate_of_id: null, depth: 0, cycle: false }],
+        {
+          lockedRows: [
+            {
+              id: target.id, status: 'queued', duplicate_of_id: null,
+              name: target.name, description: target.description,
+              amount: null, deadline: null,
+              source_url: target.source_url, wire: target.wire,
+            },
+            {
+              id: parentId, status: 'approved', duplicate_of_id: null,
+              name: matched.name, description: null,
+              amount: null, deadline: null,
+              source_url: matched.source_url, wire: matched.wire,
+            },
+          ],
+          parentRow: {
+            id: parentId, status: 'approved', duplicate_of_id: null,
+            wire: row.parent_wire,
+          },
+        },
+      );
+
+      const isSafe = row.verdict === 'correct duplicate';
+      const reviewedVerdict = {
+        matched_id: parentId,
+        verdict: isSafe ? 'same_listing' : 'distinct',
+        confidence: 0.99,
+        reason: row.verdict,
+      };
+      const out = await applyVerdict(pool, target, [matched], reviewedVerdict);
+      const expected = !isSafe
+        ? 'distinct'
+        : row.wire === row.parent_wire
+          ? 'duplicate'
+          : 'cross-wire-review';
+      assert.equal(out, expected);
+      assert.equal(
+        pool.calls.some(call => /SET status = 'duplicate'/.test(call.sql)),
+        expected === 'duplicate',
+      );
+    });
+  }
 });
 
 test('compare-and-set loss reports stale instead of claiming a mutation', async () => {

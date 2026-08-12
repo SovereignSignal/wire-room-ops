@@ -258,8 +258,8 @@ export async function processRawEntries(pool?: Pool): Promise<{
 
           // Phase 2: repeat the dedup check under the graph lock, claim the URL,
           // and finalize the raw row in one transaction. The program-identity
-          // gate (Layer 1.75) runs inside the same atomic check; a same-round
-          // program match is demoted with actioned_by='program-gate'.
+          // resolver (Layer 1.75) runs inside the same atomic check and returns
+          // advisory context only; it cannot authorize a status mutation.
           const dedupOutcome = await finalizeExistingEntryDedup(db, {
             id: row.id,
             sourceUrl: row.source_url,

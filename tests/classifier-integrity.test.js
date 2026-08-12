@@ -113,6 +113,41 @@ test('low-precision formats may publish with a concrete applicant path and mater
   assert.equal(calibrated.operatorRoute, 'publish');
 });
 
+test('negative applicant-path language cannot exempt a low-precision format', () => {
+  const result = {
+    classification: 'GRANT', inScope: true, detectedWire: 'ai',
+    qualityScore: 84, operatorRoute: 'publish',
+    reason: 'Applications are open according to the model.',
+    scoreReason: 'Eligibility appears broad.', tags: [],
+    extracted: { eligibility: 'Apply by September 30', deadline: 'September 30' },
+  };
+  const calibrated = applyReadyCalibration({
+    name: 'Regional AI Fellowship',
+    description: 'Eligibility and deadline details are unavailable; no application form or current applicant path could be verified.',
+    source_url: 'https://example.org/fellowship',
+    wire: 'ai',
+  }, result);
+  assert.equal(calibrated.operatorRoute, 'source_check');
+  assert.match(calibrated.reason, /Ready calibration/);
+});
+
+test('explicitly unavailable forms and closed calls remain source_check', () => {
+  for (const description of [
+    'No application form is available for this regional research fellowship.',
+    'There is currently no open call for proposals and the prior competition has closed.',
+  ]) {
+    const calibrated = applyReadyCalibration({
+      name: 'Regional Research Fellowship', description,
+      source_url: 'https://example.org/research', wire: 'ai',
+    }, {
+      classification: 'GRANT', inScope: true, detectedWire: 'ai',
+      qualityScore: 82, operatorRoute: 'publish',
+      reason: 'Potential opportunity.', scoreReason: 'Strong topic.', tags: [], extracted: {},
+    });
+    assert.equal(calibrated.operatorRoute, 'source_check');
+  }
+});
+
 test('ordinary direct grants are unchanged by Ready calibration', () => {
   const result = {
     classification: 'GRANT', inScope: true, detectedWire: 'oss',

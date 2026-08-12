@@ -748,9 +748,9 @@ export async function finalizeExistingEntryDedup(
         expectedStatus: entry.expectedStatus,
         expectedSourceUrl: entry.sourceUrl,
         reason: dedupResult.reason || 'Duplicate detected during intake',
-        // Program-gate (Layer 1.75) matches are attributed to the gate for the
-        // act-and-report ledger; URL/exact-name matches stay dedup-worker.
-        actor: dedupResult.matchType === 'program' ? 'program-gate' : 'dedup-worker',
+        // Program identity is advisory. Automatic duplicate outcomes here are
+        // exact URL or exact name matches and remain dedup-worker actions.
+        actor: 'dedup-worker',
       });
       if (linked.outcome === 'unresolvable') {
         // Permanent: the matched parent can never be a canonical reference, so

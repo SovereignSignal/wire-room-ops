@@ -364,7 +364,7 @@ export async function applyVerdict(pool: Pool, target: RecheckTarget, candidates
 
       // Hold the terminal parent stable through the target mutation and registry move.
       const parentResult = await client.query(
-        `SELECT id, status, duplicate_of_id
+        `SELECT id, status, duplicate_of_id, wire
          FROM scan_entries
          WHERE id = $1
          FOR UPDATE`,
@@ -399,6 +399,27 @@ export async function applyVerdict(pool: Pool, target: RecheckTarget, candidates
         return stalled.rowCount === 1 ? 'chain-unresolved' : 'stale';
       }
 
+      if (parent.wire !== target.wire) {
+        const blockedStamp = {
+          ...stamp,
+          cross_wire_blocked: true,
+          resolved_parent_id: resolvedId,
+          resolved_parent_wire: parent.wire,
+        };
+        const note = `Cross-wire semantic match blocked: #${target.id} [${target.wire}] matched #${matched.id} [${matched.wire}] but resolves to terminal #${resolvedId} [${parent.wire}]. Human review required.`;
+        const blocked = await client.query(
+          `UPDATE scan_entries SET
+             operator_notes = CONCAT_WS(E'\n', NULLIF(operator_notes, ''), $2::text),
+             metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('decided_recheck', $3::jsonb),
+             updated_at = NOW()
+           WHERE id = $1 AND status = 'queued'
+           RETURNING id`,
+          [target.id, note, JSON.stringify(blockedStamp)],
+        );
+        await client.query('COMMIT');
+        return blocked.rowCount === 1 ? 'cross-wire-review' : 'stale';
+      }
+
       const chainNote = resolvedId !== matched.id
         ? `, resolved ${resolution.depth} hop${resolution.depth === 1 ? '' : 's'} to canonical #${resolvedId}`
         : '';
@@ -415,9 +436,10 @@ export async function applyVerdict(pool: Pool, target: RecheckTarget, candidates
              WHERE parent.id = $2
                AND parent.status IN ('approved', 'declined', 'queued')
                AND parent.duplicate_of_id IS NULL
+               AND parent.wire = $5
            )
          RETURNING target.id`,
-        [target.id, resolvedId, reason, JSON.stringify(stamp)],
+        [target.id, resolvedId, reason, JSON.stringify(stamp), target.wire],
       );
       if (result.rowCount !== 1) {
         await client.query('ROLLBACK');
