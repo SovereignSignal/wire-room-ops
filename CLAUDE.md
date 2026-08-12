@@ -237,7 +237,7 @@ Server-rendered views (login/error only):
 | **Config** | `feeds`, `schedules`, `integration_config` | Wire/schedule/integration config |
 | **API management** | `api_providers`, `api_usage_log`, `model_pricing` | DB-backed API keys, usage tracking, cost estimation |
 | **Identity** | `org_profiles`, `sessions` | Organization tracking + auth sessions |
-| **Programs** | `programs` | Program-identity registry: canonical program per funder (aliases, url_domains, round + decision history); `scan_entries.program_id` links members; fed by the intake gate (dedup Layer 1.75, act-and-report, `actioned_by='program-gate'`) and `src/scripts/program-backfill.ts` |
+| **Programs** | `programs` | Program-identity registry: canonical program per funder (aliases, url_domains, round + decision history); `scan_entries.program_id` links members; fed by the advisory intake resolver (Layer 1.75) and `src/scripts/program-backfill.ts` |
 | **Legacy** | `grant_entries`, `grok_usage`, `review_queue`, `alembic_version`, `sync_status` | Historical/dormant tables |
 
 ### scan_entries — The Central Table
@@ -283,7 +283,7 @@ INGESTION (raw data)                    THE REFINERY (processing)               
 
 - **`seen_urls`**: Exact URL match. Composite unique on `(normalized_url, wire)`. Handles aggregate URLs (same URL, different entries) via name similarity check.
 - **`seen_names`**: Stores normalized names and tokens for review intelligence and alternate-source detection. Hard duplicate blocking currently relies on URL exact match; fuzzy name blocking is intentionally disabled after false positives.
-- **Program gate (Layer 1.75)**: The `programs` table canonicalizes opportunities by normalized program name (funder is a matching/veto signal, not a uniqueness key; a funder can have many programs), with aliases and url_domains feeding the matcher; same-round duplicates of a known program are demoted (`actioned_by='program-gate'`, act-and-report) in process-raw and daily-intake, but not in the Telegram dumb pipe (see `src/services/program-identity.ts`).
+- **Program resolver (Layer 1.75)**: The `programs` table supplies advisory program and round context. It does not demote entries. A 53-link audit found that broad program identities could collapse distinct proposals, rounds, calls, and cross-wire events. Exact URL and exact name layers remain the automatic duplicate gates. Decided-recheck also leaves cross-wire semantic matches queued for operator review (see `src/services/program-identity.ts` and `src/jobs/decided-recheck.ts`).
 
 ### Approval Validation Guard
 

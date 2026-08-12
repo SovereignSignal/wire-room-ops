@@ -5,6 +5,7 @@ const path = require('node:path');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
+  applyReadyCalibration,
   buildClassificationPrompt,
   parseClassificationResponse,
 } = require('../src/services/classifier');
@@ -77,6 +78,55 @@ test('past parsed deadline forces EXPIRED while deadline-today stays open', () =
   });
   assert.equal(today.classification, 'GRANT');
   assert.equal(today.operatorRoute, 'publish');
+});
+
+test('low-precision formats default publish recommendations to source_check', () => {
+  const result = {
+    classification: 'GRANT', inScope: true, detectedWire: 'ai',
+    qualityScore: 80, operatorRoute: 'publish', reason: 'Credible program.',
+    scoreReason: 'Strong sponsor.', tags: [], extracted: {},
+  };
+  const calibrated = applyReadyCalibration({
+    name: 'Regional AI Fellowship',
+    description: 'A prestigious fellowship from a credible university.',
+    source_url: 'https://example.org/fellowship',
+    wire: 'ai',
+  }, result);
+  assert.equal(calibrated.operatorRoute, 'source_check');
+  assert.match(calibrated.reason, /Ready calibration/);
+});
+
+test('low-precision formats may publish with a concrete applicant path and material benefit', () => {
+  const result = {
+    classification: 'GRANT', inScope: true, detectedWire: 'ai',
+    qualityScore: 86, operatorRoute: 'publish', reason: 'Applications are open.',
+    scoreReason: 'Strong sponsor and clear terms.', tags: [],
+    extracted: { amount: '$100,000 prize pool', eligibility: 'Apply by September 30' },
+  };
+  const calibrated = applyReadyCalibration({
+    name: 'Global AI Challenge',
+    description: 'Applications are open with a public application form and September 30 deadline.',
+    source_url: 'https://example.org/apply',
+    wire: 'ai',
+    amount: '$100,000 prize pool',
+  }, result);
+  assert.equal(calibrated.operatorRoute, 'publish');
+});
+
+test('ordinary direct grants are unchanged by Ready calibration', () => {
+  const result = {
+    classification: 'GRANT', inScope: true, detectedWire: 'oss',
+    qualityScore: 82, operatorRoute: 'publish', reason: 'Open grant.',
+    scoreReason: 'Clear application.', tags: [], extracted: {},
+  };
+  const calibrated = applyReadyCalibration({
+    name: 'Maintainer Support Grant',
+    description: 'Applications are open for grants to open source maintainers.',
+    source_url: 'https://example.org/grants/apply',
+    wire: 'oss',
+  }, result);
+  assert.equal(calibrated.operatorRoute, 'publish');
+  assert.equal(calibrated.reason, 'Open grant.');
 });
 
 test('automatic startup rescore is opt-in and queue-only', () => {

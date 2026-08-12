@@ -17,6 +17,7 @@ const TARGET = {
 function candidate(overrides = {}) {
   return {
     id: 8572,
+    wire: 'ai',
     name: 'Anthropic Fellows Program',
     status: 'duplicate',
     source_url: 'https://alignment.anthropic.com/x',
@@ -174,6 +175,38 @@ test('low-confidence same_listing only stamps metadata', async () => {
   assert.equal(out, 'same_listing');
   assert.equal(pool.calls.some(call => call.sql === 'BEGIN'), true);
   assert.equal(pool.calls.some(call => /SET status = 'duplicate'/.test(call.sql)), false);
+});
+
+test('cross-wire same_listing stays queued for operator review', async () => {
+  const pool = fakePool([], {
+    lockedRows: [
+      {
+        id: TARGET.id,
+        status: 'queued', duplicate_of_id: null,
+        name: TARGET.name, description: TARGET.description,
+        amount: null, deadline: TARGET.deadline,
+        source_url: TARGET.source_url, wire: TARGET.wire,
+      },
+      {
+        id: 8572,
+        status: 'approved', duplicate_of_id: null,
+        name: 'Anthropic Fellows Program', description: null,
+        amount: null, deadline: null,
+        source_url: 'https://alignment.anthropic.com/x', wire: 'oss',
+      },
+    ],
+  });
+  const out = await applyVerdict(
+    pool,
+    TARGET,
+    [candidate({ status: 'approved', resolve_to: null, wire: 'oss' })],
+    verdict(),
+  );
+
+  assert.equal(out, 'cross-wire-review');
+  assert.equal(pool.calls.some(call => /SET status = 'duplicate'/.test(call.sql)), false);
+  const note = pool.calls.find(call => /Cross-wire semantic match blocked/.test(String(call.params?.[1])));
+  assert.ok(note, 'operator note should explain the blocked mutation');
 });
 
 test('compare-and-set loss reports stale instead of claiming a mutation', async () => {

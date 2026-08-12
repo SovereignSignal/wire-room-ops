@@ -55,6 +55,50 @@ export interface ClassificationEntry {
   currentDate?: string | Date;
 }
 
+const LOW_PRECISION_FORMAT_RE = /\b(?:fellowships?|accelerators?|incubators?|competitions?|challenges?|hackathons?|buildathons?|regional|local|credits?|research\s+(?:program|programme|initiative|page))\b/i;
+const APPLICANT_PATH_RE = /\b(?:apply|applications?\s+(?:are|is|now)?\s*open|application\s+form|submit(?:tal)?|call\s+for\s+proposals|request\s+for\s+proposals|rfps?|eligib(?:le|ility)|deadline)\b/i;
+const STRATEGIC_CAPITAL_RE = /\b(?:treasury|allocat(?:e|ed|ion)|commit(?:ment|ted)?|invest(?:ment|ed)?|grant\s+pool|funding\s+pool|public\s+goods|governance\s+funding)\b/i;
+const MATERIAL_VALUE_RE = /(?:[$€£]\s?\d|\b\d+(?:[.,]\d+)?\s*(?:k|m|b|thousand|million|billion)\b)/i;
+
+/**
+ * Deterministic Ready calibration for formats with weak operator agreement.
+ * The LLM can still classify the item as a real grant. It cannot recommend
+ * publish unless the evidence shows a current applicant path or a material
+ * strategic capital signal.
+ */
+export function applyReadyCalibration(
+  entry: ClassificationEntry,
+  result: ClassificationResult,
+): ClassificationResult {
+  if (result.operatorRoute !== 'publish') return result;
+
+  const evidence = [
+    entry.name,
+    entry.description,
+    entry.source_url,
+    entry.amount || '',
+    result.reason,
+    result.scoreReason,
+    result.extracted.amount || '',
+    result.extracted.deadline || '',
+    result.extracted.eligibility || '',
+    result.extracted.summary || '',
+  ].join(' ');
+  if (!LOW_PRECISION_FORMAT_RE.test(evidence)) return result;
+
+  const hasApplicantPath = APPLICANT_PATH_RE.test(evidence)
+    || /\/(?:apply|application)(?:[/?#]|$)/i.test(entry.source_url);
+  const hasStrategicCapital = STRATEGIC_CAPITAL_RE.test(evidence)
+    && MATERIAL_VALUE_RE.test(evidence);
+  if (hasApplicantPath || hasStrategicCapital) return result;
+
+  return {
+    ...result,
+    operatorRoute: 'source_check',
+    reason: `${result.reason} Ready calibration: low-precision format lacks a verified applicant path or material strategic capital signal.`,
+  };
+}
+
 export class ClassifierResponseError extends Error {
   constructor(message: string) {
     super(message);
@@ -141,6 +185,8 @@ Return operator_route separately from classification. Allowed operator_route val
 - park: real but low-priority item, weak Wire fit, generic scholarship, local fellowship, academic job, or background signal.
 - decline: stale, closed, duplicate, tiny hackathon, hype, spam, or wrong-lane item.
 - relationship_signal: useful BD, landscape, funder, or ecosystem signal, but not a direct Wire post.
+
+LOW-PRECISION FORMAT GATE: fellowships, accelerators, incubators, competitions, challenges, hackathons, buildathons, regional or local events, credit-only offers, and research program pages default to source_check. Use publish only when the evidence shows a current concrete applicant path or a material strategic capital/governance signal. Sponsor prestige and verified existence alone are insufficient.
 
 For Telegram/Grok batch intake, be strict: real academic positions, local scholarships, and generic fellowships are often GRANT by content type but park by operator_route unless they are unusually strategic for grants intelligence. Announcements about awarded funding are usually relationship_signal or park, not publish.
 Also extract if available: amount, deadline, eligibility, summary.
@@ -347,7 +393,7 @@ export async function classifyEntry(entry: ClassificationEntry): Promise<Classif
   const content = data.choices?.[0]?.message?.content;
 
   try {
-    const result = parseClassificationResponse(content || '', entry);
+    const result = applyReadyCalibration(entry, parseClassificationResponse(content || '', entry));
     logApiUsage({
       provider: 'grok', model: classifyModel, purpose: 'classify', wire: entry.wire,
       duration_ms: Date.now() - start,

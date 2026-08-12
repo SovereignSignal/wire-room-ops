@@ -110,9 +110,11 @@ export async function checkDuplicate(
     }
   }
 
-  // Layer 1.75: program identity (opt-in; act-and-report gate).
-  // Same program + same round + high confidence = duplicate with history.
-  // New round resolves but never blocks — callers stamp metadata.program.
+  // Layer 1.75: program identity (opt-in; advisory only).
+  // The program registry supplies review context, but it no longer authorizes
+  // a status mutation. A 53-link audit found that broad program identities
+  // collapsed distinct proposals, rounds, calls, and cross-wire events. Exact
+  // URL and exact-name layers remain the automatic duplicate gates.
   if (options?.programGate && !options?.urlOnly) {
     try {
       const match = await resolveProgram(pool, { name: entry.name, sourceUrl: entry.sourceUrl, wire: entry.wire });
@@ -126,18 +128,6 @@ export async function checkDuplicate(
           roundLabel: round.roundLabel,
           historyLine: history,
         };
-        if (round.verdict === 'same_round' && match.confidence >= 0.85
-            && match.program.entry_count > 0 && match.program.canonical_entry_id) {
-          return {
-            isDuplicate: true,
-            matchType: 'program',
-            matchedEntryId: match.program.canonical_entry_id,
-            matchedEntryName: match.program.canonical_name,
-            confidence: match.confidence,
-            reason: `Program "${match.program.canonical_name}" — ${history}`,
-            programResolution,
-          };
-        }
       }
     } catch (err) {
       console.error('[Dedup] Program gate failed (fail-open):', err instanceof Error ? err.message : err);

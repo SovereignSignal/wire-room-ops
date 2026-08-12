@@ -59,6 +59,7 @@ const STOPWORDS = [
 
 interface Candidate {
   id: number;
+  wire: string;
   name: string;
   status: string;
   source_url: string;
@@ -89,7 +90,7 @@ async function findCandidates(pool: Pool, target: RecheckTarget): Promise<Candid
            WHERE length(tok) > 3 AND NOT (tok = ANY($4))
          ) AS tokens
      )
-     SELECT d.id, d.name, d.status, d.source_url,
+     SELECT d.id, d.wire, d.name, d.status, d.source_url,
             d.updated_at::date::text AS decided_date,
             CASE WHEN d.status = 'duplicate' THEN d.duplicate_of_id ELSE NULL END AS resolve_to,
             (SELECT COUNT(*)::int FROM unnest(ARRAY(
@@ -146,7 +147,7 @@ URL: ${target.source_url}
 Deadline: ${target.deadline || 'unknown'}
 
 PREVIOUS ENTRIES:
-${candidates.map(c => `- id ${c.id} [${c.status}${c.resolve_to ? ` -> #${c.resolve_to}` : ''}, ${c.decided_date}]: ${c.name} | ${c.source_url}`).join('\n')}
+${candidates.map(c => `- id ${c.id} [${c.wire}, ${c.status}${c.resolve_to ? ` -> #${c.resolve_to}` : ''}, ${c.decided_date}]: ${c.name} | ${c.source_url}`).join('\n')}
 
 Verdicts:
 - "same_listing": the NEW entry is the SAME program AND the SAME round/cycle with no material new information. (A tweet about a program vs the program page = same_listing.)
@@ -204,6 +205,7 @@ function candidateSnapshotMatches(row: any, candidate: Candidate): boolean {
     : Number(row.duplicate_of_id);
   return !!row
     && row.status === candidate.status
+    && row.wire === candidate.wire
     && row.name === candidate.name
     && row.source_url === candidate.source_url
     && currentParent === candidate.resolve_to;
@@ -282,6 +284,26 @@ export async function applyVerdict(pool: Pool, target: RecheckTarget, candidates
   };
 
   if (verdict.matched_id !== null && !matched) return 'stale';
+
+  if (verdict.verdict === 'same_listing'
+      && matched
+      && verdict.confidence >= 0.8
+      && matched.wire !== target.wire) {
+    const blockedStamp = { ...stamp, cross_wire_blocked: true };
+    return applyWithFreshVerdictSnapshots(pool, target, matched, async client => {
+      const note = `Cross-wire semantic match blocked: #${target.id} [${target.wire}] matched #${matched.id} [${matched.wire}]. Human review required.`;
+      const result = await client.query(
+        `UPDATE scan_entries SET
+           operator_notes = CONCAT_WS(E'\n', NULLIF(operator_notes, ''), $2::text),
+           metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('decided_recheck', $3::jsonb),
+           updated_at = NOW()
+         WHERE id = $1 AND status = 'queued'
+         RETURNING id`,
+        [target.id, note, JSON.stringify(blockedStamp)],
+      );
+      return result.rowCount === 1 ? 'cross-wire-review' : 'stale';
+    });
+  }
 
   if (verdict.verdict === 'same_listing' && matched && verdict.confidence >= 0.8) {
     const client = await pool.connect();
