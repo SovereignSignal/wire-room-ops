@@ -50,6 +50,7 @@ test.before(async () => {
       wire TEXT NOT NULL DEFAULT 'ai',
       scan_source TEXT NOT NULL DEFAULT 'forum',
       status TEXT NOT NULL DEFAULT 'queued',
+      operator_notes TEXT,
       metadata JSONB DEFAULT '{}',
       program_id INTEGER REFERENCES programs(id),
       duplicate_of_id INTEGER REFERENCES scan_entries(id),
@@ -130,12 +131,14 @@ test('finalizeProgramForEntry links and counts one entry exactly once across ret
   await finalizeProgramForEntry(pool, { id: entry.rows[0].id, name: 'Alpha Round 2' }, resolution);
   await finalizeProgramForEntry(pool, { id: entry.rows[0].id, name: 'Alpha Round 2' }, resolution);
 
-  const linked = await pool.query('SELECT program_id, metadata FROM scan_entries WHERE id = $1', [entry.rows[0].id]);
+  const linked = await pool.query('SELECT program_id, metadata, operator_notes FROM scan_entries WHERE id = $1', [entry.rows[0].id]);
   const state = await pool.query('SELECT entry_count, canonical_entry_id FROM programs WHERE id = $1', [program.rows[0].id]);
   assert.equal(linked.rows[0].program_id, program.rows[0].id);
   assert.equal(linked.rows[0].metadata.program.id, program.rows[0].id);
   assert.equal(state.rows[0].entry_count, 1);
   assert.equal(state.rows[0].canonical_entry_id, entry.rows[0].id);
+  const repeatNotes = (linked.rows[0].operator_notes || '').match(/Program repeat/g) || [];
+  assert.equal(repeatNotes.length, 1, 'same-round history note lands exactly once across retries');
 });
 
 test('purgeSourceEntries replaces a deleted canonical and reparents surviving duplicates', async () => {
