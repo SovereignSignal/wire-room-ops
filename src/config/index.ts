@@ -104,6 +104,15 @@ export const config = {
     enrichEnabled: process.env.CRM_ENRICH_ENABLED === 'true',
   },
 
+  cohort: {
+    // In-process Notion cohort bridge (Cowork + Codex daily scans table →
+    // source_runs heartbeat + queue). Default ON so a missed Stringer VM
+    // window cannot stay silent; set COHORT_BRIDGE_ENABLED=false to disable.
+    enabled: process.env.COHORT_BRIDGE_ENABLED !== 'false',
+    databaseId: process.env.COHORT_NOTION_DATABASE_ID || '366000c0d590805ba2abdd2957ee86a7',
+    token: process.env.COHORT_NOTION_TOKEN || process.env.NOTION_TOKEN || '',
+  },
+
   telegram: {
     botToken: process.env.TELEGRAM_BOT_TOKEN || '',
   },

@@ -569,9 +569,10 @@ export async function buildRunLedger(
     lanes.push({ key: 'bridge', state: 'warn', detail: 'bridge ?' });
   }
 
-  // cohort: the 05:00 Notion bridge must produce one durable source_run per
-  // day. A missed window becomes an email anomaly and opens a persistent
-  // replay cursor that survives ordinary recovery runs.
+  // cohort: the Notion Cowork+Codex bridge must produce one durable
+  // source_run per day. WRO runs that bridge in this same daily fold; a
+  // missed window becomes an email anomaly and opens a persistent replay
+  // cursor that survives ordinary recovery runs.
   const cohort = await checkCohortHealth(pool, deps);
   lanes.push(cohort.lane);
   anomalies.push(...cohort.anomalies);
