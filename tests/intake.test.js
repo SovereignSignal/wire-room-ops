@@ -436,6 +436,76 @@ test('a single name-URL paste stays on the single-entry path', () => {
   assert.equal(parseBatchEntries(single)[0].sourceUrl, 'https://x.com/base/status/111');
 });
 
+test('Grok Source/Link blocks keep program names and store the Source tweet URL', () => {
+  const content = [
+    'GitHub Secure Open Source Fund — Application window for OSS maintainers.',
+    'Deadline: Rolling',
+    'Source: [@HiJulieJennifer](https://x.com/HiJulieJennifer/status/111)',
+    'Link: https://x.com/HiJulieJennifer/status/111',
+    'OrcaRouter Open Source Program — 5% of user spend revenue share for contributors.',
+    'Deadline: Rolling',
+    'Source: [@anurag_629](https://x.com/anurag_629/status/2088954196934680924)',
+    'Link: https://x.com/anurag_629/status/2088954196934680924',
+    'OrcaRouter Contributor Pool — Matching announcement from the project account.',
+    'Deadline: Rolling',
+    'Source: [@OrcaRouter](https://x.com/OrcaRouter/status/2088962617201271026)',
+    'Link: https://x.com/OrcaRouter/status/2088962617201271026',
+    'Total: 3 results after dedup and filtering.',
+    'https://t.co/9B3tkIF96g',
+  ].join('\n');
+
+  assert.equal(isBatchMessage(content), true);
+  const parsed = parseBatchEntries(content);
+  assert.deepEqual(parsed.map(entry => entry.name), [
+    'GitHub Secure Open Source Fund',
+    'OrcaRouter Open Source Program',
+    'OrcaRouter Contributor Pool',
+  ]);
+  assert.deepEqual(parsed.map(entry => entry.sourceUrl), [
+    'https://x.com/HiJulieJennifer/status/111',
+    'https://x.com/anurag_629/status/2088954196934680924',
+    'https://x.com/OrcaRouter/status/2088962617201271026',
+  ]);
+  assert.equal(parsed.some(entry => /t\.co\//.test(entry.sourceUrl)), false);
+  assert.equal(parsed.some(entry => entry.name.startsWith('@')), false);
+  assert.match(parsed[1].description, /^5% of user spend revenue share/);
+  assert.doesNotMatch(parsed[1].description, /Source:/);
+});
+
+test('Source tweet wins over a later Link URL in the same Grok block', () => {
+  const content = [
+    'Secure Open Source Fund — Apply via the GitHub form.',
+    'Deadline: Rolling',
+    'Source: [@HiJulieJennifer](https://x.com/HiJulieJennifer/status/2089000000000000000)',
+    'Link: https://github.com/github/secure-open-source-fund',
+    'OrcaRouter Open Source Program — Revenue share for contributors.',
+    'Deadline: Rolling',
+    'Source: [@OrcaRouter](https://x.com/OrcaRouter/status/2088962617201271026)',
+    'Link: https://orcarouter.example/grants',
+  ].join('\n');
+
+  const parsed = parseBatchEntries(content);
+  assert.equal(parsed.length, 2);
+  assert.equal(parsed[0].name, 'Secure Open Source Fund');
+  assert.equal(parsed[0].sourceUrl, 'https://x.com/HiJulieJennifer/status/2089000000000000000');
+  assert.equal(parsed[1].sourceUrl, 'https://x.com/OrcaRouter/status/2088962617201271026');
+});
+
+test('newsletter markdown title links still parse when they are not Source attribution', () => {
+  const content = [
+    '[Alpha Grants](https://example.org/alpha) — Funding for OSS tooling',
+    '[Beta Fellowship](https://example.org/beta) — Research support',
+  ].join('\n');
+
+  assert.equal(isBatchMessage(content), true);
+  const parsed = parseBatchEntries(content);
+  assert.deepEqual(parsed.map(entry => entry.name), ['Alpha Grants', 'Beta Fellowship']);
+  assert.deepEqual(parsed.map(entry => entry.sourceUrl), [
+    'https://example.org/alpha',
+    'https://example.org/beta',
+  ]);
+});
+
 test('compact batch keeps later URLs when the first link is already seen', async t => {
   const db = require('../src/db');
   const originalGetAllFeeds = db.getAllFeeds;

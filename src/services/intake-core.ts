@@ -847,9 +847,12 @@ export function isBatchMessage(text: string): boolean {
   if (boldEntries && boldEntries.length >= 2) return true;
   if (boldEntries && boldEntries.length === 1 && /\n\s*Link:\s*https?:\/\//i.test(cleaned)) return true;
 
-  // Markdown link format: [Name](url) — common in newsletters/briefings
-  const mdLinks = cleaned.match(/\[([^\]]{3,})\]\(https?:\/\/[^)]+\)/g);
-  if (mdLinks && mdLinks.length >= 2) return true;
+  // Markdown link format: [Name](url) — common in newsletters/briefings.
+  // Ignore Grok `Source: [@handle](tweet)` attribution so those pastes route
+  // through the structured Source:/Link: chunker instead.
+  const titleMdLinks = [...cleaned.matchAll(/\[([^\]]{3,})\]\((https?:\/\/[^)]+)\)/g)]
+    .filter(match => !isSourceAttributionMarkdownLink(cleaned, match));
+  if (titleMdLinks.length >= 2) return true;
 
   // Structured format without ** (Telegram renders bold and strips markers):
   // Multiple "Link: <url>" lines = structured batch
@@ -926,6 +929,46 @@ function pickCompactSourceUrl(urls: string[]): string {
   return best;
 }
 
+function countStructuredFieldLines(text: string, field: 'Link' | 'Source'): number {
+  const re = field === 'Link' ? /^\s*Link:\s*.+$/gim : /^\s*Source:\s*.+$/gim;
+  return (text.match(re) || []).length;
+}
+
+function hasStructuredSourceBlocks(text: string): boolean {
+  const linkLines = countStructuredFieldLines(text, 'Link');
+  const sourceLines = countStructuredFieldLines(text, 'Source');
+  if (linkLines >= 2 || sourceLines >= 2) return true;
+  if ((linkLines === 1 || sourceLines === 1) && /\n\s*Deadline:/i.test(text)) return true;
+  return false;
+}
+
+function lineAtIndex(text: string, index: number): string {
+  const lineStart = index === 0 ? 0 : text.lastIndexOf('\n', index - 1) + 1;
+  const lineEnd = text.indexOf('\n', index);
+  return text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd).trim();
+}
+
+/** Grok `Source: [@handle](tweet)` attribution — not a newsletter title link. */
+function isSourceAttributionMarkdownLink(text: string, match: RegExpMatchArray): boolean {
+  const label = match[1].trim();
+  if (/^@[\w.]+$/.test(label)) return true;
+  return /^Source:\s*/i.test(lineAtIndex(text, match.index ?? 0));
+}
+
+/**
+ * Prefer the explicit Source: field (markdown or bare URL), then Link:, then
+ * any URL in the block. Keeps Telegram link-preview leftovers from becoming
+ * the stored source when Grok already named the tweet.
+ */
+function extractStructuredSourceUrl(chunk: string): string {
+  const sourceMd = chunk.match(/Source:\s*\[[^\]]*\]\((https?:\/\/[^)]+)\)/i);
+  const sourceBare = chunk.match(/Source:\s*<?(\bhttps?:\/\/[^\s>]+)/i);
+  const linkMatch = chunk.match(/Link:\s*<?(\bhttps?:\/\/[^\s>]+)/i);
+  const anyUrl = chunk.match(/\bhttps?:\/\/[^\s<>)]+/);
+  const raw = (sourceMd?.[1] || sourceBare?.[1] || linkMatch?.[1] || anyUrl?.[0] || '').trim();
+  return raw ? normalizeParsedSourceUrl(raw.replace(/[),.;]+$/, '')) : '';
+}
+
 /**
  * Parse unnumbered operator pastes where each opportunity is a name plus a URL.
  * Returns [] unless at least two link-backed items are present, so a single
@@ -990,10 +1033,15 @@ export function parseBatchEntries(text: string): Array<{ name: string; descripti
   // cannot become the next entry's title.
   const cleaned = stripBatchControlLines(text);
 
-  // Detect format: numbered vs bold-name vs markdown-link
+  // Detect format: numbered vs structured Source:/Link: vs markdown-link vs bold
   const isNumbered = /^\s*\d+\.\s+/.test(cleaned);
+  const structuredBlocks = hasStructuredSourceBlocks(cleaned);
   const mdLinkMatches = [...cleaned.matchAll(/\[([^\]]{3,})\]\((https?:\/\/[^)]+)\)/g)];
-  const isMarkdownLinks = !isNumbered && !/\*\*[^*]+\*\*/.test(cleaned) && mdLinkMatches.length >= 2;
+  const titleMdLinks = mdLinkMatches.filter(match => !isSourceAttributionMarkdownLink(cleaned, match));
+  const isMarkdownLinks = !isNumbered
+    && !structuredBlocks
+    && !/\*\*[^*]+\*\*/.test(cleaned)
+    && titleMdLinks.length >= 2;
 
   let chunks: string[];
   if (isNumbered) {
@@ -1002,7 +1050,7 @@ export function parseBatchEntries(text: string): Array<{ name: string; descripti
   } else if (isMarkdownLinks) {
     // Markdown link format: [Name](url) — common in newsletters/briefings
     // Each [Name](url) is one entry; extract name, URL, and surrounding description
-    return mdLinkMatches.map(m => {
+    return titleMdLinks.map(m => {
       const name = m[1].trim().slice(0, 120);
       const sourceUrl = m[2].trim();
       // Get text after the closing ) on the same line for description
@@ -1044,6 +1092,19 @@ export function parseBatchEntries(text: string): Array<{ name: string; descripti
         }
       }
       chunks = chunks.filter(c => c.length > 0 && /^\s*Link:\s*.+/im.test(c));
+
+      if (chunks.length === 0) {
+        let sourceBlock = '';
+        for (const line of cleaned.split('\n')) {
+          const trimmed = line.trim();
+          sourceBlock += line + '\n';
+          if (/^Source:\s*.+/i.test(trimmed)) {
+            chunks.push(sourceBlock.trim());
+            sourceBlock = '';
+          }
+        }
+        chunks = chunks.filter(c => c.length > 0 && /^\s*Source:\s*.+/im.test(c));
+      }
 
       if (chunks.length === 0) {
         const compact = parseCompactUrlListEntries(cleaned);
@@ -1101,13 +1162,11 @@ export function parseBatchEntries(text: string): Array<{ name: string; descripti
       .trim()
       .slice(0, 120);
 
-    // Extract URL from Link: line or any https:// in chunk
-    const linkMatch = chunk.match(/Link:\s*<?(\bhttps?:\/\/[^\s>]+)/i);
-    const urlMatch = chunk.match(/\bhttps?:\/\/[^\s<>)]+/);
-    const rawSourceUrl = (linkMatch?.[1] || urlMatch?.[0] || '').trim();
-    const hasDirectUrl = Boolean(rawSourceUrl);
+    // Prefer Source: (the tweet Grok cited) over Link: or a preview URL in the block.
+    const sourceUrlFromFields = extractStructuredSourceUrl(chunk);
+    const hasDirectUrl = Boolean(sourceUrlFromFields);
     const sourceUrl = hasDirectUrl
-      ? normalizeParsedSourceUrl(rawSourceUrl)
+      ? sourceUrlFromFields
       : `https://manual/needs-source/${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     // Extract deadline
@@ -1115,8 +1174,8 @@ export function parseBatchEntries(text: string): Array<{ name: string; descripti
     const deadline = deadlineMatch ? deadlineMatch[1].trim() : undefined;
 
     // Build clean description: name — description text, append deadline if present
-    const descMatch = entryText.match(/\*\*[^*]+\*\*\s*[—–\-]\s*([\s\S]+?)(?:\n(?:Deadline|Link):|\s+Deadline:|\s*$)/)
-      || entryText.match(/^[^—–]+[—–]\s*([\s\S]+?)(?:\n(?:Deadline|Link):|\s+Deadline:|\s*$)/);
+    const descMatch = entryText.match(/\*\*[^*]+\*\*\s*[—–\-]\s*([\s\S]+?)(?:\n(?:Deadline|Link|Source):|\s+Deadline:|\s*$)/)
+      || entryText.match(/^[^—–]+[—–]\s*([\s\S]+?)(?:\n(?:Deadline|Link|Source):|\s+Deadline:|\s*$)/);
     let description = descMatch ? descMatch[1].trim() : entryText.replace(/^\d+\.\s*/, '').trim();
     if (!hasDirectUrl) {
       description += '\nNeeds source verification: Grok supplied a via-post or missing-link placeholder.';
