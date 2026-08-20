@@ -26,6 +26,7 @@ test('classifyOrgName tags tweet/title noise, programs, events, and real orgs', 
   assert.equal(classifyOrgName('United Nations Development Programme'), 'org');
   assert.equal(classifyOrgName('Google Research Scholar Program'), 'org');
   assert.equal(classifyOrgName('Deep Funding'), 'org');
+  assert.equal(classifyOrgName('Renaissance Philanthropy'), 'org');
   assert.equal(classifyOrgName('Jane Doe'), 'person');
   assert.equal(classifyOrgName('AI-BOOST'), 'org');
   assert.equal(classifyOrgName('CRC'), 'abbrev');
@@ -40,8 +41,9 @@ test('shouldArchiveOrgProfile keeps enriched programs and existing abbreviations
     org_type: 'Protocol DAO',
   }), false);
   assert.equal(shouldArchiveOrgProfile({ name: 'Taiko Grant Program' }), true);
-  assert.equal(shouldArchiveOrgProfile({ name: 'Jane Doe' }), true);
-  assert.equal(shouldArchiveOrgProfile({ name: 'Jane Doe', website: 'https://example.org' }), false);
+  assert.equal(shouldArchiveOrgProfile({ name: 'Jane Doe' }), false);
+  assert.equal(shouldArchiveOrgProfile({ name: 'Renaissance Philanthropy' }), false);
+  assert.equal(shouldArchiveOrgProfile({ name: 'Ethereum Mexico' }), false);
   assert.equal(shouldArchiveOrgProfile({ name: 'CRC', org_type: 'Protocol DAO' }), false);
   assert.equal(shouldArchiveOrgProfile({ name: 'Ethereum Foundation' }), false);
   assert.equal(shouldArchiveOrgProfile({ name: 'United Nations Development Programme' }), false);
