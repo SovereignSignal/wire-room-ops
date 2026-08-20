@@ -269,6 +269,9 @@ Optional:
 - `FORUM_GRANTS_FEED_ENABLED` -- pre-classified discuss.watch /grants pull in the forum lane (default true)
 - `FORUM_GRANTS_MIN_CONFIDENCE` -- min classifier confidence for grants-feed items (default 60)
 - `BD_LEADS_DATABASE_ID` -- Notion Paid Work Leads db for the Wednesday BD loop
+- `COHORT_BRIDGE_ENABLED` -- in-process Notion cohort bridge in the daily-digest fold (default true; set false to disable)
+- `COHORT_NOTION_DATABASE_ID` -- Cowork + Codex Daily Grant Scans table id (default `366000c0d590805ba2abdd2957ee86a7`)
+- `COHORT_NOTION_TOKEN` -- optional Notion token override; otherwise uses the enabled Notion integration token. That integration must be granted access to the scans table.
 - `DISCUSS_WATCH_API_URL`
 - `PERPLEXITY_API_KEY` -- for deep web research scans (variant P prompts)
 

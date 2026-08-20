@@ -3,6 +3,7 @@ import { ScheduleType } from '../types/intake';
 import { runScanExecution } from '../jobs/scan-execution';
 import { runForumScan } from '../jobs/forum-scan';
 import { runSourceFeeds } from '../jobs/source-feeds';
+import { runCohortBridge } from '../jobs/cohort-bridge';
 import { runXLists } from '../jobs/x-lists';
 import { runRegistryWatch } from '../jobs/registry-watch';
 import { runWeeklyIssue } from '../jobs/weekly-issue';
@@ -435,6 +436,21 @@ function createJobExecutor(schedule: ScheduleConfig) {
         } catch (e) {
           console.error('[Scheduler] Daily source feeds failed (non-fatal):', e instanceof Error ? e.message : e);
           anomalies.push(`Source-feeds lane failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+        try {
+          if (config.cohort.enabled) {
+            const cr = await runCohortBridge(pool);
+            if (cr.skipped && !cr.ok) {
+              anomalies.push(`Cohort bridge skipped: ${cr.reason || cr.error}`);
+            } else if (!cr.ok) {
+              anomalies.push(`Cohort bridge failed: ${cr.error}`);
+            } else if (!cr.skipped) {
+              console.log(`[Scheduler] Cohort bridge: ${cr.runId} fetched=${cr.fetched} promoted=${cr.promoted} backfill=${cr.isBackfill}`);
+            }
+          }
+        } catch (e) {
+          console.error('[Scheduler] Cohort bridge failed (non-fatal):', e instanceof Error ? e.message : e);
+          anomalies.push(`Cohort bridge failed: ${e instanceof Error ? e.message : String(e)}`);
         }
         if (config.watchtower.xListsEnabled) {
           try {

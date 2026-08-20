@@ -267,16 +267,27 @@ export async function syncOrgsToNotion(integrationId: number): Promise<{
   return stats;
 }
 
+export interface NotionQueryOptions {
+  filter?: Record<string, unknown>;
+  sorts?: unknown[];
+}
+
 /**
  * Query all pages from a Notion database (handles pagination).
  */
-export async function queryAllNotionPages(token: string, databaseId: string): Promise<NotionPage[]> {
+export async function queryAllNotionPages(
+  token: string,
+  databaseId: string,
+  query: NotionQueryOptions = {},
+): Promise<NotionPage[]> {
   const allPages: NotionPage[] = [];
   let startCursor: string | undefined;
   let hasMore = true;
 
   while (hasMore) {
     const body: any = { page_size: 100 };
+    if (query.filter) body.filter = query.filter;
+    if (query.sorts) body.sorts = query.sorts;
     if (startCursor) body.start_cursor = startCursor;
 
     const data = await notionRequest('POST', `/databases/${databaseId}/query`, token, body);

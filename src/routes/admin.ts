@@ -8,6 +8,7 @@
  * POST /classify-backfill   — batch-classify UNCHECKED entries
  * POST /tag-backfill        — batch-extract entity tags for entries missing them
  * POST /summary-sync-backfill — historical Telegram summary import
+ * POST /cohort-bridge        — run the Notion cohort bridge (heartbeat + backfill)
  * POST /clean-orgs          — cleanup org profiles (remove junk)
  * POST /dedup-orgs          — merge duplicate org profiles
  * POST /enrich-orgs         — LLM-based org profile enrichment
@@ -237,6 +238,26 @@ router.post('/summary-sync-backfill', async (req: Request, res: Response) => {
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';
     console.error('[SummarySync] Backfill failed:', error);
+    res.status(500).json({ error: errorMsg });
+  }
+});
+
+// POST /cohort-bridge — ingest the Cowork+Codex Notion table and stamp source_runs
+router.post('/cohort-bridge', async (req: Request, res: Response) => {
+  if (!rateLimit('cohort-bridge', 1, 10 * 60 * 1000)) {
+    res.status(429).json({ error: 'Cohort bridge recently ran. Please wait 10 minutes.' });
+    return;
+  }
+
+  try {
+    const { runCohortBridge } = await import('../jobs/cohort-bridge');
+    const dryRun = req.body?.dryRun === true;
+    console.log(`[Admin] Cohort bridge triggered (dryRun=${dryRun})`);
+    const result = await runCohortBridge(getPool(), { dryRun });
+    res.status(result.ok || result.skipped ? 200 : 500).json(result);
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[Admin] Cohort bridge failed:', error);
     res.status(500).json({ error: errorMsg });
   }
 });
