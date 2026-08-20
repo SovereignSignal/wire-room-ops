@@ -33,12 +33,21 @@ export class TelegramIntakeRetryableError extends Error {
 // Minimal Telegram types (only what we need)
 // ────────────────────────────────────────────────────────────────────────────
 
+interface TelegramMessageEntity {
+  type: string;
+  offset: number;
+  length: number;
+  url?: string;
+}
+
 interface TelegramMessage {
   message_id: number;
   from?: { id: number; first_name?: string };
   chat: { id: number };
   text?: string;
   caption?: string;
+  entities?: TelegramMessageEntity[];
+  caption_entities?: TelegramMessageEntity[];
   forward_date?: number;
   forward_from?: { id: number; first_name?: string };
   forward_from_chat?: { id: number; title?: string };
@@ -347,6 +356,37 @@ function formatReply(result: IntakeResult): string {
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
+ * Surface URLs Telegram hid behind text_link entities (hyperlinked names
+ * with no visible https://) so batch parsing can see every submitted link.
+ */
+export function resolveTelegramIntakeText(message: {
+  text?: string;
+  caption?: string;
+  entities?: TelegramMessageEntity[];
+  caption_entities?: TelegramMessageEntity[];
+}): string {
+  const text = message.text || message.caption || '';
+  const entities = message.entities || message.caption_entities || [];
+  if (!text || entities.length === 0) return text;
+
+  const extrasByLine = new Map<number, string[]>();
+  for (const entity of entities) {
+    if (entity.type !== 'text_link' || !entity.url) continue;
+    if (text.includes(entity.url)) continue;
+    const lineIndex = (text.slice(0, entity.offset).match(/\n/g) || []).length;
+    const urls = extrasByLine.get(lineIndex) ?? [];
+    if (!urls.includes(entity.url)) urls.push(entity.url);
+    extrasByLine.set(lineIndex, urls);
+  }
+  if (extrasByLine.size === 0) return text;
+
+  return text.split('\n').map((line, index) => {
+    const urls = extrasByLine.get(index);
+    return urls ? `${line} ${urls.join(' ')}`.trim() : line;
+  }).join('\n');
+}
+
+/**
  * Handle an incoming Telegram webhook update (message or callback).
  */
 export async function handleTelegramUpdate(
@@ -366,7 +406,7 @@ export async function handleTelegramUpdate(
     return;
   }
 
-  const text = message.text || message.caption || '';
+  const text = resolveTelegramIntakeText(message);
   if (!text.trim()) {
     await sendMessage(message.chat.id, 'Please send a URL or text to submit.');
     return;
@@ -385,7 +425,7 @@ export async function handleTelegramUpdate(
     forwardedFrom,
   };
 
-  // Batch mode: numbered list, bold-name, or structured (Link:) format
+  // Batch mode: numbered list, bold-name, Link: fields, or compact name-URL list
   if (isBatchMessage(text)) {
     console.log(`[TelegramAdapter] Batch message detected from user ${userId}`);
     if (options.sendBatchAcknowledgement !== false) {

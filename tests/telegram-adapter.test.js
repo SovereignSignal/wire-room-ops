@@ -5,7 +5,9 @@ const assert = require('node:assert/strict');
 const {
   formatSettledBatchReport,
   hasOutstandingHistoryChecks,
+  resolveTelegramIntakeText,
 } = require('../src/services/telegram-adapter');
+const { isBatchMessage, parseBatchEntries } = require('../src/services/intake-core');
 
 test('settled batch report uses final database status instead of insert count', () => {
   const batch = {
@@ -97,4 +99,35 @@ test('history completion detection treats unstamped queued rows as outstanding',
     { id: 201, status: 'queued', decided_recheck: { verdict: 'distinct' }, duplicate_chain_error: null },
     { id: 202, status: 'duplicate', decided_recheck: null, duplicate_chain_error: null },
   ]), false);
+});
+
+test('hidden Telegram text_link URLs are materialized for compact batch parsing', () => {
+  const names = [
+    'Prezenti AI Sponsorship (Celo)',
+    'GOAT Network AI Builder Grants',
+  ];
+  const text = names.join('\n');
+  const entities = [
+    {
+      type: 'text_link',
+      offset: 0,
+      length: names[0].length,
+      url: 'https://x.com/prezenti_grants/status/2090153678397436206',
+    },
+    {
+      type: 'text_link',
+      offset: names[0].length + 1,
+      length: names[1].length,
+      url: 'https://x.com/GOATNetwork/status/2087971190572794275',
+    },
+  ];
+
+  const resolved = resolveTelegramIntakeText({ text, entities });
+  assert.match(resolved, /prezenti_grants\/status\/2090153678397436206/);
+  assert.match(resolved, /GOATNetwork\/status\/2087971190572794275/);
+  assert.equal(isBatchMessage(resolved), true);
+  const parsed = parseBatchEntries(resolved);
+  assert.equal(parsed.length, 2);
+  assert.equal(parsed[0].name, names[0]);
+  assert.equal(parsed[1].sourceUrl, 'https://x.com/GOATNetwork/status/2087971190572794275');
 });
