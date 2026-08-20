@@ -13,6 +13,7 @@ const {
   isBatchMessage,
   normalizeDeadlineForDb,
   parseBatchEntries,
+  processBatchMessage,
   processIntakeMessage,
   semanticBatchKey,
 } = require('../src/services/intake-core');
@@ -372,6 +373,129 @@ test('parseBatchEntries preserves inline Grok rows with placeholder links', () =
   assert.match(parsed[2].description, /needs source verification/i);
   assert.equal(parsed[3].name, 'Gitcoin / Impact Certificates (Hypercerts)');
   assert.equal(parsed[4].name, 'Protocol Guild / Retro Funding Discussion');
+});
+
+test('unnumbered name-URL pastes route as batches so one duplicate cannot drop the rest', () => {
+  const content = [
+    'Prezenti AI Sponsorship (Celo) - https://x.com/prezenti_grants/status/2090153678397436206',
+    'GOAT Network AI Builder Grants - https://x.com/GOATNetwork/status/2087971190572794275',
+    'Stacks Thesis Bounty - https://x.com/zeroauthdao/status/2088309922328903811',
+  ].join('\n');
+
+  assert.equal(isBatchMessage(content), true);
+  const parsed = parseBatchEntries(content);
+  assert.equal(parsed.length, 3);
+  assert.deepEqual(parsed.map(entry => entry.name), [
+    'Prezenti AI Sponsorship (Celo)',
+    'GOAT Network AI Builder Grants',
+    'Stacks Thesis Bounty',
+  ]);
+  assert.equal(parsed[0].sourceUrl, 'https://x.com/prezenti_grants/status/2090153678397436206');
+  assert.equal(parsed[2].sourceUrl, 'https://x.com/zeroauthdao/status/2088309922328903811');
+});
+
+test('compact URL lists accept name/URL pairs, bullets, and a preview duplicate in the mix', () => {
+  const pairs = [
+    'Base Batches 004',
+    'https://x.com/base/status/111',
+    'GWDC 2026 Korea Hackathon',
+    'https://x.com/gwdc/status/222',
+    'QIE Hackathon 3.0',
+    'https://x.com/qie/status/333',
+  ].join('\n');
+  assert.equal(isBatchMessage(pairs), true);
+  const pairParsed = parseBatchEntries(pairs);
+  assert.deepEqual(pairParsed.map(entry => entry.name), [
+    'Base Batches 004',
+    'GWDC 2026 Korea Hackathon',
+    'QIE Hackathon 3.0',
+  ]);
+  assert.equal(pairParsed[1].sourceUrl, 'https://x.com/gwdc/status/222');
+
+  const bullets = [
+    '• CODE ODYSSEY 2026 - https://x.com/odyssey/status/444',
+    '* Monad AI & Blockchain Hackathon (Hyderabad) - https://x.com/monad/status/555',
+  ].join('\n');
+  assert.equal(isBatchMessage(bullets), true);
+  const bulletParsed = parseBatchEntries(bullets);
+  assert.equal(bulletParsed[0].name, 'CODE ODYSSEY 2026');
+  assert.equal(bulletParsed[1].name, 'Monad AI & Blockchain Hackathon (Hyderabad)');
+
+  const withKnownDupe = [
+    'Arbitrum Open House Singapore - https://x.com/arbitrum/status/666',
+    'Fresh Builder Grant - https://x.com/fresh/status/777',
+  ].join('\n');
+  assert.equal(isBatchMessage(withKnownDupe), true);
+  assert.equal(parseBatchEntries(withKnownDupe).length, 2);
+});
+
+test('a single name-URL paste stays on the single-entry path', () => {
+  const single = 'Base Batches 004 - https://x.com/base/status/111';
+  assert.equal(isBatchMessage(single), false);
+  assert.equal(parseBatchEntries(single).length, 1);
+  assert.equal(parseBatchEntries(single)[0].sourceUrl, 'https://x.com/base/status/111');
+});
+
+test('compact batch keeps later URLs when the first link is already seen', async t => {
+  const db = require('../src/db');
+  const originalGetAllFeeds = db.getAllFeeds;
+  const originalGetPool = db.getPool;
+  t.after(() => {
+    db.getAllFeeds = originalGetAllFeeds;
+    db.getPool = originalGetPool;
+  });
+
+  db.getAllFeeds = async () => [{ key: 'crypto' }, { key: 'ai' }, { key: 'oss' }];
+  let nextId = 500;
+  const client = {
+    query: async (sql) => {
+      if (/INSERT INTO scan_entries/i.test(sql)) {
+        nextId += 1;
+        return { rows: [{ id: nextId }], rowCount: 1 };
+      }
+      if (/INSERT INTO seen_urls/i.test(sql)) {
+        return { rows: [{ id: 1 }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    },
+    release() {},
+  };
+  db.getPool = () => ({
+    connect: async () => client,
+    query: async (sql, params) => {
+      if (/channel_update_id/i.test(sql)) return { rows: [] };
+      if (/FROM seen_urls/i.test(sql)) {
+        const normalized = String(params?.[0] || '');
+        if (normalized.includes('2090153678397436206')) {
+          return {
+            rows: [{
+              first_seen_entry_id: 11,
+              name: 'Prezenti AI Sponsorship (Celo)',
+              url: params[0],
+            }],
+          };
+        }
+        return { rows: [] };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const result = await processBatchMessage({
+    text: [
+      'Prezenti AI Sponsorship (Celo) - https://x.com/prezenti_grants/status/2090153678397436206',
+      'GOAT Network AI Builder Grants - https://x.com/GOATNetwork/status/2087971190572794275',
+      'Stacks Thesis Bounty - https://x.com/zeroauthdao/status/2088309922328903811',
+    ].join('\n'),
+    senderId: 'telegram:1',
+  });
+
+  assert.equal(result.duplicates, 1);
+  assert.equal(result.inserted, 2);
+  assert.equal(result.entries[0].isDuplicate, true);
+  assert.match(result.entries[0].error, /Already seen as "Prezenti AI Sponsorship \(Celo\)"/);
+  assert.ok(result.entries[1].id);
+  assert.ok(result.entries[2].id);
 });
 
 test('dedup checks raw entries so rapid double-pastes do not slip through', async () => {

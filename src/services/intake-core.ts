@@ -770,6 +770,7 @@ export interface BatchIntakeResult {
  *   - Bold markdown: "**Name** — Description" appearing 2+ times
  *   - Markdown links: "[Name](url)" appearing 2+ times (newsletters/briefings)
  *   - Structured: Multiple "Link: https://..." lines (Telegram strips ** to bold rendering)
+ *   - Compact URL list: 2+ "Name - https://..." lines, or name/URL pairs
  */
 /**
  * Grok sometimes appends citation footnote digits directly after X status IDs
@@ -870,6 +871,11 @@ export function isBatchMessage(text: string): boolean {
   // single-entry intake and discard the valid payload.
   if ((declaredResultCount ?? 0) > 0 && parseBatchEntries(cleaned).length > 0) return true;
 
+  // Compact operator paste: one grant per line as "Name - URL" (or name then
+  // URL on the next line). Telegram link-previews one URL and the single-entry
+  // path previously rejected the whole message when that preview was a duplicate.
+  if (parseCompactUrlListEntries(cleaned).length >= 2) return true;
+
   return false;
 }
 
@@ -900,6 +906,82 @@ function stripBatchControlLines(text: string): string {
     .filter(line => !isBatchControlLine(line) && !isIntakeStatusLine(line))
     .join('\n')
     .trim();
+}
+
+function compactItemName(raw: string): string {
+  return raw
+    .replace(/^\s*\d+\.\s+/, '')
+    .replace(/^\s*[-*•]\s+/, '')
+    .replace(/\s*[—–−-]\s*$/, '')
+    .replace(/\s*:\s*$/, '')
+    .replace(/^\[+|\]+$/g, '')
+    .trim();
+}
+
+function pickCompactSourceUrl(urls: string[]): string {
+  let best = urls[0];
+  for (const url of urls.slice(1)) {
+    if (isBetterBatchSource(url, best)) best = url;
+  }
+  return best;
+}
+
+/**
+ * Parse unnumbered operator pastes where each opportunity is a name plus a URL.
+ * Returns [] unless at least two link-backed items are present, so a single
+ * grant with a source URL still uses the single-entry path.
+ */
+export function parseCompactUrlListEntries(
+  text: string,
+): Array<{ name: string; description: string; sourceUrl: string; deadline?: string }> {
+  const lines = stripBatchControlLines(text)
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line.length > 0 && !isIntakeStatusLine(line));
+
+  if (lines.length < 2) return [];
+  // Structured Grok/Telegram "Link:" batches have their own chunker. Do not
+  // steal those by treating the Link: URL as a compact one-liner.
+  if (lines.some(line => /^Link:\s*.+/i.test(line))) return [];
+
+  const items: Array<{ name: string; description: string; sourceUrl: string; deadline?: string }> = [];
+  let pendingName = '';
+
+  for (const line of lines) {
+    const deadlineMatch = line.match(/^Deadline:\s*(.+)$/i);
+    if (deadlineMatch) {
+      if (items.length > 0) {
+        const deadline = deadlineMatch[1].trim();
+        items[items.length - 1].deadline = deadline;
+        if (deadline && deadline.toLowerCase() !== 'none listed') {
+          items[items.length - 1].description += `\nDeadline: ${deadline}`;
+        }
+      }
+      continue;
+    }
+
+    const rawUrls = extractUrls(line);
+    if (rawUrls.length === 0) {
+      pendingName = compactItemName(line);
+      continue;
+    }
+
+    const cleanedUrls = rawUrls.map(url => normalizeParsedSourceUrl(url.replace(/[),.;]+$/, '')));
+    const sourceUrl = pickCompactSourceUrl(cleanedUrls);
+    let nameSource = line;
+    for (const url of rawUrls) nameSource = nameSource.replace(url, '');
+    const name = compactItemName(nameSource) || compactItemName(pendingName);
+    pendingName = '';
+    const resolvedName = (name.length > 2 ? name : buildName(name || sourceUrl, sourceUrl)).slice(0, 120);
+    items.push({
+      name: resolvedName,
+      description: name.length > 2 ? name : resolvedName,
+      sourceUrl,
+    });
+  }
+
+  const usable = items.filter(item => item.name.length > 2 && /^https?:\/\//i.test(item.sourceUrl));
+  return usable.length >= 2 ? usable : [];
 }
 
 export function parseBatchEntries(text: string): Array<{ name: string; description: string; sourceUrl: string; deadline?: string }> {
@@ -964,6 +1046,8 @@ export function parseBatchEntries(text: string): Array<{ name: string; descripti
       chunks = chunks.filter(c => c.length > 0 && /^\s*Link:\s*.+/im.test(c));
 
       if (chunks.length === 0) {
+        const compact = parseCompactUrlListEntries(cleaned);
+        if (compact.length >= 2) return compact;
         chunks = cleaned.split(/\n\s*\n/).filter(c => c.trim().length > 0);
       }
     }
