@@ -9,7 +9,7 @@
  * POST /tag-backfill        — batch-extract entity tags for entries missing them
  * POST /summary-sync-backfill — historical Telegram summary import
  * POST /cohort-bridge        — run the Notion cohort bridge (heartbeat + backfill)
- * POST /clean-orgs          — cleanup org profiles (remove junk)
+ * POST /clean-orgs          — archive junk org profiles (+ matching Notion pages)
  * POST /dedup-orgs          — merge duplicate org profiles
  * POST /enrich-orgs         — LLM-based org profile enrichment
  * POST /discover-contacts   — LLM-based contact discovery (org + content sources)
@@ -262,9 +262,10 @@ router.post('/cohort-bridge', async (req: Request, res: Response) => {
   }
 });
 
-// POST /clean-orgs — one-time org_profiles cleanup (remove bad data)
-router.post('/clean-orgs', async (_req: Request, res: Response) => {
-  if (!rateLimit('clean-orgs', 1, 30 * 60 * 1000)) {
+// POST /clean-orgs — archive junk org profiles (+ matching Notion pages)
+router.post('/clean-orgs', async (req: Request, res: Response) => {
+  const dryRun = req.body?.dryRun === true;
+  if (!rateLimit(dryRun ? 'clean-orgs-dry' : 'clean-orgs', 1, 30 * 60 * 1000)) {
     res.status(429).json({ error: 'Cleanup recently run. Please wait 30 minutes.' });
     return;
   }
@@ -272,7 +273,7 @@ router.post('/clean-orgs', async (_req: Request, res: Response) => {
   try {
     const { runOrgCleanup } = await import('../migrations/cleanup-org-profiles');
     const pool = getPool();
-    const result = await runOrgCleanup(pool);
+    const result = await runOrgCleanup(pool, { dryRun });
     res.json(result);
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';

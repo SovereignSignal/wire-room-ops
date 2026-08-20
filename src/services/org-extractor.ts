@@ -100,7 +100,7 @@ const ORG_ALIASES: Record<string, string> = {
  * Returns false for names containing known org suffixes.
  */
 function looksLikePersonName(candidate: string): boolean {
-  const ORG_SUFFIXES = /\b(foundation|labs?|inc|corp|dao|protocol|network|fund|ventures|capital|institute|consortium|alliance|council|agency|committee|group)\b/i;
+  const ORG_SUFFIXES = /\b(foundation|labs?|inc|corp|dao|protocol|network|funds?|funding|ventures|capital|institute|consortium|alliance|council|agency|committee|group)\b/i;
   if (ORG_SUFFIXES.test(candidate)) return false;
   const PERSON = /^[A-Z][a-z\u00C0-\u00FF]+ (?:[A-Z]\. )?[A-Z][a-z\u00C0-\u00FF]+(?:\s*\(.*\))?$/;
   return PERSON.test(candidate);
@@ -114,6 +114,8 @@ function looksLikeEventOrProgram(candidate: string): boolean {
     /\b(season|nominations?|launch|update|announcement|recap|roundup|cycle)\b/i,
     /\b(week|day|summit|conference)\s+\d/i,
     /^(official|introducing|presenting|announcing)\b/i,
+    /\b20\d{2}\s+(fall|spring|winter|summer)\b/i,
+    /\b(fall|spring|winter|summer)\s+20\d{2}\b/i,
   ];
   return PATTERNS.some(p => p.test(candidate));
 }
@@ -124,6 +126,81 @@ function looksLikeEventOrProgram(candidate: string): boolean {
 function isJunkOrgName(candidate: string): boolean {
   if (candidate.length <= 3) return true;
   if (candidate.length <= 4 && /^[A-Z\/]+$/.test(candidate) && !ORG_ALIASES[candidate.toLowerCase()]) return true;
+  return false;
+}
+
+/** Entry titles previously stored as org names (not real organizations). */
+const EXACT_NOISE_NAMES = new Set([
+  'official launch',
+  'season 7 nominations',
+  'thrive polygon update',
+  'stacks new grants program live',
+  'opportunities for youth',
+  'foresight ai nodes grants',
+  'introducing @pl_genesis: frontiers of collaboration',
+  'webfalainitiat1',
+].map(n => n.toLowerCase()));
+
+export type OrgNameKind = 'org' | 'noise' | 'program' | 'person' | 'event' | 'abbrev';
+
+function isRetweetOrHandleNoise(candidate: string): boolean {
+  if (/^\s*RT\b/i.test(candidate)) return true;
+  if (/^\s*@[\w]{1,15}\s*$/i.test(candidate)) return true;
+  return false;
+}
+
+function isLowerKebabSlug(candidate: string): boolean {
+  return /^[a-z0-9]+(?:-[a-z0-9]+)+$/.test(candidate);
+}
+
+function looksLikeProgramOffering(candidate: string): boolean {
+  return [
+    /\bround\s+\d+\b/i,
+    /\bfellowships?\b/i,
+    /\bincubators?\b/i,
+    /\b(grant|grants|bounty|developer)\s+programs?\b/i,
+    /\bcompute grants\b/i,
+    /\bmaintainer funding\b/i,
+  ].some(p => p.test(candidate));
+}
+
+/**
+ * Classify a candidate org-profile name. Used both to block new junk at
+ * extract time and to decide which existing rows the CRM cleanup may archive.
+ */
+export function classifyOrgName(name: string): OrgNameKind {
+  const candidate = (name || '').replace(/\s+/g, ' ').trim();
+  if (!candidate) return 'noise';
+  if (EXACT_NOISE_NAMES.has(candidate.toLowerCase())) return 'noise';
+  if (isRetweetOrHandleNoise(candidate)) return 'noise';
+  if (/\s+today$/i.test(candidate)) return 'noise';
+  if (isLowerKebabSlug(candidate)) return 'noise';
+  if (looksLikePersonName(candidate)) return 'person';
+  if (looksLikeEventOrProgram(candidate)) return 'event';
+  if (looksLikeProgramOffering(candidate)) return 'program';
+  if (isJunkOrgName(candidate)) return 'abbrev';
+  return 'org';
+}
+
+export interface OrgArchiveFields {
+  name: string;
+  org_type?: string | null;
+  website?: string | null;
+  description?: string | null;
+}
+
+/**
+ * Existing CRM rows we will archive: tweet/title noise, people, events, and
+ * unenriched program-shaped names. Short abbreviations already in the CRM
+ * (CRC, QIE) stay — they are not new junk, just terse names.
+ */
+export function shouldArchiveOrgProfile(org: OrgArchiveFields): boolean {
+  const kind = classifyOrgName(org.name);
+  if (kind === 'noise' || kind === 'event') return true;
+  if (kind === 'person' || kind === 'program') {
+    const enriched = Boolean(org.org_type || org.website || org.description);
+    return !enriched;
+  }
   return false;
 }
 
@@ -257,10 +334,7 @@ export function extractOrgFromName(entryName: string): string | null {
  * Returns true if the candidate should be accepted.
  */
 function passesGuards(candidate: string): boolean {
-  if (isJunkOrgName(candidate)) return false;
-  if (looksLikePersonName(candidate)) return false;
-  if (looksLikeEventOrProgram(candidate)) return false;
-  return true;
+  return classifyOrgName(candidate) === 'org';
 }
 
 /**
@@ -270,6 +344,7 @@ function normalizeOrgName(raw: string): string {
   const cleaned = raw
     .replace(/\s+/g, ' ')
     .replace(/^[@#]/, '')
+    .replace(/\s*@[a-zA-Z0-9_]+/g, '')
     .trim();
 
   // Check alias map
@@ -404,12 +479,16 @@ Return ONLY valid JSON array, no explanation.`;
 
   try {
     const parsed = JSON.parse(jsonMatch[0]) as Array<{ id: number; org: string | null }>;
-    return parsed.map(p => ({
-      entryId: p.id,
-      orgName: p.org ? normalizeOrgName(p.org) : null,
-      confidence: p.org ? 'medium' as const : 'low' as const,
-      method: 'grok' as const,
-    }));
+    return parsed.map(p => {
+      const orgName = p.org ? normalizeOrgName(p.org) : null;
+      const accepted = orgName && classifyOrgName(orgName) === 'org' ? orgName : null;
+      return {
+        entryId: p.id,
+        orgName: accepted,
+        confidence: accepted ? 'medium' as const : 'low' as const,
+        method: 'grok' as const,
+      };
+    });
   } catch {
     return entries.map(e => ({ entryId: e.id, orgName: null, confidence: 'low' as const, method: 'grok' as const }));
   }
