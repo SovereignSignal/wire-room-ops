@@ -303,6 +303,43 @@ export async function queryAllNotionPages(
 }
 
 /**
+ * Archive Notion database pages whose Name/title exactly matches one of `titles`.
+ * Used by org-profile cleanup so deleted Postgres rows do not linger in Simple CRM.
+ */
+export async function archiveNotionPagesByTitle(
+  token: string,
+  databaseId: string,
+  titles: string[],
+): Promise<{ archived: number; misses: number }> {
+  const stats = { archived: 0, misses: 0 };
+  const unique = [...new Set(titles.map(t => t.trim()).filter(Boolean))];
+
+  for (const title of unique) {
+    try {
+      const data = await notionRequest('POST', `/databases/${databaseId}/query`, token, {
+        filter: { property: 'Name', title: { equals: title } },
+        page_size: 5,
+      });
+      const pages: Array<{ id: string }> = data.results || [];
+      if (pages.length === 0) {
+        stats.misses++;
+        continue;
+      }
+      for (const page of pages) {
+        await notionRequest('PATCH', `/pages/${page.id}`, token, { archived: true });
+        stats.archived++;
+      }
+    } catch (err) {
+      console.error(`[NotionSync] Failed to archive Notion page "${title}":`, err);
+      stats.misses++;
+    }
+    await new Promise(r => setTimeout(r, 350));
+  }
+
+  return stats;
+}
+
+/**
  * Build Notion properties object for an org profile.
  * Mapped to match the actual "Sov's Orgs" Notion database properties.
  *
