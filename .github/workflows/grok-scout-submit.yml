@@ -1,0 +1,74 @@
+name: Grok Scout Submit
+
+# workflow_dispatch only — do not run on push (would be noisy; Railway deploys from main).
+on:
+  workflow_dispatch:
+    inputs:
+      wire:
+        description: "crypto | ai | oss"
+        required: true
+        type: choice
+        options: [crypto, ai, oss]
+      scanDate:
+        description: "YYYY-MM-DD"
+        required: true
+        type: string
+      rawText:
+        description: "grok-scout JSON manifest (single line OK)"
+        required: true
+        type: string
+
+jobs:
+  submit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: POST to WRO /api/scan/submit
+        env:
+          WRO_INTERNAL_API_KEY: ${{ secrets.WRO_INTERNAL_API_KEY }}
+          INTERNAL_API_KEY: ${{ secrets.INTERNAL_API_KEY }}
+          WIRE: ${{ inputs.wire }}
+          SCAN_DATE: ${{ inputs.scanDate }}
+          RAW_TEXT: ${{ inputs.rawText }}
+          WRO_URL: https://wire-room-ops-production.up.railway.app/api/scan/submit
+        run: |
+          set -euo pipefail
+          KEY="${WRO_INTERNAL_API_KEY:-${INTERNAL_API_KEY:-}}"
+          if [ -z "$KEY" ]; then
+            echo "Missing Actions secret WRO_INTERNAL_API_KEY (or INTERNAL_API_KEY)."
+            exit 1
+          fi
+          case "$WIRE" in crypto|ai|oss) ;; *) echo "Invalid wire"; exit 1 ;; esac
+          echo "$SCAN_DATE" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' || { echo "Bad scanDate"; exit 1; }
+          python3 - <<'PY'
+          import json, os, urllib.request
+          raw = os.environ["RAW_TEXT"]
+          wire = os.environ["WIRE"]
+          date = os.environ["SCAN_DATE"]
+          key = os.environ.get("WRO_INTERNAL_API_KEY") or os.environ.get("INTERNAL_API_KEY") or ""
+          url = os.environ["WRO_URL"]
+          body = json.dumps({
+            "wire": wire,
+            "promptVariant": "S",
+            "scanDate": date,
+            "source": "grok-scout",
+            "rawText": raw,
+          }).encode()
+          req = urllib.request.Request(
+              url, data=body, method="POST",
+              headers={
+                  "Authorization": f"Bearer {key}",
+                  "Content-Type": "application/json",
+              },
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=60) as resp:
+                  data = resp.read().decode()
+                  print("HTTP", resp.status)
+                  parsed = json.loads(data)
+                  print({k: parsed.get(k) for k in ("success", "processing", "error", "note") if k in parsed})
+          except urllib.error.HTTPError as e:
+              print("HTTP", e.code)
+              print(e.read().decode()[:500])
+              raise SystemExit(1)
+          PY
