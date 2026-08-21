@@ -21,6 +21,9 @@ const ORG_ALIASES: Record<string, string> = {
   'gitcoin grants': 'Gitcoin',
   'arbitrum': 'Arbitrum Foundation',
   'arbitrum foundation': 'Arbitrum Foundation',
+  'rocket pool': 'Rocket Pool',
+  'rocket pool gmc': 'Rocket Pool',
+  'rocket pool grants management committee': 'Rocket Pool',
   'optimism': 'Optimism Foundation',
   'op foundation': 'Optimism Foundation',
   'ethereum foundation': 'Ethereum Foundation',
@@ -172,6 +175,10 @@ export function classifyOrgName(name: string): OrgNameKind {
   const candidate = (name || '').replace(/\s+/g, ' ').trim();
   if (!candidate) return 'noise';
   if (EXACT_NOISE_NAMES.has(candidate.toLowerCase())) return 'noise';
+  const lower = candidate.toLowerCase();
+  if (ORG_ALIASES[lower] || Object.values(ORG_ALIASES).some(v => v.toLowerCase() === lower)) {
+    return 'org';
+  }
   if (isRetweetOrHandleNoise(candidate)) return 'noise';
   if (/\s+today$/i.test(candidate)) return 'noise';
   if (isLowerKebabSlug(candidate)) return 'noise';
@@ -342,6 +349,10 @@ function passesGuards(candidate: string): boolean {
 /**
  * Normalize an org name — check aliases, clean up formatting.
  */
+export function canonicalizeOrgName(raw: string): string {
+  return normalizeOrgName(raw);
+}
+
 function normalizeOrgName(raw: string): string {
   const cleaned = raw
     .replace(/\s+/g, ' ')

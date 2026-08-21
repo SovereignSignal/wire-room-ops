@@ -27,6 +27,7 @@ test('classifyOrgName tags tweet/title noise, programs, events, and real orgs', 
   assert.equal(classifyOrgName('Google Research Scholar Program'), 'org');
   assert.equal(classifyOrgName('Deep Funding'), 'org');
   assert.equal(classifyOrgName('Renaissance Philanthropy'), 'org');
+  assert.equal(classifyOrgName('Rocket Pool'), 'org');
   assert.equal(classifyOrgName('Jane Doe'), 'person');
   assert.equal(classifyOrgName('AI-BOOST'), 'org');
   assert.equal(classifyOrgName('CRC'), 'abbrev');
@@ -53,10 +54,18 @@ test('extractOrgFromName no longer mints tweet titles or program shells as orgs'
   assert.equal(extractOrgFromName('RT @Walkowiak_Emma: interesting paper'), null);
   assert.equal(extractOrgFromName("New Kalil's Corner today — weekly notes"), null);
   assert.equal(extractOrgFromName('FAS AI Safety Policy Entrepreneurship Fellowship — apply'), null);
-  assert.equal(extractOrgFromName('Rocket Pool GMC Round 40 — results'), null);
+  assert.equal(extractOrgFromName('Rocket Pool GMC Round 40 — results'), 'Rocket Pool');
   assert.equal(extractOrgFromName('MagicBlock Magic Incubator — cohort 2'), null);
   assert.equal(extractOrgFromName('Ethereum Foundation — ESP academic grants'), 'Ethereum Foundation');
   assert.equal(extractOrgFromName('Gitcoin — Allo stack update'), 'Gitcoin');
+  assert.equal(extractOrgFromName('Rocket Pool GMC Round 40'), 'Rocket Pool');
+});
+
+test('canonicalizeOrgName maps brand aliases onto the CRM canonical org', () => {
+  const { canonicalizeOrgName } = require('../src/services/org-extractor');
+  assert.equal(canonicalizeOrgName('Arbitrum'), 'Arbitrum Foundation');
+  assert.equal(canonicalizeOrgName('Rocket Pool Grants Management Committee'), 'Rocket Pool');
+  assert.equal(canonicalizeOrgName('rocket pool gmc'), 'Rocket Pool');
 });
 
 function stubPool(orgs) {
@@ -98,4 +107,23 @@ test('runOrgCleanup deletes noise rows, unlinks entries, and skips Notion when a
   assert.equal(result.entriesUnlinked, 1);
   assert.equal(result.notionArchived, 0);
   assert.ok(pool.calls.some(c => /DELETE FROM org_profiles/i.test(c.sql) && c.params[0] === 9));
+});
+
+test('planKnownOrgMerges renames missing targets and aliases leftovers without archiving Arbitrum', () => {
+  const { planKnownOrgMerges } = require('../src/migrations/merge-org-duplicates');
+  const plans = planKnownOrgMerges([
+    { id: 444, name: 'Rocket Pool Grants Management Committee', aliases: [] },
+    { id: 25, name: 'Arbitrum Foundation', aliases: [] },
+  ]);
+  assert.deepEqual(plans.map(p => p.kind), ['rename', 'alias']);
+  assert.equal(plans[0].kind, 'rename');
+  if (plans[0].kind === 'rename') {
+    assert.equal(plans[0].toName, 'Rocket Pool');
+    assert.equal(plans[0].archiveNotionSource, true);
+  }
+  assert.equal(plans[1].kind, 'alias');
+  if (plans[1].kind === 'alias') {
+    assert.equal(plans[1].alias, 'Arbitrum');
+    assert.equal(plans[1].archiveNotionSource, false);
+  }
 });

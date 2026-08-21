@@ -340,6 +340,28 @@ export async function archiveNotionPagesByTitle(
 }
 
 /**
+ * Archive matching Sov's Orgs pages via the enabled SimpleCRM integration.
+ * No-ops (with a warning) when the integration is missing credentials.
+ */
+export async function archiveSimpleCrmOrgPages(
+  titles: string[],
+): Promise<{ archived: number; misses: number }> {
+  const unique = [...new Set(titles.map(t => t.trim()).filter(Boolean))];
+  if (unique.length === 0) return { archived: 0, misses: 0 };
+
+  const configs = await getIntegrationConfigs('notion');
+  const crm = configs.find(i => i.name === 'SimpleCRM - Notion' && i.enabled)
+    || configs.find(i => i.enabled && i.config?.notion_token && i.config?.database_id);
+  const token = crm?.config?.notion_token;
+  const databaseId = crm?.config?.database_id;
+  if (!token || !databaseId) {
+    console.warn('[NotionSync] SimpleCRM archive skipped: integration not configured');
+    return { archived: 0, misses: unique.length };
+  }
+  return archiveNotionPagesByTitle(token, databaseId, unique);
+}
+
+/**
  * Build Notion properties object for an org profile.
  * Mapped to match the actual "Sov's Orgs" Notion database properties.
  *
