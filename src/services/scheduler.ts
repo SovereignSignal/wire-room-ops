@@ -544,8 +544,8 @@ function createJobExecutor(schedule: ScheduleConfig) {
         // ---- Daily CRM cycle (folded — no standalone timers) ----
         // Runs AFTER the digest email so CRM latency can never delay the
         // operator's morning touchpoint. Each step isolated + non-fatal.
-        // Deterministic derived fields are always refreshed. External
-        // enrichment and contact discovery remain behind the spend gate.
+        // Deterministic derived fields are always refreshed. Org enrichment
+        // and contact discovery are separate spend gates.
         try {
           const { computeDerivedFields } = await import('./org-enricher');
           await computeDerivedFields();
@@ -561,6 +561,10 @@ function createJobExecutor(schedule: ScheduleConfig) {
           } catch (e) {
             console.error('[Scheduler] Daily CRM enrichment failed (non-fatal):', e);
           }
+        } else {
+          console.log('[Scheduler] Daily CRM: org enrichment skipped (CRM_ENRICH_ENABLED != true)');
+        }
+        if (config.crm.contactDiscoveryEnabled) {
           try {
             const { runContactDiscovery } = await import('./contact-discovery');
             const cd = await runContactDiscovery(pool, { limit: 20 });
@@ -569,7 +573,7 @@ function createJobExecutor(schedule: ScheduleConfig) {
             console.error('[Scheduler] Daily CRM contact discovery failed (non-fatal):', e);
           }
         } else {
-          console.log('[Scheduler] Daily CRM: enrichment + contact discovery skipped (CRM_ENRICH_ENABLED != true)');
+          console.log('[Scheduler] Daily CRM: contact discovery skipped (CRM_CONTACT_DISCOVERY_ENABLED != true)');
         }
         try {
           const { getIntegrationConfigs, syncOrgsToNotion } = await import('./notion-sync');

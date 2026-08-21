@@ -98,10 +98,11 @@ export const config = {
   },
 
   crm: {
-    // Org enrichment + contact discovery ran on xAI's server-side web_search
-    // (Responses API) — retired 2026-07-11 with the xAI account. OFF until
-    // rebuilt on a supported retrieval path; Notion sync + BD stay on.
+    // Org enrichment uses Grok Responses + web_search (same path as scans).
+    // Contact discovery is a separate spend gate — it writes Needs Review
+    // rows and should stay off until that queue is worked.
     enrichEnabled: process.env.CRM_ENRICH_ENABLED === 'true',
+    contactDiscoveryEnabled: process.env.CRM_CONTACT_DISCOVERY_ENABLED === 'true',
   },
 
   cohort: {

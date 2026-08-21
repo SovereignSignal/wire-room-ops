@@ -35,6 +35,15 @@ test('rejects missing identity / role / source / name', () => {
   assert.equal(passesContactBar({ name:'Jane Doe', role:'Founder', x_handle:'j', profile_url:null, source:'' }), false);
   assert.equal(passesContactBar({ name:'', role:'Founder', x_handle:'j', profile_url:null, source:'https://o.com' }), false);
 });
+test('rejects organization / brand accounts parked as contacts', () => {
+  assert.equal(passesContactBar({
+    name: 'SuperDapp',
+    role: 'Organization Account (Grants & Ecosystem)',
+    x_handle: 'SuperDappAI',
+    profile_url: 'https://x.com/SuperDappAI',
+    source: 'https://superdapp.medium.com/post',
+  }), false);
+});
 test('rejects pure bot / engagement-farm accounts (is_bot flag)', () => {
   assert.equal(passesContactBar({ name:'SashaVolkoff1', role:'crypto', x_handle:'sasha', profile_url:'https://x.com/sasha', source:'https://x.com/sasha', is_bot:true }), false);
 });
