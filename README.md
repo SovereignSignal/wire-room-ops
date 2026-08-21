@@ -168,7 +168,7 @@ Authenticated API (partial list -- see CLAUDE.md for complete reference):
 - `POST /api/scan/prompts/review` -- Claude-based prompt review
 - `POST /api/scan/run` -- trigger scan execution
 - `POST /api/forum/run` -- trigger forum scan
-- `POST /api/scan/submit`, `POST /api/scan/submit-batch`
+- `POST /api/scan/submit`, `POST /api/scan/submit-batch`, `POST /api/scan/telegram-batch`
 - `GET /api/scan/queue`, `GET /api/scan/entries`
 - `POST /api/scan/entries/:id/action` -- approve/decline/archive
 - `POST /api/scan/entries/bulk-action` -- bulk approve/decline
