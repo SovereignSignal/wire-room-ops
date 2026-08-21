@@ -63,10 +63,16 @@ export interface ContactCandidate {
  *  Require a stable identifier (name OR handle), a descriptor (org role OR independent
  *  capacity), a reachable profile (X handle OR profile URL), and a backing source.
  *  Reject empty/unidentifiable and pure engagement-farm/bot accounts. */
+export function looksLikeOrgAccountContact(c: ContactCandidate): boolean {
+  const role = (c.role || '').toLowerCase();
+  return /\borganization account\b/.test(role);
+}
+
 export function passesContactBar(c: ContactCandidate): boolean {
   const name = (c.name || '').trim();
   if (!name) return false;
   if (!c.role || !c.role.trim()) return false;
+  if (looksLikeOrgAccountContact(c)) return false;
   if (!c.source || !/^https?:\/\//.test(c.source)) return false;
   const hasHandle = !!(c.x_handle && c.x_handle.trim());
   const hasProfile = !!(c.profile_url && /^https?:\/\//.test(c.profile_url));
@@ -391,6 +397,7 @@ Return ONLY a JSON array with this exact shape. No explanation, no markdown fenc
 
 Rules:
 - Only include real, verifiable individuals
+- Never return organization, protocol, or brand accounts — those belong in Orgs, not Contacts
 - Set is_bot to true if the account is clearly a bot or engagement farm
 - Use null (not empty string) for missing fields
 - source must be a real URL you found; do not guess`;
@@ -438,6 +445,7 @@ Return ONLY a JSON array with this exact shape. No explanation, no markdown fenc
 
 Rules:
 - Only include real, verifiable individuals
+- Never return organization, protocol, or brand accounts — those belong in Orgs, not Contacts
 - Set is_bot to true if the account is clearly a bot or engagement farm
 - Use null (not empty string) for missing fields
 - source must be a real URL you found; do not guess
