@@ -100,7 +100,7 @@ const ORG_ALIASES: Record<string, string> = {
  * Returns false for names containing known org suffixes.
  */
 function looksLikePersonName(candidate: string): boolean {
-  const ORG_SUFFIXES = /\b(foundation|labs?|inc|corp|dao|protocol|network|funds?|funding|ventures|capital|institute|consortium|alliance|council|agency|committee|group)\b/i;
+  const ORG_SUFFIXES = /\b(foundation|labs?|inc|corp|dao|protocol|network|funds?|funding|philanthropy|ventures|capital|institute|consortium|alliance|council|agency|committee|group)\b/i;
   if (ORG_SUFFIXES.test(candidate)) return false;
   const PERSON = /^[A-Z][a-z\u00C0-\u00FF]+ (?:[A-Z]\. )?[A-Z][a-z\u00C0-\u00FF]+(?:\s*\(.*\))?$/;
   return PERSON.test(candidate);
@@ -197,7 +197,9 @@ export interface OrgArchiveFields {
 export function shouldArchiveOrgProfile(org: OrgArchiveFields): boolean {
   const kind = classifyOrgName(org.name);
   if (kind === 'noise' || kind === 'event') return true;
-  if (kind === 'person' || kind === 'program') {
+  // Two-word Title Case names match the person heuristic (e.g. "Renaissance
+  // Philanthropy", "Ethereum Mexico") — do not auto-archive those.
+  if (kind === 'program') {
     const enriched = Boolean(org.org_type || org.website || org.description);
     return !enriched;
   }
