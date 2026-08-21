@@ -109,6 +109,11 @@ test('no auth is rejected on the scan API', async () => {
   assert.equal(res.status, 401);
 });
 
+test('no auth is rejected on POST /api/scan/telegram-batch', async () => {
+  const res = await call('POST', '/api/scan/telegram-batch', { body: { text: '1. **X** — crypto grant\nLink: https://x.com/a/status/123456789012345678' } });
+  assert.equal(res.status, 401);
+});
+
 test('session-only routers stay session-only (internal key must NOT unlock /api/feeds CRUD)', async () => {
   const res = await call('POST', '/api/feeds', { key: KEY });
   assert.equal(res.status, 401, 'internal key should not grant access to the session-only feeds router');

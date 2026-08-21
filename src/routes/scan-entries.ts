@@ -4,7 +4,8 @@
  * GET    /entries                — query entries with filters (status, wire, date, etc.)
  * GET    /entries/:id            — single entry (dashboard deep link from digest email)
  * POST   /submit                — single entry submission
- * POST   /submit-batch          — batch submission
+ * POST   /submit-batch          — batch submission (Prompt A/B/C x-scan sections)
+ * POST   /telegram-batch        — same processBatchMessage path as @GrantWireSummarizer_bot
  * GET    /queue                  — list queued entries
  * GET    /stats                  — scan pipeline statistics
  * GET    /status-counts          — count by status
@@ -31,6 +32,8 @@ import { rewriteEntrySource, linkEntryDuplicate, EntryMaintenanceError } from '.
 import { buildCuratorStamp } from '../services/curator';
 import { retryDistribution } from '../services/distribution';
 import { PROMPT_VARIANTS, SCAN_SOURCES } from '../types/intake';
+import { isBatchMessage, processBatchMessage, processIntakeMessage } from '../services/intake-core';
+import { runDecidedRecheckForIds } from '../jobs/decided-recheck';
 
 const router = Router();
 
@@ -154,6 +157,88 @@ router.post('/submit-batch', async (req: Request, res: Response) => {
     res.json({ success: true, summary });
   } catch (error) {
     console.error('Scan batch submit failed:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
+  }
+});
+
+const TELEGRAM_BATCH_TEXT_MAX = 20_000;
+
+/**
+ * POST /telegram-batch — HTTP door into the Grant Wire summarizer intake.
+ * Same parseBatchEntries + URL/name dedupe + queued insert as the Telegram bot.
+ * Body: { text: string }  (the markdown Sov pastes into @GrantWireSummarizer_bot)
+ * Auth: session or INTERNAL_API_KEY (this router is already behind requireAuthOrInternalKey).
+ */
+router.post('/telegram-batch', async (req: Request, res: Response) => {
+  if (!rateLimit('telegram-batch', 20, 5 * 60 * 1000)) {
+    res.status(429).json({ error: 'telegram-batch recently run. Please wait.' });
+    return;
+  }
+
+  const text = typeof req.body?.text === 'string' ? req.body.text : '';
+  if (!text.trim()) {
+    res.status(400).json({ error: 'text is required and must be a non-empty string' });
+    return;
+  }
+  if (text.length > TELEGRAM_BATCH_TEXT_MAX) {
+    res.status(400).json({ error: `text exceeds ${TELEGRAM_BATCH_TEXT_MAX} characters` });
+    return;
+  }
+
+  const actor = resolveMaintenanceActor(req) || 'http:telegram-batch';
+  const intakeMsg = {
+    text,
+    senderId: actor,
+    channelMessageId: `http-${Date.now()}`,
+  };
+
+  try {
+    if (isBatchMessage(text)) {
+      const batch = await processBatchMessage(intakeMsg, 'telegram');
+      if (batch.retryableErrors > 0) {
+        res.setHeader('Retry-After', '5');
+        res.status(503).json({
+          error: 'Retryable persistence errors',
+          inserted: batch.inserted,
+          duplicates: batch.duplicates,
+          errors: batch.errors,
+          retryableErrors: batch.retryableErrors,
+          entries: batch.entries,
+        });
+        return;
+      }
+
+      const acceptedIds = batch.entries
+        .filter(entry => entry.id && !entry.isDuplicate)
+        .map(entry => entry.id!);
+      if (acceptedIds.length > 0) {
+        try {
+          await runDecidedRecheckForIds(getPool(), acceptedIds);
+        } catch (error) {
+          console.error('[TelegramBatch] History check failed:', error);
+        }
+      }
+
+      res.json({
+        success: true,
+        inserted: batch.inserted,
+        duplicates: batch.duplicates,
+        errors: batch.errors,
+        retryableErrors: batch.retryableErrors,
+        entries: batch.entries,
+      });
+      return;
+    }
+
+    const result = await processIntakeMessage(intakeMsg, 'telegram');
+    if (result.status === 'error') {
+      res.setHeader('Retry-After', '5');
+      res.status(503).json({ error: result.errorMessage || 'Telegram intake failed', result });
+      return;
+    }
+    res.json({ success: result.status === 'inserted', result });
+  } catch (error) {
+    console.error('Telegram-batch intake failed:', error);
     res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
   }
 });
