@@ -99,6 +99,8 @@ export const config = {
 
   crm: {
     // Org enrichment uses Grok Responses + web_search (same path as scans).
+    // The grok provider's default_model may be a cheap chat model (glm-5.2);
+    // enricher/contact-discovery pin a Grok search-capable model instead.
     // Contact discovery is a separate spend gate — it writes Needs Review
     // rows and should stay off until that queue is worked.
     enrichEnabled: process.env.CRM_ENRICH_ENABLED === 'true',

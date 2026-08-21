@@ -151,8 +151,11 @@ REQUIREMENTS:
   return data.choices[0].message.content.trim();
 }
 
-// Default model for scan prompts — uses Responses API with x_search tool
-const DEFAULT_SCAN_MODEL = 'grok-4.20-beta-0309-non-reasoning';
+// Default model for scan prompts — uses Responses API with x_search tool.
+// Chat defaults (glm-5.2, etc.) stay on the grok provider for classification;
+// search lanes must pin a Grok model or xAI rejects / no-ops the tool.
+export const GROK_SEARCH_MODEL = 'grok-4.20-beta-0309-non-reasoning';
+const DEFAULT_SCAN_MODEL = GROK_SEARCH_MODEL;
 
 // Response format for the /v1/responses endpoint
 interface ResponsesAPIOutput {
@@ -170,6 +173,19 @@ interface ResponsesAPIResponse {
 
 export function supportsGrokSearchTools(model: string): boolean {
   return /^grok(?:[-_.]|$)/i.test(model.trim());
+}
+
+/**
+ * Use the provider default only when it can call x_search/web_search.
+ * Otherwise fall back so CRM enrichment does not inherit a cheap chat model.
+ */
+export function resolveGrokSearchModel(
+  providerDefault?: string | null,
+  fallback: string = GROK_SEARCH_MODEL,
+): string {
+  const candidate = (providerDefault || '').trim();
+  if (candidate && supportsGrokSearchTools(candidate)) return candidate;
+  return fallback;
 }
 
 export async function executeScanPrompt(
