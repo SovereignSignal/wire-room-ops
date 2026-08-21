@@ -1,7 +1,7 @@
 require('ts-node/register/transpile-only');
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { parseEnrichmentResponse } = require('../src/services/org-enricher');
+const { parseEnrichmentResponse, formatEnrichmentParseError } = require('../src/services/org-enricher');
 
 test('parses full enrichment fields and clamps invalids', () => {
   const raw = JSON.stringify([{
@@ -24,6 +24,20 @@ test('parses full enrichment fields and clamps invalids', () => {
 test('parseEnrichmentResponse rejects non-JSON, junk, and empty arrays', () => {
   assert.throws(() => parseEnrichmentResponse('not json'), /JSON array/);
   assert.throws(() => parseEnrichmentResponse('[]'), /empty/);
+});
+
+test('formatEnrichmentParseError includes model and a truncated preview', () => {
+  const err = formatEnrichmentParseError(
+    new Error('response does not contain a JSON array'),
+    'glm-5.2',
+    '  Sorry, I cannot browse the web.  ',
+  );
+  assert.match(err, /response does not contain a JSON array/);
+  assert.match(err, /model=glm-5\.2/);
+  assert.match(err, /Sorry, I cannot browse the web/);
+
+  const empty = formatEnrichmentParseError(new Error('response does not contain a JSON array'), 'glm-5.2', '   ');
+  assert.match(empty, /empty output/);
 });
 
 test('tags are capped at 5', () => {

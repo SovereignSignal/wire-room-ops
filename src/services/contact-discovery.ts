@@ -3,12 +3,10 @@ import { notionRequest, getIntegrationConfigs, queryAllNotionPages } from './not
 import { getCachedProvider } from './api-provider';
 import { config } from '../config';
 import { logApiUsage } from './api-usage';
+import { resolveGrokSearchModel } from './grok';
 
 const DEFAULT_CONTACTS_DB_ID = '66190528a1194cdc85797763d67c5a71';
 const DEFAULT_ORGS_DB_ID = '301000c0-d590-81c4-8435-c6db7782db12';
-
-// Model that supports the web_search tool via the Responses API (mirrors org-enricher.ts)
-const DISCOVER_MODEL = 'grok-4.20-beta-0309-non-reasoning';
 
 // ============================================================
 // Responses API types (mirrors org-enricher.ts)
@@ -262,7 +260,11 @@ export async function grokWebSearch(prompt: string): Promise<string> {
 
   // Strip trailing /v1 to build the Responses API URL (mirrors org-enricher.ts line 147)
   const baseUrl = (provider?.base_url || config.apis.grok.baseUrl).replace(/\/v1$/, '');
-  const model = provider?.default_model || DISCOVER_MODEL;
+  const model = resolveGrokSearchModel(provider?.default_model);
+  const configuredModel = (provider?.default_model || '').trim();
+  if (configuredModel && model !== configuredModel) {
+    console.warn(`[ContactDiscovery] grok default_model "${configuredModel}" cannot use web_search; using ${model}`);
+  }
 
   const start = Date.now();
 

@@ -20,6 +20,7 @@
 import { getPool } from '../db';
 import { getCachedProvider, isProviderExplicitlyDisabled } from './api-provider';
 import { logApiUsage } from './api-usage';
+import { resolveGrokSearchModel } from './grok';
 import { findDeadUrlFields } from './url-verify';
 
 // ============================================================
@@ -161,8 +162,13 @@ export function parseEnrichmentResponse(
 // LLM Enrichment (web-augmented via Grok Responses API)
 // ============================================================
 
-// Model that supports the web_search tool via the Responses API
-const ENRICH_MODEL = 'grok-4.20-beta-0309-non-reasoning';
+export function formatEnrichmentParseError(err: unknown, model: string, content: string): string {
+  const base = err instanceof Error ? err.message : String(err);
+  const preview = content.trim().replace(/\s+/g, ' ').slice(0, 200);
+  return preview
+    ? `${base} [model=${model} preview=${JSON.stringify(preview)}]`
+    : `${base} [model=${model} empty output]`;
+}
 
 // Response format for the /v1/responses endpoint (mirrors grok.ts)
 interface ResponsesAPIOutput {
@@ -199,7 +205,11 @@ export async function enrichOrgs(
 
   // Strip trailing /v1 to build the Responses API URL (mirrors grok.ts line 176)
   const baseUrl = (provider.base_url || 'https://api.x.ai/v1').replace(/\/v1$/, '');
-  const model = provider.default_model || ENRICH_MODEL;
+  const model = resolveGrokSearchModel(provider.default_model);
+  const configuredModel = (provider.default_model || '').trim();
+  if (configuredModel && model !== configuredModel) {
+    console.warn(`[OrgEnricher] grok default_model "${configuredModel}" cannot use web_search; using ${model}`);
+  }
 
   const orgList = orgs.map((o, i) =>
     `${i + 1}. [ID:${o.id}] "${o.name}" (wires: ${o.wires.join(', ')}, entries: ${o.entry_count})`
@@ -285,13 +295,14 @@ ${orgList}`;
   try {
     enriched = parseEnrichmentResponse(content, allowedIds);
   } catch (err) {
+    const error_message = formatEnrichmentParseError(err, model, content);
     logApiUsage({
       provider: 'grok', model, purpose: 'org-enrichment', duration_ms: Date.now() - start,
       tokens_in: data.usage?.input_tokens, tokens_out: data.usage?.output_tokens,
       success: false,
-      error_message: err instanceof Error ? err.message : String(err),
+      error_message,
     });
-    throw err;
+    throw new EnrichmentResponseError(error_message);
   }
 
   logApiUsage({
