@@ -47,8 +47,12 @@ function fakePool(options = {}) {
         const terminal = (options.chainRows || [{ id: 10699, status: 'approved', duplicate_of_id: null, depth: 1, cycle: false }])[0];
         return { rows: terminal ? [terminal] : [], rowCount: terminal ? 1 : 0 };
       }
-      if (/SELECT id, wire, first_seen_entry_id/.test(sql)) {
-        const rows = options.wireClaimRows || [];
+      if (/WHERE first_seen_entry_id = \$1 AND wire = \$2/.test(sql)) {
+        const rows = options.ownedWireClaims || [];
+        return { rows, rowCount: rows.length };
+      }
+      if (/WHERE normalized_url = ANY\(\$1::text\[\]\)/.test(sql)) {
+        const rows = options.scopeWireClaims || [];
         return { rows, rowCount: rows.length };
       }
       if (/SELECT first_seen_entry_id FROM seen_urls/.test(sql)) {
@@ -59,9 +63,9 @@ function fakePool(options = {}) {
         const rows = options.chainRows || [{ id: 10699, status: 'approved', duplicate_of_id: null, depth: 1, cycle: false }];
         return { rows, rowCount: rows.length };
       }
-      if (/UPDATE seen_urls SET wire/.test(sql)) {
-        const rowCount = options.wireRegistryRowCount ?? 1;
-        return { rows: rowCount ? [{ id: 77 }] : [], rowCount };
+      if (/UPDATE seen_urls\s+SET wire/.test(sql)) {
+        const rowCount = options.wireRegistryRowCount ?? (options.ownedWireClaims || []).length;
+        return { rows: Array.from({ length: rowCount }, (_, index) => ({ id: 77 + index })), rowCount };
       }
       if (/SET wire = \$2, wires = \$3/.test(sql)) {
         const rowCount = options.updateRowCount ?? 1;
@@ -135,10 +139,12 @@ test('source rewrite refuses a canonical URL owned by another entry', async () =
   assert.equal(pool.calls.some(call => /UPDATE scan_entries SET/.test(call.sql)), false);
 });
 
-test('wire rewrite moves scan row, seen URL ownership, and seen name in one transaction', async () => {
-  const pool = fakePool({
-    wireClaimRows: [{ id: 77, wire: 'ai', first_seen_entry_id: 11106 }],
-  });
+test('wire rewrite moves every owned URL alias and seen name in one transaction', async () => {
+  const ownedWireClaims = [
+    { id: 77, url: 'https://manual/needs-source/11106', normalized_url: 'https://manual/needs-source/11106', wire: 'ai', first_seen_entry_id: 11106 },
+    { id: 78, url: 'https://example.org/alternate', normalized_url: 'https://example.org/alternate', wire: 'ai', first_seen_entry_id: 11106 },
+  ];
+  const pool = fakePool({ ownedWireClaims, scopeWireClaims: ownedWireClaims });
 
   const result = await rewriteEntryWires(pool, 11106, {
     wires: ['oss', 'ai'],
@@ -149,19 +155,26 @@ test('wire rewrite moves scan row, seen URL ownership, and seen name in one tran
   assert.deepEqual(result, { entryId: 11106, wire: 'oss', wires: ['oss', 'ai'] });
   const graphLock = pool.calls.findIndex(call => /pg_advisory_xact_lock/.test(call.sql));
   const entryLock = pool.calls.findIndex(call => /SELECT id, status, source_url, wire, wires, scan_date/.test(call.sql));
-  const registryLock = pool.calls.findIndex(call => /SELECT id, wire, first_seen_entry_id/.test(call.sql));
-  const registryMove = pool.calls.findIndex(call => /UPDATE seen_urls SET wire/.test(call.sql));
+  const ownedLock = pool.calls.findIndex(call => /WHERE first_seen_entry_id = \$1 AND wire = \$2/.test(call.sql));
+  const scopeLock = pool.calls.findIndex(call => /WHERE normalized_url = ANY\(\$1::text\[\]\)/.test(call.sql));
+  const registryMove = pool.calls.findIndex(call => /UPDATE seen_urls\s+SET wire/.test(call.sql));
   const rowMove = pool.calls.findIndex(call => /SET wire = \$2, wires = \$3/.test(call.sql));
-  assert.ok(graphLock >= 0 && graphLock < entryLock && entryLock < registryLock && registryLock < registryMove && registryMove < rowMove);
+  assert.ok(graphLock >= 0 && graphLock < entryLock && entryLock < ownedLock && ownedLock < scopeLock && scopeLock < registryMove && registryMove < rowMove);
+  assert.deepEqual(pool.calls[registryMove].params, [11106, 'oss', 'ai']);
   assert.ok(pool.calls.some(call => /UPDATE seen_names SET wire/.test(call.sql)));
   assert.ok(pool.calls.some(call => call.sql === 'COMMIT'));
 });
 
-test('wire rewrite refuses a target Wire URL owned by another entry', async () => {
+test('wire rewrite refuses any target Wire alias owned by another entry', async () => {
+  const ownedWireClaims = [
+    { id: 77, url: 'https://manual/needs-source/11106', normalized_url: 'https://manual/needs-source/11106', wire: 'ai', first_seen_entry_id: 11106 },
+    { id: 78, url: 'https://example.org/alternate', normalized_url: 'https://example.org/alternate', wire: 'ai', first_seen_entry_id: 11106 },
+  ];
   const pool = fakePool({
-    wireClaimRows: [
-      { id: 77, wire: 'ai', first_seen_entry_id: 11106 },
-      { id: 78, wire: 'oss', first_seen_entry_id: 22222 },
+    ownedWireClaims,
+    scopeWireClaims: [
+      ...ownedWireClaims,
+      { id: 79, url: 'https://example.org/alternate', normalized_url: 'https://example.org/alternate', wire: 'oss', first_seen_entry_id: 22222 },
     ],
   });
 

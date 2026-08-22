@@ -147,13 +147,20 @@ test('archived-owner transfer and x-monitor restore serialize without split owne
   }
 });
 
-test('Wire rewrite moves exact URL ownership to the new dedup scope', async () => {
+test('Wire rewrite moves primary and alternate URL ownership to the new dedup scope', async () => {
   const pool = getPool();
-  const url = 'https://example.com/wire-move-' + process.pid + '-' + Date.now();
+  const suffix = process.pid + '-' + Date.now();
+  const url = 'https://example.com/wire-move-' + suffix;
+  const aliasUrl = 'https://example.org/wire-alias-' + suffix;
   const entryId = await insertEntry(pool, 'Atomic Wire Move', url, 'queued');
   try {
     const claim = await registerSeen(pool, { id: entryId, sourceUrl: url, name: 'Atomic Wire Move', wire: 'oss', scanDate: '2026-08-22' });
     assert.equal(claim.urlConflict, false);
+    await pool.query(
+      `INSERT INTO seen_urls (url, normalized_url, first_seen_entry_id, first_seen_date, wire)
+       VALUES ($1, $1, $2, CURRENT_DATE, 'oss')`,
+      [aliasUrl, entryId],
+    );
 
     const moved = await rewriteEntryWires(pool, entryId, {
       wires: ['ai', 'oss'],
@@ -162,18 +169,21 @@ test('Wire rewrite moves exact URL ownership to the new dedup scope', async () =
     });
     assert.equal(moved.wire, 'ai');
 
-    const state = await pool.query(
-      `SELECT se.wire, se.wires, su.wire AS registry_wire, su.first_seen_entry_id
-       FROM scan_entries se
-       JOIN seen_urls su ON su.normalized_url = $2
-       WHERE se.id = $1`,
-      [entryId, url],
+    const entryState = await pool.query(`SELECT wire, wires FROM scan_entries WHERE id = $1`, [entryId]);
+    assert.equal(entryState.rows[0].wire, 'ai');
+    assert.deepEqual(entryState.rows[0].wires, ['ai', 'oss']);
+
+    const registry = await pool.query(
+      `SELECT url, wire, first_seen_entry_id
+       FROM seen_urls
+       WHERE first_seen_entry_id = $1
+       ORDER BY url`,
+      [entryId],
     );
-    assert.equal(state.rows.length, 1);
-    assert.equal(state.rows[0].wire, 'ai');
-    assert.deepEqual(state.rows[0].wires, ['ai', 'oss']);
-    assert.equal(state.rows[0].registry_wire, 'ai');
-    assert.equal(Number(state.rows[0].first_seen_entry_id), entryId);
+    assert.equal(registry.rows.length, 2);
+    assert.deepEqual(registry.rows.map(row => row.url), [url, aliasUrl].sort());
+    assert.ok(registry.rows.every(row => row.wire === 'ai'));
+    assert.ok(registry.rows.every(row => Number(row.first_seen_entry_id) === entryId));
   } finally {
     await pool.query(`DELETE FROM seen_names WHERE entry_id = $1`, [entryId]);
     await pool.query(`DELETE FROM seen_urls WHERE first_seen_entry_id = $1`, [entryId]);
