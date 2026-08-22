@@ -174,6 +174,9 @@ export async function runDailyIntake(
   submissions: ScanSubmission[],
   options: IntakeJobOptions = {}
 ): Promise<IntakeRunSummary> {
+  if (submissions.some(submission => submission.source === 'x-monitor')) {
+    throw new Error('x-monitor submissions must use the Account Monitor canonical-URL intake path');
+  }
   const config = { ...DEFAULT_CONFIG, ...options.config };
   const progress = options.onProgress || (() => {});
 
@@ -436,9 +439,6 @@ export async function runDailyIntake(
         classification: classResult.classification,
       });
       const classStatus = freshnessDecision.status;
-      const correctedWire = (classResult.inScope && classResult.detectedWire
-        && ['crypto', 'ai', 'oss'].includes(classResult.detectedWire) && classResult.detectedWire !== entry.wire)
-        ? classResult.detectedWire : null;
       const mergedMetadata = {
         ...classResult.extracted,
         operator_route: classResult.operatorRoute,
@@ -450,16 +450,16 @@ export async function runDailyIntake(
          SET quality_score = $1, quality_breakdown = $2, status = $8,
              classification = $3, classification_reason = $4,
              metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
-             tags = $6,
-             wire = COALESCE($9, wire)
+             tags = $6
          WHERE id = $7
            AND status = 'deduped'
-           AND name IS NOT DISTINCT FROM $10
-           AND description IS NOT DISTINCT FROM $11
-           AND source_url IS NOT DISTINCT FROM $12
-           AND wire IS NOT DISTINCT FROM $13
-           AND deadline_parsed IS NOT DISTINCT FROM $14
-           AND source_published_at IS NOT DISTINCT FROM $15
+           AND name IS NOT DISTINCT FROM $9
+           AND description IS NOT DISTINCT FROM $10
+           AND source_url IS NOT DISTINCT FROM $11
+           AND wire IS NOT DISTINCT FROM $12
+           AND deadline_parsed IS NOT DISTINCT FROM $13
+           AND source_published_at IS NOT DISTINCT FROM $14
+           AND amount IS NOT DISTINCT FROM $15
          RETURNING id`,
         [
           classResult.qualityScore,
@@ -470,13 +470,13 @@ export async function runDailyIntake(
           classResult.tags,
           entryId,
           classStatus,
-          correctedWire,
           entry.name,
           entry.description,
           entry.source_url,
           entry.wire,
           entry.deadline_parsed,
           entry.source_published_at,
+          entry.amount,
         ]
       );
       if (classified.rowCount !== 1) continue;
@@ -490,10 +490,10 @@ export async function runDailyIntake(
           id: entryId,
           name: entry.name,
           sourceUrl: entry.source_url,
-          wire: correctedWire || entry.wire,
+          wire: entry.wire,
           deadline: entry.deadline_parsed ?? null,
           description: entry.description ?? null,
-        }, correctedWire ? null : (programResolutions.get(entryId) ?? null));
+        }, programResolutions.get(entryId) ?? null);
       }
     } catch (classError) {
       console.error(`[DailyIntake] Classification failed for entry ${entryId}:`, classError);
@@ -552,9 +552,6 @@ export async function runDailyIntake(
           classification: classResult.classification,
         });
         const retryStatus = freshnessDecision.status;
-        const correctedWire = (classResult.inScope && classResult.detectedWire
-          && ['crypto', 'ai', 'oss'].includes(classResult.detectedWire) && classResult.detectedWire !== entry.wire)
-          ? classResult.detectedWire : null;
         const mergedMetadata = {
           ...classResult.extracted,
           operator_route: classResult.operatorRoute,
@@ -566,8 +563,7 @@ export async function runDailyIntake(
            SET quality_score = $1, quality_breakdown = $2, status = $8,
                classification = $3, classification_reason = $4,
                metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
-               tags = $6,
-               wire = COALESCE($15, wire)
+               tags = $6
            WHERE id = $7
              AND status = 'queued'
              AND name IS NOT DISTINCT FROM $9
@@ -576,6 +572,7 @@ export async function runDailyIntake(
              AND wire IS NOT DISTINCT FROM $12
              AND deadline_parsed IS NOT DISTINCT FROM $13
              AND source_published_at IS NOT DISTINCT FROM $14
+             AND amount IS NOT DISTINCT FROM $15
            RETURNING id`,
           [
             classResult.qualityScore,
@@ -592,7 +589,7 @@ export async function runDailyIntake(
             entry.wire,
             entry.deadline_parsed,
             entry.source_published_at,
-            correctedWire,
+            entry.amount,
           ]
         );
         if (retried.rowCount !== 1) continue;
@@ -602,10 +599,10 @@ export async function runDailyIntake(
             id: entryId,
             name: entry.name,
             sourceUrl: entry.source_url,
-            wire: correctedWire || entry.wire,
+            wire: entry.wire,
             deadline: entry.deadline_parsed ?? null,
             description: entry.description ?? null,
-          }, correctedWire ? null : (programResolutions.get(entryId) ?? null));
+          }, programResolutions.get(entryId) ?? null);
         }
 
         // Update running totals

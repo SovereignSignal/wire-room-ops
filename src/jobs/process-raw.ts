@@ -139,7 +139,6 @@ export interface RawClassificationWrite {
   metadata: unknown;
   tags: string[];
   status: 'queued' | 'archived';
-  correctedWire: string | null;
 }
 
 export interface RawClassificationSnapshot {
@@ -168,16 +167,15 @@ export async function applyClassificationIfQueued(
          quality_breakdown = $4,
          metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
          tags = $6,
-         status = $8,
-         wire = COALESCE($9, wire)
-     WHERE id = $7 AND status = $10
-       AND ($11::text IS NULL OR (
-         source_url = $11 AND name = $12
-         AND description IS NOT DISTINCT FROM $13
-         AND wire = $14
-         AND amount IS NOT DISTINCT FROM $15
-         AND deadline_parsed IS NOT DISTINCT FROM $16
-         AND source_published_at IS NOT DISTINCT FROM $17
+         status = $8
+     WHERE id = $7 AND status = $9
+       AND ($10::text IS NULL OR (
+         source_url = $10 AND name = $11
+         AND description IS NOT DISTINCT FROM $12
+         AND wire = $13
+         AND amount IS NOT DISTINCT FROM $14
+         AND deadline_parsed IS NOT DISTINCT FROM $15
+         AND source_published_at IS NOT DISTINCT FROM $16
        ))
      RETURNING id`,
     [
@@ -189,7 +187,6 @@ export async function applyClassificationIfQueued(
       result.tags,
       entryId,
       result.status,
-      result.correctedWire,
       expectedStatus,
       expected?.sourceUrl ?? null,
       expected?.name ?? null,
@@ -356,9 +353,6 @@ export async function processRawEntries(pool?: Pool): Promise<{
               const classStatus = classResult.inScope
                 ? determinePostClassificationStatus(classResult, row.scan_source)
                 : 'archived';
-              const correctedWire = (classResult.inScope && classResult.detectedWire
-                && ['crypto', 'ai', 'oss'].includes(classResult.detectedWire) && classResult.detectedWire !== row.wire)
-                ? classResult.detectedWire : null;
               const classified = await applyClassificationIfQueued(db, row.id, {
                 classification: classResult.classification,
                 reason: classResult.reason,
@@ -373,7 +367,6 @@ export async function processRawEntries(pool?: Pool): Promise<{
                 metadata: { ...classResult.extracted, operator_route: classResult.operatorRoute || null },
                 tags: classResult.tags,
                 status: classStatus,
-                correctedWire,
               }, isXMonitor ? 'deduped' : 'queued', {
                 sourceUrl: row.source_url,
                 name: row.name,
@@ -399,7 +392,8 @@ export async function processRawEntries(pool?: Pool): Promise<{
                 ) {
                   // Program identity is downstream of the classification CAS:
                   // do not create intelligence for stale, off-scope, or news
-                  // rows. Use the corrected wire and only a validated ISO date.
+                  // rows. Detected Wire remains advisory until an atomic
+                  // operator reassignment moves the row and URL registry.
                   const deadlineValue = row.deadline_parsed instanceof Date
                     ? row.deadline_parsed.toISOString().slice(0, 10)
                     : row.deadline_parsed;
@@ -407,7 +401,7 @@ export async function processRawEntries(pool?: Pool): Promise<{
                     id: row.id,
                     name: row.name,
                     sourceUrl: row.source_url,
-                    wire: correctedWire ?? row.wire,
+                    wire: row.wire,
                     deadline: normalizeProgramDeadline(deadlineValue),
                     description: row.description ?? null,
                   }, dedupOutcome.programResolution ?? null);

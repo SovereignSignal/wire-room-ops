@@ -30,6 +30,12 @@ export interface LinkDuplicateOptions extends GuardedMutationOptions {
   expectedSourceUrl: string;
 }
 
+export interface RewriteWireOptions {
+  wires: string[];
+  actor?: string;
+  reason?: string;
+}
+
 function requireAuditFields(opts: GuardedMutationOptions): void {
   if (!opts.expectedStatus?.trim()) throw new EntryMaintenanceError('expectedStatus is required', 400);
   if (!opts.actor?.trim()) throw new EntryMaintenanceError('actor is required', 400);
@@ -153,6 +159,99 @@ export async function rewriteEntrySource(
     }
     await client.query('COMMIT');
     return { entryId, oldSourceUrl: current.source_url, newSourceUrl, status: current.status, dryRun: false };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** Reassign an entry's primary Wire and move exact-URL ownership atomically. */
+export async function rewriteEntryWires(
+  pool: Pool,
+  entryId: number,
+  opts: RewriteWireOptions,
+): Promise<{ entryId: number; wire: string; wires: string[] }> {
+  const wires = [...new Set(opts.wires.map(wire => wire.trim()).filter(Boolean))];
+  if (wires.length === 0) throw new EntryMaintenanceError('At least one wire is required', 400);
+  const primaryWire = wires[0];
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await lockDuplicateGraph(client);
+    const currentResult = await client.query(
+      `SELECT id, status, source_url, wire, wires, scan_date
+       FROM scan_entries
+       WHERE id = $1
+       FOR UPDATE`,
+      [entryId],
+    );
+    const current = currentResult.rows[0];
+    if (!current) throw new EntryMaintenanceError('Entry not found', 404);
+
+    if (current.wire !== primaryWire && current.source_url) {
+      const normalized = normalizeUrl(current.source_url);
+      const claims = await client.query(
+        `SELECT id, wire, first_seen_entry_id
+         FROM seen_urls
+         WHERE normalized_url = $1 AND wire = ANY($2::text[])
+         ORDER BY wire
+         FOR UPDATE`,
+        [normalized, [current.wire, primaryWire]],
+      );
+      const oldClaim = claims.rows.find(row => row.wire === current.wire);
+      const newClaim = claims.rows.find(row => row.wire === primaryWire);
+      if (oldClaim && Number(oldClaim.first_seen_entry_id) !== entryId) {
+        throw new EntryMaintenanceError('Current Wire URL ownership belongs to another entry', 409);
+      }
+      if (newClaim && Number(newClaim.first_seen_entry_id) !== entryId) {
+        throw new EntryMaintenanceError(
+          newClaim.first_seen_entry_id === null
+            ? 'Target Wire URL exists in seed history'
+            : `Target Wire URL belongs to entry #${newClaim.first_seen_entry_id}`,
+          409,
+        );
+      }
+
+      if (oldClaim && newClaim) {
+        await client.query(`DELETE FROM seen_urls WHERE id = $1`, [oldClaim.id]);
+      } else if (oldClaim) {
+        const moved = await client.query(
+          `UPDATE seen_urls SET wire = $2, url = $3 WHERE id = $1 AND first_seen_entry_id = $4 RETURNING id`,
+          [oldClaim.id, primaryWire, current.source_url, entryId],
+        );
+        if (moved.rowCount !== 1) throw new EntryMaintenanceError('URL ownership changed before Wire move', 409);
+      } else if (!newClaim) {
+        await client.query(
+          `INSERT INTO seen_urls (url, normalized_url, first_seen_entry_id, first_seen_date, wire)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [current.source_url, normalized, entryId, current.scan_date, primaryWire],
+        );
+      }
+    }
+
+    const updated = await client.query(
+      `UPDATE scan_entries
+       SET wire = $2, wires = $3,
+           actioned_by = COALESCE($4, actioned_by),
+           action_reason = COALESCE($5, action_reason),
+           updated_at = NOW()
+       WHERE id = $1 AND wire = $6
+       RETURNING id, wire, wires`,
+      [
+        entryId,
+        primaryWire,
+        wires,
+        opts.actor || null,
+        opts.reason || `Wire reassignment ${current.wire} -> ${primaryWire}`,
+        current.wire,
+      ],
+    );
+    if (updated.rowCount !== 1) throw new EntryMaintenanceError('Entry changed before Wire move', 409);
+    await client.query(`UPDATE seen_names SET wire = $2 WHERE entry_id = $1`, [entryId, primaryWire]);
+    await client.query('COMMIT');
+    return { entryId, wire: updated.rows[0].wire, wires: updated.rows[0].wires };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => undefined);
     throw error;

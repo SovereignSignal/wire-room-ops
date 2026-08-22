@@ -242,7 +242,7 @@ test('classification evidence reaches Gate 2 and a successful in-scope grant CAS
   assert.equal(classificationInput.deadlineParsed, '2026-09-01');
   assert.equal(classificationInput.sourcePublishedAt, '2026-07-20T12:00:00Z');
   assert.equal(programFinalizations.length, 1);
-  assert.equal(programFinalizations[0].entry.wire, 'ai');
+  assert.equal(programFinalizations[0].entry.wire, 'crypto', 'detected Wire stays advisory until atomic reassignment');
   assert.equal(programFinalizations[0].entry.deadline, '2026-09-01');
   classifier.classifyEntry = async () => { throw new Error('classifier stubbed out in tests'); };
 });
@@ -383,12 +383,13 @@ test('x-monitor park classifications settle outside the review queue', async () 
   const classified = pool.calls.find(c => c.sql.includes('SET classification = $1'));
   assert.ok(classified, 'classification write was not issued');
   assert.equal(classified.params[7], 'archived', 'parked x-monitor rows must not land in the operator queue');
-  assert.equal(classified.params[9], 'deduped', 'x-monitor must remain hidden until classification settles');
-  assert.equal(classified.params[10], row.source_url, 'classification CAS must fence source rewrites');
-  assert.equal(classified.params[11], row.name, 'classification CAS must fence title rewrites');
-  assert.equal(classified.params[13], row.wire, 'classification CAS must fence wire rewrites');
-  assert.match(classified.sql, /source_url = \$11/);
-  assert.match(classified.sql, /description IS NOT DISTINCT FROM \$13/);
+  assert.equal(classified.params[8], 'deduped', 'x-monitor must remain hidden until classification settles');
+  assert.equal(classified.params[9], row.source_url, 'classification CAS must fence source rewrites');
+  assert.equal(classified.params[10], row.name, 'classification CAS must fence title rewrites');
+  assert.equal(classified.params[12], row.wire, 'classification CAS must fence wire rewrites');
+  assert.match(classified.sql, /source_url = \$10/);
+  assert.match(classified.sql, /description IS NOT DISTINCT FROM \$12/);
+  assert.doesNotMatch(classified.sql, /wire\s*=\s*COALESCE/, 'classification must not mutate dedup Wire scope');
   assert.equal(stats.queued, 0);
   assert.equal(stats.archived, 1);
   assert.ok(

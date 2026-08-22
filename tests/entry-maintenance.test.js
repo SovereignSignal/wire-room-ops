@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 
 const {
   rewriteEntrySource,
+  rewriteEntryWires,
   linkEntryDuplicate,
   EntryMaintenanceError,
 } = require('../src/services/entry-maintenance');
@@ -16,6 +17,7 @@ function fakePool(options = {}) {
     status: 'queued',
     source_url: 'https://manual/needs-source/11106',
     wire: 'ai',
+    wires: ['ai'],
     scan_date: '2026-07-10',
   };
   const client = {
@@ -32,6 +34,9 @@ function fakePool(options = {}) {
         ];
         return { rows, rowCount: rows.length };
       }
+      if (/SELECT id, status, source_url, wire, wires, scan_date/.test(sql)) {
+        return { rows: entry ? [entry] : [], rowCount: entry ? 1 : 0 };
+      }
       if (/SELECT id, status, source_url, wire, scan_date/.test(sql)) {
         return { rows: entry ? [entry] : [], rowCount: entry ? 1 : 0 };
       }
@@ -42,6 +47,10 @@ function fakePool(options = {}) {
         const terminal = (options.chainRows || [{ id: 10699, status: 'approved', duplicate_of_id: null, depth: 1, cycle: false }])[0];
         return { rows: terminal ? [terminal] : [], rowCount: terminal ? 1 : 0 };
       }
+      if (/SELECT id, wire, first_seen_entry_id/.test(sql)) {
+        const rows = options.wireClaimRows || [];
+        return { rows, rowCount: rows.length };
+      }
       if (/SELECT first_seen_entry_id FROM seen_urls/.test(sql)) {
         const rows = options.conflictRows || [];
         return { rows, rowCount: rows.length };
@@ -49,6 +58,14 @@ function fakePool(options = {}) {
       if (/WITH RECURSIVE duplicate_chain/.test(sql)) {
         const rows = options.chainRows || [{ id: 10699, status: 'approved', duplicate_of_id: null, depth: 1, cycle: false }];
         return { rows, rowCount: rows.length };
+      }
+      if (/UPDATE seen_urls SET wire/.test(sql)) {
+        const rowCount = options.wireRegistryRowCount ?? 1;
+        return { rows: rowCount ? [{ id: 77 }] : [], rowCount };
+      }
+      if (/SET wire = \$2, wires = \$3/.test(sql)) {
+        const rowCount = options.updateRowCount ?? 1;
+        return { rows: rowCount ? [{ id: entry.id, wire: params[1], wires: params[2] }] : [], rowCount };
       }
       if (/UPDATE scan_entries SET/.test(sql)) {
         const rowCount = options.updateRowCount ?? 1;
@@ -116,6 +133,45 @@ test('source rewrite refuses a canonical URL owned by another entry', async () =
   );
   assert.ok(pool.calls.some(call => call.sql === 'ROLLBACK'));
   assert.equal(pool.calls.some(call => /UPDATE scan_entries SET/.test(call.sql)), false);
+});
+
+test('wire rewrite moves scan row, seen URL ownership, and seen name in one transaction', async () => {
+  const pool = fakePool({
+    wireClaimRows: [{ id: 77, wire: 'ai', first_seen_entry_id: 11106 }],
+  });
+
+  const result = await rewriteEntryWires(pool, 11106, {
+    wires: ['oss', 'ai'],
+    actor: 'sov',
+    reason: 'Corrected domain',
+  });
+
+  assert.deepEqual(result, { entryId: 11106, wire: 'oss', wires: ['oss', 'ai'] });
+  const graphLock = pool.calls.findIndex(call => /pg_advisory_xact_lock/.test(call.sql));
+  const entryLock = pool.calls.findIndex(call => /SELECT id, status, source_url, wire, wires, scan_date/.test(call.sql));
+  const registryLock = pool.calls.findIndex(call => /SELECT id, wire, first_seen_entry_id/.test(call.sql));
+  const registryMove = pool.calls.findIndex(call => /UPDATE seen_urls SET wire/.test(call.sql));
+  const rowMove = pool.calls.findIndex(call => /SET wire = \$2, wires = \$3/.test(call.sql));
+  assert.ok(graphLock >= 0 && graphLock < entryLock && entryLock < registryLock && registryLock < registryMove && registryMove < rowMove);
+  assert.ok(pool.calls.some(call => /UPDATE seen_names SET wire/.test(call.sql)));
+  assert.ok(pool.calls.some(call => call.sql === 'COMMIT'));
+});
+
+test('wire rewrite refuses a target Wire URL owned by another entry', async () => {
+  const pool = fakePool({
+    wireClaimRows: [
+      { id: 77, wire: 'ai', first_seen_entry_id: 11106 },
+      { id: 78, wire: 'oss', first_seen_entry_id: 22222 },
+    ],
+  });
+
+  await assert.rejects(
+    rewriteEntryWires(pool, 11106, { wires: ['oss'], actor: 'sov' }),
+    error => error instanceof EntryMaintenanceError && error.statusCode === 409,
+  );
+
+  assert.ok(pool.calls.some(call => call.sql === 'ROLLBACK'));
+  assert.ok(!pool.calls.some(call => /SET wire = \$2, wires = \$3/.test(call.sql)));
 });
 
 const duplicateOptions = {

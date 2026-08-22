@@ -416,6 +416,9 @@ export async function classifyBatch(
              AND description IS NOT DISTINCT FROM $9
              AND source_url IS NOT DISTINCT FROM $10
              AND wire IS NOT DISTINCT FROM $11
+             AND amount IS NOT DISTINCT FROM $12
+             AND deadline_parsed IS NOT DISTINCT FROM $13
+             AND source_published_at IS NOT DISTINCT FROM $14
            RETURNING id`,
           [
             result.classification,
@@ -436,6 +439,9 @@ export async function classifyBatch(
             entry.description,
             entry.source_url,
             entry.wire,
+            entry.amount ?? null,
+            entry.deadlineParsed ?? null,
+            entry.sourcePublishedAt ?? null,
           ]
         );
 
