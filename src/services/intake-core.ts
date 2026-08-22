@@ -137,6 +137,8 @@ export interface IntakeResult {
 export interface IntakeOptions {
   /** Trusted source-lane wire. Applied only when it matches an active wire. */
   wireHint?: string;
+  /** Original source copy retained as provenance when intake uses a canonical URL. */
+  sourceContext?: string;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -353,12 +355,13 @@ interface NewIntakeEntry {
   channelUpdateId?: string;
   channelItemKey?: string;
   forwardedFrom?: string;
+  sourceContext?: string;
 }
 
 type Queryable = Pick<Pool, 'query'>;
 
 export function buildIntakeMetadata(entry: NewIntakeEntry): Record<string, unknown> {
-  return {
+  const metadata: Record<string, unknown> = {
     source_needs_verification: entry.sourceNeedsVerification ?? false,
     operator_route: entry.operatorRoute ?? null,
     channel_message_id: entry.channelMessageId ?? null,
@@ -366,6 +369,8 @@ export function buildIntakeMetadata(entry: NewIntakeEntry): Record<string, unkno
     channel_item_key: entry.channelItemKey ?? null,
     forwarded_from: entry.forwardedFrom ?? null,
   };
+  if (entry.sourceContext) metadata.source_context = entry.sourceContext;
+  return metadata;
 }
 
 export function telegramReplayPlaceholder(updateId: string, itemKey: string): string {
@@ -493,11 +498,18 @@ export async function insertIntakeEntryWithClaim(
 // Post-insert classification (fire-and-forget)
 // ────────────────────────────────────────────────────────────────────────────
 
-export function determinePostClassificationStatus(_result: {
+export function determinePostClassificationStatus(result: {
   classification: Classification;
   qualityScore: number;
   operatorRoute?: OperatorRoute;
-}, _scanSource = 'manual-intake'): 'queued' | 'archived' {
+}, scanSource = 'manual-intake'): 'queued' | 'archived' {
+  // x-monitor is a high-volume discovery lane, not operator-authored intake.
+  // Only settled publish/source-check candidates belong in the review queue.
+  if (scanSource === 'x-monitor') {
+    return result.operatorRoute === 'publish' || result.operatorRoute === 'source_check'
+      ? 'queued'
+      : 'archived';
+  }
   // Wide net, label by route: operator intake (Telegram + manual paste) never
   // auto-archives. Every classified item lands in the review queue carrying its
   // operator_route (publish/source_check/park/relationship_signal/decline) in
@@ -505,6 +517,10 @@ export function determinePostClassificationStatus(_result: {
   // the prior gate that silently archived everything except publish/source_check
   // — which was hiding real grants (park/relationship_signal) from review.
   return 'queued';
+}
+
+export function determineInitialIntakeStatus(scanSource = 'manual-intake'): 'raw' | 'queued' {
+  return scanSource === 'x-monitor' ? 'raw' : 'queued';
 }
 
 export function normalizeDeadlineForDb(value?: string | null, referenceDate = new Date().toISOString().slice(0, 10)): string | null {
@@ -628,6 +644,7 @@ export async function processIntakeMessage(
   }
 
   const scanDate = new Date().toISOString().slice(0, 10);
+  const initialStatus = determineInitialIntakeStatus(scanSource);
 
   // Source lanes with an explicit wire assignment should not be reclassified
   // from sparse post text. Ignore stale/invalid hints and fall back to content
@@ -657,13 +674,14 @@ export async function processIntakeMessage(
         scanDate,
         submittedBy: msg.senderId,
         scanSource,
-        status: 'queued',
+        status: initialStatus,
         sourceNeedsVerification,
         operatorRoute: sourceNeedsVerification ? 'source_check' : undefined,
         channelMessageId: msg.channelMessageId,
         channelUpdateId: msg.channelUpdateId,
         channelItemKey,
         forwardedFrom: msg.forwardedFrom,
+        sourceContext: options.sourceContext,
       });
       if (inserted.urlConflict) {
         return {
@@ -675,8 +693,8 @@ export async function processIntakeMessage(
         };
       }
       const id = inserted.id;
-      // Dumb pipe: no classification at intake — the row lands in the queue as-is.
-      // Scoring/classification/routing is the downstream filter's job, not the pipe's.
+      // Operator-authored intake remains a wide-net queue. x-monitor starts as
+      // raw and must settle through classification before it can be visible.
       return {
         status: 'inserted',
         entryId: id,
@@ -711,13 +729,14 @@ export async function processIntakeMessage(
       scanDate,
       submittedBy: msg.senderId,
       scanSource,
-      status: 'queued',
+      status: initialStatus,
       sourceNeedsVerification,
       operatorRoute: sourceNeedsVerification ? 'source_check' : undefined,
       channelMessageId: msg.channelMessageId,
       channelUpdateId: msg.channelUpdateId,
       channelItemKey,
       forwardedFrom: msg.forwardedFrom,
+      sourceContext: options.sourceContext,
     });
     if (inserted.urlConflict) {
       return {
@@ -729,7 +748,8 @@ export async function processIntakeMessage(
       };
     }
     const id = inserted.id;
-    // Dumb pipe: no classification at intake — lands in the queue as-is (filter runs downstream).
+    // Operator-authored intake remains a wide-net queue. x-monitor starts as
+    // raw and must settle through classification before it can be visible.
     return {
       status: 'inserted',
       entryId: id,

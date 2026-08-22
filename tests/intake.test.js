@@ -9,6 +9,8 @@ const {
   parseStructuredOutput,
 } = require('../src/services/intake');
 const {
+  buildIntakeMetadata,
+  determineInitialIntakeStatus,
   determinePostClassificationStatus,
   isBatchMessage,
   normalizeDeadlineForDb,
@@ -630,6 +632,32 @@ test('post-classification queues every operator_route for manual paste intake to
   assert.equal(determinePostClassificationStatus({ classification: 'NEWS', qualityScore: 68, operatorRoute: 'relationship_signal' }, 'manual-intake'), 'queued');
   assert.equal(determinePostClassificationStatus({ classification: 'GRANT', qualityScore: 52, operatorRoute: 'park' }, 'manual-intake'), 'queued');
   assert.equal(determinePostClassificationStatus({ classification: 'NOISE', qualityScore: 18, operatorRoute: 'decline' }, 'manual-intake'), 'queued');
+});
+
+test('post-classification keeps x-monitor out of the queue unless the settled route is publish or source_check', () => {
+  assert.equal(determinePostClassificationStatus({ classification: 'GRANT', qualityScore: 88, operatorRoute: 'publish' }, 'x-monitor'), 'queued');
+  assert.equal(determinePostClassificationStatus({ classification: 'GRANT', qualityScore: 70, operatorRoute: 'source_check' }, 'x-monitor'), 'queued');
+  assert.equal(determinePostClassificationStatus({ classification: 'NEWS', qualityScore: 62, operatorRoute: 'relationship_signal' }, 'x-monitor'), 'archived');
+  assert.equal(determinePostClassificationStatus({ classification: 'NEWS', qualityScore: 55, operatorRoute: 'park' }, 'x-monitor'), 'archived');
+  assert.equal(determinePostClassificationStatus({ classification: 'NOISE', qualityScore: 18, operatorRoute: 'decline' }, 'x-monitor'), 'archived');
+  assert.equal(determinePostClassificationStatus({ classification: 'UNCHECKED', qualityScore: 0 }, 'x-monitor'), 'archived');
+});
+
+test('x-monitor starts raw and retains tweet copy as provenance while operator intake stays queued', () => {
+  assert.equal(determineInitialIntakeStatus('x-monitor'), 'raw');
+  assert.equal(determineInitialIntakeStatus('telegram'), 'queued');
+  assert.equal(determineInitialIntakeStatus('manual-intake'), 'queued');
+  const metadata = buildIntakeMetadata({
+    name: 'Canonical title',
+    description: 'Canonical source description',
+    sourceUrl: 'https://example.org/program',
+    wire: 'ai',
+    scanDate: '2026-08-22',
+    submittedBy: 'x-monitor:example',
+    scanSource: 'x-monitor',
+    sourceContext: 'Raw tweet text that must not become the title',
+  });
+  assert.equal(metadata.source_context, 'Raw tweet text that must not become the title');
 });
 
 test('source freshness gate parks old non-urgent Grants.gov listings', () => {

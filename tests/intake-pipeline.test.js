@@ -258,3 +258,84 @@ test('program identity is skipped for NEWS and for a lost classification CAS', a
   assert.equal(programFinalizations.length, 0);
   classifier.classifyEntry = async () => { throw new Error('classifier stubbed out in tests'); };
 });
+
+test('x-monitor park classifications settle outside the review queue', async () => {
+  let batchCalls = 0;
+  classifier.classifyEntry = async () => ({
+    classification: 'NEWS',
+    reason: 'context only',
+    qualityScore: 35,
+    scoreReason: 'no applicant path',
+    operatorRoute: 'park',
+    tags: ['context'],
+    inScope: true,
+    detectedWire: 'ai',
+    extracted: {},
+  });
+  const row = {
+    id: 601,
+    name: 'Canonical source title',
+    description: 'A sufficiently detailed source description that should be classified before review.',
+    source_url: 'https://example.org/x-monitor-park',
+    amount: null,
+    deadline: null,
+    deadline_parsed: null,
+    source_published_at: null,
+    wire: 'ai',
+    scan_source: 'x-monitor',
+    scan_date: '2026-08-22',
+    prompt_id: null,
+    prompt_intent: null,
+  };
+  const pool = routingPool([
+    [RAW_BATCH, () => (++batchCalls === 1 ? { rows: [row] } : { rows: [] })],
+    ["WHERE id = $1 AND status = 'deduped'", { rows: [{ id: row.id }], rowCount: 1 }],
+    ['SET classification = $1', { rows: [{ id: row.id }], rowCount: 1 }],
+  ]);
+
+  const stats = await processRawEntries(pool);
+
+  const classified = pool.calls.find(c => c.sql.includes('SET classification = $1'));
+  assert.ok(classified, 'classification write was not issued');
+  assert.equal(classified.params[7], 'archived', 'parked x-monitor rows must not land in the operator queue');
+  assert.equal(classified.params[9], 'deduped', 'x-monitor must remain hidden until classification settles');
+  assert.equal(stats.queued, 0);
+  assert.equal(stats.archived, 1);
+  assert.ok(
+    !pool.calls.some(c => c.params?.[0] === row.id && c.sql.includes('SET quality_score = NULL') && c.sql.includes("status = 'queued'")),
+    'x-monitor must never become transiently visible as UNCHECKED',
+  );
+  classifier.classifyEntry = async () => { throw new Error('classifier stubbed out in tests'); };
+});
+
+test('x-monitor classifier failure returns the row to raw instead of leaking UNCHECKED into the queue', async () => {
+  let batchCalls = 0;
+  classifier.classifyEntry = async () => { throw new Error('temporary classifier failure'); };
+  const row = {
+    id: 602,
+    name: 'Canonical source title',
+    description: 'A sufficiently detailed source description that must remain pending when classification fails.',
+    source_url: 'https://example.org/x-monitor-retry',
+    amount: null,
+    deadline: null,
+    deadline_parsed: null,
+    source_published_at: null,
+    wire: 'ai',
+    scan_source: 'x-monitor',
+    scan_date: '2026-08-22',
+    prompt_id: null,
+    prompt_intent: null,
+  };
+  const pool = routingPool([
+    [RAW_BATCH, () => (++batchCalls === 1 ? { rows: [row] } : { rows: [] })],
+    ["WHERE id = $1 AND status = 'deduped'", { rows: [{ id: row.id }], rowCount: 1 }],
+    ["SET status = 'raw'", { rows: [{ id: row.id }], rowCount: 1 }],
+  ]);
+
+  await processRawEntries(pool);
+
+  const retry = pool.calls.find(c => c.sql.includes("SET status = 'raw'"));
+  assert.ok(retry, 'failed x-monitor classification must be returned to raw for a later retry');
+  assert.match(retry.sql, /status = 'deduped'/);
+  assert.deepEqual(retry.params, [row.id]);
+});

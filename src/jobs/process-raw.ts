@@ -18,6 +18,7 @@ import { finalizeExistingEntryDedup } from '../services/dedup';
 // quality-scorer.ts replaced by LLM scoring in classifier.ts
 import { classifyEntry } from '../services/classifier';
 import { classifySourceLink } from '../services/source-filter';
+import { determinePostClassificationStatus } from '../services/intake-core';
 import { finalizeProgramForEntry, normalizeProgramDeadline } from '../services/program-identity';
 
 const BATCH_SIZE = 50;
@@ -127,11 +128,12 @@ export interface RawClassificationWrite {
   correctedWire: string | null;
 }
 
-/** Apply LLM output only while the row is still in the temporary queued state. */
+/** Apply LLM output only while the row is still in its expected handoff state. */
 export async function applyClassificationIfQueued(
   db: Pick<Pool, 'query'>,
   entryId: number,
   result: RawClassificationWrite,
+  expectedStatus = 'queued',
 ): Promise<boolean> {
   const classified = await db.query(
     `UPDATE scan_entries
@@ -143,7 +145,7 @@ export async function applyClassificationIfQueued(
          tags = $6,
          status = $8,
          wire = COALESCE($9, wire)
-     WHERE id = $7 AND status = 'queued'
+     WHERE id = $7 AND status = $10
      RETURNING id`,
     [
       result.classification,
@@ -155,6 +157,7 @@ export async function applyClassificationIfQueued(
       entryId,
       result.status,
       result.correctedWire,
+      expectedStatus,
     ],
   );
   return classified.rowCount === 1;
@@ -215,7 +218,7 @@ export async function processRawEntries(pool?: Pool): Promise<{
       const batch = await db.query(
         `SELECT se.id, se.name, se.description, se.source_url, se.amount, se.deadline,
                 se.deadline_parsed, se.source_published_at,
-                se.wire, se.scan_date, se.prompt_id, sp.intent AS prompt_intent
+                se.wire, se.scan_source, se.scan_date, se.prompt_id, sp.intent AS prompt_intent
          FROM scan_entries se
          LEFT JOIN scan_prompts sp ON se.prompt_id = sp.id
          WHERE se.status = 'raw'
@@ -275,8 +278,12 @@ export async function processRawEntries(pool?: Pool): Promise<{
             continue;
           }
 
-          // Temporarily queue — Gate 2 below may auto-archive based on classification/score.
-          const queued = await db.query(
+          const isXMonitor = row.scan_source === 'x-monitor';
+          // Operator-authored raw intake remains fail-open and becomes visible
+          // before classification. x-monitor stays in its hidden deduped handoff
+          // until a settled route decides whether it belongs in the queue.
+          if (!isXMonitor) {
+            const queued = await db.query(
               `UPDATE scan_entries
                SET quality_score = NULL,
                    status = 'queued',
@@ -286,8 +293,8 @@ export async function processRawEntries(pool?: Pool): Promise<{
               [row.id]
             );
             if (queued.rowCount !== 1) continue;
-
             stats.queued++;
+          }
             // Gate 2: LLM classification + quality scoring (single Grok call)
             // Non-blocking: failure leaves the entry explicitly unscored.
             try {
@@ -303,7 +310,9 @@ export async function processRawEntries(pool?: Pool): Promise<{
               });
               // In-scope items queue for the agent to curate; off-scope items
               // (real opportunities outside crypto/AI/OSS) are archived.
-              const classStatus = classResult.inScope ? 'queued' : 'archived';
+              const classStatus = classResult.inScope
+                ? determinePostClassificationStatus(classResult, row.scan_source)
+                : 'archived';
               const correctedWire = (classResult.inScope && classResult.detectedWire
                 && ['crypto', 'ai', 'oss'].includes(classResult.detectedWire) && classResult.detectedWire !== row.wire)
                 ? classResult.detectedWire : null;
@@ -322,30 +331,58 @@ export async function processRawEntries(pool?: Pool): Promise<{
                 tags: classResult.tags,
                 status: classStatus,
                 correctedWire,
-              });
+              }, isXMonitor ? 'deduped' : 'queued');
               if (!classified) {
                 console.log(`[ProcessRaw] Entry ${row.id} changed during classification; preserving operator state`);
-              } else if (
-                classResult.inScope
-                && (classResult.classification === 'GRANT' || classResult.classification === 'EXPIRED')
-              ) {
-                // Program identity is downstream of the classification CAS:
-                // do not create intelligence for stale, off-scope, or news
-                // rows. Use the corrected wire and only a validated ISO date.
-                const deadlineValue = row.deadline_parsed instanceof Date
-                  ? row.deadline_parsed.toISOString().slice(0, 10)
-                  : row.deadline_parsed;
-                await finalizeProgramForEntry(db, {
-                  id: row.id,
-                  name: row.name,
-                  sourceUrl: row.source_url,
-                  wire: correctedWire ?? row.wire,
-                  deadline: normalizeProgramDeadline(deadlineValue),
-                  description: row.description ?? null,
-                }, dedupOutcome.programResolution ?? null);
+              } else {
+                if (classStatus === 'archived') {
+                  stats.archived++;
+                  if (!isXMonitor) stats.queued = Math.max(0, stats.queued - 1);
+                } else if (isXMonitor) {
+                  stats.queued++;
+                }
+                if (
+                  classStatus === 'queued'
+                  && classResult.inScope
+                  && (classResult.classification === 'GRANT' || classResult.classification === 'EXPIRED')
+                ) {
+                  // Program identity is downstream of the classification CAS:
+                  // do not create intelligence for stale, off-scope, or news
+                  // rows. Use the corrected wire and only a validated ISO date.
+                  const deadlineValue = row.deadline_parsed instanceof Date
+                    ? row.deadline_parsed.toISOString().slice(0, 10)
+                    : row.deadline_parsed;
+                  await finalizeProgramForEntry(db, {
+                    id: row.id,
+                    name: row.name,
+                    sourceUrl: row.source_url,
+                    wire: correctedWire ?? row.wire,
+                    deadline: normalizeProgramDeadline(deadlineValue),
+                    description: row.description ?? null,
+                  }, dedupOutcome.programResolution ?? null);
+                }
               }
             } catch (classError) {
-              console.error(`[ProcessRaw] Classification failed for entry ${row.id}, leaving as UNCHECKED:`, classError);
+              if (row.scan_source === 'x-monitor') {
+                // Monitored tweets are not operator-authored intake. Retry a
+                // transient classifier failure without leaking UNCHECKED social
+                // copy into the review queue.
+                const reset = await db.query(
+                  `UPDATE scan_entries
+                   SET status = 'raw', updated_at = NOW()
+                   WHERE id = $1 AND status = 'deduped' AND classification = 'UNCHECKED'
+                   RETURNING id`,
+                  [row.id],
+                );
+                if (reset.rowCount === 1) {
+                  stats.queued = Math.max(0, stats.queued - 1);
+                  console.error(`[ProcessRaw] Classification failed for x-monitor entry ${row.id}; returned to raw for retry:`, classError);
+                } else {
+                  console.error(`[ProcessRaw] Classification failed for x-monitor entry ${row.id}; row changed before retry reset:`, classError);
+                }
+              } else {
+                console.error(`[ProcessRaw] Classification failed for entry ${row.id}, leaving as UNCHECKED:`, classError);
+              }
             }
 
           stats.processed++;

@@ -161,14 +161,17 @@ export async function runAccountMonitor(pool: Pool, deps: AccountMonitorDeps = {
           try {
             intakeResult = await submitImpl(
               {
-                text: `${tweet.text}\n${url}`,
+                // Submit the URL as a bare message so intake scrapes a stable
+                // source title and description. Keep the tweet as provenance
+                // metadata instead of turning raw social copy into a queue title.
+                text: url,
                 urls: [url],
                 senderId: `x-monitor:${account.handle}`,
                 channelMessageId: tweet.id,
                 forwardedFrom: `@${account.handle}`,
               },
               'x-monitor',
-              { wireHint: account.wire || undefined },
+              { wireHint: account.wire || undefined, sourceContext: tweet.text },
             );
           } catch (err) {
             intakeError = err instanceof Error ? err.message : String(err);
