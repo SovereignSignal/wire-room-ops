@@ -142,7 +142,11 @@ export function resolveBareUrlIntakeFields(input: {
   const name = scraped.name?.trim() || '';
   const description = scraped.description?.trim() || '';
   if (!name || /^https?:\/\//i.test(name)) {
-    return { ok: false, retryable: false, errorMessage: 'Source has no usable editorial title' };
+    // Firecrawl can return usable content without title metadata, and the
+    // lightweight title fallback deliberately collapses network/HTTP failures
+    // to null. Keep this retryable so a transient title fetch never advances
+    // the account watermark as a durable rejection.
+    return { ok: false, retryable: true, errorMessage: 'Source title unavailable; x-monitor item will retry' };
   }
   const descriptionText = description.replace(/\s+/g, ' ').trim();
   if (!descriptionText || /^https?:\/\/\S+$/i.test(descriptionText) || descriptionText.replace(/\s+/g, '').length < 30) {

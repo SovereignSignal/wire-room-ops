@@ -14,6 +14,7 @@ if (!DB_URL) {
 
 const { getPool, closePool } = require('../src/db');
 const { annotateAlternateSource, registerSeen, checkDuplicate } = require('../src/services/dedup');
+const { restoreEntryRows, EntryActionConflictError } = require('../src/services/entry-actions');
 const { insertIntakeEntryWithClaim } = require('../src/services/intake-core');
 const { linkEntryDuplicate, EntryMaintenanceError } = require('../src/services/entry-maintenance');
 
@@ -92,6 +93,53 @@ test('archived URL ownership transfers atomically to a fresh entry for reconside
       [url],
     );
     assert.equal(Number(owner.rows[0].first_seen_entry_id), fresh);
+  } finally {
+    await pool.query(`DELETE FROM seen_names WHERE entry_id IN ($1, $2)`, [archived, fresh]);
+    await pool.query(`DELETE FROM seen_urls WHERE first_seen_entry_id IN ($1, $2)`, [archived, fresh]);
+    await pool.query(`DELETE FROM scan_entries WHERE id IN ($1, $2)`, [archived, fresh]);
+  }
+});
+
+test('archived-owner transfer and x-monitor restore serialize without split ownership', async () => {
+  const pool = getPool();
+  const url = 'https://example.com/restore-transfer-race-' + process.pid + '-' + Date.now();
+  const archived = await insertEntry(pool, 'Archived Race Signal', url, 'archived');
+  const fresh = await insertEntry(pool, 'Fresh Race Signal', url, 'raw');
+  try {
+    await pool.query(
+      `UPDATE scan_entries
+       SET scan_source = 'x-monitor', classification = 'GRANT',
+           metadata = jsonb_build_object('operator_route', 'publish')
+       WHERE id = $1`,
+      [archived],
+    );
+    const first = await registerSeen(pool, { id: archived, sourceUrl: url, name: 'Archived Race Signal', wire: 'oss', scanDate: '2026-06-10' });
+    assert.equal(first.urlConflict, false);
+
+    const [claimResult, restoreResult] = await Promise.allSettled([
+      registerSeen(pool, { id: fresh, sourceUrl: url, name: 'Fresh Race Signal', wire: 'oss', scanDate: '2026-08-22' }),
+      restoreEntryRows(pool, [archived], { actor: 'integration-test', reason: 'race proof' }),
+    ]);
+
+    assert.equal(claimResult.status, 'fulfilled');
+    const state = await pool.query(
+      `SELECT se.status, su.first_seen_entry_id
+       FROM scan_entries se
+       JOIN seen_urls su ON su.normalized_url = $2 AND su.wire = 'oss'
+       WHERE se.id = $1`,
+      [archived, url],
+    );
+    const owner = Number(state.rows[0].first_seen_entry_id);
+    if (restoreResult.status === 'fulfilled') {
+      assert.equal(state.rows[0].status, 'queued');
+      assert.equal(owner, archived, 'a restored archived row must retain URL ownership');
+      assert.equal(claimResult.value.urlConflict, true);
+    } else {
+      assert.ok(restoreResult.reason instanceof EntryActionConflictError);
+      assert.equal(state.rows[0].status, 'archived');
+      assert.equal(owner, fresh, 'a transferred URL must keep the archived row inactive');
+      assert.equal(claimResult.value.urlConflict, false);
+    }
   } finally {
     await pool.query(`DELETE FROM seen_names WHERE entry_id IN ($1, $2)`, [archived, fresh]);
     await pool.query(`DELETE FROM seen_urls WHERE first_seen_entry_id IN ($1, $2)`, [archived, fresh]);

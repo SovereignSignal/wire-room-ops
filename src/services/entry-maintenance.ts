@@ -66,6 +66,9 @@ export async function rewriteEntrySource(
 
   try {
     await client.query('BEGIN');
+    // Source rewrites participate in the same lifecycle lock as URL claims,
+    // archived-owner transfer, duplicate linking, and restore.
+    await lockDuplicateGraph(client);
     const currentResult = await client.query(
       `SELECT id, status, source_url, wire, scan_date
        FROM scan_entries WHERE id = $1 FOR UPDATE`,

@@ -695,7 +695,7 @@ test('x-monitor rejects a scraped source that still lacks usable editorial field
     originalText: 'https://example.org/program',
     scraped: { name: null, description: 'Long enough description but no source title is available for the queue.', scrapedContent: 'content' },
     scanSource: 'x-monitor',
-  }), { ok: false, retryable: false, errorMessage: 'Source has no usable editorial title' });
+  }), { ok: false, retryable: true, errorMessage: 'Source title unavailable; x-monitor item will retry' });
   assert.deepEqual(resolveBareUrlIntakeFields({
     initialName: 'example.org/program',
     originalText: 'https://example.org/program',

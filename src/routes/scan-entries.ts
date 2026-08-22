@@ -27,7 +27,7 @@ import { isValidUuid, isValidFeedKey } from '../utils/validation';
 import { buildSubmission, buildBatchSubmission } from '../services/intake';
 import { runDailyIntake, getDailyQueue, getIntakeStats } from '../jobs/daily-intake';
 import { getPromptEffectivenessStats } from '../services/scan-stats';
-import { singleEntryAction, bulkEntryAction, ApprovalBlockedError, BulkApprovalBlockedError } from '../services/entry-actions';
+import { singleEntryAction, bulkEntryAction, ApprovalBlockedError, BulkApprovalBlockedError, EntryActionConflictError } from '../services/entry-actions';
 import { rewriteEntrySource, linkEntryDuplicate, EntryMaintenanceError } from '../services/entry-maintenance';
 import { buildCuratorStamp } from '../services/curator';
 import { retryDistribution } from '../services/distribution';
@@ -465,6 +465,10 @@ router.post('/entries/bulk-action', async (req: Request, res: Response) => {
     });
     res.json(result);
   } catch (error) {
+    if (error instanceof EntryActionConflictError) {
+      res.status(409).json({ error: error.message });
+      return;
+    }
     if (error instanceof BulkApprovalBlockedError) {
       res.status(422).json({
         error: 'Some entries blocked',
@@ -506,6 +510,10 @@ router.post('/entries/:id/action', async (req: Request, res: Response) => {
     });
     res.json(result);
   } catch (error) {
+    if (error instanceof EntryActionConflictError) {
+      res.status(409).json({ error: error.message });
+      return;
+    }
     if (error instanceof ApprovalBlockedError) {
       res.status(422).json({
         error: 'Approval blocked',

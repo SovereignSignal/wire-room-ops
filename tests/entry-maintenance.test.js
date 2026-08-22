@@ -93,6 +93,9 @@ test('source rewrite commits entry and seen_urls registry atomically', async () 
   assert.ok(pool.calls.some(call => /source_rewrites/.test(call.sql)));
   assert.ok(pool.calls.some(call => /DELETE FROM seen_urls/.test(call.sql)));
   assert.ok(pool.calls.some(call => /INSERT INTO seen_urls/.test(call.sql)));
+  const graphLock = pool.calls.findIndex(call => /pg_advisory_xact_lock/.test(call.sql));
+  const entryLock = pool.calls.findIndex(call => /SELECT id, status, source_url, wire, scan_date/.test(call.sql));
+  assert.ok(graphLock >= 0 && graphLock < entryLock, 'source rewrite must take the lifecycle lock before the entry row');
   assert.ok(pool.calls.some(call => call.sql === 'COMMIT'));
 });
 

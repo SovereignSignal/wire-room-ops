@@ -89,8 +89,11 @@ export function isCompletionSufficient(entry: {
   if (/^https?:\/\//i.test(name)) {
     return { passes: false, reason: 'Name is only a URL' };
   }
-  if (/^@?[a-zA-Z0-9_]+$/.test(name)) {
+  if (/^@[a-zA-Z0-9_]+$/.test(name)) {
     return { passes: false, reason: 'Name is only a handle' };
+  }
+  if (name.length < 2) {
+    return { passes: false, reason: 'Name is too short' };
   }
 
   // Check description — strip whitespace and emoji before length check
@@ -139,12 +142,23 @@ export interface RawClassificationWrite {
   correctedWire: string | null;
 }
 
+export interface RawClassificationSnapshot {
+  sourceUrl: string;
+  name: string;
+  description: string | null;
+  wire: string;
+  amount: string | null;
+  deadlineParsed: string | Date | null;
+  sourcePublishedAt: string | Date | null;
+}
+
 /** Apply LLM output only while the row is still in its expected handoff state. */
 export async function applyClassificationIfQueued(
   db: Pick<Pool, 'query'>,
   entryId: number,
   result: RawClassificationWrite,
   expectedStatus = 'queued',
+  expected?: RawClassificationSnapshot,
 ): Promise<boolean> {
   const classified = await db.query(
     `UPDATE scan_entries
@@ -157,6 +171,14 @@ export async function applyClassificationIfQueued(
          status = $8,
          wire = COALESCE($9, wire)
      WHERE id = $7 AND status = $10
+       AND ($11::text IS NULL OR (
+         source_url = $11 AND name = $12
+         AND description IS NOT DISTINCT FROM $13
+         AND wire = $14
+         AND amount IS NOT DISTINCT FROM $15
+         AND deadline_parsed IS NOT DISTINCT FROM $16
+         AND source_published_at IS NOT DISTINCT FROM $17
+       ))
      RETURNING id`,
     [
       result.classification,
@@ -169,6 +191,13 @@ export async function applyClassificationIfQueued(
       result.status,
       result.correctedWire,
       expectedStatus,
+      expected?.sourceUrl ?? null,
+      expected?.name ?? null,
+      expected?.description ?? null,
+      expected?.wire ?? null,
+      expected?.amount ?? null,
+      expected?.deadlineParsed ?? null,
+      expected?.sourcePublishedAt ?? null,
     ],
   );
   return classified.rowCount === 1;
@@ -345,7 +374,15 @@ export async function processRawEntries(pool?: Pool): Promise<{
                 tags: classResult.tags,
                 status: classStatus,
                 correctedWire,
-              }, isXMonitor ? 'deduped' : 'queued');
+              }, isXMonitor ? 'deduped' : 'queued', {
+                sourceUrl: row.source_url,
+                name: row.name,
+                description: row.description ?? null,
+                wire: row.wire,
+                amount: row.amount ?? null,
+                deadlineParsed: row.deadline_parsed ?? null,
+                sourcePublishedAt: row.source_published_at ?? null,
+              });
               if (!classified) {
                 console.log(`[ProcessRaw] Entry ${row.id} changed during classification; preserving operator state`);
               } else {

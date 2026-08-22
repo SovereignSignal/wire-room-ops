@@ -663,6 +663,7 @@ export async function registerSeen(
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    await lockDuplicateGraph(client);
     const result = await registerSeenInTransaction(client, entry);
     await client.query('COMMIT');
     return result;

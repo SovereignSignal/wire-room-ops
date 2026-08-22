@@ -29,7 +29,8 @@ programIdentity.finalizeProgramForEntry = async (_pool, entry, resolution) => {
   programFinalizations.push({ entry, resolution });
 };
 
-const { processRawEntries, recoverStrandedDedupedEntries } = require('../src/jobs/process-raw');
+const { processRawEntries, recoverStrandedDedupedEntries, isCompletionSufficient } = require('../src/jobs/process-raw');
+const { resolveBareUrlIntakeFields } = require('../src/services/intake-core');
 
 /** Stub pool that routes by SQL substring, records every call (params deep-
  *  copied — process-raw mutates its `attempted` array between calls). Also
@@ -53,6 +54,19 @@ function routingPool(routes) {
 }
 
 const RAW_BATCH = 'SELECT se.id, se.name';
+
+test('Gate 1 accepts canonical one-word titles and rejects only explicit social handles', () => {
+  const base = {
+    description: 'Official source description with enough detail for classification and editorial routing.',
+    source_url: 'https://example.org/program',
+  };
+  assert.deepEqual(isCompletionSufficient({ ...base, name: 'Gitcoin' }), { passes: true });
+  assert.deepEqual(isCompletionSufficient({ ...base, name: 'OpenAI' }), { passes: true });
+  assert.deepEqual(isCompletionSufficient({ ...base, name: '@gitcoin' }), {
+    passes: false,
+    reason: 'Name is only a handle',
+  });
+});
 
 test('stranded deduped rows are recovered to the review queue after the safety window', async () => {
   const pool = routingPool([
@@ -277,6 +291,59 @@ test('program identity is skipped for NEWS and for a lost classification CAS', a
   classifier.classifyEntry = async () => { throw new Error('classifier stubbed out in tests'); };
 });
 
+test('canonical one-word x-monitor title reaches settled classification instead of incomplete', async () => {
+  const resolved = resolveBareUrlIntakeFields({
+    initialName: 'example.org/gitcoin',
+    originalText: 'https://example.org/gitcoin',
+    scraped: {
+      name: 'Gitcoin',
+      description: 'Official canonical source description for an open funding opportunity.',
+      scrapedContent: '# Gitcoin\nOfficial canonical source description.',
+    },
+    scanSource: 'x-monitor',
+  });
+  assert.equal(resolved.ok, true);
+
+  let batchCalls = 0;
+  classifier.classifyEntry = async () => ({
+    classification: 'GRANT',
+    reason: 'open and in scope',
+    qualityScore: 80,
+    scoreReason: 'canonical evidence',
+    operatorRoute: 'publish',
+    tags: ['grant'],
+    inScope: true,
+    detectedWire: 'oss',
+    extracted: {},
+  });
+  const row = {
+    id: 600,
+    name: resolved.name,
+    description: resolved.description,
+    source_url: 'https://example.org/gitcoin',
+    amount: null,
+    deadline: null,
+    deadline_parsed: null,
+    source_published_at: null,
+    wire: 'oss',
+    scan_source: 'x-monitor',
+    scan_date: '2026-08-22',
+    prompt_id: null,
+    prompt_intent: null,
+  };
+  const pool = routingPool([
+    [RAW_BATCH, () => (++batchCalls === 1 ? { rows: [row] } : { rows: [] })],
+    ["WHERE id = $1 AND status = 'deduped'", { rows: [{ id: row.id }], rowCount: 1 }],
+    ['SET classification = $1', { rows: [{ id: row.id }], rowCount: 1 }],
+  ]);
+
+  const stats = await processRawEntries(pool);
+
+  assert.equal(stats.incomplete, 0);
+  assert.equal(stats.queued, 1);
+  assert.ok(pool.calls.some(call => call.sql.includes('SET classification = $1')));
+});
+
 test('x-monitor park classifications settle outside the review queue', async () => {
   let batchCalls = 0;
   classifier.classifyEntry = async () => ({
@@ -317,6 +384,11 @@ test('x-monitor park classifications settle outside the review queue', async () 
   assert.ok(classified, 'classification write was not issued');
   assert.equal(classified.params[7], 'archived', 'parked x-monitor rows must not land in the operator queue');
   assert.equal(classified.params[9], 'deduped', 'x-monitor must remain hidden until classification settles');
+  assert.equal(classified.params[10], row.source_url, 'classification CAS must fence source rewrites');
+  assert.equal(classified.params[11], row.name, 'classification CAS must fence title rewrites');
+  assert.equal(classified.params[13], row.wire, 'classification CAS must fence wire rewrites');
+  assert.match(classified.sql, /source_url = \$11/);
+  assert.match(classified.sql, /description IS NOT DISTINCT FROM \$13/);
   assert.equal(stats.queued, 0);
   assert.equal(stats.archived, 1);
   assert.ok(
