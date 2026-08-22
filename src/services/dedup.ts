@@ -580,7 +580,7 @@ export async function registerSeenInTransaction(
   let conflictEntryId: number | null = null;
   if (urlRes.rowCount === 0) {
     const existing = await db.query(
-      `SELECT su.first_seen_entry_id, se.name
+      `SELECT su.first_seen_entry_id, se.name, se.status
        FROM seen_urls su
        LEFT JOIN scan_entries se ON se.id = su.first_seen_entry_id
        WHERE su.normalized_url = $1 AND su.wire = $2
@@ -595,33 +595,51 @@ export async function registerSeenInTransaction(
     // A null owner is a seed-only historical URL and must remain a conflict.
     if (ownerId !== entry.id) {
       const ownerName = existing.rows[0].name as string | null;
-      let allowSharedSocialSource = false;
-      if (ownerId !== null
-          && ownerName
-          && isSocialAggregateUrl(entry.sourceUrl)
-          && !areNamesSimilar(entry.name, ownerName)) {
-        // The seen_urls row lock serializes concurrent claimants for this
-        // normalized URL. Count active rows after acquiring it so at most two
-        // distinct opportunities can share one aggregate social post.
-        const activeSocial = await db.query(
-          `SELECT id, source_url
-           FROM scan_entries
-           WHERE wire = $1
-             AND id != $2
-             AND source_url IS NOT NULL
-             AND source_url ~* '^https?://(www\\.)?(x|twitter)\\.com\\.?/'
-             AND status NOT IN ('duplicate', 'archived')`,
-          [entry.wire, entry.id],
+      const ownerStatus = existing.rows[0].status as string | null;
+      if (ownerId !== null && ownerStatus === 'archived') {
+        // URL precheck deliberately ignores archived owners so a later signal
+        // can be reconsidered. Preserve that policy at the atomic claim stage:
+        // transfer the locked registry row instead of demoting the fresh entry
+        // to an archived parent and consuming its account-monitor watermark.
+        const transferred = await db.query(
+          `UPDATE seen_urls
+           SET url = $1, first_seen_entry_id = $2, first_seen_date = $3
+           WHERE normalized_url = $4 AND wire = $5 AND first_seen_entry_id = $6
+           RETURNING id`,
+          [entry.sourceUrl, entry.id, entry.scanDate, normalized_url, entry.wire, ownerId],
         );
-        const existingCount = activeSocial.rows.filter(
-          row => normalizeUrl(String(row.source_url)) === normalized_url,
-        ).length;
-        allowSharedSocialSource = existingCount < 2;
-      }
+        if (transferred.rowCount !== 1) {
+          throw new Error('Archived exact URL owner changed during ownership transfer');
+        }
+      } else {
+        let allowSharedSocialSource = false;
+        if (ownerId !== null
+            && ownerName
+            && isSocialAggregateUrl(entry.sourceUrl)
+            && !areNamesSimilar(entry.name, ownerName)) {
+          // The seen_urls row lock serializes concurrent claimants for this
+          // normalized URL. Count active rows after acquiring it so at most two
+          // distinct opportunities can share one aggregate social post.
+          const activeSocial = await db.query(
+            `SELECT id, source_url
+             FROM scan_entries
+             WHERE wire = $1
+               AND id != $2
+               AND source_url IS NOT NULL
+               AND source_url ~* '^https?://(www\\.)?(x|twitter)\\.com\\.?/'
+               AND status NOT IN ('duplicate', 'archived')`,
+            [entry.wire, entry.id],
+          );
+          const existingCount = activeSocial.rows.filter(
+            row => normalizeUrl(String(row.source_url)) === normalized_url,
+          ).length;
+          allowSharedSocialSource = existingCount < 2;
+        }
 
-      if (!allowSharedSocialSource) {
-        urlConflict = true;
-        conflictEntryId = ownerId;
+        if (!allowSharedSocialSource) {
+          urlConflict = true;
+          conflictEntryId = ownerId;
+        }
       }
     }
   }
@@ -645,6 +663,7 @@ export async function registerSeen(
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    await lockDuplicateGraph(client);
     const result = await registerSeenInTransaction(client, entry);
     await client.query('COMMIT');
     return result;

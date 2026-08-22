@@ -17,6 +17,9 @@ import { extractOrgFromName, upsertOrgProfile, linkEntryToOrg, findSimilarOrg } 
 import { enrichSingleOrg } from './org-enricher';
 import { refreshProgramCounters } from './program-identity';
 import { config } from '../config';
+import type { Pool } from 'pg';
+import { normalizeUrl } from './intake';
+import { lockDuplicateGraph } from './duplicate-chain';
 
 // --- Types ---
 
@@ -68,6 +71,13 @@ export class BulkApprovalBlockedError extends Error {
   }
 }
 
+export class EntryActionConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'EntryActionConflictError';
+  }
+}
+
 // --- Migration: ensure audit columns on scan_entries ---
 
 export async function ensureEntryActionColumns(): Promise<void> {
@@ -90,6 +100,95 @@ function resolveAction(action: string): string {
   const status = ACTION_MAP[action];
   if (!status) throw new Error('Invalid action. Must be approve, decline, reviewlater, or restore.');
   return status;
+}
+
+const X_MONITOR_RESTORE_ROUTES = new Set(['publish', 'source_check']);
+const X_MONITOR_RESTORABLE_STATUSES = new Set(['archived', 'declined', 'skipped']);
+
+function metadataRoute(metadata: unknown): string | null {
+  if (typeof metadata === 'string') {
+    try { metadata = JSON.parse(metadata); } catch { return null; }
+  }
+  if (!metadata || typeof metadata !== 'object') return null;
+  const route = (metadata as Record<string, unknown>).operator_route;
+  return typeof route === 'string' ? route : null;
+}
+
+/** Restore rows under the global URL and duplicate lifecycle lock. */
+export async function restoreEntryRows(
+  pool: Pool,
+  entryIds: number[],
+  opts: ActionOptions = {},
+): Promise<any[]> {
+  const ids = [...new Set(entryIds)];
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await lockDuplicateGraph(client);
+    const currentResult = await client.query(
+      `SELECT id, status, scan_source, classification, metadata, source_url, wire, program_id
+       FROM scan_entries
+       WHERE id = ANY($1::bigint[])
+       ORDER BY id
+       FOR UPDATE`,
+      [ids],
+    );
+    if (currentResult.rows.length !== ids.length) throw new Error('Entry not found');
+
+    for (const row of currentResult.rows) {
+      if (row.scan_source !== 'x-monitor') continue;
+      if (!X_MONITOR_RESTORABLE_STATUSES.has(row.status)) {
+        throw new EntryActionConflictError(
+          `x-monitor entry #${row.id} cannot restore from status ${row.status}`,
+        );
+      }
+      const route = metadataRoute(row.metadata);
+      if (!row.classification || row.classification === 'UNCHECKED' || !route || !X_MONITOR_RESTORE_ROUTES.has(route)) {
+        throw new EntryActionConflictError(
+          `x-monitor entry #${row.id} must settle to publish or source_check before queue restore`,
+        );
+      }
+      const owner = await client.query(
+        `SELECT first_seen_entry_id
+         FROM seen_urls
+         WHERE normalized_url = $1 AND wire = $2
+         FOR UPDATE`,
+        [normalizeUrl(row.source_url), row.wire],
+      );
+      if (owner.rows.length !== 1 || Number(owner.rows[0].first_seen_entry_id) !== Number(row.id)) {
+        throw new EntryActionConflictError(
+          `x-monitor entry #${row.id} no longer owns its canonical URL`,
+        );
+      }
+    }
+
+    if (opts.dryRun) {
+      await client.query('ROLLBACK');
+      return currentResult.rows.map(row => ({ ...row, status: 'queued', distributable: false }));
+    }
+
+    const restored = await client.query(
+      `UPDATE scan_entries
+       SET status = 'queued', distributable = false,
+           actioned_by = COALESCE($2, actioned_by),
+           action_reason = COALESCE($3, action_reason),
+           updated_at = NOW()
+       WHERE id = ANY($1::bigint[])
+       RETURNING id, status, wire, name, description, enriched_summary, quality_score,
+                 amount, deadline, source_url, org_id, program_id, scan_date, tags`,
+      [ids, opts.actor || null, opts.reason || null],
+    );
+    if (restored.rows.length !== ids.length) {
+      throw new EntryActionConflictError('Entries changed before restore');
+    }
+    await client.query('COMMIT');
+    return restored.rows;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 /**
@@ -182,8 +281,9 @@ export async function singleEntryAction(
     }
   }
 
-  // Dry run: return what would happen without committing
-  if (opts.dryRun) {
+  // Dry run: return what would happen without committing. Restore dry runs
+  // still enter the guarded transaction so lifecycle conflicts are visible.
+  if (opts.dryRun && action !== 'restore') {
     const response: SingleActionResult = {
       success: true,
       newStatus,
@@ -193,7 +293,9 @@ export async function singleEntryAction(
   }
 
   const distributable = opts.quiet ? false : true;
-  const result = await pool.query(
+  const result = action === 'restore'
+    ? { rows: await restoreEntryRows(pool, [entryId], opts) }
+    : await pool.query(
     `UPDATE scan_entries SET status = $1, distributable = $2, actioned_by = COALESCE($3, actioned_by), action_reason = COALESCE($4, action_reason), updated_at = NOW() WHERE id = $5
      RETURNING id, status, wire, name, description, enriched_summary, quality_score, amount, deadline, source_url, org_id, program_id, scan_date, tags`,
     [newStatus, distributable, opts.actor || null, opts.reason || null, entryId]
@@ -201,6 +303,10 @@ export async function singleEntryAction(
 
   if (result.rows.length === 0) {
     throw new Error('Entry not found');
+  }
+
+  if (opts.dryRun) {
+    return { success: true, newStatus };
   }
 
   await refreshProgramCounters(pool, result.rows.map(row => row.program_id).filter((id): id is number => Number.isSafeInteger(id)));
@@ -301,14 +407,16 @@ export async function bulkEntryAction(
     }
   }
 
-  // Dry run: return what would happen without committing
-  if (opts.dryRun) {
+  // Dry run: restore still validates lifecycle ownership and routing.
+  if (opts.dryRun && action !== 'restore') {
     return { success: true, updated: entryIds.length, newStatus, summaryIds: {} };
   }
 
   // Bulk update status
   const distributable = opts.quiet ? false : true;
-  const result = await pool.query(
+  const result = action === 'restore'
+    ? { rows: await restoreEntryRows(pool, entryIds, opts) }
+    : await pool.query(
     `UPDATE scan_entries SET status = $1, distributable = $2, actioned_by = COALESCE($3, actioned_by), action_reason = COALESCE($4, action_reason), updated_at = NOW()
      WHERE id = ANY($5)
      RETURNING id, status, wire, name, description, enriched_summary, quality_score, amount, deadline, source_url, org_id, program_id, scan_date, tags`,
@@ -316,6 +424,9 @@ export async function bulkEntryAction(
   );
 
   const updated = result.rows;
+  if (opts.dryRun) {
+    return { success: true, updated: updated.length, newStatus, summaryIds: {} };
+  }
   await refreshProgramCounters(pool, updated.map(row => row.program_id).filter((id): id is number => Number.isSafeInteger(id)));
   const summaryIds: Record<number, number | null> = {};
 

@@ -27,8 +27,8 @@ import { isValidUuid, isValidFeedKey } from '../utils/validation';
 import { buildSubmission, buildBatchSubmission } from '../services/intake';
 import { runDailyIntake, getDailyQueue, getIntakeStats } from '../jobs/daily-intake';
 import { getPromptEffectivenessStats } from '../services/scan-stats';
-import { singleEntryAction, bulkEntryAction, ApprovalBlockedError, BulkApprovalBlockedError } from '../services/entry-actions';
-import { rewriteEntrySource, linkEntryDuplicate, EntryMaintenanceError } from '../services/entry-maintenance';
+import { singleEntryAction, bulkEntryAction, ApprovalBlockedError, BulkApprovalBlockedError, EntryActionConflictError } from '../services/entry-actions';
+import { rewriteEntrySource, rewriteEntryWires, linkEntryDuplicate, EntryMaintenanceError } from '../services/entry-maintenance';
 import { buildCuratorStamp } from '../services/curator';
 import { retryDistribution } from '../services/distribution';
 import { PROMPT_VARIANTS, SCAN_SOURCES } from '../types/intake';
@@ -87,6 +87,10 @@ router.post('/submit', async (req: Request, res: Response) => {
       res.status(400).json({ error: `Invalid source "${source}". Valid: ${SCAN_SOURCES.join(', ')}` });
       return;
     }
+    if (source === 'x-monitor') {
+      res.status(400).json({ error: 'x-monitor is reserved for the Account Monitor canonical-URL intake path' });
+      return;
+    }
 
     const submission = buildSubmission(
       rawText,
@@ -136,6 +140,10 @@ router.post('/submit-batch', async (req: Request, res: Response) => {
     }
     if (source !== undefined && !SCAN_SOURCES.includes(source)) {
       res.status(400).json({ error: `Invalid source "${source}". Valid: ${SCAN_SOURCES.join(', ')}` });
+      return;
+    }
+    if (source === 'x-monitor') {
+      res.status(400).json({ error: 'x-monitor is reserved for the Account Monitor canonical-URL intake path' });
       return;
     }
 
@@ -465,6 +473,10 @@ router.post('/entries/bulk-action', async (req: Request, res: Response) => {
     });
     res.json(result);
   } catch (error) {
+    if (error instanceof EntryActionConflictError) {
+      res.status(409).json({ error: error.message });
+      return;
+    }
     if (error instanceof BulkApprovalBlockedError) {
       res.status(422).json({
         error: 'Some entries blocked',
@@ -506,6 +518,10 @@ router.post('/entries/:id/action', async (req: Request, res: Response) => {
     });
     res.json(result);
   } catch (error) {
+    if (error instanceof EntryActionConflictError) {
+      res.status(409).json({ error: error.message });
+      return;
+    }
     if (error instanceof ApprovalBlockedError) {
       res.status(422).json({
         error: 'Approval blocked',
@@ -598,42 +614,15 @@ router.patch('/entries/:id/wire', async (req: Request, res: Response) => {
       return;
     }
 
-    const primaryWire = wireArray[0];
-    const pool = getPool();
-    
-    // Get current wire before update
-    const currentResult = await pool.query(
-      `SELECT wire, name FROM scan_entries WHERE id = $1`,
-      [entryId]
-    );
-    
-    if (currentResult.rows.length === 0) {
-      res.status(404).json({ error: 'Entry not found' });
-      return;
-    }
-    
-    const currentWire = currentResult.rows[0].wire;
-    const entryName = currentResult.rows[0].name;
-    
-    // Update scan_entries
-    const result = await pool.query(
-      `UPDATE scan_entries SET wire = $1, wires = $2, updated_at = NOW() WHERE id = $3 RETURNING id, wire, wires`,
-      [primaryWire, wireArray, entryId]
-    );
+    const result = await rewriteEntryWires(getPool(), entryId, {
+      wires: wireArray,
+      actor: resolveMaintenanceActor(req) || undefined,
+      reason: typeof req.body?.reason === 'string' ? req.body.reason : undefined,
+    });
 
-    // Also update seen_names to keep wire in sync for dedup
-    if (currentWire !== primaryWire) {
-      await pool.query(
-        `UPDATE seen_names SET wire = $1 WHERE entry_id = $2`,
-        [primaryWire, entryId]
-      );
-      console.log(`[WireUpdate] Updated entry #${entryId} wire: ${currentWire} → ${primaryWire} (also updated seen_names)`);
-    }
-
-    res.json({ success: true, wire: result.rows[0].wire, wires: result.rows[0].wires });
+    res.json({ success: true, wire: result.wire, wires: result.wires });
   } catch (error) {
-    console.error('Failed to update entry wire:', error);
-    res.status(500).json({ error: 'Failed to update wire' });
+    sendMaintenanceError(res, error, 'WireRewrite');
   }
 });
 

@@ -29,7 +29,8 @@ programIdentity.finalizeProgramForEntry = async (_pool, entry, resolution) => {
   programFinalizations.push({ entry, resolution });
 };
 
-const { processRawEntries } = require('../src/jobs/process-raw');
+const { processRawEntries, recoverStrandedDedupedEntries, isCompletionSufficient } = require('../src/jobs/process-raw');
+const { resolveBareUrlIntakeFields } = require('../src/services/intake-core');
 
 /** Stub pool that routes by SQL substring, records every call (params deep-
  *  copied — process-raw mutates its `attempted` array between calls). Also
@@ -54,9 +55,25 @@ function routingPool(routes) {
 
 const RAW_BATCH = 'SELECT se.id, se.name';
 
+test('Gate 1 accepts canonical one-word titles and rejects only explicit social handles', () => {
+  const base = {
+    description: 'Official source description with enough detail for classification and editorial routing.',
+    source_url: 'https://example.org/program',
+  };
+  assert.deepEqual(isCompletionSufficient({ ...base, name: 'Gitcoin' }), { passes: true });
+  assert.deepEqual(isCompletionSufficient({ ...base, name: 'OpenAI' }), { passes: true });
+  assert.deepEqual(isCompletionSufficient({ ...base, name: '@gitcoin' }), {
+    passes: false,
+    reason: 'Name is only a handle',
+  });
+});
+
 test('stranded deduped rows are recovered to the review queue after the safety window', async () => {
   const pool = routingPool([
-    ["WHERE status = 'deduped'", { rows: [{ id: 91 }, { id: 92 }], rowCount: 2 }],
+    ["WHERE status = 'deduped'", { rows: [
+      { id: 91, status: 'queued', scan_source: 'telegram' },
+      { id: 92, status: 'queued', scan_source: 'manual-intake' },
+    ], rowCount: 2 }],
     [RAW_BATCH, { rows: [] }],
   ]);
 
@@ -64,7 +81,7 @@ test('stranded deduped rows are recovered to the review queue after the safety w
 
   assert.equal(stats.processed, 2);
   assert.equal(stats.queued, 2);
-  const recovery = pool.calls.find(c => c.sql.includes("classification = COALESCE(classification, 'UNCHECKED')"));
+  const recovery = pool.calls.find(c => c.sql.includes("WHEN scan_source = 'x-monitor' THEN 'UNCHECKED'"));
   assert.ok(recovery, 'deduped recovery update was not issued');
   assert.match(recovery.sql, /updated_at < NOW\(\) - \$1::interval/);
   assert.match(
@@ -72,7 +89,22 @@ test('stranded deduped rows are recovered to the review queue after the safety w
     /duplicate_reason IS DISTINCT FROM 'URL already exists in seed history'/,
     'terminal seed-history conflicts must stay parked',
   );
+  assert.match(recovery.sql, /CASE WHEN scan_source = 'x-monitor' THEN 'raw' ELSE 'queued' END/);
   assert.deepEqual(recovery.params, ['15 minutes']);
+});
+
+test('stranded x-monitor handoffs return to raw instead of leaking into the queue as UNCHECKED', async () => {
+  const pool = routingPool([
+    ["WHERE status = 'deduped'", { rows: [{ id: 93, status: 'raw', scan_source: 'x-monitor' }], rowCount: 1 }],
+  ]);
+
+  const recovered = await recoverStrandedDedupedEntries(pool);
+
+  assert.deepEqual(recovered, { queued: 0, retried: 1 });
+  const recovery = pool.calls[0];
+  assert.match(recovery.sql, /WHEN scan_source = 'x-monitor' THEN 'raw'/);
+  assert.match(recovery.sql, /WHEN scan_source = 'x-monitor' THEN 'UNCHECKED'/);
+  assert.match(recovery.sql, /quality_score = CASE WHEN scan_source = 'x-monitor' THEN NULL/);
 });
 
 test('Gate 1: incomplete row is marked incomplete and excluded from the next batch query', async () => {
@@ -210,7 +242,7 @@ test('classification evidence reaches Gate 2 and a successful in-scope grant CAS
   assert.equal(classificationInput.deadlineParsed, '2026-09-01');
   assert.equal(classificationInput.sourcePublishedAt, '2026-07-20T12:00:00Z');
   assert.equal(programFinalizations.length, 1);
-  assert.equal(programFinalizations[0].entry.wire, 'ai');
+  assert.equal(programFinalizations[0].entry.wire, 'crypto', 'detected Wire stays advisory until atomic reassignment');
   assert.equal(programFinalizations[0].entry.deadline, '2026-09-01');
   classifier.classifyEntry = async () => { throw new Error('classifier stubbed out in tests'); };
 });
@@ -257,4 +289,144 @@ test('program identity is skipped for NEWS and for a lost classification CAS', a
 
   assert.equal(programFinalizations.length, 0);
   classifier.classifyEntry = async () => { throw new Error('classifier stubbed out in tests'); };
+});
+
+test('canonical one-word x-monitor title reaches settled classification instead of incomplete', async () => {
+  const resolved = resolveBareUrlIntakeFields({
+    initialName: 'example.org/gitcoin',
+    originalText: 'https://example.org/gitcoin',
+    scraped: {
+      name: 'Gitcoin',
+      description: 'Official canonical source description for an open funding opportunity.',
+      scrapedContent: '# Gitcoin\nOfficial canonical source description.',
+    },
+    scanSource: 'x-monitor',
+  });
+  assert.equal(resolved.ok, true);
+
+  let batchCalls = 0;
+  classifier.classifyEntry = async () => ({
+    classification: 'GRANT',
+    reason: 'open and in scope',
+    qualityScore: 80,
+    scoreReason: 'canonical evidence',
+    operatorRoute: 'publish',
+    tags: ['grant'],
+    inScope: true,
+    detectedWire: 'oss',
+    extracted: {},
+  });
+  const row = {
+    id: 600,
+    name: resolved.name,
+    description: resolved.description,
+    source_url: 'https://example.org/gitcoin',
+    amount: null,
+    deadline: null,
+    deadline_parsed: null,
+    source_published_at: null,
+    wire: 'oss',
+    scan_source: 'x-monitor',
+    scan_date: '2026-08-22',
+    prompt_id: null,
+    prompt_intent: null,
+  };
+  const pool = routingPool([
+    [RAW_BATCH, () => (++batchCalls === 1 ? { rows: [row] } : { rows: [] })],
+    ["WHERE id = $1 AND status = 'deduped'", { rows: [{ id: row.id }], rowCount: 1 }],
+    ['SET classification = $1', { rows: [{ id: row.id }], rowCount: 1 }],
+  ]);
+
+  const stats = await processRawEntries(pool);
+
+  assert.equal(stats.incomplete, 0);
+  assert.equal(stats.queued, 1);
+  assert.ok(pool.calls.some(call => call.sql.includes('SET classification = $1')));
+});
+
+test('x-monitor park classifications settle outside the review queue', async () => {
+  let batchCalls = 0;
+  classifier.classifyEntry = async () => ({
+    classification: 'NEWS',
+    reason: 'context only',
+    qualityScore: 35,
+    scoreReason: 'no applicant path',
+    operatorRoute: 'park',
+    tags: ['context'],
+    inScope: true,
+    detectedWire: 'ai',
+    extracted: {},
+  });
+  const row = {
+    id: 601,
+    name: 'Canonical source title',
+    description: 'A sufficiently detailed source description that should be classified before review.',
+    source_url: 'https://example.org/x-monitor-park',
+    amount: null,
+    deadline: null,
+    deadline_parsed: null,
+    source_published_at: null,
+    wire: 'ai',
+    scan_source: 'x-monitor',
+    scan_date: '2026-08-22',
+    prompt_id: null,
+    prompt_intent: null,
+  };
+  const pool = routingPool([
+    [RAW_BATCH, () => (++batchCalls === 1 ? { rows: [row] } : { rows: [] })],
+    ["WHERE id = $1 AND status = 'deduped'", { rows: [{ id: row.id }], rowCount: 1 }],
+    ['SET classification = $1', { rows: [{ id: row.id }], rowCount: 1 }],
+  ]);
+
+  const stats = await processRawEntries(pool);
+
+  const classified = pool.calls.find(c => c.sql.includes('SET classification = $1'));
+  assert.ok(classified, 'classification write was not issued');
+  assert.equal(classified.params[7], 'archived', 'parked x-monitor rows must not land in the operator queue');
+  assert.equal(classified.params[8], 'deduped', 'x-monitor must remain hidden until classification settles');
+  assert.equal(classified.params[9], row.source_url, 'classification CAS must fence source rewrites');
+  assert.equal(classified.params[10], row.name, 'classification CAS must fence title rewrites');
+  assert.equal(classified.params[12], row.wire, 'classification CAS must fence wire rewrites');
+  assert.match(classified.sql, /source_url = \$10/);
+  assert.match(classified.sql, /description IS NOT DISTINCT FROM \$12/);
+  assert.doesNotMatch(classified.sql, /wire\s*=\s*COALESCE/, 'classification must not mutate dedup Wire scope');
+  assert.equal(stats.queued, 0);
+  assert.equal(stats.archived, 1);
+  assert.ok(
+    !pool.calls.some(c => c.params?.[0] === row.id && c.sql.includes('SET quality_score = NULL') && c.sql.includes("status = 'queued'")),
+    'x-monitor must never become transiently visible as UNCHECKED',
+  );
+  classifier.classifyEntry = async () => { throw new Error('classifier stubbed out in tests'); };
+});
+
+test('x-monitor classifier failure returns the row to raw instead of leaking UNCHECKED into the queue', async () => {
+  let batchCalls = 0;
+  classifier.classifyEntry = async () => { throw new Error('temporary classifier failure'); };
+  const row = {
+    id: 602,
+    name: 'Canonical source title',
+    description: 'A sufficiently detailed source description that must remain pending when classification fails.',
+    source_url: 'https://example.org/x-monitor-retry',
+    amount: null,
+    deadline: null,
+    deadline_parsed: null,
+    source_published_at: null,
+    wire: 'ai',
+    scan_source: 'x-monitor',
+    scan_date: '2026-08-22',
+    prompt_id: null,
+    prompt_intent: null,
+  };
+  const pool = routingPool([
+    [RAW_BATCH, () => (++batchCalls === 1 ? { rows: [row] } : { rows: [] })],
+    ["WHERE id = $1 AND status = 'deduped'", { rows: [{ id: row.id }], rowCount: 1 }],
+    ["SET status = 'raw'", { rows: [{ id: row.id }], rowCount: 1 }],
+  ]);
+
+  await processRawEntries(pool);
+
+  const retry = pool.calls.find(c => c.sql.includes("SET status = 'raw'"));
+  assert.ok(retry, 'failed x-monitor classification must be returned to raw for a later retry');
+  assert.match(retry.sql, /status = 'deduped'/);
+  assert.deepEqual(retry.params, [row.id]);
 });

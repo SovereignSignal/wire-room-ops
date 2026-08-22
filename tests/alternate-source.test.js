@@ -14,8 +14,9 @@ if (!DB_URL) {
 
 const { getPool, closePool } = require('../src/db');
 const { annotateAlternateSource, registerSeen, checkDuplicate } = require('../src/services/dedup');
+const { restoreEntryRows, EntryActionConflictError } = require('../src/services/entry-actions');
 const { insertIntakeEntryWithClaim } = require('../src/services/intake-core');
-const { linkEntryDuplicate, EntryMaintenanceError } = require('../src/services/entry-maintenance');
+const { rewriteEntryWires, linkEntryDuplicate, EntryMaintenanceError } = require('../src/services/entry-maintenance');
 
 async function insertEntry(pool, name, url, status = 'raw') {
   const res = await pool.query(
@@ -73,6 +74,120 @@ test('registerSeen reports a conflict when another entry owns the URL', async ()
     await pool.query(`DELETE FROM seen_names WHERE entry_id IN ($1, $2)`, [first, second]);
     await pool.query(`DELETE FROM seen_urls WHERE first_seen_entry_id IN ($1, $2)`, [first, second]);
     await pool.query(`DELETE FROM scan_entries WHERE id IN ($1, $2)`, [first, second]);
+  }
+});
+
+test('archived URL ownership transfers atomically to a fresh entry for reconsideration', async () => {
+  const pool = getPool();
+  const url = 'https://example.com/archived-reconsideration-' + process.pid;
+  const archived = await insertEntry(pool, 'Archived Signal', url, 'archived');
+  const fresh = await insertEntry(pool, 'Fresh Signal', url, 'raw');
+  try {
+    const first = await registerSeen(pool, { id: archived, sourceUrl: url, name: 'Archived Signal', wire: 'oss', scanDate: '2026-06-10' });
+    assert.equal(first.urlConflict, false);
+
+    const reconsidered = await registerSeen(pool, { id: fresh, sourceUrl: url, name: 'Fresh Signal', wire: 'oss', scanDate: '2026-08-22' });
+    assert.deepEqual(reconsidered, { urlConflict: false, conflictEntryId: null });
+    const owner = await pool.query(
+      `SELECT first_seen_entry_id FROM seen_urls WHERE normalized_url = $1 AND wire = 'oss'`,
+      [url],
+    );
+    assert.equal(Number(owner.rows[0].first_seen_entry_id), fresh);
+  } finally {
+    await pool.query(`DELETE FROM seen_names WHERE entry_id IN ($1, $2)`, [archived, fresh]);
+    await pool.query(`DELETE FROM seen_urls WHERE first_seen_entry_id IN ($1, $2)`, [archived, fresh]);
+    await pool.query(`DELETE FROM scan_entries WHERE id IN ($1, $2)`, [archived, fresh]);
+  }
+});
+
+test('archived-owner transfer and x-monitor restore serialize without split ownership', async () => {
+  const pool = getPool();
+  const url = 'https://example.com/restore-transfer-race-' + process.pid + '-' + Date.now();
+  const archived = await insertEntry(pool, 'Archived Race Signal', url, 'archived');
+  const fresh = await insertEntry(pool, 'Fresh Race Signal', url, 'raw');
+  try {
+    await pool.query(
+      `UPDATE scan_entries
+       SET scan_source = 'x-monitor', classification = 'GRANT',
+           metadata = jsonb_build_object('operator_route', 'publish')
+       WHERE id = $1`,
+      [archived],
+    );
+    const first = await registerSeen(pool, { id: archived, sourceUrl: url, name: 'Archived Race Signal', wire: 'oss', scanDate: '2026-06-10' });
+    assert.equal(first.urlConflict, false);
+
+    const [claimResult, restoreResult] = await Promise.allSettled([
+      registerSeen(pool, { id: fresh, sourceUrl: url, name: 'Fresh Race Signal', wire: 'oss', scanDate: '2026-08-22' }),
+      restoreEntryRows(pool, [archived], { actor: 'integration-test', reason: 'race proof' }),
+    ]);
+
+    assert.equal(claimResult.status, 'fulfilled');
+    const state = await pool.query(
+      `SELECT se.status, su.first_seen_entry_id
+       FROM scan_entries se
+       JOIN seen_urls su ON su.normalized_url = $2 AND su.wire = 'oss'
+       WHERE se.id = $1`,
+      [archived, url],
+    );
+    const owner = Number(state.rows[0].first_seen_entry_id);
+    if (restoreResult.status === 'fulfilled') {
+      assert.equal(state.rows[0].status, 'queued');
+      assert.equal(owner, archived, 'a restored archived row must retain URL ownership');
+      assert.equal(claimResult.value.urlConflict, true);
+    } else {
+      assert.ok(restoreResult.reason instanceof EntryActionConflictError);
+      assert.equal(state.rows[0].status, 'archived');
+      assert.equal(owner, fresh, 'a transferred URL must keep the archived row inactive');
+      assert.equal(claimResult.value.urlConflict, false);
+    }
+  } finally {
+    await pool.query(`DELETE FROM seen_names WHERE entry_id IN ($1, $2)`, [archived, fresh]);
+    await pool.query(`DELETE FROM seen_urls WHERE first_seen_entry_id IN ($1, $2)`, [archived, fresh]);
+    await pool.query(`DELETE FROM scan_entries WHERE id IN ($1, $2)`, [archived, fresh]);
+  }
+});
+
+test('Wire rewrite moves primary and alternate URL ownership to the new dedup scope', async () => {
+  const pool = getPool();
+  const suffix = process.pid + '-' + Date.now();
+  const url = 'https://example.com/wire-move-' + suffix;
+  const aliasUrl = 'https://example.org/wire-alias-' + suffix;
+  const entryId = await insertEntry(pool, 'Atomic Wire Move', url, 'queued');
+  try {
+    const claim = await registerSeen(pool, { id: entryId, sourceUrl: url, name: 'Atomic Wire Move', wire: 'oss', scanDate: '2026-08-22' });
+    assert.equal(claim.urlConflict, false);
+    await pool.query(
+      `INSERT INTO seen_urls (url, normalized_url, first_seen_entry_id, first_seen_date, wire)
+       VALUES ($1, $1, $2, CURRENT_DATE, 'oss')`,
+      [aliasUrl, entryId],
+    );
+
+    const moved = await rewriteEntryWires(pool, entryId, {
+      wires: ['ai', 'oss'],
+      actor: 'integration-test',
+      reason: 'atomic scope proof',
+    });
+    assert.equal(moved.wire, 'ai');
+
+    const entryState = await pool.query(`SELECT wire, wires FROM scan_entries WHERE id = $1`, [entryId]);
+    assert.equal(entryState.rows[0].wire, 'ai');
+    assert.deepEqual(entryState.rows[0].wires, ['ai', 'oss']);
+
+    const registry = await pool.query(
+      `SELECT url, wire, first_seen_entry_id
+       FROM seen_urls
+       WHERE first_seen_entry_id = $1
+       ORDER BY url`,
+      [entryId],
+    );
+    assert.equal(registry.rows.length, 2);
+    assert.deepEqual(registry.rows.map(row => row.url), [url, aliasUrl].sort());
+    assert.ok(registry.rows.every(row => row.wire === 'ai'));
+    assert.ok(registry.rows.every(row => Number(row.first_seen_entry_id) === entryId));
+  } finally {
+    await pool.query(`DELETE FROM seen_names WHERE entry_id = $1`, [entryId]);
+    await pool.query(`DELETE FROM seen_urls WHERE first_seen_entry_id = $1`, [entryId]);
+    await pool.query(`DELETE FROM scan_entries WHERE id = $1`, [entryId]);
   }
 });
 

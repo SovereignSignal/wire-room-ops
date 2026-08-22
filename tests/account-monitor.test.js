@@ -77,7 +77,7 @@ test('account watermark advances only through durable tweets and passes the conf
       return [tweet('103'), tweet('102'), tweet('101')];
     },
     submit: async (message, source, options) => {
-      submissions.push({ id: message.channelMessageId, source, options });
+      submissions.push({ id: message.channelMessageId, text: message.text, source, options });
       if (message.channelMessageId === '102') return { status: 'error', errorMessage: 'temporary insert failure' };
       return { status: 'inserted' };
     },
@@ -88,6 +88,16 @@ test('account watermark advances only through durable tweets and passes the conf
   assert.deepEqual(submissions.map(s => s.id), ['101', '102'], 'newer tweets must wait behind the failed tweet');
   assert.ok(submissions.every(s => s.source === 'x-monitor'));
   assert.ok(submissions.every(s => s.options.wireHint === 'ai'));
+  assert.deepEqual(
+    submissions.map(s => s.text),
+    ['https://example.org/101', 'https://example.org/102'],
+    'x-monitor must submit the canonical URL as a bare message so intake derives a source title instead of persisting tweet text',
+  );
+  assert.deepEqual(
+    submissions.map(s => s.options.sourceContext),
+    ['Applications 101', 'Applications 102'],
+    'the original tweet must survive as provenance metadata, not as the queue title',
+  );
   assert.deepEqual(stateWrites, [{ key: 'xmonitor:since:account-1', value: '101' }]);
   assert.equal(result.submitted, 1);
   assert.equal(result.errors, 1);

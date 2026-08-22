@@ -9,12 +9,15 @@ const {
   parseStructuredOutput,
 } = require('../src/services/intake');
 const {
+  buildIntakeMetadata,
+  determineInitialIntakeStatus,
   determinePostClassificationStatus,
   isBatchMessage,
   normalizeDeadlineForDb,
   parseBatchEntries,
   processBatchMessage,
   processIntakeMessage,
+  resolveBareUrlIntakeFields,
   semanticBatchKey,
 } = require('../src/services/intake-core');
 const { checkDuplicate, findRelatedOpportunity } = require('../src/services/dedup');
@@ -630,6 +633,75 @@ test('post-classification queues every operator_route for manual paste intake to
   assert.equal(determinePostClassificationStatus({ classification: 'NEWS', qualityScore: 68, operatorRoute: 'relationship_signal' }, 'manual-intake'), 'queued');
   assert.equal(determinePostClassificationStatus({ classification: 'GRANT', qualityScore: 52, operatorRoute: 'park' }, 'manual-intake'), 'queued');
   assert.equal(determinePostClassificationStatus({ classification: 'NOISE', qualityScore: 18, operatorRoute: 'decline' }, 'manual-intake'), 'queued');
+});
+
+test('post-classification keeps x-monitor out of the queue unless the settled route is publish or source_check', () => {
+  assert.equal(determinePostClassificationStatus({ classification: 'GRANT', qualityScore: 88, operatorRoute: 'publish' }, 'x-monitor'), 'queued');
+  assert.equal(determinePostClassificationStatus({ classification: 'GRANT', qualityScore: 70, operatorRoute: 'source_check' }, 'x-monitor'), 'queued');
+  assert.equal(determinePostClassificationStatus({ classification: 'NEWS', qualityScore: 62, operatorRoute: 'relationship_signal' }, 'x-monitor'), 'archived');
+  assert.equal(determinePostClassificationStatus({ classification: 'NEWS', qualityScore: 55, operatorRoute: 'park' }, 'x-monitor'), 'archived');
+  assert.equal(determinePostClassificationStatus({ classification: 'NOISE', qualityScore: 18, operatorRoute: 'decline' }, 'x-monitor'), 'archived');
+  assert.equal(determinePostClassificationStatus({ classification: 'UNCHECKED', qualityScore: 0 }, 'x-monitor'), 'archived');
+});
+
+test('x-monitor starts raw and retains tweet copy as provenance while operator intake stays queued', () => {
+  assert.equal(determineInitialIntakeStatus('x-monitor'), 'raw');
+  assert.equal(determineInitialIntakeStatus('telegram'), 'queued');
+  assert.equal(determineInitialIntakeStatus('manual-intake'), 'queued');
+  const metadata = buildIntakeMetadata({
+    name: 'Canonical title',
+    description: 'Canonical source description',
+    sourceUrl: 'https://example.org/program',
+    wire: 'ai',
+    scanDate: '2026-08-22',
+    submittedBy: 'x-monitor:example',
+    scanSource: 'x-monitor',
+    sourceContext: 'Raw tweet text that must not become the title',
+  });
+  assert.equal(metadata.source_context, 'Raw tweet text that must not become the title');
+});
+
+test('x-monitor bare URLs require a source scrape and use the page title even when it is shorter than the URL slug', () => {
+  const unavailable = resolveBareUrlIntakeFields({
+    initialName: 'example.org/opportunities/artificial-intelligence-research-open-call-2026',
+    originalText: 'https://example.org/opportunities/artificial-intelligence-research-open-call-2026',
+    scraped: null,
+    scanSource: 'x-monitor',
+  });
+  assert.deepEqual(unavailable, {
+    ok: false,
+    retryable: true,
+    errorMessage: 'Source scrape unavailable; x-monitor item will retry',
+  });
+
+  const resolved = resolveBareUrlIntakeFields({
+    initialName: 'example.org/opportunities/artificial-intelligence-research-open-call-2026',
+    originalText: 'https://example.org/opportunities/artificial-intelligence-research-open-call-2026',
+    scraped: {
+      name: 'Grant',
+      description: 'Official source description with enough detail to pass the raw completeness gate.',
+      scrapedContent: '# Grant\nOfficial source description with enough detail.',
+    },
+    scanSource: 'x-monitor',
+  });
+  assert.equal(resolved.ok, true);
+  assert.equal(resolved.name, 'Grant');
+  assert.notEqual(resolved.name, 'example.org/opportunities/artificial-intelligence-research-open-call-2026');
+});
+
+test('x-monitor rejects a scraped source that still lacks usable editorial fields', () => {
+  assert.deepEqual(resolveBareUrlIntakeFields({
+    initialName: 'example.org/program',
+    originalText: 'https://example.org/program',
+    scraped: { name: null, description: 'Long enough description but no source title is available for the queue.', scrapedContent: 'content' },
+    scanSource: 'x-monitor',
+  }), { ok: false, retryable: true, errorMessage: 'Source title unavailable; x-monitor item will retry' });
+  assert.deepEqual(resolveBareUrlIntakeFields({
+    initialName: 'example.org/program',
+    originalText: 'https://example.org/program',
+    scraped: { name: 'Program', description: 'Too short', scrapedContent: 'content' },
+    scanSource: 'x-monitor',
+  }), { ok: false, retryable: false, errorMessage: 'Source has no usable description' });
 });
 
 test('source freshness gate parks old non-urgent Grants.gov listings', () => {

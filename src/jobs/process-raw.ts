@@ -5,8 +5,9 @@
  * Gate 1 (completeness) → dedup → scoring → queue pipeline.
  *
  * Gate 1 rejects entries with missing/garbage data (status='incomplete').
- * Entries that pass Gate 1 + dedup always go to 'queued' — human reviews everything.
- * Quality score is still calculated for display but does NOT gate queue entry.
+ * Operator-authored entries that pass Gate 1 + dedup go to 'queued'.
+ * x-monitor entries remain hidden until classification settles and only
+ * publish/source_check routes enter the operator queue.
  *
  * Idempotent: safe to run multiple times. Processes status='raw' entries and
  * recovers abandoned status='deduped' handoffs after a safety window.
@@ -18,6 +19,7 @@ import { finalizeExistingEntryDedup } from '../services/dedup';
 // quality-scorer.ts replaced by LLM scoring in classifier.ts
 import { classifyEntry } from '../services/classifier';
 import { classifySourceLink } from '../services/source-filter';
+import { determinePostClassificationStatus } from '../services/intake-core';
 import { finalizeProgramForEntry, normalizeProgramDeadline } from '../services/program-identity';
 
 const BATCH_SIZE = 50;
@@ -35,8 +37,8 @@ const MAX_RUN_DURATION_MS = 10 * 60 * 1000; // 10 minutes
  * `deduped` is a temporary handoff state. A process restart or a downstream
  * failure after the atomic URL claim can otherwise leave the row invisible
  * forever because the main worker only consumes `raw` rows. Recover old
- * handoffs to the normal review queue. Keeping the existing classification,
- * score, and distributable flag preserves the originating intake contract.
+ * operator handoffs to the normal review queue, but return x-monitor handoffs
+ * to raw so they can never leak into the queue as UNCHECKED.
  * Seed-history URL conflicts also use `deduped`, but they are a terminal park,
  * not a handoff, and must remain excluded from recovery.
  *
@@ -45,19 +47,29 @@ const MAX_RUN_DURATION_MS = 10 * 60 * 1000; // 10 minutes
  */
 export async function recoverStrandedDedupedEntries(
   db: Pick<Pool, 'query'>,
-): Promise<number> {
+): Promise<{ queued: number; retried: number }> {
   const recovered = await db.query(
     `UPDATE scan_entries
-     SET status = 'queued',
-         classification = COALESCE(classification, 'UNCHECKED'),
+     SET status = CASE WHEN scan_source = 'x-monitor' THEN 'raw' ELSE 'queued' END,
+         classification = CASE
+           WHEN scan_source = 'x-monitor' THEN 'UNCHECKED'
+           ELSE COALESCE(classification, 'UNCHECKED')
+         END,
+         classification_reason = CASE WHEN scan_source = 'x-monitor' THEN NULL ELSE classification_reason END,
+         quality_score = CASE WHEN scan_source = 'x-monitor' THEN NULL ELSE quality_score END,
+         quality_breakdown = CASE WHEN scan_source = 'x-monitor' THEN NULL ELSE quality_breakdown END,
+         tags = CASE WHEN scan_source = 'x-monitor' THEN '{}'::text[] ELSE tags END,
          updated_at = NOW()
      WHERE status = 'deduped'
        AND updated_at < NOW() - $1::interval
        AND duplicate_reason IS DISTINCT FROM 'URL already exists in seed history'
-     RETURNING id`,
+     RETURNING id, status, scan_source`,
     [STRANDED_DEDUPED_AGE],
   );
-  return recovered.rowCount ?? recovered.rows.length;
+  return {
+    queued: recovered.rows.filter(row => row.status === 'queued').length,
+    retried: recovered.rows.filter(row => row.status === 'raw' && row.scan_source === 'x-monitor').length,
+  };
 }
 
 /**
@@ -77,8 +89,11 @@ export function isCompletionSufficient(entry: {
   if (/^https?:\/\//i.test(name)) {
     return { passes: false, reason: 'Name is only a URL' };
   }
-  if (/^@?[a-zA-Z0-9_]+$/.test(name)) {
+  if (/^@[a-zA-Z0-9_]+$/.test(name)) {
     return { passes: false, reason: 'Name is only a handle' };
+  }
+  if (name.length < 2) {
+    return { passes: false, reason: 'Name is too short' };
   }
 
   // Check description — strip whitespace and emoji before length check
@@ -124,14 +139,25 @@ export interface RawClassificationWrite {
   metadata: unknown;
   tags: string[];
   status: 'queued' | 'archived';
-  correctedWire: string | null;
 }
 
-/** Apply LLM output only while the row is still in the temporary queued state. */
+export interface RawClassificationSnapshot {
+  sourceUrl: string;
+  name: string;
+  description: string | null;
+  wire: string;
+  amount: string | null;
+  deadlineParsed: string | Date | null;
+  sourcePublishedAt: string | Date | null;
+}
+
+/** Apply LLM output only while the row is still in its expected handoff state. */
 export async function applyClassificationIfQueued(
   db: Pick<Pool, 'query'>,
   entryId: number,
   result: RawClassificationWrite,
+  expectedStatus = 'queued',
+  expected?: RawClassificationSnapshot,
 ): Promise<boolean> {
   const classified = await db.query(
     `UPDATE scan_entries
@@ -141,9 +167,16 @@ export async function applyClassificationIfQueued(
          quality_breakdown = $4,
          metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
          tags = $6,
-         status = $8,
-         wire = COALESCE($9, wire)
-     WHERE id = $7 AND status = 'queued'
+         status = $8
+     WHERE id = $7 AND status = $9
+       AND ($10::text IS NULL OR (
+         source_url = $10 AND name = $11
+         AND description IS NOT DISTINCT FROM $12
+         AND wire = $13
+         AND amount IS NOT DISTINCT FROM $14
+         AND deadline_parsed IS NOT DISTINCT FROM $15
+         AND source_published_at IS NOT DISTINCT FROM $16
+       ))
      RETURNING id`,
     [
       result.classification,
@@ -154,7 +187,14 @@ export async function applyClassificationIfQueued(
       result.tags,
       entryId,
       result.status,
-      result.correctedWire,
+      expectedStatus,
+      expected?.sourceUrl ?? null,
+      expected?.name ?? null,
+      expected?.description ?? null,
+      expected?.wire ?? null,
+      expected?.amount ?? null,
+      expected?.deadlineParsed ?? null,
+      expected?.sourcePublishedAt ?? null,
     ],
   );
   return classified.rowCount === 1;
@@ -193,10 +233,13 @@ export async function processRawEntries(pool?: Pool): Promise<{
     // raw intake, and the same rows will be retried on the next cycle.
     try {
       const recovered = await recoverStrandedDedupedEntries(db);
-      if (recovered > 0) {
-        stats.processed += recovered;
-        stats.queued += recovered;
-        console.warn(`[ProcessRaw] Recovered ${recovered} stranded deduped entr${recovered === 1 ? 'y' : 'ies'} to queue`);
+      if (recovered.queued > 0) {
+        stats.processed += recovered.queued;
+        stats.queued += recovered.queued;
+        console.warn(`[ProcessRaw] Recovered ${recovered.queued} stranded operator entr${recovered.queued === 1 ? 'y' : 'ies'} to queue`);
+      }
+      if (recovered.retried > 0) {
+        console.warn(`[ProcessRaw] Returned ${recovered.retried} stranded x-monitor entr${recovered.retried === 1 ? 'y' : 'ies'} to raw for classification retry`);
       }
     } catch (error) {
       console.error('[ProcessRaw] Stranded deduped recovery failed; continuing with raw intake:', error);
@@ -215,7 +258,7 @@ export async function processRawEntries(pool?: Pool): Promise<{
       const batch = await db.query(
         `SELECT se.id, se.name, se.description, se.source_url, se.amount, se.deadline,
                 se.deadline_parsed, se.source_published_at,
-                se.wire, se.scan_date, se.prompt_id, sp.intent AS prompt_intent
+                se.wire, se.scan_source, se.scan_date, se.prompt_id, sp.intent AS prompt_intent
          FROM scan_entries se
          LEFT JOIN scan_prompts sp ON se.prompt_id = sp.id
          WHERE se.status = 'raw'
@@ -275,8 +318,12 @@ export async function processRawEntries(pool?: Pool): Promise<{
             continue;
           }
 
-          // Temporarily queue — Gate 2 below may auto-archive based on classification/score.
-          const queued = await db.query(
+          const isXMonitor = row.scan_source === 'x-monitor';
+          // Operator-authored raw intake remains fail-open and becomes visible
+          // before classification. x-monitor stays in its hidden deduped handoff
+          // until a settled route decides whether it belongs in the queue.
+          if (!isXMonitor) {
+            const queued = await db.query(
               `UPDATE scan_entries
                SET quality_score = NULL,
                    status = 'queued',
@@ -286,8 +333,8 @@ export async function processRawEntries(pool?: Pool): Promise<{
               [row.id]
             );
             if (queued.rowCount !== 1) continue;
-
             stats.queued++;
+          }
             // Gate 2: LLM classification + quality scoring (single Grok call)
             // Non-blocking: failure leaves the entry explicitly unscored.
             try {
@@ -303,10 +350,9 @@ export async function processRawEntries(pool?: Pool): Promise<{
               });
               // In-scope items queue for the agent to curate; off-scope items
               // (real opportunities outside crypto/AI/OSS) are archived.
-              const classStatus = classResult.inScope ? 'queued' : 'archived';
-              const correctedWire = (classResult.inScope && classResult.detectedWire
-                && ['crypto', 'ai', 'oss'].includes(classResult.detectedWire) && classResult.detectedWire !== row.wire)
-                ? classResult.detectedWire : null;
+              const classStatus = classResult.inScope
+                ? determinePostClassificationStatus(classResult, row.scan_source)
+                : 'archived';
               const classified = await applyClassificationIfQueued(db, row.id, {
                 classification: classResult.classification,
                 reason: classResult.reason,
@@ -321,31 +367,67 @@ export async function processRawEntries(pool?: Pool): Promise<{
                 metadata: { ...classResult.extracted, operator_route: classResult.operatorRoute || null },
                 tags: classResult.tags,
                 status: classStatus,
-                correctedWire,
+              }, isXMonitor ? 'deduped' : 'queued', {
+                sourceUrl: row.source_url,
+                name: row.name,
+                description: row.description ?? null,
+                wire: row.wire,
+                amount: row.amount ?? null,
+                deadlineParsed: row.deadline_parsed ?? null,
+                sourcePublishedAt: row.source_published_at ?? null,
               });
               if (!classified) {
                 console.log(`[ProcessRaw] Entry ${row.id} changed during classification; preserving operator state`);
-              } else if (
-                classResult.inScope
-                && (classResult.classification === 'GRANT' || classResult.classification === 'EXPIRED')
-              ) {
-                // Program identity is downstream of the classification CAS:
-                // do not create intelligence for stale, off-scope, or news
-                // rows. Use the corrected wire and only a validated ISO date.
-                const deadlineValue = row.deadline_parsed instanceof Date
-                  ? row.deadline_parsed.toISOString().slice(0, 10)
-                  : row.deadline_parsed;
-                await finalizeProgramForEntry(db, {
-                  id: row.id,
-                  name: row.name,
-                  sourceUrl: row.source_url,
-                  wire: correctedWire ?? row.wire,
-                  deadline: normalizeProgramDeadline(deadlineValue),
-                  description: row.description ?? null,
-                }, dedupOutcome.programResolution ?? null);
+              } else {
+                if (classStatus === 'archived') {
+                  stats.archived++;
+                  if (!isXMonitor) stats.queued = Math.max(0, stats.queued - 1);
+                } else if (isXMonitor) {
+                  stats.queued++;
+                }
+                if (
+                  classStatus === 'queued'
+                  && classResult.inScope
+                  && (classResult.classification === 'GRANT' || classResult.classification === 'EXPIRED')
+                ) {
+                  // Program identity is downstream of the classification CAS:
+                  // do not create intelligence for stale, off-scope, or news
+                  // rows. Detected Wire remains advisory until an atomic
+                  // operator reassignment moves the row and URL registry.
+                  const deadlineValue = row.deadline_parsed instanceof Date
+                    ? row.deadline_parsed.toISOString().slice(0, 10)
+                    : row.deadline_parsed;
+                  await finalizeProgramForEntry(db, {
+                    id: row.id,
+                    name: row.name,
+                    sourceUrl: row.source_url,
+                    wire: row.wire,
+                    deadline: normalizeProgramDeadline(deadlineValue),
+                    description: row.description ?? null,
+                  }, dedupOutcome.programResolution ?? null);
+                }
               }
             } catch (classError) {
-              console.error(`[ProcessRaw] Classification failed for entry ${row.id}, leaving as UNCHECKED:`, classError);
+              if (row.scan_source === 'x-monitor') {
+                // Monitored tweets are not operator-authored intake. Retry a
+                // transient classifier failure without leaking UNCHECKED social
+                // copy into the review queue.
+                const reset = await db.query(
+                  `UPDATE scan_entries
+                   SET status = 'raw', updated_at = NOW()
+                   WHERE id = $1 AND status = 'deduped' AND classification = 'UNCHECKED'
+                   RETURNING id`,
+                  [row.id],
+                );
+                if (reset.rowCount === 1) {
+                  stats.queued = Math.max(0, stats.queued - 1);
+                  console.error(`[ProcessRaw] Classification failed for x-monitor entry ${row.id}; returned to raw for retry:`, classError);
+                } else {
+                  console.error(`[ProcessRaw] Classification failed for x-monitor entry ${row.id}; row changed before retry reset:`, classError);
+                }
+              } else {
+                console.error(`[ProcessRaw] Classification failed for entry ${row.id}, leaving as UNCHECKED:`, classError);
+              }
             }
 
           stats.processed++;
