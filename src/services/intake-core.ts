@@ -88,11 +88,13 @@ function isBareUrlMessage(text: string, urls: string[]): boolean {
  * Scrape a URL via Firecrawl and extract a real name + description.
  * Returns null for Twitter/X URLs (handled natively by Grok) or non-scrapable URLs.
  */
-async function scrapeForIntake(url: string): Promise<{
+export interface ScrapedIntakeData {
   name: string | null;
   description: string | null;
   scrapedContent: string | null;
-} | null> {
+}
+
+async function scrapeForIntake(url: string): Promise<ScrapedIntakeData | null> {
   if (/^https?:\/\/(x\.com|twitter\.com)\//i.test(url)) return null;
   if (!isScrapableUrl(url)) return null;
   try {
@@ -111,6 +113,42 @@ async function scrapeForIntake(url: string): Promise<{
     console.error(`[IntakeCore] scrapeForIntake failed for ${url}:`, err);
     return null;
   }
+}
+
+export type BareUrlIntakeResolution =
+  | { ok: true; name: string; description: string; scrapedContent: string | null }
+  | { ok: false; retryable: boolean; errorMessage: string };
+
+/** Resolve source fields without letting post text or a URL slug become an x-monitor title. */
+export function resolveBareUrlIntakeFields(input: {
+  initialName: string;
+  originalText: string;
+  scraped: ScrapedIntakeData | null;
+  scanSource: string;
+}): BareUrlIntakeResolution {
+  const { initialName, originalText, scraped, scanSource } = input;
+  if (scanSource !== 'x-monitor') {
+    return {
+      ok: true,
+      name: scraped?.name && scraped.name.length > initialName.length ? scraped.name : initialName,
+      description: scraped?.description || originalText,
+      scrapedContent: scraped?.scrapedContent ?? null,
+    };
+  }
+
+  if (!scraped) {
+    return { ok: false, retryable: true, errorMessage: 'Source scrape unavailable; x-monitor item will retry' };
+  }
+  const name = scraped.name?.trim() || '';
+  const description = scraped.description?.trim() || '';
+  if (!name || /^https?:\/\//i.test(name)) {
+    return { ok: false, retryable: false, errorMessage: 'Source has no usable editorial title' };
+  }
+  const descriptionText = description.replace(/\s+/g, ' ').trim();
+  if (!descriptionText || /^https?:\/\/\S+$/i.test(descriptionText) || descriptionText.replace(/\s+/g, '').length < 30) {
+    return { ok: false, retryable: false, errorMessage: 'Source has no usable description' };
+  }
+  return { ok: true, name, description, scrapedContent: scraped.scrapedContent };
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -612,16 +650,35 @@ export async function processIntakeMessage(
 
   let name = buildName(text, allUrls[0] || null);
 
+  const bareUrlMessage = isBareUrlMessage(text, allUrls);
+  if (scanSource === 'x-monitor' && !bareUrlMessage) {
+    return { status: 'rejected', errorMessage: 'x-monitor intake requires a bare external source URL' };
+  }
+  if (scanSource === 'x-monitor' && allUrls.length > 0 && !isScrapableUrl(allUrls[0])) {
+    return { status: 'rejected', errorMessage: 'x-monitor source is not supported by canonical scraping' };
+  }
+
   // Pre-scrape bare URL messages for better data quality
   let scrapedContent: string | null = null;
   let effectiveDescription = text;
-  if (isBareUrlMessage(text, allUrls) && allUrls.length > 0) {
+  if (bareUrlMessage && allUrls.length > 0) {
     console.log(`[IntakeCore] Bare URL detected, scraping ${allUrls[0]}...`);
-    const scraped = await scrapeForIntake(allUrls[0]);
+    let scraped = await scrapeForIntake(allUrls[0]);
+    if (scanSource === 'x-monitor' && scraped && !scraped.name) {
+      const fetchedTitle = await fetchUrlTitle(allUrls[0]);
+      if (fetchedTitle) scraped = { ...scraped, name: fetchedTitle };
+    }
+    const resolved = resolveBareUrlIntakeFields({ initialName: name, originalText: text, scraped, scanSource });
+    if (!resolved.ok) {
+      return {
+        status: resolved.retryable ? 'error' : 'rejected',
+        errorMessage: resolved.errorMessage,
+      };
+    }
+    name = resolved.name;
+    effectiveDescription = resolved.description;
+    scrapedContent = resolved.scrapedContent;
     if (scraped) {
-      scrapedContent = scraped.scrapedContent;
-      if (scraped.name && scraped.name.length > name.length) name = scraped.name;
-      if (scraped.description) effectiveDescription = scraped.description;
       console.log(`[IntakeCore] Scraped: name="${name}", desc=${effectiveDescription.length} chars`);
     }
   }

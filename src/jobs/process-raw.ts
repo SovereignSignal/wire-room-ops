@@ -5,8 +5,9 @@
  * Gate 1 (completeness) → dedup → scoring → queue pipeline.
  *
  * Gate 1 rejects entries with missing/garbage data (status='incomplete').
- * Entries that pass Gate 1 + dedup always go to 'queued' — human reviews everything.
- * Quality score is still calculated for display but does NOT gate queue entry.
+ * Operator-authored entries that pass Gate 1 + dedup go to 'queued'.
+ * x-monitor entries remain hidden until classification settles and only
+ * publish/source_check routes enter the operator queue.
  *
  * Idempotent: safe to run multiple times. Processes status='raw' entries and
  * recovers abandoned status='deduped' handoffs after a safety window.
@@ -36,8 +37,8 @@ const MAX_RUN_DURATION_MS = 10 * 60 * 1000; // 10 minutes
  * `deduped` is a temporary handoff state. A process restart or a downstream
  * failure after the atomic URL claim can otherwise leave the row invisible
  * forever because the main worker only consumes `raw` rows. Recover old
- * handoffs to the normal review queue. Keeping the existing classification,
- * score, and distributable flag preserves the originating intake contract.
+ * operator handoffs to the normal review queue, but return x-monitor handoffs
+ * to raw so they can never leak into the queue as UNCHECKED.
  * Seed-history URL conflicts also use `deduped`, but they are a terminal park,
  * not a handoff, and must remain excluded from recovery.
  *
@@ -46,19 +47,29 @@ const MAX_RUN_DURATION_MS = 10 * 60 * 1000; // 10 minutes
  */
 export async function recoverStrandedDedupedEntries(
   db: Pick<Pool, 'query'>,
-): Promise<number> {
+): Promise<{ queued: number; retried: number }> {
   const recovered = await db.query(
     `UPDATE scan_entries
-     SET status = 'queued',
-         classification = COALESCE(classification, 'UNCHECKED'),
+     SET status = CASE WHEN scan_source = 'x-monitor' THEN 'raw' ELSE 'queued' END,
+         classification = CASE
+           WHEN scan_source = 'x-monitor' THEN 'UNCHECKED'
+           ELSE COALESCE(classification, 'UNCHECKED')
+         END,
+         classification_reason = CASE WHEN scan_source = 'x-monitor' THEN NULL ELSE classification_reason END,
+         quality_score = CASE WHEN scan_source = 'x-monitor' THEN NULL ELSE quality_score END,
+         quality_breakdown = CASE WHEN scan_source = 'x-monitor' THEN NULL ELSE quality_breakdown END,
+         tags = CASE WHEN scan_source = 'x-monitor' THEN '{}'::text[] ELSE tags END,
          updated_at = NOW()
      WHERE status = 'deduped'
        AND updated_at < NOW() - $1::interval
        AND duplicate_reason IS DISTINCT FROM 'URL already exists in seed history'
-     RETURNING id`,
+     RETURNING id, status, scan_source`,
     [STRANDED_DEDUPED_AGE],
   );
-  return recovered.rowCount ?? recovered.rows.length;
+  return {
+    queued: recovered.rows.filter(row => row.status === 'queued').length,
+    retried: recovered.rows.filter(row => row.status === 'raw' && row.scan_source === 'x-monitor').length,
+  };
 }
 
 /**
@@ -196,10 +207,13 @@ export async function processRawEntries(pool?: Pool): Promise<{
     // raw intake, and the same rows will be retried on the next cycle.
     try {
       const recovered = await recoverStrandedDedupedEntries(db);
-      if (recovered > 0) {
-        stats.processed += recovered;
-        stats.queued += recovered;
-        console.warn(`[ProcessRaw] Recovered ${recovered} stranded deduped entr${recovered === 1 ? 'y' : 'ies'} to queue`);
+      if (recovered.queued > 0) {
+        stats.processed += recovered.queued;
+        stats.queued += recovered.queued;
+        console.warn(`[ProcessRaw] Recovered ${recovered.queued} stranded operator entr${recovered.queued === 1 ? 'y' : 'ies'} to queue`);
+      }
+      if (recovered.retried > 0) {
+        console.warn(`[ProcessRaw] Returned ${recovered.retried} stranded x-monitor entr${recovered.retried === 1 ? 'y' : 'ies'} to raw for classification retry`);
       }
     } catch (error) {
       console.error('[ProcessRaw] Stranded deduped recovery failed; continuing with raw intake:', error);

@@ -17,6 +17,7 @@ const {
   parseBatchEntries,
   processBatchMessage,
   processIntakeMessage,
+  resolveBareUrlIntakeFields,
   semanticBatchKey,
 } = require('../src/services/intake-core');
 const { checkDuplicate, findRelatedOpportunity } = require('../src/services/dedup');
@@ -658,6 +659,49 @@ test('x-monitor starts raw and retains tweet copy as provenance while operator i
     sourceContext: 'Raw tweet text that must not become the title',
   });
   assert.equal(metadata.source_context, 'Raw tweet text that must not become the title');
+});
+
+test('x-monitor bare URLs require a source scrape and use the page title even when it is shorter than the URL slug', () => {
+  const unavailable = resolveBareUrlIntakeFields({
+    initialName: 'example.org/opportunities/artificial-intelligence-research-open-call-2026',
+    originalText: 'https://example.org/opportunities/artificial-intelligence-research-open-call-2026',
+    scraped: null,
+    scanSource: 'x-monitor',
+  });
+  assert.deepEqual(unavailable, {
+    ok: false,
+    retryable: true,
+    errorMessage: 'Source scrape unavailable; x-monitor item will retry',
+  });
+
+  const resolved = resolveBareUrlIntakeFields({
+    initialName: 'example.org/opportunities/artificial-intelligence-research-open-call-2026',
+    originalText: 'https://example.org/opportunities/artificial-intelligence-research-open-call-2026',
+    scraped: {
+      name: 'Grant',
+      description: 'Official source description with enough detail to pass the raw completeness gate.',
+      scrapedContent: '# Grant\nOfficial source description with enough detail.',
+    },
+    scanSource: 'x-monitor',
+  });
+  assert.equal(resolved.ok, true);
+  assert.equal(resolved.name, 'Grant');
+  assert.notEqual(resolved.name, 'example.org/opportunities/artificial-intelligence-research-open-call-2026');
+});
+
+test('x-monitor rejects a scraped source that still lacks usable editorial fields', () => {
+  assert.deepEqual(resolveBareUrlIntakeFields({
+    initialName: 'example.org/program',
+    originalText: 'https://example.org/program',
+    scraped: { name: null, description: 'Long enough description but no source title is available for the queue.', scrapedContent: 'content' },
+    scanSource: 'x-monitor',
+  }), { ok: false, retryable: false, errorMessage: 'Source has no usable editorial title' });
+  assert.deepEqual(resolveBareUrlIntakeFields({
+    initialName: 'example.org/program',
+    originalText: 'https://example.org/program',
+    scraped: { name: 'Program', description: 'Too short', scrapedContent: 'content' },
+    scanSource: 'x-monitor',
+  }), { ok: false, retryable: false, errorMessage: 'Source has no usable description' });
 });
 
 test('source freshness gate parks old non-urgent Grants.gov listings', () => {

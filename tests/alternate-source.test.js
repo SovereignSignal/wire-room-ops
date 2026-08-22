@@ -76,6 +76,29 @@ test('registerSeen reports a conflict when another entry owns the URL', async ()
   }
 });
 
+test('archived URL ownership transfers atomically to a fresh entry for reconsideration', async () => {
+  const pool = getPool();
+  const url = 'https://example.com/archived-reconsideration-' + process.pid;
+  const archived = await insertEntry(pool, 'Archived Signal', url, 'archived');
+  const fresh = await insertEntry(pool, 'Fresh Signal', url, 'raw');
+  try {
+    const first = await registerSeen(pool, { id: archived, sourceUrl: url, name: 'Archived Signal', wire: 'oss', scanDate: '2026-06-10' });
+    assert.equal(first.urlConflict, false);
+
+    const reconsidered = await registerSeen(pool, { id: fresh, sourceUrl: url, name: 'Fresh Signal', wire: 'oss', scanDate: '2026-08-22' });
+    assert.deepEqual(reconsidered, { urlConflict: false, conflictEntryId: null });
+    const owner = await pool.query(
+      `SELECT first_seen_entry_id FROM seen_urls WHERE normalized_url = $1 AND wire = 'oss'`,
+      [url],
+    );
+    assert.equal(Number(owner.rows[0].first_seen_entry_id), fresh);
+  } finally {
+    await pool.query(`DELETE FROM seen_names WHERE entry_id IN ($1, $2)`, [archived, fresh]);
+    await pool.query(`DELETE FROM seen_urls WHERE first_seen_entry_id IN ($1, $2)`, [archived, fresh]);
+    await pool.query(`DELETE FROM scan_entries WHERE id IN ($1, $2)`, [archived, fresh]);
+  }
+});
+
 test('seed-only seen URL remains a conflict and cannot enter the live queue', async () => {
   const pool = getPool();
   const url = `https://example.com/seed-history-${process.pid}-${Date.now()}`;

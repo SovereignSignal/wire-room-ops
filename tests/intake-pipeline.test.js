@@ -29,7 +29,7 @@ programIdentity.finalizeProgramForEntry = async (_pool, entry, resolution) => {
   programFinalizations.push({ entry, resolution });
 };
 
-const { processRawEntries } = require('../src/jobs/process-raw');
+const { processRawEntries, recoverStrandedDedupedEntries } = require('../src/jobs/process-raw');
 
 /** Stub pool that routes by SQL substring, records every call (params deep-
  *  copied — process-raw mutates its `attempted` array between calls). Also
@@ -56,7 +56,10 @@ const RAW_BATCH = 'SELECT se.id, se.name';
 
 test('stranded deduped rows are recovered to the review queue after the safety window', async () => {
   const pool = routingPool([
-    ["WHERE status = 'deduped'", { rows: [{ id: 91 }, { id: 92 }], rowCount: 2 }],
+    ["WHERE status = 'deduped'", { rows: [
+      { id: 91, status: 'queued', scan_source: 'telegram' },
+      { id: 92, status: 'queued', scan_source: 'manual-intake' },
+    ], rowCount: 2 }],
     [RAW_BATCH, { rows: [] }],
   ]);
 
@@ -64,7 +67,7 @@ test('stranded deduped rows are recovered to the review queue after the safety w
 
   assert.equal(stats.processed, 2);
   assert.equal(stats.queued, 2);
-  const recovery = pool.calls.find(c => c.sql.includes("classification = COALESCE(classification, 'UNCHECKED')"));
+  const recovery = pool.calls.find(c => c.sql.includes("WHEN scan_source = 'x-monitor' THEN 'UNCHECKED'"));
   assert.ok(recovery, 'deduped recovery update was not issued');
   assert.match(recovery.sql, /updated_at < NOW\(\) - \$1::interval/);
   assert.match(
@@ -72,7 +75,22 @@ test('stranded deduped rows are recovered to the review queue after the safety w
     /duplicate_reason IS DISTINCT FROM 'URL already exists in seed history'/,
     'terminal seed-history conflicts must stay parked',
   );
+  assert.match(recovery.sql, /CASE WHEN scan_source = 'x-monitor' THEN 'raw' ELSE 'queued' END/);
   assert.deepEqual(recovery.params, ['15 minutes']);
+});
+
+test('stranded x-monitor handoffs return to raw instead of leaking into the queue as UNCHECKED', async () => {
+  const pool = routingPool([
+    ["WHERE status = 'deduped'", { rows: [{ id: 93, status: 'raw', scan_source: 'x-monitor' }], rowCount: 1 }],
+  ]);
+
+  const recovered = await recoverStrandedDedupedEntries(pool);
+
+  assert.deepEqual(recovered, { queued: 0, retried: 1 });
+  const recovery = pool.calls[0];
+  assert.match(recovery.sql, /WHEN scan_source = 'x-monitor' THEN 'raw'/);
+  assert.match(recovery.sql, /WHEN scan_source = 'x-monitor' THEN 'UNCHECKED'/);
+  assert.match(recovery.sql, /quality_score = CASE WHEN scan_source = 'x-monitor' THEN NULL/);
 });
 
 test('Gate 1: incomplete row is marked incomplete and excluded from the next batch query', async () => {
