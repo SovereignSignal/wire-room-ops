@@ -310,6 +310,7 @@ export async function processRawEntries(pool?: Pool): Promise<{
             wire: row.wire,
             scanDate: row.scan_date,
             expectedStatus: 'raw',
+            deadline: row.deadline ?? null,
           }, 14, { programGate: true });
           if (dedupOutcome.outcome === 'stale') continue;
           if (dedupOutcome.outcome === 'duplicate' || dedupOutcome.outcome === 'seed-conflict') {
