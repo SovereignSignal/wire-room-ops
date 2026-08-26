@@ -5,9 +5,29 @@ const path = require('node:path');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
+  applyKnownProgramCycleGuard,
   buildClassificationPrompt,
   parseClassificationResponse,
 } = require('../src/services/classifier');
+const { determinePostClassificationStatus } = require('../src/services/intake-core');
+
+function processRawStatus(result, scanSource = 'stringer') {
+  return result.inScope
+    ? determinePostClassificationStatus(result, scanSource)
+    : 'archived';
+}
+
+function offScopeNoiseReply() {
+  return validReply({
+    classification: 'NOISE',
+    in_scope: false,
+    wire: 'off_domain',
+    quality_score: 15,
+    operator_route: 'decline',
+    score_reason: 'Wiki content grant outside OSS software funding.',
+    reason: 'Wikimedia Rapid Funds is open-knowledge, not open-source software.',
+  });
+}
 
 function validReply(overrides = {}) {
   return JSON.stringify({
@@ -77,6 +97,88 @@ test('past parsed deadline forces EXPIRED while deadline-today stays open', () =
   });
   assert.equal(today.classification, 'GRANT');
   assert.equal(today.operatorRoute, 'publish');
+});
+
+test('new-cycle Rapid-style official URL is not NOISE-archived', () => {
+  const raw = parseClassificationResponse(offScopeNoiseReply());
+  assert.equal(raw.classification, 'NOISE');
+  assert.equal(raw.inScope, false);
+  assert.equal(processRawStatus(raw), 'archived');
+
+  const guarded = applyKnownProgramCycleGuard(raw, {
+    name: 'Wikimedia Rapid Funds Cycle 3 FY2026-27',
+    sourceUrl: 'https://meta.wikimedia.org/wiki/Grants:Project/Rapid',
+    intakeWire: 'oss',
+    priorCycle: { entryId: 15496, name: 'Wikimedia Rapid Grants — Cycle 2 2026' },
+  });
+
+  assert.equal(guarded.classification, 'GRANT');
+  assert.equal(guarded.inScope, true);
+  assert.equal(guarded.detectedWire, 'oss');
+  assert.equal(guarded.operatorRoute, 'source_check');
+  assert.equal(processRawStatus(guarded, 'stringer'), 'queued');
+  assert.match(guarded.reason, /not archived as NOISE/);
+});
+
+test('new-cycle stamp in operator_notes also keeps a first-party apply URL in review', () => {
+  const raw = parseClassificationResponse(offScopeNoiseReply());
+  const guarded = applyKnownProgramCycleGuard(raw, {
+    name: 'Wikimedia Rapid Funds Cycle 3 FY2026-27',
+    sourceUrl: 'https://meta.wikimedia.org/wiki/Grants:Project/Rapid',
+    intakeWire: 'oss',
+    operatorNotes: 'New cycle of #15496: "Wikimedia Rapid Grants — Cycle 2 2026"',
+  });
+
+  assert.equal(guarded.classification, 'GRANT');
+  assert.equal(processRawStatus(guarded), 'queued');
+});
+
+test('generic no-cycle reprint can still be NOISE-archived', () => {
+  const raw = parseClassificationResponse(offScopeNoiseReply());
+
+  const officialReprint = applyKnownProgramCycleGuard(raw, {
+    name: 'Wikimedia Rapid Grants',
+    sourceUrl: 'https://meta.wikimedia.org/wiki/Grants:Project/Rapid',
+    intakeWire: 'oss',
+  });
+  assert.equal(officialReprint.classification, 'NOISE');
+  assert.equal(officialReprint.inScope, false);
+  assert.equal(processRawStatus(officialReprint), 'archived');
+
+  const aggregator = applyKnownProgramCycleGuard(raw, {
+    name: 'Wikimedia Rapid Funds Cycle 3 FY2026-27',
+    sourceUrl: 'https://opportunitydesk.org/wikimedia-rapid-funds',
+    intakeWire: 'oss',
+    priorCycle: { entryId: 15496, name: 'Wikimedia Rapid Grants — Cycle 2 2026' },
+  });
+  assert.equal(aggregator.classification, 'NOISE');
+  assert.equal(processRawStatus(aggregator), 'archived');
+});
+
+test('known-program cycle guard does not rewrite an in-scope GRANT or NEWS label', () => {
+  const grant = parseClassificationResponse(validReply());
+  const guardedGrant = applyKnownProgramCycleGuard(grant, {
+    name: 'R Consortium ISC Grant Program 2026-2',
+    sourceUrl: 'https://r-consortium.org/all-projects/callforproposals.html',
+    intakeWire: 'oss',
+    priorCycle: { entryId: 2092, name: 'ISC Grant Program' },
+  });
+  assert.equal(guardedGrant, grant);
+
+  const news = parseClassificationResponse(validReply({
+    classification: 'NEWS',
+    operator_route: 'relationship_signal',
+    quality_score: 55,
+  }));
+  const guardedNews = applyKnownProgramCycleGuard(news, {
+    name: 'Wikimedia Rapid Funds Cycle 3 FY2026-27',
+    sourceUrl: 'https://meta.wikimedia.org/wiki/Grants:Project/Rapid',
+    intakeWire: 'oss',
+    priorCycle: { entryId: 15496, name: 'Wikimedia Rapid Grants Cycle 2 2026' },
+  });
+  assert.equal(guardedNews.classification, 'NEWS');
+  assert.equal(guardedNews.inScope, true);
+  assert.equal(processRawStatus(guardedNews), 'queued');
 });
 
 test('automatic startup rescore is opt-in and queue-only', () => {

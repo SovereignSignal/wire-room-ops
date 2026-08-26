@@ -967,7 +967,12 @@ export async function finalizeExistingEntryDedup(
   entry: ExistingEntryDedupInput,
   lookbackDays: number,
   options?: { programGate?: boolean },
-): Promise<{ outcome: ExistingEntryDedupOutcome; canonicalParentId: number | null; programResolution?: DedupResult['programResolution'] }> {
+): Promise<{
+  outcome: ExistingEntryDedupOutcome;
+  canonicalParentId: number | null;
+  programResolution?: DedupResult['programResolution'];
+  priorCycle?: DedupResult['priorCycle'];
+}> {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -1109,6 +1114,7 @@ export async function finalizeExistingEntryDedup(
       outcome: claim.urlConflict ? 'seed-conflict' : 'unique',
       canonicalParentId: null,
       programResolution: dedupResult.programResolution ?? null,
+      priorCycle: dedupResult.priorCycle ?? null,
     };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => undefined);
