@@ -40,7 +40,7 @@ export const TOOL_TYPES_DB = [...TOOL_TYPES, 'community'] as const;
 export type ScanUsagePurpose = 'scan' | 'scan-test';
 
 // Where a result came from.
-export const SCAN_SOURCES = ['x-scan', 'grok-scout', 'web-search', 'perplexity', 'community', 'telegram', 'telegram-intake', 'manual-intake', 'email', 'forum', 'x-monitor', 'x-list', 'feed', 'claude-code', 'claude-cohort-notion', 'known-org-watch'] as const;
+export const SCAN_SOURCES = ['x-scan', 'grok-scout', 'web-search', 'perplexity', 'community', 'telegram', 'telegram-intake', 'manual-intake', 'email', 'forum', 'x-monitor', 'x-list', 'feed', 'claude-code', 'claude-cohort-notion', 'known-org-watch', 'stringer'] as const;
 export type ScanSource = typeof SCAN_SOURCES[number];
 
 // Processing state for scan results as they move through the pipeline:

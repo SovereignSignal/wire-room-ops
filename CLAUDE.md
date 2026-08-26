@@ -253,7 +253,7 @@ All pipeline data flows through `scan_entries`. Key columns:
 | `classification` | varchar | Gate 2 label: `GRANT`, `NEWS`, `EXPIRED`, `NOISE`, `UNCHECKED` |
 | `quality_score` | integer | 0-100 score from LLM classifier (null on dumb-pipe Telegram/manual intake — the curator stamp is the queue's triage signal) |
 | `wire` | text | Feed vertical (crypto/ai/oss) |
-| `scan_source` | text | Ingestion channel — all 16 allowed values, derived from `SCAN_SOURCES` in `src/types/intake.ts` (including `grok-scout` and `known-org-watch`) |
+| `scan_source` | text | Ingestion channel — all 17 allowed values, derived from `SCAN_SOURCES` in `src/types/intake.ts` (including `grok-scout`, `known-org-watch`, and `stringer`) |
 | `source_url` | text | Original source link |
 | `metadata` | jsonb | LLM-extracted structured data (amount, deadline, eligibility, summary) + curator stamp + decided-recheck verdict |
 | `org_id` | integer | FK to `org_profiles` (auto-linked on approve) |
@@ -403,6 +403,7 @@ Automated discovery of grant opportunities via X.com scanning, web search, and f
 - **Telegram intake** (`telegram`): Bot-based URL/article submission via webhook — a **dumb pipe**: queue raw with URL-only dedup, no classify at intake. Supports single URLs and batch messages (numbered lists, bold-name, or `Link:` format). Adapter pattern (`telegram-adapter.ts` -> `intake-core.ts`)
 - **Agent submits** (`claude-code`, `x-scan`/`web-search` via API): the daily-grant-scan claude.ai routine and The Stringer submit via `POST /api/scan/submit` with the internal API key — inserted raw (`insertOnly`), completed by the 5-minute process-raw cycle
 - **Known Org Watch** (`known-org-watch`): Stringer compiler inserts official-source org-watch findings into the review queue. Keep this value in `SCAN_SOURCES` so boot does not recreate `scan_entries_scan_source_check` without it.
+- **Strings** (`stringer`): Cursor Grok Bot submits finds via `POST /api/scan/submit`. Dedicated producer label — do not reuse `grok-scout`, `claude-code`, or `known-org-watch`.
 - **Manual paste** (`manual-intake`): Dashboard paste-in flow (historically the highest-approval channel)
 
 ### Data Flow
