@@ -10,6 +10,7 @@ import type { Pool } from 'pg';
 import { logApiUsage } from './api-usage';
 import { getCachedProvider, isProviderExplicitlyDisabled } from './api-provider';
 import { computeOperatorSignals, formatSignalsForPrompt } from './operator-signals';
+import { blockedSourceDomain, classifySourceLink } from './source-filter';
 
 export type Classification = 'GRANT' | 'EXPIRED' | 'NEWS' | 'NOISE' | 'UNCHECKED';
 export type OperatorRoute = 'publish' | 'source_check' | 'park' | 'decline' | 'relationship_signal';
@@ -279,6 +280,66 @@ export function parseClassificationResponse(
       eligibility: readOptionalString(extractedRecord.eligibility),
       summary: readOptionalString(extractedRecord.summary),
     },
+  };
+}
+
+/** Written by cycle-aware URL dedup onto operator_notes / duplicate_reason. */
+const NEW_CYCLE_STAMP = /New cycle of #\d+/;
+
+export interface KnownProgramCycleContext {
+  name: string;
+  sourceUrl: string;
+  intakeWire?: string;
+  priorCycle?: { entryId: number; name: string } | null;
+  operatorNotes?: string | null;
+  duplicateReason?: string | null;
+}
+
+export function hasNewCycleStamp(context: Pick<KnownProgramCycleContext, 'priorCycle' | 'operatorNotes' | 'duplicateReason'>): boolean {
+  if (context.priorCycle && Number.isSafeInteger(context.priorCycle.entryId)) return true;
+  return NEW_CYCLE_STAMP.test(`${context.operatorNotes || ''}\n${context.duplicateReason || ''}`);
+}
+
+/** Official program/apply page — not a tweet, shortener, placeholder, or aggregator. */
+export function isFirstPartyApplyUrl(url: string | null | undefined): boolean {
+  return classifySourceLink(url) === 'ok' && !blockedSourceDomain(url);
+}
+
+function intakeDomainWire(wire?: string): 'crypto' | 'ai' | 'oss' | undefined {
+  return wire === 'crypto' || wire === 'ai' || wire === 'oss' ? wire : undefined;
+}
+
+/**
+ * A named new cycle of a known program on a first-party apply URL must
+ * reach review. Gate 2's domain-scope gate otherwise archives those as
+ * NOISE (Wikimedia Rapid Cycle 3 after #15496). Generic reprints with no
+ * cycle stamp, aggregator URLs, and tweet-only links stay archivable.
+ */
+export function applyKnownProgramCycleGuard(
+  result: ClassificationResult,
+  context: KnownProgramCycleContext,
+): ClassificationResult {
+  if (!hasNewCycleStamp(context) || !isFirstPartyApplyUrl(context.sourceUrl)) {
+    return result;
+  }
+  if (result.classification !== 'NOISE' && result.inScope) {
+    return result;
+  }
+
+  const detectedWire = result.detectedWire && result.detectedWire !== 'off_domain'
+    ? result.detectedWire
+    : intakeDomainWire(context.intakeWire) ?? 'oss';
+
+  return {
+    ...result,
+    classification: 'GRANT',
+    inScope: true,
+    detectedWire,
+    operatorRoute: result.operatorRoute === 'decline' || !result.operatorRoute
+      ? 'source_check'
+      : result.operatorRoute,
+    reason: `${result.reason} New cycle of a known program on a first-party apply URL; not archived as NOISE.`,
+    scoreReason: `${result.scoreReason} Known-program new-cycle guard kept this in review.`,
   };
 }
 

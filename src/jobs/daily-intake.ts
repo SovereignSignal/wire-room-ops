@@ -39,7 +39,7 @@ import { findRelatedOpportunity, finalizeExistingEntryDedup, annotateAlternateSo
 import { seedSeenUrlsFromMessages } from '../db';
 import { finalizeProgramForEntry } from '../services/program-identity';
 import type { ProgramResolutionStamp } from '../services/program-identity';
-import type { Classification } from '../services/classifier';
+import { applyKnownProgramCycleGuard, type Classification } from '../services/classifier';
 
 // ============================================================
 // Default Configuration
@@ -342,6 +342,7 @@ export async function runDailyIntake(
   let duplicatesFound = 0;
   const uniqueEntryIds: number[] = [];
   const programResolutions = new Map<number, ProgramResolutionStamp | null>();
+  const priorCycles = new Map<number, { entryId: number; name: string } | null>();
 
   for (const idx of validIndices) {
     const item = allResults[idx];
@@ -385,6 +386,7 @@ export async function runDailyIntake(
     // Finalize program identity only after classification establishes domain,
     // scope, and a validated deadline.
     programResolutions.set(entryId, dedupOutcome.programResolution ?? null);
+    priorCycles.set(entryId, dedupOutcome.priorCycle ?? null);
 
     // Progress update every 10 entries
     if (duplicatesFound % 10 === 0 && duplicatesFound > 0) {
@@ -411,7 +413,7 @@ export async function runDailyIntake(
     // Fetch the entry for classification + scoring (join prompt intent)
     const entryRes = await pool.query(
       `SELECT se.name, se.description, se.amount, se.deadline, se.deadline_parsed, se.scan_date,
-              se.source_url, se.source_published_at, se.wire,
+              se.source_url, se.source_published_at, se.wire, se.operator_notes,
               sp.intent AS prompt_intent
        FROM scan_entries se
        LEFT JOIN scan_prompts sp ON se.prompt_id = sp.id
@@ -423,7 +425,7 @@ export async function runDailyIntake(
 
     // Gate 2: LLM classification + quality scoring (single call)
     try {
-      const classResult = await classifyEntry({
+      const rawClassResult = await classifyEntry({
         name: entry.name,
         description: entry.description || '',
         source_url: entry.source_url || '',
@@ -433,6 +435,14 @@ export async function runDailyIntake(
         deadlineParsed: entry.deadline_parsed,
         sourcePublishedAt: entry.source_published_at,
       });
+      const classResult = applyKnownProgramCycleGuard(rawClassResult, {
+        name: entry.name,
+        sourceUrl: entry.source_url || '',
+        intakeWire: entry.wire,
+        priorCycle: priorCycles.get(entryId),
+        operatorNotes: entry.operator_notes,
+      });
+      const cycleGuarded = classResult !== rawClassResult;
       const freshnessDecision = applySourceFreshnessGate({
         sourceUrl: entry.source_url,
         sourcePublishedAt: entry.source_published_at,
@@ -464,7 +474,12 @@ export async function runDailyIntake(
          RETURNING id`,
         [
           classResult.qualityScore,
-          JSON.stringify({ scoreReason: classResult.scoreReason, in_scope: classResult.inScope, detected_wire: classResult.detectedWire }),
+          JSON.stringify({
+            scoreReason: classResult.scoreReason,
+            in_scope: classResult.inScope,
+            detected_wire: classResult.detectedWire,
+            ...(cycleGuarded ? { cycle_guard: 'known_program_new_cycle' } : {}),
+          }),
           classResult.classification,
           classResult.reason,
           JSON.stringify(mergedMetadata),
@@ -527,7 +542,7 @@ export async function runDailyIntake(
 
         const entryRes = await pool.query(
           `SELECT se.name, se.description, se.amount, se.source_url, se.source_published_at,
-                  se.deadline_parsed, se.wire, sp.intent AS prompt_intent
+                  se.deadline_parsed, se.wire, se.operator_notes, sp.intent AS prompt_intent
            FROM scan_entries se
            LEFT JOIN scan_prompts sp ON se.prompt_id = sp.id
            WHERE se.id = $1 AND se.status = 'queued'`,
@@ -536,7 +551,7 @@ export async function runDailyIntake(
         const entry = entryRes.rows[0];
         if (!entry) continue;
 
-        const classResult = await classifyEntry({
+        const rawClassResult = await classifyEntry({
           name: entry.name,
           description: entry.description || '',
           source_url: entry.source_url || '',
@@ -546,6 +561,14 @@ export async function runDailyIntake(
           deadlineParsed: entry.deadline_parsed,
           sourcePublishedAt: entry.source_published_at,
         });
+        const classResult = applyKnownProgramCycleGuard(rawClassResult, {
+          name: entry.name,
+          sourceUrl: entry.source_url || '',
+          intakeWire: entry.wire,
+          priorCycle: priorCycles.get(entryId),
+          operatorNotes: entry.operator_notes,
+        });
+        const cycleGuarded = classResult !== rawClassResult;
         const freshnessDecision = applySourceFreshnessGate({
           sourceUrl: entry.source_url,
           sourcePublishedAt: entry.source_published_at,
@@ -577,7 +600,12 @@ export async function runDailyIntake(
            RETURNING id`,
           [
             classResult.qualityScore,
-            JSON.stringify({ scoreReason: classResult.scoreReason, in_scope: classResult.inScope, detected_wire: classResult.detectedWire }),
+            JSON.stringify({
+              scoreReason: classResult.scoreReason,
+              in_scope: classResult.inScope,
+              detected_wire: classResult.detectedWire,
+              ...(cycleGuarded ? { cycle_guard: 'known_program_new_cycle' } : {}),
+            }),
             classResult.classification,
             classResult.reason,
             JSON.stringify(mergedMetadata),

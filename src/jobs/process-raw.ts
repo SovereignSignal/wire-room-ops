@@ -17,7 +17,7 @@
 import type { Pool } from 'pg';
 import { finalizeExistingEntryDedup } from '../services/dedup';
 // quality-scorer.ts replaced by LLM scoring in classifier.ts
-import { classifyEntry } from '../services/classifier';
+import { applyKnownProgramCycleGuard, classifyEntry } from '../services/classifier';
 import { classifySourceLink } from '../services/source-filter';
 import { determinePostClassificationStatus } from '../services/intake-core';
 import { finalizeProgramForEntry, normalizeProgramDeadline } from '../services/program-identity';
@@ -339,7 +339,7 @@ export async function processRawEntries(pool?: Pool): Promise<{
             // Gate 2: LLM classification + quality scoring (single Grok call)
             // Non-blocking: failure leaves the entry explicitly unscored.
             try {
-              const classResult = await classifyEntry({
+              const rawClassResult = await classifyEntry({
                 name: row.name,
                 description: row.description || '',
                 source_url: row.source_url,
@@ -349,8 +349,17 @@ export async function processRawEntries(pool?: Pool): Promise<{
                 deadlineParsed: row.deadline_parsed ?? null,
                 sourcePublishedAt: row.source_published_at ?? null,
               });
+              const classResult = applyKnownProgramCycleGuard(rawClassResult, {
+                name: row.name,
+                sourceUrl: row.source_url,
+                intakeWire: row.wire,
+                priorCycle: dedupOutcome.priorCycle,
+              });
+              const cycleGuarded = classResult !== rawClassResult;
               // In-scope items queue for the agent to curate; off-scope items
               // (real opportunities outside crypto/AI/OSS) are archived.
+              // Known-program new cycles on a first-party apply URL stay in
+              // review even when Gate 2 called them off-scope NOISE.
               const classStatus = classResult.inScope
                 ? determinePostClassificationStatus(classResult, row.scan_source)
                 : 'archived';
@@ -362,6 +371,7 @@ export async function processRawEntries(pool?: Pool): Promise<{
                   scoreReason: classResult.scoreReason,
                   in_scope: classResult.inScope,
                   detected_wire: classResult.detectedWire,
+                  ...(cycleGuarded ? { cycle_guard: 'known_program_new_cycle' } : {}),
                 },
                 // operator_route MUST persist into metadata. It is the BD
                 // loop's source signal and the queue's route filter.

@@ -430,3 +430,103 @@ test('x-monitor classifier failure returns the row to raw instead of leaking UNC
   assert.match(retry.sql, /status = 'deduped'/);
   assert.deepEqual(retry.params, [row.id]);
 });
+
+test('new-cycle Rapid-style official URL is not NOISE-archived after Gate 2', async () => {
+  const originalFinalize = dedup.finalizeExistingEntryDedup;
+  let batchCalls = 0;
+  classifier.classifyEntry = async () => ({
+    classification: 'NOISE',
+    reason: 'Wikimedia Rapid Funds is open-knowledge, not open-source software.',
+    qualityScore: 15,
+    scoreReason: 'Wiki content grant outside OSS software funding.',
+    operatorRoute: 'decline',
+    tags: ['Wikimedia'],
+    inScope: false,
+    detectedWire: 'off_domain',
+    extracted: {},
+  });
+  dedup.finalizeExistingEntryDedup = async () => ({
+    outcome: 'unique',
+    priorCycle: { entryId: 15496, name: 'Wikimedia Rapid Grants — Cycle 2 2026' },
+  });
+  const row = {
+    id: 15779,
+    name: 'Wikimedia Rapid Funds Cycle 3 FY2026-27',
+    description: 'Cycle 3 of Wikimedia Rapid Funds for FY2026-27 is now open on the official Rapid Grants page.',
+    source_url: 'https://meta.wikimedia.org/wiki/Grants:Project/Rapid',
+    amount: null,
+    deadline: null,
+    deadline_parsed: null,
+    source_published_at: null,
+    wire: 'oss',
+    scan_source: 'stringer',
+    scan_date: '2026-08-26',
+    prompt_id: null,
+    prompt_intent: null,
+  };
+  const pool = routingPool([
+    [RAW_BATCH, () => (++batchCalls === 1 ? { rows: [row] } : { rows: [] })],
+    ["WHERE id = $1 AND status = 'deduped'", { rows: [{ id: row.id }], rowCount: 1 }],
+    ['SET classification = $1', { rows: [{ id: row.id }], rowCount: 1 }],
+  ]);
+
+  try {
+    const stats = await processRawEntries(pool);
+    const classified = pool.calls.find(c => c.sql.includes('SET classification = $1'));
+    assert.ok(classified, 'classification write was not issued');
+    assert.equal(classified.params[0], 'GRANT');
+    assert.equal(classified.params[7], 'queued');
+    assert.match(JSON.stringify(classified.params[3]), /known_program_new_cycle/);
+    assert.equal(stats.queued, 1);
+    assert.equal(stats.archived, 0);
+  } finally {
+    dedup.finalizeExistingEntryDedup = originalFinalize;
+    classifier.classifyEntry = async () => { throw new Error('classifier stubbed out in tests'); };
+  }
+});
+
+test('generic no-cycle reprint can still be NOISE-archived after Gate 2', async () => {
+  let batchCalls = 0;
+  classifier.classifyEntry = async () => ({
+    classification: 'NOISE',
+    reason: 'Aggregator reprint with no applicant path.',
+    qualityScore: 12,
+    scoreReason: 'Generic listicle.',
+    operatorRoute: 'decline',
+    tags: [],
+    inScope: false,
+    detectedWire: 'off_domain',
+    extracted: {},
+  });
+  const row = {
+    id: 15790,
+    name: 'Wikimedia Rapid Grants',
+    description: 'A generic telegram reprint of Wikimedia Rapid Grants with no new cycle cutoff.',
+    source_url: 'https://opportunitydesk.org/wikimedia-rapid-grants',
+    amount: null,
+    deadline: null,
+    deadline_parsed: null,
+    source_published_at: null,
+    wire: 'oss',
+    scan_source: 'stringer',
+    scan_date: '2026-08-26',
+    prompt_id: null,
+    prompt_intent: null,
+  };
+  const pool = routingPool([
+    [RAW_BATCH, () => (++batchCalls === 1 ? { rows: [row] } : { rows: [] })],
+    ["WHERE id = $1 AND status = 'deduped'", { rows: [{ id: row.id }], rowCount: 1 }],
+    ['SET classification = $1', { rows: [{ id: row.id }], rowCount: 1 }],
+  ]);
+
+  try {
+    const stats = await processRawEntries(pool);
+    const classified = pool.calls.find(c => c.sql.includes('SET classification = $1'));
+    assert.ok(classified, 'classification write was not issued');
+    assert.equal(classified.params[0], 'NOISE');
+    assert.equal(classified.params[7], 'archived');
+    assert.equal(stats.archived, 1);
+  } finally {
+    classifier.classifyEntry = async () => { throw new Error('classifier stubbed out in tests'); };
+  }
+});
