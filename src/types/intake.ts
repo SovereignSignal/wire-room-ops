@@ -137,6 +137,8 @@ export interface DedupResult {
   reason: string;
   /** Program-identity resolution (Layer 1.75) — present when the gate ran and matched, even on non-duplicate outcomes. */
   programResolution?: ProgramResolutionStamp | null;
+  /** Prior cycle on the same official URL. Set when URL-exact matches a known page but the incoming name/deadline is a new numbered or seasonal cutoff. The entry is NOT a duplicate. */
+  priorCycle?: { entryId: number; name: string } | null;
 }
 
 /**

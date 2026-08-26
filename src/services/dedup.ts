@@ -2,7 +2,10 @@
  * Deduplication Service
  *
  * Two-layer dedup strategy:
- * 1. URL exact match (fast, catches ~70% of duplicates)
+ * 1. URL exact match (fast, catches ~70% of duplicates). New numbered or
+ *    seasonal cutoffs on a stable official page are not silent duplicates;
+ *    they stay visible and cite the prior cycle. Same-cycle resubmits and
+ *    generic telegram reprints still die.
  * 2. Fuzzy name matching (catches same program from different sources)
  *
  * Uses the seen_urls and seen_names tables for efficient lookups.
@@ -54,6 +57,176 @@ function isSocialAggregateUrl(sourceUrl: string): boolean {
 }
 
 // ============================================================
+// Cycle identity on a stable official URL
+// ============================================================
+// Official program pages often keep one URL across numbered/seasonal
+// cutoffs (Wikimedia Rapid, R Consortium ISC, FreeCAD, Stellar SCF,
+// Rocket Pool GMC). URL-exact must still kill telegram reprints and
+// same-cycle resubmits, but a new cutoff on that URL has to reach review.
+
+type CycleKind =
+  | 'cycle' | 'round' | 'season' | 'batch' | 'wave'
+  | 'fund' | 'hash' | 'quarter' | 'half' | 'call';
+
+const CYCLE_KIND_PRIORITY: CycleKind[] = [
+  'cycle', 'round', 'season', 'batch', 'wave', 'fund', 'hash', 'quarter', 'half', 'call',
+];
+
+const NUMBERED_CYCLE_PATTERNS: Array<[RegExp, CycleKind]> = [
+  [/\bcycles?\s*#?\s*(\d+)\b/gi, 'cycle'],
+  [/\brounds?\s*#?\s*(\d+)\b/gi, 'round'],
+  [/\bseasons?\s*#?\s*(\d+)\b/gi, 'season'],
+  [/\bbatch(?:es)?\s*#?\s*(\d+)\b/gi, 'batch'],
+  [/\bwaves?\s*#?\s*(\d+)\b/gi, 'wave'],
+  [/\bfunds?\s*#?\s*(\d+)\b/gi, 'fund'],
+  [/\bfund(\d+)\b/gi, 'fund'],
+  [/#\s*(\d+)\b/g, 'hash'],
+  [/\bq([1-4])\b/gi, 'quarter'],
+  [/\bh([12])\b/gi, 'half'],
+  [/\b(20\d\d)\s*[-/.]\s*([1-9]\d?)\b/g, 'call'],
+];
+
+export interface CycleMarkers {
+  numbered: Array<{ kind: CycleKind; value: string }>;
+  years: number[];
+  fiscal: string | null;
+}
+
+export function extractCycleMarkers(name: string): CycleMarkers {
+  const text = name || '';
+  const numbered: CycleMarkers['numbered'] = [];
+  const seen = new Set<string>();
+
+  for (const [pattern, kind] of NUMBERED_CYCLE_PATTERNS) {
+    pattern.lastIndex = 0;
+    for (const match of text.matchAll(pattern)) {
+      const value = kind === 'call'
+        ? `${match[1]}-${match[2]}`
+        : String(Number(match[1]));
+      if (!Number.isFinite(Number(kind === 'call' ? match[2] : match[1]))) continue;
+      const key = `${kind}:${value}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      numbered.push({ kind, value });
+    }
+  }
+
+  const fiscalMatch = text.match(/\bfy\s*(20\d\d)(?:\s*[-/]\s*(\d{2,4}))?/i);
+  const fiscal = fiscalMatch
+    ? (fiscalMatch[2] ? `fy${fiscalMatch[1]}-${fiscalMatch[2]}` : `fy${fiscalMatch[1]}`).toLowerCase()
+    : null;
+
+  const years = [...new Set(
+    (text.match(/\b20\d\d\b/g) || []).map(year => Number(year))
+  )];
+
+  return { numbered, years, fiscal };
+}
+
+function primaryNumberedMarker(markers: CycleMarkers): { kind: CycleKind; value: string } | null {
+  for (const kind of CYCLE_KIND_PRIORITY) {
+    const hit = markers.numbered.find(marker => marker.kind === kind);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function parseDeadlineMs(value: string | Date | null | undefined): number | null {
+  if (value == null || value === '') return null;
+  if (value instanceof Date) {
+    const ms = value.getTime();
+    return Number.isNaN(ms) ? null : ms;
+  }
+  const ms = Date.parse(String(value));
+  return Number.isNaN(ms) ? null : ms;
+}
+
+/**
+ * True when `incomingName` (and optional deadline) is a new numbered or
+ * seasonal cutoff relative to an already-seen official-page entry.
+ * Incoming names with no cycle signal stay "the program exists" — telegram
+ * reprints and generic resubmits must still URL-dedup.
+ */
+export function isNewProgramCycle(
+  incomingName: string,
+  existingName: string,
+  incomingDeadline?: string | Date | null,
+  existingDeadline?: string | Date | null,
+): boolean {
+  const incoming = extractCycleMarkers(incomingName);
+  const existing = extractCycleMarkers(existingName);
+  const incomingPrimary = primaryNumberedMarker(incoming);
+  const existingPrimary = primaryNumberedMarker(existing);
+
+  if (incomingPrimary && existingPrimary) {
+    return incomingPrimary.kind !== existingPrimary.kind
+      || incomingPrimary.value !== existingPrimary.value;
+  }
+  if (incomingPrimary && !existingPrimary) return true;
+  if (!incomingPrimary && existingPrimary) return false;
+
+  if (incoming.fiscal) {
+    if (existing.fiscal) return incoming.fiscal !== existing.fiscal;
+    const fyYear = Number((incoming.fiscal.match(/20\d\d/) || [])[0]);
+    if (fyYear && existing.years.includes(fyYear)) return false;
+    if (existing.years.length === 0) return true;
+  }
+
+  if (incoming.years.length > 0 && existing.years.length > 0) {
+    return Math.max(...incoming.years) !== Math.max(...existing.years);
+  }
+
+  const incomingMs = parseDeadlineMs(incomingDeadline);
+  const existingMs = parseDeadlineMs(existingDeadline);
+  return incomingMs !== null && existingMs !== null && incomingMs > existingMs;
+}
+
+export function isSameProgramCycle(
+  incomingName: string,
+  existingName: string,
+  incomingDeadline?: string | Date | null,
+  existingDeadline?: string | Date | null,
+): boolean {
+  return !isNewProgramCycle(incomingName, existingName, incomingDeadline, existingDeadline)
+    && !isNewProgramCycle(existingName, incomingName, existingDeadline, incomingDeadline);
+}
+
+function priorCycleReason(entryId: number, name: string): string {
+  return `New cycle of #${entryId}: "${name}"`;
+}
+
+interface UrlCycleSibling {
+  id: number;
+  name: string;
+  deadline: string | Date | null;
+  status: string;
+}
+
+function isEstablishedUrlSibling(row: UrlCycleSibling, excludeEntryId?: number): boolean {
+  if (row.status === 'raw') {
+    return excludeEntryId != null && row.id < excludeEntryId;
+  }
+  return true;
+}
+
+async function findUrlCycleSiblings(
+  pool: Pick<Pool, 'query'>,
+  args: { sourceUrl: string; seenUrl?: string | null; wire: string; excludeEntryId?: number },
+): Promise<UrlCycleSibling[]> {
+  const result = await pool.query(
+    `SELECT id, name, deadline, status
+     FROM scan_entries
+     WHERE wire = $1
+       AND status IN ('raw', 'deduped', 'queued', 'approved', 'declined')
+       AND ($2::int IS NULL OR id != $2)
+       AND source_url IS NOT NULL
+       AND (source_url = $3 OR source_url = $4)`,
+    [args.wire, args.excludeEntryId ?? null, args.sourceUrl, args.seenUrl || args.sourceUrl],
+  );
+  return result.rows;
+}
+
+// ============================================================
 // Main Dedup Check
 // ============================================================
 
@@ -79,14 +252,28 @@ export async function checkDuplicate(
      *  layer matches the entry against its own freshly inserted raw row
      *  and marks it a duplicate of itself. */
     excludeEntryId?: number;
+    deadline?: string | Date | null;
   },
   lookbackDays: number = 180,
   options?: { urlOnly?: boolean; programGate?: boolean }
 ): Promise<DedupResult> {
   // Layer 1: URL exact match (fastest)
   // Pass entry name so we can distinguish aggregate URLs (one tweet listing multiple grants)
-  const urlResult = await checkUrlMatch(pool, entry.sourceUrl, entry.wire, entry.name, entry.excludeEntryId);
+  const urlResult = await checkUrlMatch(
+    pool,
+    entry.sourceUrl,
+    entry.wire,
+    entry.name,
+    entry.excludeEntryId,
+    entry.deadline,
+  );
   if (urlResult.isDuplicate) {
+    return urlResult;
+  }
+  // A new numbered/seasonal cutoff on a known official URL is not a
+  // duplicate. Skip the exact-name layer: same-name reopenings (later
+  // deadline, new FY) would otherwise be killed after the URL escape.
+  if (urlResult.priorCycle) {
     return urlResult;
   }
 
@@ -169,7 +356,8 @@ async function checkUrlMatch(
   sourceUrl: string,
   wire: string,
   entryName?: string,
-  excludeEntryId?: number
+  excludeEntryId?: number,
+  deadline?: string | Date | null,
 ): Promise<DedupResult> {
   const normalized = normalizeUrl(sourceUrl);
 
@@ -178,7 +366,7 @@ async function checkUrlMatch(
   // copy is still raw. Excluding raw lets exact URL duplicates slip through.
   // Only archived (auto-filtered junk) is excluded — those may deserve a second look.
   const result = await pool.query(
-    `SELECT su.first_seen_entry_id, se.name, su.url
+    `SELECT su.first_seen_entry_id, se.name, su.url, se.deadline
      FROM seen_urls su
      JOIN scan_entries se ON se.id = su.first_seen_entry_id
      WHERE su.normalized_url = $1 AND su.wire = $2
@@ -225,6 +413,41 @@ async function checkUrlMatch(
         matchedEntryName: null,
         confidence: 0,
         reason: `Social URL matches entry #${entryId} ("${matchedName}") but names differ — treating as distinct entry (${existingCount + 1} of 2 max)`,
+      };
+    }
+
+    // Official pages keep one URL across numbered/seasonal cutoffs. A new
+    // cycle of the same program must reach review; the same cycle must not.
+    if (entryName && matchedName && isNewProgramCycle(entryName, matchedName, deadline, row.deadline)) {
+      const siblings = await findUrlCycleSiblings(pool, {
+        sourceUrl,
+        seenUrl: row.url,
+        wire,
+        excludeEntryId,
+      });
+      const sameCycle = siblings.find(sibling =>
+        isEstablishedUrlSibling(sibling, excludeEntryId)
+        && isSameProgramCycle(entryName, sibling.name, deadline, sibling.deadline)
+      );
+      if (sameCycle) {
+        return {
+          isDuplicate: true,
+          matchType: 'url_exact',
+          matchedEntryId: sameCycle.id,
+          matchedEntryName: sameCycle.name,
+          confidence: 1.0,
+          reason: `Exact URL match with entry #${sameCycle.id}: "${sameCycle.name}"`,
+        };
+      }
+
+      return {
+        isDuplicate: false,
+        matchType: null,
+        matchedEntryId: entryId,
+        matchedEntryName: displayName,
+        confidence: 0,
+        reason: priorCycleReason(entryId, displayName),
+        priorCycle: { entryId, name: displayName },
       };
     }
 
@@ -554,6 +777,7 @@ interface SeenEntry {
   name: string;
   wire: string;
   scanDate: string;
+  deadline?: string | Date | null;
 }
 
 type Queryable = Pick<Pool, 'query'>;
@@ -580,7 +804,7 @@ export async function registerSeenInTransaction(
   let conflictEntryId: number | null = null;
   if (urlRes.rowCount === 0) {
     const existing = await db.query(
-      `SELECT su.first_seen_entry_id, se.name, se.status
+      `SELECT su.first_seen_entry_id, se.name, se.status, se.deadline
        FROM seen_urls su
        LEFT JOIN scan_entries se ON se.id = su.first_seen_entry_id
        WHERE su.normalized_url = $1 AND su.wire = $2
@@ -596,6 +820,7 @@ export async function registerSeenInTransaction(
     if (ownerId !== entry.id) {
       const ownerName = existing.rows[0].name as string | null;
       const ownerStatus = existing.rows[0].status as string | null;
+      const ownerDeadline = existing.rows[0].deadline as string | Date | null;
       if (ownerId !== null && ownerStatus === 'archived') {
         // URL precheck deliberately ignores archived owners so a later signal
         // can be reconsidered. Preserve that policy at the atomic claim stage:
@@ -637,8 +862,29 @@ export async function registerSeenInTransaction(
         }
 
         if (!allowSharedSocialSource) {
-          urlConflict = true;
-          conflictEntryId = ownerId;
+          const allowSharedNewCycle = Boolean(
+            ownerName
+            && isNewProgramCycle(entry.name, ownerName, entry.deadline, ownerDeadline)
+          );
+          if (allowSharedNewCycle) {
+            const siblings = await findUrlCycleSiblings(db, {
+              sourceUrl: entry.sourceUrl,
+              seenUrl: entry.sourceUrl,
+              wire: entry.wire,
+              excludeEntryId: entry.id,
+            });
+            const sameCycle = siblings.find(sibling =>
+              isEstablishedUrlSibling(sibling, entry.id)
+              && isSameProgramCycle(entry.name, sibling.name, entry.deadline, sibling.deadline)
+            );
+            if (sameCycle) {
+              urlConflict = true;
+              conflictEntryId = sameCycle.id;
+            }
+          } else {
+            urlConflict = true;
+            conflictEntryId = ownerId;
+          }
         }
       }
     }
@@ -682,6 +928,7 @@ export interface ExistingEntryDedupInput {
   wire: string;
   scanDate: string | Date;
   expectedStatus: string;
+  deadline?: string | Date | null;
 }
 
 export type ExistingEntryDedupOutcome = 'unique' | 'duplicate' | 'seed-conflict' | 'stale' | 'unresolved-parent';
@@ -752,6 +999,7 @@ export async function finalizeExistingEntryDedup(
         name: entry.name,
         wire: entry.wire,
         excludeEntryId: entry.id,
+        deadline: entry.deadline,
       },
       lookbackDays,
       { programGate: options?.programGate },
@@ -799,6 +1047,7 @@ export async function finalizeExistingEntryDedup(
       name: entry.name,
       wire: entry.wire,
       scanDate,
+      deadline: entry.deadline,
     });
 
     if (claim.urlConflict && claim.conflictEntryId !== null) {
@@ -830,12 +1079,17 @@ export async function finalizeExistingEntryDedup(
     }
 
     const reason = claim.urlConflict ? 'URL already exists in seed history' : null;
+    const priorNote = !claim.urlConflict && dedupResult.priorCycle
+      ? priorCycleReason(dedupResult.priorCycle.entryId, dedupResult.priorCycle.name)
+      : null;
     const finalized = await client.query(
       `UPDATE scan_entries
        SET status = 'deduped',
            duplicate_of_id = NULL,
            duplicate_reason = $2,
            distributable = CASE WHEN $2::text IS NULL THEN distributable ELSE false END,
+           operator_notes = CASE WHEN $7::text IS NULL THEN operator_notes
+             ELSE CONCAT_WS(E'\n', NULLIF(operator_notes, ''), $7::text) END,
            updated_at = NOW()
        WHERE id = $1
          AND status = $3
@@ -843,7 +1097,7 @@ export async function finalizeExistingEntryDedup(
          AND name = $5
          AND wire = $6
        RETURNING id`,
-      [entry.id, reason, entry.expectedStatus, entry.sourceUrl, entry.name, entry.wire],
+      [entry.id, reason, entry.expectedStatus, entry.sourceUrl, entry.name, entry.wire, priorNote],
     );
     if (finalized.rowCount !== 1) {
       await client.query('ROLLBACK');

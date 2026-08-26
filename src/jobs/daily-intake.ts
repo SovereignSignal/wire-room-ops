@@ -354,6 +354,7 @@ export async function runDailyIntake(
       wire: item.wire,
       scanDate: item.scanDate,
       expectedStatus: 'raw',
+      deadline: item.result.deadline ?? null,
     }, config.dedupeWindow, { programGate: true });
 
     if (dedupOutcome.outcome === 'duplicate' || dedupOutcome.outcome === 'seed-conflict') {
