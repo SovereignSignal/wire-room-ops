@@ -19,9 +19,10 @@ const {
 test('canonical consts have the expected shape', () => {
   assert.equal(PROMPT_VARIANTS.length, 7);
   assert.ok(PROMPT_VARIANTS.includes('S'), 'scout prompt variant must stay route and DB valid');
-  assert.equal(SCAN_SOURCES.length, 16);
+  assert.equal(SCAN_SOURCES.length, 17);
   assert.ok(SCAN_SOURCES.includes('grok-scout'), 'Grok Scout must stay a valid ingestion source');
   assert.ok(SCAN_SOURCES.includes('known-org-watch'), 'Known Org Watch must stay a valid ingestion source');
+  assert.ok(SCAN_SOURCES.includes('stringer'), 'Strings (Cursor Grok Bot) must have its own ingestion source');
   assert.equal(SCAN_STATUSES.length, 11);
   assert.ok(SCAN_STATUSES.includes('incomplete'), 'the June drift value must stay in the list');
   assert.equal(SCHEDULE_TYPES.length, 5);
