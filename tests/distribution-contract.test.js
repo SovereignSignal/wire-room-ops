@@ -27,6 +27,17 @@ test('logDistribution writes the tele-sum guard columns (external_id + wire + ch
   }
 });
 
+test('live sends claim a pending log before talking to Telegram or X', () => {
+  const source = read('src/services/distribution.ts');
+  const dbSource = read('src/db/index.ts');
+  assert.match(source, /async function sendAfterClaim/);
+  assert.match(source, /claimDistributionLog/);
+  assert.match(source, /finalizeDistributionLog/);
+  assert.match(dbSource, /status: 'pending'/);
+  const liveClaims = source.match(/return sendAfterClaim\(/g) || [];
+  assert.equal(liveClaims.length, 5, 'telegram/discord/slack managed + telegram/x legacy must claim before send');
+});
+
 test('the double-post guard index only covers pending/success — failed logs never block a retry', () => {
   const dbSource = read('src/db/index.ts');
   const idx = dbSource.match(/UNIQUE INDEX[^;]*distribution_logs[^;]*WHERE[^;]*status IN \(([^)]+)\)/i);

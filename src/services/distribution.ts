@@ -4,7 +4,7 @@
  * Newsletter generation is a separate read-only operation.
  */
 
-import { getDistributionConfigs, getUndistributedEntries, logDistribution, getDistributionLogs, getPool, getEnabledDistributionChannelsForWire, DistributionChannelRecord } from '../db';
+import { getDistributionConfigs, getUndistributedEntries, logDistribution, claimDistributionLog, finalizeDistributionLog, getDistributionLogs, getPool, getEnabledDistributionChannelsForWire, DistributionChannelRecord } from '../db';
 import { getCachedProvider } from './api-provider';
 import { generatePosts } from './post-generator';
 
@@ -144,24 +144,6 @@ async function dispatchToManagedChannel(
   const creds = mc.credentials || {};
   const targetId = mc.targetId;
 
-  // Idempotency guard: the unique index only prevents duplicate LOGS after
-  // the fact — without this check a repeat call (re-approve, multi-wire
-  // redistribute) would re-SEND before the log insert fails. Never re-send
-  // to a channel that already has a pending/success log for this entry.
-  try {
-    const existing = await getPool().query(
-      `SELECT 1 FROM distribution_logs
-       WHERE entry_id = $1 AND channel = $2
-         AND COALESCE(channel_id, '00000000-0000-0000-0000-000000000000') = $3::uuid
-         AND status IN ('pending', 'success')
-       LIMIT 1`,
-      [entry.id, channel, mc.id]
-    );
-    if (existing.rows.length > 0) return 'skipped';
-  } catch (err) {
-    console.error('[Distribution] Idempotency check failed, proceeding:', err);
-  }
-
   if (channel === 'telegram') {
     const token = creds.bot_token || getTelegramBotToken();
     if (!token || !targetId) {
@@ -176,18 +158,19 @@ async function dispatchToManagedChannel(
       return 'skipped';
     }
 
-    const result = await sendChannelMessage(token, targetId, posts.telegram);
-    await logDistribution({
+    return sendAfterClaim({
       entryId: entry.id,
       channel: 'telegram',
       channelId: mc.id,
       wire: mc.wire,
-      status: result ? 'success' : 'failed',
       postText: posts.telegram,
-      externalId: result ? String(result.messageId) : undefined,
-      errorMessage: result ? undefined : 'Telegram API call failed',
+      send: async () => {
+        const result = await sendChannelMessage(token, targetId, posts.telegram);
+        return result
+          ? { ok: true, externalId: String(result.messageId) }
+          : { ok: false, errorMessage: 'Telegram API call failed' };
+      },
     });
-    return result ? 'success' : 'failed';
   }
 
   if (channel === 'discord') {
@@ -204,18 +187,19 @@ async function dispatchToManagedChannel(
       return 'skipped';
     }
 
-    const result = await sendDiscordMessage(token, targetId, posts.telegram);
-    await logDistribution({
+    return sendAfterClaim({
       entryId: entry.id,
       channel: 'discord',
       channelId: mc.id,
       wire: mc.wire,
-      status: result ? 'success' : 'failed',
       postText: posts.telegram,
-      externalId: result ? result.messageId : undefined,
-      errorMessage: result ? undefined : 'Discord API call failed',
+      send: async () => {
+        const result = await sendDiscordMessage(token, targetId, posts.telegram);
+        return result
+          ? { ok: true, externalId: result.messageId }
+          : { ok: false, errorMessage: 'Discord API call failed' };
+      },
     });
-    return result ? 'success' : 'failed';
   }
 
   if (channel === 'slack') {
@@ -232,36 +216,27 @@ async function dispatchToManagedChannel(
       return 'skipped';
     }
 
-    try {
-      const resp = await fetch(webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: posts.telegram }),
-      });
-
-      const ok = resp.ok;
-      await logDistribution({
-        entryId: entry.id,
-        channel: 'slack',
-        channelId: mc.id,
-        wire: mc.wire,
-        status: ok ? 'success' : 'failed',
-        postText: posts.telegram,
-        errorMessage: ok ? undefined : `Slack webhook returned ${resp.status}`,
-      });
-      return ok ? 'success' : 'failed';
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-      await logDistribution({
-        entryId: entry.id,
-        channel: 'slack',
-        channelId: mc.id,
-        wire: mc.wire,
-        status: 'failed',
-        errorMessage: errorMsg,
-      });
-      return 'failed';
-    }
+    return sendAfterClaim({
+      entryId: entry.id,
+      channel: 'slack',
+      channelId: mc.id,
+      wire: mc.wire,
+      postText: posts.telegram,
+      send: async () => {
+        try {
+          const resp = await fetch(webhookUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: posts.telegram }),
+          });
+          return resp.ok
+            ? { ok: true }
+            : { ok: false, errorMessage: `Slack webhook returned ${resp.status}` };
+        } catch (error) {
+          return { ok: false, errorMessage: error instanceof Error ? error.message : 'Unknown error' };
+        }
+      },
+    });
   }
 
   return 'skipped';
@@ -327,17 +302,18 @@ async function dispatchToChannel(
       return 'skipped';
     }
 
-    const result = await sendChannelMessage(token, channelId, posts.telegram);
-    await logDistribution({
+    return sendAfterClaim({
       entryId: entry.id,
       channel: 'telegram',
       wire: cfg.wire,
-      status: result ? 'success' : 'failed',
       postText: posts.telegram,
-      externalId: result ? String(result.messageId) : undefined,
-      errorMessage: result ? undefined : 'Telegram API call failed',
+      send: async () => {
+        const result = await sendChannelMessage(token, channelId, posts.telegram);
+        return result
+          ? { ok: true, externalId: String(result.messageId) }
+          : { ok: false, errorMessage: 'Telegram API call failed' };
+      },
     });
-    return result ? 'success' : 'failed';
   }
 
   if (cfg.channel === 'x') {
@@ -359,25 +335,57 @@ async function dispatchToChannel(
       return 'skipped';
     }
 
-    const result = await postTweet(posts.tweet, creds);
-    await logDistribution({
+    return sendAfterClaim({
       entryId: entry.id,
       channel: 'x',
       wire: cfg.wire,
-      status: result ? 'success' : 'failed',
       postText: posts.tweet,
-      externalId: result?.id,
-      errorMessage: result ? undefined : 'X API call failed',
+      send: async () => {
+        const result = await postTweet(posts.tweet, creds);
+        return result
+          ? { ok: true, externalId: result.id }
+          : { ok: false, errorMessage: 'X API call failed' };
+      },
     });
-    return result ? 'success' : 'failed';
   }
 
   return 'skipped';
 }
 
-/**
- * Retry distribution for a single entry (delete failed logs, re-run only failed channels).
- */
+async function sendAfterClaim(params: {
+  entryId: number;
+  channel: DistributionChannel;
+  wire: string;
+  channelId?: string;
+  postText: string;
+  send: () => Promise<{ ok: boolean; externalId?: string; errorMessage?: string }>;
+}): Promise<'success' | 'failed' | 'skipped'> {
+  const slot = await claimDistributionLog({
+    entryId: params.entryId,
+    channel: params.channel,
+    wire: params.wire,
+    channelId: params.channelId,
+  });
+  if (!slot) return 'skipped';
+
+  try {
+    const result = await params.send();
+    await finalizeDistributionLog(slot.id, {
+      status: result.ok ? 'success' : 'failed',
+      postText: params.postText,
+      externalId: result.externalId,
+      errorMessage: result.ok ? undefined : result.errorMessage,
+    });
+    return result.ok ? 'success' : 'failed';
+  } catch (error) {
+    await finalizeDistributionLog(slot.id, {
+      status: 'failed',
+      errorMessage: error instanceof Error ? error.message : 'Unknown error',
+    });
+    throw error;
+  }
+}
+
 /**
  * Distribute a single approved entry immediately to all enabled channels for its wire.
  * Used when an entry is approved via the dashboard — only sends that one entry,

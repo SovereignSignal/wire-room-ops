@@ -1734,6 +1734,48 @@ export async function logDistribution(params: {
   return parseDistributionLogRow(result.rows[0]);
 }
 
+/** Insert a pending log to claim the unique send slot. Null = already claimed. */
+export async function claimDistributionLog(params: {
+  entryId: number;
+  channel: DistributionChannel;
+  wire: string;
+  channelId?: string;
+}): Promise<DistributionLog | null> {
+  try {
+    return await logDistribution({
+      entryId: params.entryId,
+      channel: params.channel,
+      wire: params.wire,
+      channelId: params.channelId,
+      status: 'pending',
+    });
+  } catch (err: any) {
+    if (err?.code === '23505') return null;
+    throw err;
+  }
+}
+
+export async function finalizeDistributionLog(
+  id: number,
+  patch: {
+    status: DistributionStatus;
+    postText?: string;
+    externalId?: string;
+    errorMessage?: string;
+  },
+): Promise<void> {
+  const pool = getPool();
+  await pool.query(
+    `UPDATE distribution_logs
+     SET status = $1,
+         post_text = COALESCE($2, post_text),
+         external_id = COALESCE($3, external_id),
+         error_message = $4
+     WHERE id = $5`,
+    [patch.status, patch.postText ?? null, patch.externalId ?? null, patch.errorMessage ?? null, id]
+  );
+}
+
 export async function getDistributionLogs(entryId: number): Promise<DistributionLog[]> {
   const pool = getPool();
   const result = await pool.query(
@@ -1913,6 +1955,7 @@ export interface SummaryInsert {
   summary: string;
   wire: string;
   qualityScore: number | null;
+  scanEntryId?: number;
   entities: Record<string, unknown>;
 }
 
@@ -1931,7 +1974,32 @@ export async function insertApprovedSummary(entry: SummaryInsert): Promise<numbe
     ? 'CONFIDENT'
     : 'UNCERTAIN';
 
+  const entities = {
+    ...entry.entities,
+    ...(entry.scanEntryId != null ? { scan_entry_id: entry.scanEntryId } : {}),
+  };
+
   try {
+    if (entry.scanEntryId != null || typeof entry.entities?.source_url === 'string') {
+      const existing = await pool.query(
+        `SELECT id FROM summaries
+         WHERE ($1::int IS NOT NULL AND entities->>'scan_entry_id' = $1::text)
+            OR (
+              $2::text IS NOT NULL
+              AND entities->>'source_url' = $2
+              AND wire = $3
+            )
+         ORDER BY id ASC
+         LIMIT 1`,
+        [
+          entry.scanEntryId ?? null,
+          typeof entry.entities?.source_url === 'string' ? entry.entities.source_url : null,
+          entry.wire,
+        ]
+      );
+      if (existing.rows[0]?.id) return existing.rows[0].id;
+    }
+
     const result = await pool.query(
       `INSERT INTO summaries (title, summary, wire, processing_status, data_quality, confidence, entities, message_id, category_id)
        VALUES ($1, $2, $3, 'SUCCESS', $4, $5, $6, NULL, NULL)
@@ -1942,7 +2010,7 @@ export async function insertApprovedSummary(entry: SummaryInsert): Promise<numbe
         entry.wire,
         dataQuality,
         confidence,
-        JSON.stringify(entry.entities),
+        JSON.stringify(entities),
       ]
     );
     return result.rows[0]?.id ?? null;

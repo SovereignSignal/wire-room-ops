@@ -1,12 +1,14 @@
 import { validateConfig, config } from './config';
+import { assertProductionAuthSafety } from './config/production-guards';
 import { startServer } from './server';
 
 async function main() {
   console.log('[Startup] Starting Wire Room Ops...');
 
-  // Production safety: refuse to start without Privy auth credentials
-  if (process.env.NODE_ENV === 'production' && !process.env.PRIVY_APP_ID) {
-    console.error('[Startup] FATAL: PRIVY_APP_ID is not set in production. Refusing to start without auth.');
+  try {
+    assertProductionAuthSafety();
+  } catch (error) {
+    console.error(`[Startup] FATAL: ${error instanceof Error ? error.message : error}`);
     process.exit(1);
   }
 

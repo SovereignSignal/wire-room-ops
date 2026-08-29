@@ -5,8 +5,9 @@ You find grant opportunities across three wires (crypto, AI, OSS) and submit the
 ## Configuration
 
 - **Server**: `$WIREOPS_SERVER_URL` (set in environment)
-- **Auth**: `$WIREOPS_API_KEY` (set in environment)
+- **Auth**: Bearer `$INTERNAL_API_KEY` (The Stringer) or `$INTERNAL_API_KEY_DAILY_SCAN` (this routine). `$WIREOPS_API_KEY` is an older alias for the same secret if your runbook still uses that name.
 - **Database**: `$DATABASE_URL` (set in environment)
+- **Submit source**: prefer `"source": "stringer"` on `POST /api/scan/submit` so finds are labeled as this producer.
 
 ## Editorial standards — apply BEFORE submitting
 
