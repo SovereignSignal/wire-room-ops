@@ -58,7 +58,7 @@ const STOPWORDS = [
   'that', 'your', 'their', 'announcing', 'launch', 'launches', 'apply',
 ];
 
-interface Candidate {
+export interface Candidate {
   id: number;
   wire: string;
   name: string;
@@ -71,7 +71,7 @@ interface Candidate {
   squash_match: boolean;
 }
 
-interface RecheckTarget {
+export interface RecheckTarget {
   id: number;
   wire: string;
   name: string;
@@ -134,14 +134,23 @@ interface Verdict {
   reason: string;
 }
 
-async function judgeCandidates(target: RecheckTarget, candidates: Candidate[]): Promise<Verdict | null> {
-  const provider = getCachedProvider('grok');
-  const model = provider?.default_model || 'grok-4.20-beta-0309-non-reasoning';
-  const apiKey = provider?.api_key;
-  const baseUrl = provider?.base_url || config.apis.grok.baseUrl;
-  if (!apiKey) return null;
+/**
+ * Lower the same_listing demotion bar for tweet/X reprints of an already-seen
+ * official listing (or another tweet of the same cycle). Official-vs-official
+ * and official-vs-tweet keep the 0.8 floor so a first-party page is never
+ * auto-demoted against a weaker source.
+ */
+export function sameListingConfidenceFloor(targetUrl: string, matchedUrl: string): number {
+  const targetKind = classifySourceLink(targetUrl);
+  const matchedKind = classifySourceLink(matchedUrl);
+  const targetIsTweet = targetKind === 'tweet-only';
+  const matchedIsOfficial = matchedKind === 'ok';
+  const reprintPair = targetIsTweet && (matchedIsOfficial || matchedKind === 'tweet-only');
+  return reprintPair ? 0.7 : 0.8;
+}
 
-  const prompt = `You deduplicate a grants-intelligence review queue. Compare the NEW entry against PREVIOUS entries (already seen, possibly already decided by the human operator).
+export function buildRecheckJudgePrompt(target: RecheckTarget, candidates: Candidate[]): string {
+  return `You deduplicate a grants-intelligence review queue. Compare the NEW entry against PREVIOUS entries (already seen, possibly already decided by the human operator).
 
 NEW ENTRY:
 Name: ${target.name}
@@ -154,13 +163,25 @@ PREVIOUS ENTRIES:
 ${candidates.map(c => `- id ${c.id} [${c.wire}, ${c.status}${c.resolve_to ? ` -> #${c.resolve_to}` : ''}, ${c.decided_date}]: ${c.name} | ${c.source_url}`).join('\n')}
 
 Verdicts:
-- "same_listing": the NEW entry is the SAME program AND the SAME round/cycle with no material new information. (A tweet about a program vs the program page = same_listing.)
-- "update": same program but a NEW round, a reopening, a changed deadline or amount, or otherwise material NEW information. Updates are valuable — the operator must see them.
+- "same_listing": the NEW entry is the SAME program AND the SAME round/cycle with no material new information. A tweet, X post, or aggregator copy of the same program + same numbered round/cycle as a previous official (or already-queued) listing is same_listing — even if the URL and phrasing differ.
+- "update": same program but a NEW numbered round/cycle, a reopening, a changed deadline or amount, a newly opened apply path, or otherwise material NEW information. A reprint that only restates the same cycle is not an update.
 - "distinct": a different program, even if from the same organization.
 
-CRITICAL BIAS RULE: if torn between same_listing and update, answer "update". Filtering out a real update costs far more than showing a near-duplicate.
+REPRINT OVERRIDE: a tweet/X post or aggregator listing of the same program and same round as a previous entry is same_listing. This overrides the bias rule below.
+
+CRITICAL BIAS RULE: if torn between same_listing and update, answer "update". Filtering out a real update costs far more than showing a near-duplicate. The reprint override still wins when the only difference is source (tweet vs official page, aggregator vs first-party).
 
 Respond with ONLY JSON: {"matched_id": <id or null>, "verdict": "same_listing"|"update"|"distinct", "confidence": <0.0-1.0>, "reason": "<one line>"}`;
+}
+
+async function judgeCandidates(target: RecheckTarget, candidates: Candidate[]): Promise<Verdict | null> {
+  const provider = getCachedProvider('grok');
+  const model = provider?.default_model || 'grok-4.20-beta-0309-non-reasoning';
+  const apiKey = provider?.api_key;
+  const baseUrl = provider?.base_url || config.apis.grok.baseUrl;
+  if (!apiKey) return null;
+
+  const prompt = buildRecheckJudgePrompt(target, candidates);
 
   const start = Date.now();
   const response = await fetch(`${baseUrl}/chat/completions`, {
@@ -292,7 +313,10 @@ export async function applyVerdict(pool: Pool, target: RecheckTarget, candidates
   // Cross-wire candidates are NOT rejected up front: a cross-wire duplicate row
   // can resolve to a same-wire canonical parent, which is a safe demotion. The
   // wire gate runs after chain resolution, against the terminal parent.
-  if (verdict.verdict === 'same_listing' && matched && verdict.confidence >= 0.8) {
+  const demoteFloor = matched
+    ? sameListingConfidenceFloor(target.source_url, matched.source_url)
+    : 0.8;
+  if (verdict.verdict === 'same_listing' && matched && verdict.confidence >= demoteFloor) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');

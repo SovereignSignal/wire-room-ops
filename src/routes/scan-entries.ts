@@ -438,6 +438,7 @@ router.get('/entries', async (req: Request, res: Response) => {
     const maxScore = isNaN(rawMaxScore) ? undefined : Math.max(0, Math.min(100, rawMaxScore));
     const unscored = req.query.unscored === '1' || req.query.unscored === 'true';
     const excludeSources = req.query.excludeSources ? (req.query.excludeSources as string).split(',').map(s => s.trim()).filter(Boolean) : undefined;
+    const hideTweets = req.query.hideTweets === '1' || req.query.hideTweets === 'true';
 
     const autoSummarizeFailed = req.query.autoSummarizeFailed === 'true';
 
@@ -454,6 +455,7 @@ router.get('/entries', async (req: Request, res: Response) => {
       classification,
       route,
       dateStatus: dateStatus && isQueueDateStatus(dateStatus) ? dateStatus : undefined,
+      hideTweets: hideTweets || undefined,
     });
 
     if (autoSummarizeFailed) {

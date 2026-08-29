@@ -3,7 +3,7 @@ require('ts-node/register/transpile-only');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { applyVerdict, resolveDuplicateChain } = require('../src/jobs/decided-recheck');
+const { applyVerdict, resolveDuplicateChain, sameListingConfidenceFloor, buildRecheckJudgePrompt } = require('../src/jobs/decided-recheck');
 const auditFixture = require('./fixtures/semantic-dedup-audit-2026-08-11.json');
 
 const TARGET = {
@@ -178,6 +178,61 @@ test('low-confidence same_listing only stamps metadata', async () => {
   assert.equal(out, 'same_listing');
   assert.equal(pool.calls.some(call => call.sql === 'BEGIN'), true);
   assert.equal(pool.calls.some(call => /SET status = 'duplicate'/.test(call.sql)), false);
+});
+
+test('official vs official same_listing at 0.72 stays below the 0.8 floor', async () => {
+  const pool = fakePool();
+  const out = await applyVerdict(pool, TARGET, [candidate()], verdict({ confidence: 0.72 }));
+
+  assert.equal(out, 'same_listing');
+  assert.equal(pool.calls.some(call => /SET status = 'duplicate'/.test(call.sql)), false);
+});
+
+test('tweet reprint vs official same_listing demotes at 0.72', async () => {
+  const tweetTarget = { ...TARGET, source_url: 'https://x.com/anthropic/status/123' };
+  const pool = fakePool(
+    [{ id: 8572, status: 'approved', duplicate_of_id: null, depth: 0, cycle: false }],
+    {
+      lockedRows: [
+        {
+          id: tweetTarget.id,
+          status: 'queued',
+          duplicate_of_id: null,
+          name: tweetTarget.name,
+          description: tweetTarget.description,
+          amount: null,
+          deadline: tweetTarget.deadline,
+          source_url: tweetTarget.source_url,
+          wire: tweetTarget.wire,
+        },
+        {
+          id: 8572,
+          status: 'approved',
+          duplicate_of_id: null,
+          name: 'Anthropic Fellows Program',
+          description: null,
+          amount: null,
+          deadline: null,
+          source_url: 'https://alignment.anthropic.com/x',
+          wire: 'ai',
+        },
+      ],
+      parentRow: {
+        id: 8572, status: 'approved', duplicate_of_id: null,
+        wire: 'ai', source_url: 'https://alignment.anthropic.com/x',
+      },
+    },
+  );
+  const out = await applyVerdict(
+    pool,
+    tweetTarget,
+    [candidate({ status: 'approved', resolve_to: null })],
+    verdict({ confidence: 0.72 }),
+  );
+
+  assert.equal(out, 'duplicate');
+  const update = pool.calls.find(call => /SET status = 'duplicate'/.test(call.sql));
+  assert.equal(update.params[1], 8572);
 });
 
 test('cross-wire same_listing stays queued for operator review', async () => {
@@ -456,4 +511,33 @@ test('compare-and-set loss reports stale instead of claiming a mutation', async 
   const out = await applyVerdict(pool, TARGET, [candidate({ status: 'approved' })], verdict());
   assert.equal(out, 'stale');
   assert.ok(pool.calls.some(call => call.sql === 'ROLLBACK'));
+});
+
+test('sameListingConfidenceFloor lowers only tweet reprints, never official pages', () => {
+  assert.equal(
+    sameListingConfidenceFloor('https://x.com/org/status/1', 'https://job-boards.greenhouse.io/anthropic/jobs/1'),
+    0.7,
+  );
+  assert.equal(
+    sameListingConfidenceFloor('https://twitter.com/org/status/1', 'https://x.com/org/status/2'),
+    0.7,
+  );
+  assert.equal(
+    sameListingConfidenceFloor('https://job-boards.greenhouse.io/anthropic/jobs/1', 'https://alignment.anthropic.com/x'),
+    0.8,
+  );
+  assert.equal(
+    sameListingConfidenceFloor('https://job-boards.greenhouse.io/anthropic/jobs/1', 'https://x.com/org/status/1'),
+    0.8,
+  );
+});
+
+test('recheck judge prompt treats tweet/aggregator reprints as same_listing over the update bias', () => {
+  const prompt = buildRecheckJudgePrompt(TARGET, [candidate()]);
+  assert.match(prompt, /REPRINT OVERRIDE/);
+  assert.match(prompt, /tweet\/X post or aggregator/);
+  assert.match(prompt, /This overrides the bias rule/);
+  assert.match(prompt, /A reprint that only restates the same cycle is not an update/);
+  assert.match(prompt, /CRITICAL BIAS RULE/);
+  assert.match(prompt, /NEW numbered round\/cycle/);
 });

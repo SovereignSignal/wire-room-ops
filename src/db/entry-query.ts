@@ -23,6 +23,7 @@ export interface ScanEntryQueryFilters {
   classification?: string;
   route?: string;
   dateStatus?: QueueDateStatus;
+  hideTweets?: boolean;
 }
 
 const EFFECTIVE_ROUTE_SQL = `COALESCE(metadata->'curator'->>'route', metadata->>'operator_route')`;
@@ -91,6 +92,9 @@ export function buildScanEntryFilterClauses(
     conditions.push(`deadline_parsed IS NOT NULL AND deadline_parsed < CURRENT_DATE`);
   } else if (opts?.dateStatus === 'no_date') {
     conditions.push(`deadline_parsed IS NULL`);
+  }
+  if (opts?.hideTweets) {
+    conditions.push(`(source_url IS NULL OR source_url !~* '^https?://(?:[^/]+\\.)*(?:x\\.com|twitter\\.com)(?:[/?#]|$)')`);
   }
 
   return { conditions, values, nextIndex: paramIndex };
