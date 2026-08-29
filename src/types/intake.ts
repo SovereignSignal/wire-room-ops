@@ -194,10 +194,13 @@ export interface IntakeRunSummary {
 /**
  * Configuration for the daily intake job.
  */
+/** Exact-name dedup lookback used by process-raw, scan intake, and summary-sync. */
+export const DEFAULT_DEDUPE_WINDOW_DAYS = 180;
+
 export interface IntakeJobConfig {
   wire?: string;                     // Filter to specific wire, or all
   qualityThreshold: number;         // Minimum score to enter the queue (default: 40)
-  dedupeWindow: number;             // Days to look back for duplicates (default: 14)
+  dedupeWindow: number;             // Days to look back for duplicates (default: 180)
   sendBriefing: boolean;            // Email daily briefing
   briefingMinScore: number;         // Minimum score for briefing inclusion (default: 60)
 }
