@@ -55,7 +55,6 @@ export async function fetchEntries(params: {
   dateStatus?: string;
   unscored?: boolean;
   excludeSources?: string;
-  hideTweets?: boolean;
 } = {}): Promise<{ entries: ScanEntry[]; total: number }> {
   const query: Record<string, string | number | boolean> = { limit: 100, offset: 0 };
   for (const [key, value] of Object.entries(params)) {
