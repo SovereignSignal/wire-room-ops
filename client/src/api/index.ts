@@ -1,4 +1,4 @@
-import { ScanEntry, WireCounts, DbStats, DbTableResponse, ScanPrompt, GrantsIntelSummary, GrantsIntelObservation, EntryDistributionLog } from '@/types';
+import { ScanEntry, WireCounts, DbStats, DbTableResponse, ScanPrompt, GrantsIntelSummary, GrantsIntelObservation, EntryDistributionLog, DbConfigMeta } from '@/types';
 import { normalizeQualityScore } from '@/lib/dashboard-state';
 
 const BASE = "/api";
@@ -92,6 +92,38 @@ export async function fetchEntryDistribution(id: number | string): Promise<Entry
   const res = await authFetch(`${BASE}/scan/entries/${encodeURIComponent(id)}/distribution`);
   if (!res.ok) throw new Error(`Failed to fetch entry distribution: ${res.status}`);
   return res.json();
+}
+
+export async function redistributeEntry(id: number | string): Promise<{ success: boolean }> {
+  const res = await authFetch(`${BASE}/scan/entries/${encodeURIComponent(id)}/redistribute`, {
+    method: 'POST',
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(String(body.error || `Redistribute failed: ${res.status}`));
+  return body;
+}
+
+export interface ManualIntakeResult {
+  success: boolean;
+  inserted?: number;
+  duplicates?: number;
+  errors?: number;
+  entries?: Array<{ name: string; wire?: string; id?: number; isDuplicate?: boolean; error?: string }>;
+  result?: { status: string; entryId?: number; detectedWire?: string; errorMessage?: string; confirmText?: string };
+  error?: string;
+}
+
+export async function submitManualIntake(text: string, wire?: string): Promise<ManualIntakeResult> {
+  const res = await authFetch(`${BASE}/scan/manual-intake`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, ...(wire ? { wire } : {}) }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok && res.status !== 503) {
+    throw new Error(String(body.error || `Manual intake failed: ${res.status}`));
+  }
+  return body;
 }
 
 // Map our status names to the existing action endpoint verbs
@@ -214,7 +246,7 @@ export async function fetchWireCounts(): Promise<WireCounts[]> {
 
 // --- Database introspection API ---
 
-export async function fetchDbConfig(): Promise<{ configured: boolean; host: string | null; database: string | null; source: string }> {
+export async function fetchDbConfig(): Promise<DbConfigMeta> {
   const res = await authFetch(`${BASE}/database/config`);
   if (!res.ok) throw new Error(`Failed to fetch DB config: ${res.status}`);
   return res.json();

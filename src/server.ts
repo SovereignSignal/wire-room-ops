@@ -15,7 +15,8 @@ import { processRawEntries } from './jobs/process-raw';
 import { runDecidedRecheck } from './jobs/decided-recheck';
 import { publishPublicSnapshot } from './jobs/public-snapshot';
 import { refreshProviderCache, getCachedProvider } from './services/api-provider';
-import { runStartupMigrations } from './db/startup-migrations';
+import { getStartupMigrationHealth, runStartupMigrations } from './db/startup-migrations';
+import { csrfGuard } from './middleware/csrf';
 
 // Route modules
 import { authRouter } from './routes/auth';
@@ -42,56 +43,21 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-// CSRF origin check for state-changing requests
-app.use((req: Request, res: Response, next: Function): void => {
-  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') {
-    return next();
-  }
-
-  // Skip if APP_URL is not configured (can't validate origin without it)
-  let appHost: string;
-  try {
-    appHost = new URL(config.app.url).host;
-  } catch {
-    return next();
-  }
-
-  const origin = req.headers.origin;
-  const referer = req.headers.referer;
-
-  // Accept if Origin header matches our app
-  if (origin) {
-    try {
-      if (new URL(origin).host === appHost) return next();
-    } catch {}
-    res.status(403).json({ error: 'Forbidden: origin mismatch' });
-    return;
-  }
-
-  // Fall back to Referer if no Origin header
-  if (referer) {
-    try {
-      if (new URL(referer).host === appHost) return next();
-    } catch {}
-    res.status(403).json({ error: 'Forbidden: referer mismatch' });
-    return;
-  }
-
-  // No Origin or Referer: allow for same-origin API clients (curl, etc.)
-  // This is safe because browsers always send Origin on cross-origin POSTs
-  next();
-});
+// CSRF origin check for cookie-authenticated state-changing requests
+app.use(csrfGuard);
 
 // Health check
 app.get('/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Readiness check (includes DB connectivity)
+// Readiness check (DB connectivity + startup migrations)
 app.get('/ready', async (_req: Request, res: Response) => {
+  const migrations = getStartupMigrationHealth();
   const checks = {
     db: false,
     schedulerInitialized: false,
+    startupMigrations: migrations.failed === 0,
   };
 
   try {
@@ -104,11 +70,12 @@ app.get('/ready', async (_req: Request, res: Response) => {
   const schedulerStatus = getSchedulerStatus();
   checks.schedulerInitialized = schedulerStatus.totalSchedules > 0;
 
-  const ready = checks.db;
+  const ready = checks.db && checks.startupMigrations;
   const payload = {
     status: ready ? 'ready' : 'not_ready',
     timestamp: new Date().toISOString(),
     checks,
+    ...(migrations.failed > 0 ? { migrationErrors: migrations.errors } : {}),
   };
 
   if (!ready) {

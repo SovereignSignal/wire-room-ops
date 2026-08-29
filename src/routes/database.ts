@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { Pool } from 'pg';
-import { getEffectiveDbUrl, getDbConfigMeta, saveDbConfig } from '../config/db-config';
+import { getEffectiveDbUrl, getDbConfigMeta, isDatabaseUrlChangeAllowed, saveDbConfig } from '../config/db-config';
 
 const router = Router();
 
@@ -55,8 +55,15 @@ router.get('/config', (_req: Request, res: Response) => {
   res.json(getDbConfigMeta());
 });
 
+function rejectUrlChangeInProduction(res: Response): boolean {
+  if (isDatabaseUrlChangeAllowed()) return false;
+  res.status(403).json({ error: 'DATABASE_URL cannot be changed in production' });
+  return true;
+}
+
 // POST /config/test — test a connection URL
 router.post('/config/test', async (req: Request, res: Response) => {
+  if (rejectUrlChangeInProduction(res)) return;
   const { databaseUrl } = req.body;
   if (!databaseUrl || typeof databaseUrl !== 'string') {
     res.status(400).json({ success: false, error: 'databaseUrl is required' });
@@ -95,6 +102,7 @@ router.post('/config/test', async (req: Request, res: Response) => {
 
 // POST /config — save new DB URL (tests first)
 router.post('/config', async (req: Request, res: Response) => {
+  if (rejectUrlChangeInProduction(res)) return;
   const { databaseUrl } = req.body;
   if (!databaseUrl || typeof databaseUrl !== 'string') {
     res.status(400).json({ error: 'databaseUrl is required' });

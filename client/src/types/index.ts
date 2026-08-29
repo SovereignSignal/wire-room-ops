@@ -98,7 +98,16 @@ export interface EntryDistributionLog {
   entryId: number;
   channel: string;
   status: 'pending' | 'success' | 'failed' | 'skipped';
+  errorMessage?: string | null;
   createdAt: string;
+}
+
+export interface DbConfigMeta {
+  configured: boolean;
+  host: string | null;
+  database: string | null;
+  source: string;
+  urlChangeAllowed: boolean;
 }
 
 export interface FilterState {

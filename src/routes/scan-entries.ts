@@ -6,6 +6,7 @@
  * POST   /submit                — single entry submission
  * POST   /submit-batch          — batch submission (Prompt A/B/C x-scan sections)
  * POST   /telegram-batch        — same processBatchMessage path as @GrantWireSummarizer_bot
+ * POST   /manual-intake         — dashboard paste (scan_source=manual-intake)
  * GET    /queue                  — list queued entries
  * GET    /stats                  — scan pipeline statistics
  * GET    /status-counts          — count by status
@@ -170,17 +171,15 @@ router.post('/submit-batch', async (req: Request, res: Response) => {
   }
 });
 
-const TELEGRAM_BATCH_TEXT_MAX = 20_000;
+const TEXT_INTAKE_MAX = 20_000;
 
-/**
- * POST /telegram-batch — HTTP door into the Grant Wire summarizer intake.
- * Same parseBatchEntries + URL/name dedupe + queued insert as the Telegram bot.
- * Body: { text: string }  (the markdown Sov pastes into @GrantWireSummarizer_bot)
- * Auth: session or INTERNAL_API_KEY (this router is already behind requireAuthOrInternalKey).
- */
-router.post('/telegram-batch', async (req: Request, res: Response) => {
-  if (!rateLimit('telegram-batch', 20, 5 * 60 * 1000)) {
-    res.status(429).json({ error: 'telegram-batch recently run. Please wait.' });
+async function handleTextIntake(
+  req: Request,
+  res: Response,
+  opts: { scanSource: string; rateKey: string; logLabel: string; wireHint?: string },
+): Promise<void> {
+  if (!rateLimit(opts.rateKey, 20, 5 * 60 * 1000)) {
+    res.status(429).json({ error: `${opts.rateKey} recently run. Please wait.` });
     return;
   }
 
@@ -189,21 +188,22 @@ router.post('/telegram-batch', async (req: Request, res: Response) => {
     res.status(400).json({ error: 'text is required and must be a non-empty string' });
     return;
   }
-  if (text.length > TELEGRAM_BATCH_TEXT_MAX) {
-    res.status(400).json({ error: `text exceeds ${TELEGRAM_BATCH_TEXT_MAX} characters` });
+  if (text.length > TEXT_INTAKE_MAX) {
+    res.status(400).json({ error: `text exceeds ${TEXT_INTAKE_MAX} characters` });
     return;
   }
 
-  const actor = resolveMaintenanceActor(req) || 'http:telegram-batch';
+  const actor = resolveMaintenanceActor(req) || `http:${opts.rateKey}`;
   const intakeMsg = {
     text,
     senderId: actor,
     channelMessageId: `http-${Date.now()}`,
   };
+  const intakeOptions = opts.wireHint ? { wireHint: opts.wireHint } : {};
 
   try {
     if (isBatchMessage(text)) {
-      const batch = await processBatchMessage(intakeMsg, 'telegram');
+      const batch = await processBatchMessage(intakeMsg, opts.scanSource, intakeOptions);
       if (batch.retryableErrors > 0) {
         res.setHeader('Retry-After', '5');
         res.status(503).json({
@@ -224,7 +224,7 @@ router.post('/telegram-batch', async (req: Request, res: Response) => {
         try {
           await runDecidedRecheckForIds(getPool(), acceptedIds);
         } catch (error) {
-          console.error('[TelegramBatch] History check failed:', error);
+          console.error(`[${opts.logLabel}] History check failed:`, error);
         }
       }
 
@@ -239,17 +239,50 @@ router.post('/telegram-batch', async (req: Request, res: Response) => {
       return;
     }
 
-    const result = await processIntakeMessage(intakeMsg, 'telegram');
+    const result = await processIntakeMessage(intakeMsg, opts.scanSource, intakeOptions);
     if (result.status === 'error') {
       res.setHeader('Retry-After', '5');
-      res.status(503).json({ error: result.errorMessage || 'Telegram intake failed', result });
+      res.status(503).json({ error: result.errorMessage || `${opts.logLabel} intake failed`, result });
       return;
     }
     res.json({ success: result.status === 'inserted', result });
   } catch (error) {
-    console.error('Telegram-batch intake failed:', error);
+    console.error(`${opts.logLabel} intake failed:`, error);
     res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
   }
+}
+
+/**
+ * POST /telegram-batch — HTTP door into the Grant Wire summarizer intake.
+ * Same parseBatchEntries + URL/name dedupe + queued insert as the Telegram bot.
+ * Body: { text: string }  (the markdown Sov pastes into @GrantWireSummarizer_bot)
+ * Auth: session or INTERNAL_API_KEY (this router is already behind requireAuthOrInternalKey).
+ */
+router.post('/telegram-batch', async (req: Request, res: Response) => {
+  await handleTextIntake(req, res, {
+    scanSource: 'telegram',
+    rateKey: 'telegram-batch',
+    logLabel: 'TelegramBatch',
+  });
+});
+
+/**
+ * POST /manual-intake — dashboard paste (historically the highest-approval channel).
+ * Same intake path as telegram-batch, but scan_source is always manual-intake.
+ * Body: { text: string, wire?: 'crypto'|'ai'|'oss' }
+ */
+router.post('/manual-intake', async (req: Request, res: Response) => {
+  const wire = typeof req.body?.wire === 'string' ? req.body.wire.trim().toLowerCase() : '';
+  if (wire && !isCoreWire(wire)) {
+    res.status(400).json({ error: `Invalid wire "${wire}". Valid: crypto, ai, oss` });
+    return;
+  }
+  await handleTextIntake(req, res, {
+    scanSource: 'manual-intake',
+    rateKey: 'manual-intake',
+    logLabel: 'ManualIntake',
+    wireHint: wire || undefined,
+  });
 });
 
 // GET /queue — list queued entries
