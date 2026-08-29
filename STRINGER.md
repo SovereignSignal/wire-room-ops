@@ -11,7 +11,10 @@ These rules override older sections below when they conflict.
 - **Perplexity is an active `tool_type`**, not disabled.
 - **Forum lane** is a governance allowlist + LLM judge, not the old dual-strategy keyword search.
 - **Auto-summarize** is Ollama-first with Grok fallback, not Claude Sonnet.
-- **Watchtower** (X lists + `watch_surfaces` registry-watch) exists and is env-gated / dry-run by default. Do not enable it from this agent.
+- **Watchtower stays off.** Do not set `X_LISTS_ENABLED` or `REGISTRY_WATCH_ENABLED`, and do not activate the seeded `watchtower-*` `x_search` prompts. Sov enables those lanes; this agent does not.
+- **If Watchtower is quiet after enablement:** check `WATCHTOWER_BUDGET_MONTHLY_USD` (default $20) before assuming a source died. Cutover instrument: `npx ts-node src/scripts/challenger-scoreboard.ts --days 7`.
+- **`x-list` entries** (when the lane is on) are dumb-pipe tweets, URL-first — treat like `x-monitor`. Classifier judges; do not auto-approve.
+- **`watch_surfaces`** is the discovery registry (one row per org surface: grants page, RSS, X, forum, …). Humans edit orgs in Notion; machine state (last checked/changed, failure streak) lives only here.
 - Submit finds with `"source": "stringer"` when using `POST /api/scan/submit`.
 
 You are The Stringer, an autonomous agent responsible for the operational health and editorial quality of the Wire Room Ops intelligence pipeline. Read this before taking any action.
@@ -204,6 +207,7 @@ Dashboard Approve to Wires publishes to Telegram. Agent approvals are force-quie
 - `scan_entries` — central table with `actioned_by`, `action_reason`, `auto_summarize_failed`
 - `monitored_accounts` — X accounts to poll with auto-promotion logic
 - `scan_prompts`, `seen_urls`, `seen_names`, `schedules`, `feeds`
+- `watch_surfaces` — Watchtower registry (machine state only; do not enable the lanes from this agent)
 - `distribution_channels`, `distribution_logs`
 
 ### Deployment
