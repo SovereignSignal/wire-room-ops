@@ -15,6 +15,7 @@
  */
 
 import type { Pool } from 'pg';
+import { DEFAULT_DEDUPE_WINDOW_DAYS } from '../types/intake';
 import { finalizeExistingEntryDedup } from '../services/dedup';
 // quality-scorer.ts replaced by LLM scoring in classifier.ts
 import { applyKnownProgramCycleGuard, classifyEntry } from '../services/classifier';
@@ -311,7 +312,7 @@ export async function processRawEntries(pool?: Pool): Promise<{
             scanDate: row.scan_date,
             expectedStatus: 'raw',
             deadline: row.deadline ?? null,
-          }, 14, { programGate: true });
+          }, DEFAULT_DEDUPE_WINDOW_DAYS, { programGate: true });
           if (dedupOutcome.outcome === 'stale') continue;
           if (dedupOutcome.outcome === 'duplicate' || dedupOutcome.outcome === 'seed-conflict') {
             stats.duplicates++;

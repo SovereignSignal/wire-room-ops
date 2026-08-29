@@ -4,6 +4,7 @@ import { config } from '../config';
 import { DatabaseEntry } from '../types';
 import type { PromptVariant, ToolType, DistributionChannel, DistributionStatus, DistributionConfig, DistributionLog } from '../types/intake';
 import { normalizeUrl } from '../utils/url';
+import { buildScanEntryFilterClauses, type ScanEntryQueryFilters } from './entry-query';
 
 let pool: Pool | null = null;
 
@@ -1362,33 +1363,13 @@ export async function getStatusCounts(
 
 export async function getEntriesByStatus(
   statuses: string[],
-  opts?: { wire?: string; date?: string; promptId?: string; limit?: number; offset?: number; minScore?: number; excludeSources?: string[] }
+  opts?: ScanEntryQueryFilters & { limit?: number; offset?: number }
 ): Promise<{ entries: any[]; total: number }> {
   const pool = getPool();
-  const conditions: string[] = [`status = ANY($1)`];
-  const values: any[] = [statuses];
-  let paramIndex = 2;
-
-  if (opts?.wire) {
-    conditions.push(`wire = $${paramIndex++}`);
-    values.push(opts.wire);
-  }
-  if (opts?.date) {
-    conditions.push(`scan_date = $${paramIndex++}`);
-    values.push(opts.date);
-  }
-  if (opts?.promptId) {
-    conditions.push(`prompt_id = $${paramIndex++}`);
-    values.push(opts.promptId);
-  }
-  if (opts?.minScore != null) {
-    conditions.push(`COALESCE(quality_score, 0) >= $${paramIndex++}`);
-    values.push(opts.minScore);
-  }
-  if (opts?.excludeSources && opts.excludeSources.length > 0) {
-    conditions.push(`COALESCE(scan_source, '') != ALL($${paramIndex++})`);
-    values.push(opts.excludeSources);
-  }
+  const filters = buildScanEntryFilterClauses(opts, 2);
+  const conditions: string[] = [`status = ANY($1)`, ...filters.conditions];
+  const values: any[] = [statuses, ...filters.values];
+  let paramIndex = filters.nextIndex;
 
   const whereClause = `WHERE ${conditions.join(' AND ')}`;
   const limit = opts?.limit || 100;

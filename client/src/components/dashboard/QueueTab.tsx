@@ -1,14 +1,14 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
-import { ScanEntry, FilterState, Classification } from '@/types';
+import { ScanEntry, Classification } from '@/types';
 import { CuratorBadge } from './CuratorBadge';
-import { VerticalTag } from './VerticalTag';
 import { ActionBar } from './ActionBar';
 import { FilterBar } from './FilterBar';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Button } from '@/components/ui/button';
 import { ExternalLink, CheckCircle2, Database, ChevronDown, XCircle } from 'lucide-react';
 import { updateEntryWires, fetchWires } from '@/api';
-import { effectiveOperatorRoute, isInScoreBand, visibleSelection } from '@/lib/dashboard-state';
+import { effectiveOperatorRoute, visibleSelection } from '@/lib/dashboard-state';
+import { queueFiltersActive, type QueueClassificationFilter, type QueueQueryFilters, type QueueRouteFilter } from '@/lib/queue-filters';
 import { getQueueDecision, queueDecisionButtonClass } from './queue-decisions';
 
 const WIRES_DECISION = getQueueDecision('wires');
@@ -252,7 +252,8 @@ function WireSelector({ wire, wires, entryId, onWiresChange, availableWires = []
 
 interface QueueTabProps {
   entries: ScanEntry[];
-  verticals: string[];
+  filters: QueueQueryFilters;
+  onFiltersChange: (filters: QueueQueryFilters) => void;
   onUpdateStatus: (ids: string[], status: ScanEntry['status']) => void;
   onViewDetails: (entry: ScanEntry) => void;
   onSingleAction?: (id: string, status: ScanEntry['status']) => void;
@@ -263,11 +264,8 @@ interface QueueTabProps {
   onLoadMore: () => void;
 }
 
-export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, onSingleAction, onApproveToPrograms, onEntryUpdated, total, loadingMore, onLoadMore }: QueueTabProps) {
+export function QueueTab({ entries, filters, onFiltersChange, onUpdateStatus, onViewDetails, onSingleAction, onApproveToPrograms, onEntryUpdated, total, loadingMore, onLoadMore }: QueueTabProps) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [wireFilter, setWireFilter] = useState<string | null>(null);
-  const [classificationFilter, setClassificationFilter] = useState<string | null>(null);
-  const [routeFilter, setRouteFilter] = useState<string | null>(null);
   const [availableWires, setAvailableWires] = useState<{ key: string; displayName: string }[]>([]);
 
   useEffect(() => {
@@ -275,12 +273,6 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
       if (wires.length > 0) setAvailableWires(wires);
     }).catch(() => {/* fail silently — hardcoded fallback still visible in entries */});
   }, []);
-  const [filters, setFilters] = useState<FilterState>({
-    wire: null,
-    scoreMin: null,
-    scoreMax: null,
-    dateStatus: 'all',
-  });
 
   const handleWiresChange = async (entryId: string, newWires: string[]) => {
     try {
@@ -291,36 +283,16 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
     }
   };
 
-  const filteredEntries = useMemo(() => {
-    return entries.filter(entry => {
-      // Quick wire filter (button group)
-      if (wireFilter && entry.wire !== wireFilter) return false;
-      // Classification filter
-      if (classificationFilter) {
-        const entryCls = entry.classification || 'UNCHECKED';
-        if (entryCls !== classificationFilter) return false;
-      }
-      // Operator-route filter (wide-net queue triage)
-      if (routeFilter) {
-        const entryRoute = effectiveOperatorRoute(entry.metadata);
-        if (entryRoute !== routeFilter) return false;
-      }
-      // Advanced filters
-      if (filters.wire && entry.wire !== filters.wire) return false;
-      if (!isInScoreBand(entry.quality_score, filters.scoreMin, filters.scoreMax)) return false;
-      
-      if (filters.dateStatus !== 'all') {
-        const hasDate = !!entry.deadline_parsed;
-        const isExpired = hasDate && new Date(entry.deadline_parsed!) < new Date();
-        
-        if (filters.dateStatus === 'no_date' && hasDate) return false;
-        if (filters.dateStatus === 'upcoming' && (!hasDate || isExpired)) return false;
-        if (filters.dateStatus === 'expired' && !isExpired) return false;
-      }
-      
-      return true;
-    });
-  }, [entries, filters, wireFilter, classificationFilter, routeFilter]);
+  const filteredEntries = entries;
+  const hasActiveFilters = queueFiltersActive(filters);
+  const clearFilters = () => onFiltersChange({
+    ...filters,
+    wire: null,
+    classification: null,
+    route: null,
+    scoreBand: null,
+    timeline: 'all',
+  });
 
   const visibleIds = useMemo(
     () => new Set(filteredEntries.map(entry => entry.id)),
@@ -366,18 +338,15 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
   return (
     <div className={`space-y-4 ${selectedVisibleIds.size > 0 ? 'pb-28 sm:pb-20' : ''}`}>
       <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] font-mono text-muted-foreground">
-        <span>LOADED {entries.length} OF {total} QUEUED</span>
-        {filteredEntries.length !== entries.length && (
-          <span>{filteredEntries.length} MATCH CURRENT FILTERS</span>
-        )}
+        <span>SHOWING {entries.length} OF {total}{hasActiveFilters ? ' MATCHING' : ' QUEUED'}</span>
       </div>
 
       {/* Quick wire filter buttons + classify action */}
       <div className="flex items-center gap-2 flex-wrap">
         <button
-          onClick={() => setWireFilter(null)}
+          onClick={() => onFiltersChange({ ...filters, wire: null })}
           className={`px-3 py-1.5 rounded text-[10px] font-display font-medium uppercase tracking-wider border transition-colors ${
-            wireFilter === null
+            filters.wire === null
               ? 'bg-primary/20 text-primary border-primary/50'
               : 'bg-muted/30 text-muted-foreground border-border hover:text-foreground hover:bg-muted/50'
           }`}
@@ -387,9 +356,9 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
         {availableWires.map(({ key: w, displayName }) => (
           <button
             key={w}
-            onClick={() => setWireFilter(wireFilter === w ? null : w)}
+            onClick={() => onFiltersChange({ ...filters, wire: filters.wire === w ? null : w })}
             className={`px-3 py-1.5 rounded text-[10px] font-display font-medium uppercase tracking-wider border transition-colors ${
-              wireFilter === w
+              filters.wire === w
                 ? (wireFilterColors[w] || 'bg-sky-500/20 text-sky-400 border-sky-500/50')
                 : 'bg-muted/30 text-muted-foreground border-border hover:text-foreground hover:bg-muted/50'
             }`}
@@ -405,9 +374,9 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
       <div className="flex items-center gap-1.5 flex-wrap">
         <span className="text-[10px] text-muted-foreground font-mono mr-1">TYPE:</span>
         <button
-          onClick={() => setClassificationFilter(null)}
+          onClick={() => onFiltersChange({ ...filters, classification: null })}
           className={`px-2 py-1 rounded text-[9px] font-mono border transition-colors ${
-            classificationFilter === null
+            filters.classification === null
               ? 'bg-primary/20 text-primary border-primary/50'
               : 'bg-muted/20 text-muted-foreground border-border hover:text-foreground hover:bg-muted/40'
           }`}
@@ -417,9 +386,12 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
         {(['GRANT', 'EXPIRED', 'NEWS', 'NOISE', 'UNCHECKED'] as const).map(cls => (
           <button
             key={cls}
-            onClick={() => setClassificationFilter(classificationFilter === cls ? null : cls)}
+            onClick={() => onFiltersChange({
+              ...filters,
+              classification: filters.classification === cls ? null : cls as QueueClassificationFilter,
+            })}
             className={`px-2 py-1 rounded text-[9px] font-mono border transition-colors ${
-              classificationFilter === cls
+              filters.classification === cls
                 ? classificationStyles[cls]
                 : 'bg-muted/20 text-muted-foreground border-border hover:text-foreground hover:bg-muted/40'
             }`}
@@ -433,9 +405,9 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
       <div className="flex items-center gap-1.5 flex-wrap">
         <span className="text-[10px] text-muted-foreground font-mono mr-1">ROUTE:</span>
         <button
-          onClick={() => setRouteFilter(null)}
+          onClick={() => onFiltersChange({ ...filters, route: null })}
           className={`px-2 py-1 rounded text-[9px] font-mono border transition-colors ${
-            routeFilter === null
+            filters.route === null
               ? 'bg-primary/20 text-primary border-primary/50'
               : 'bg-muted/20 text-muted-foreground border-border hover:text-foreground hover:bg-muted/40'
           }`}
@@ -445,9 +417,12 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
         {ROUTE_OPTIONS.map((r: RouteKey) => (
           <button
             key={r}
-            onClick={() => setRouteFilter(routeFilter === r ? null : r)}
+            onClick={() => onFiltersChange({
+              ...filters,
+              route: filters.route === r ? null : r as QueueRouteFilter,
+            })}
             className={`px-2 py-1 rounded text-[9px] font-mono border transition-colors ${
-              routeFilter === r
+              filters.route === r
                 ? routeStyles[r]
                 : 'bg-muted/20 text-muted-foreground border-border hover:text-foreground hover:bg-muted/40'
             }`}
@@ -457,7 +432,12 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
         ))}
       </div>
 
-      <FilterBar filters={filters} onFilterChange={setFilters} verticals={verticals} />
+      <FilterBar
+        filters={filters}
+        onFilterChange={onFiltersChange}
+        onClearAll={clearFilters}
+        hasActiveFilters={hasActiveFilters}
+      />
       
       {/* Card view keeps all decisions visible on mobile and tablet widths. */}
       <div className="block xl:hidden space-y-2">
@@ -692,7 +672,7 @@ export function QueueTab({ entries, verticals, onUpdateStatus, onViewDetails, on
             {loadingMore ? 'LOADING...' : `LOAD NEXT ${Math.min(100, total - entries.length)}`}
           </Button>
           <span className="text-[10px] font-mono text-muted-foreground">
-            Filters apply to the {entries.length} loaded rows.
+            Filters apply to the full queue.
           </span>
         </div>
       )}

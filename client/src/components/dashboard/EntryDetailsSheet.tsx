@@ -1,6 +1,21 @@
 import { useEffect, useMemo, useState } from 'react';
 import { EntryDistributionLog, ScanEntry } from '@/types';
 import { fetchEntryDistribution } from '@/api';
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+} from '@/components/ui/sheet';
+import { ScoreBadge } from './ScoreBadge';
+import { VerticalTag } from './VerticalTag';
+import { DistributionBadges } from './DistributionBadges';
+import { CuratorBadge } from './CuratorBadge';
+import { ExternalLink, Calendar, DollarSign, Activity, FileText, Tag, CheckCircle2, Database, XCircle } from 'lucide-react';
+import { format } from 'date-fns';
+import { effectiveOperatorRoute } from '@/lib/dashboard-state';
+import { getQueueDecision, queueDecisionButtonClass } from './queue-decisions';
 
 function isXUrl(url: string): boolean {
   try { const h = new URL(url).hostname.replace(/^www\./, ''); return h === 'x.com' || h === 'twitter.com'; }
@@ -16,25 +31,20 @@ function getDirectUrl(entry: { source_url?: string; description?: string }): str
   const descMatch = (entry.description || '').match(/https?:\/\/[^\s)>"]+/);
   return descMatch && !isXUrl(descMatch[0]) ? descMatch[0] : null;
 }
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-  SheetDescription,
-} from '@/components/ui/sheet';
-import { ScoreBadge } from './ScoreBadge';
-import { VerticalTag } from './VerticalTag';
-import { DistributionBadges } from './DistributionBadges';
-import { ExternalLink, Calendar, DollarSign, Activity, FileText, Tag } from 'lucide-react';
-import { format } from 'date-fns';
+
+const WIRES_DECISION = getQueueDecision('wires');
+const PROGRAMS_DECISION = getQueueDecision('programs');
+const REJECT_DECISION = getQueueDecision('reject');
 
 interface EntryDetailsSheetProps {
   entry: ScanEntry | null;
   onClose: () => void;
+  onApproveToWires?: (id: string) => void;
+  onApproveToPrograms?: (id: string) => void;
+  onReject?: (id: string) => void;
 }
 
-export function EntryDetailsSheet({ entry, onClose }: EntryDetailsSheetProps) {
+export function EntryDetailsSheet({ entry, onClose, onApproveToWires, onApproveToPrograms, onReject }: EntryDetailsSheetProps) {
   const [distributionLogs, setDistributionLogs] = useState<EntryDistributionLog[]>([]);
 
   useEffect(() => {
@@ -72,18 +82,24 @@ export function EntryDetailsSheet({ entry, onClose }: EntryDetailsSheetProps) {
                     </span>
                   )}
 
-                  {entry.classification && entry.classification !== 'UNCHECKED' && (
+                  {entry.classification && (
                     <span className={`text-xs font-mono px-2 py-1 rounded border ${
                       entry.classification === 'GRANT' ? 'bg-green-500/10 text-green-400 border-green-500/20' :
                       entry.classification === 'EXPIRED' ? 'bg-orange-500/10 text-orange-400 border-orange-500/20' :
                       entry.classification === 'NEWS' ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' :
-                      'bg-red-500/10 text-red-400 border-red-500/20'
+                      entry.classification === 'NOISE' ? 'bg-red-500/10 text-red-400 border-red-500/20' :
+                      'bg-muted/20 text-muted-foreground border-border'
                     }`}>{
-                      entry.classification === 'GRANT' ? '✅ GRANT' :
-                      entry.classification === 'EXPIRED' ? '⏰ EXPIRED' :
-                      entry.classification === 'NEWS' ? '📰 NEWS' : '🚫 NOISE'
+                      entry.classification === 'GRANT' ? 'GRANT' :
+                      entry.classification === 'EXPIRED' ? 'EXPIRED' :
+                      entry.classification === 'NEWS' ? 'NEWS' :
+                      entry.classification === 'NOISE' ? 'NOISE' : 'UNCLASSIFIED'
                     }</span>
                   )}
+                  <span className="text-[10px] font-mono px-2 py-1 rounded border border-border text-muted-foreground">
+                    {effectiveOperatorRoute(entry.metadata).replace('_', ' ').toUpperCase()}
+                  </span>
+                  <CuratorBadge curator={entry.metadata?.curator} />
                 </div>
               </div>
               
@@ -252,6 +268,47 @@ export function EntryDetailsSheet({ entry, onClose }: EntryDetailsSheetProps) {
                     Distribution
                   </div>
                   <DistributionBadges channels={successfulChannels} />
+                </div>
+              )}
+
+              {entry.status === 'queued' && (onApproveToWires || onApproveToPrograms || onReject) && (
+                <div className="grid grid-cols-3 gap-2 items-stretch pt-2">
+                  {onApproveToWires && (
+                    <button
+                      type="button"
+                      onClick={() => onApproveToWires(entry.id)}
+                      title={WIRES_DECISION.title}
+                      aria-label={WIRES_DECISION.label}
+                      className={queueDecisionButtonClass(WIRES_DECISION.tone)}
+                    >
+                      <CheckCircle2 className="w-4 h-4 shrink-0" />
+                      {WIRES_DECISION.label}
+                    </button>
+                  )}
+                  {onApproveToPrograms && (
+                    <button
+                      type="button"
+                      onClick={() => onApproveToPrograms(entry.id)}
+                      title={PROGRAMS_DECISION.title}
+                      aria-label={PROGRAMS_DECISION.label}
+                      className={queueDecisionButtonClass(PROGRAMS_DECISION.tone)}
+                    >
+                      <Database className="w-4 h-4 shrink-0" />
+                      {PROGRAMS_DECISION.label}
+                    </button>
+                  )}
+                  {onReject && (
+                    <button
+                      type="button"
+                      onClick={() => onReject(entry.id)}
+                      title={REJECT_DECISION.title}
+                      aria-label={REJECT_DECISION.label}
+                      className={queueDecisionButtonClass(REJECT_DECISION.tone)}
+                    >
+                      <XCircle className="w-4 h-4 shrink-0" />
+                      {REJECT_DECISION.label}
+                    </button>
+                  )}
                 </div>
               )}
             </div>

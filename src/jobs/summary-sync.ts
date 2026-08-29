@@ -10,6 +10,7 @@
  */
 
 import type { Pool } from 'pg';
+import { DEFAULT_DEDUPE_WINDOW_DAYS } from '../types/intake';
 import { getActiveWires } from '../services/intake-core';
 import { checkDuplicate, registerSeenInTransaction } from '../services/dedup';
 import { getAppState, setAppState } from '../db';
@@ -189,7 +190,7 @@ export async function syncSummariesToScanEntries(
       // Cross-source dedup: the same program often already exists under a
       // DIFFERENT url (x.com status vs project page) from manual intake or a
       // scan — the raw source_url check above can't see those.
-      const dedupResult = await checkDuplicate(pool, { sourceUrl, name: row.title, wire }, 180);
+      const dedupResult = await checkDuplicate(pool, { sourceUrl, name: row.title, wire }, DEFAULT_DEDUPE_WINDOW_DAYS);
       if (dedupResult.isDuplicate) {
         result.skipped++;
         continue;
