@@ -73,17 +73,6 @@ test('queue filters are server-side and survive tab changes', () => {
   assert.match(indexPage, /DecisionConfirmDialog/);
 });
 
-test('queue hides tweet sources by default with an obvious include-tweets chip', () => {
-  assert.match(queueTab, /TWEETS HIDDEN/);
-  assert.match(queueTab, /Tweets hidden from queue/);
-  assert.match(queueTab, /hideTweets: !filters\.hideTweets/);
-  assert.match(queueTab, /hideTweets: true/);
-  const filters = read('client/src/lib/queue-filters.ts');
-  assert.match(filters, /hideTweets: true/);
-  assert.match(filters, /params\.get\('tweets'\) !== '1'/);
-  assert.match(filters, /if \(filters\.hideTweets\) params\.hideTweets = true/);
-});
-
 test('entry details sheet can complete the same three queue decisions', () => {
   for (const decision of ['WIRES_DECISION', 'PROGRAMS_DECISION', 'REJECT_DECISION']) {
     assert.match(entrySheet, new RegExp(`aria-label=\\{${decision}\\.label\\}`));

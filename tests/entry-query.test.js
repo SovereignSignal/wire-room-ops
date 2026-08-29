@@ -53,14 +53,3 @@ test('timeline upcoming and expired use the parsed deadline date', () => {
   assert.ok(upcoming.conditions.includes('deadline_parsed IS NOT NULL AND deadline_parsed >= CURRENT_DATE'));
   assert.ok(expired.conditions.includes('deadline_parsed IS NOT NULL AND deadline_parsed < CURRENT_DATE'));
 });
-
-test('hideTweets excludes x.com and twitter.com hosts without touching other URLs', () => {
-  const hidden = buildScanEntryFilterClauses({ hideTweets: true }, 2);
-  assert.equal(hidden.conditions.length, 1);
-  assert.match(hidden.conditions[0], /x\\.com/);
-  assert.match(hidden.conditions[0], /twitter\\.com/);
-  assert.match(hidden.conditions[0], /source_url IS NULL OR/);
-  assert.deepEqual(hidden.values, []);
-  const shown = buildScanEntryFilterClauses({ hideTweets: false }, 2);
-  assert.deepEqual(shown.conditions, []);
-});

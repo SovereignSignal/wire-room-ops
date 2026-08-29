@@ -21,10 +21,6 @@ test('blockedSourceDomain blocks known aggregators incl. subdomains', () => {
   // subdomain of a blocked root
   assert.equal(blockedSourceDomain('https://www.opportunitydesk.org/x'), 'opportunitydesk.org');
   assert.equal(blockedSourceDomain('https://sub.afredac.net/x'), 'afredac.net');
-  // Queue-QC reprint aggregators (Aug 2026)
-  assert.equal(blockedSourceDomain('https://www.fundsforngos.org/latest-funds-for-ngos/'), 'fundsforngos.org');
-  assert.equal(blockedSourceDomain('https://grantedai.com/grants/example'), 'grantedai.com');
-  assert.equal(blockedSourceDomain('https://tun.com/scholarships/x'), 'tun.com');
 });
 
 test('blockedSourceDomain lets legitimate funder sources through', () => {

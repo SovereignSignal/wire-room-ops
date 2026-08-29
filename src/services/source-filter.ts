@@ -35,10 +35,6 @@ const DEFAULT_BLOCKED_DOMAINS = [
   'scholarshippositions.com',
   'opportunitiescircle.com',
   'armacad.info',
-  // Queue-QC reprints (Aug 2026): aggregator copies of official listings
-  'fundsforngos.org',
-  'grantedai.com',
-  'tun.com',
 ];
 
 let cachedExtra: string[] | null = null;
