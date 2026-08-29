@@ -102,6 +102,61 @@ function resolveAction(action: string): string {
   return status;
 }
 
+/** Statuses an action may leave. Restore has its own lock and is not listed. */
+export const ACTION_ELIGIBLE_STATUSES: Record<string, readonly string[]> = {
+  approve: ['queued'],
+  decline: ['queued', 'skipped'],
+  reviewlater: ['queued'],
+};
+
+export function eligibleStatusesForAction(action: string): readonly string[] | null {
+  return ACTION_ELIGIBLE_STATUSES[action] ?? null;
+}
+
+async function applyStatusChange(
+  pool: Pool,
+  entryIds: number[],
+  action: string,
+  newStatus: string,
+  distributable: boolean,
+  opts: ActionOptions,
+): Promise<{ rows: any[] }> {
+  const eligible = eligibleStatusesForAction(action);
+  const result = await pool.query(
+    `UPDATE scan_entries
+     SET status = $1, distributable = $2, actioned_by = COALESCE($3, actioned_by), action_reason = COALESCE($4, action_reason), updated_at = NOW()
+     WHERE id = ANY($5)
+       AND ($6::text[] IS NULL OR status = ANY($6))
+     RETURNING id, status, wire, name, description, enriched_summary, quality_score, amount, deadline, source_url, org_id, program_id, scan_date, tags`,
+    [newStatus, distributable, opts.actor || null, opts.reason || null, entryIds, eligible ? [...eligible] : null]
+  );
+  return result;
+}
+
+/** Throws if any id is missing or in a status that cannot take this action. Already-at-target is allowed. */
+async function assertActionEligible(
+  pool: Pool,
+  entryIds: number[],
+  action: string,
+  newStatus: string,
+): Promise<void> {
+  const eligible = eligibleStatusesForAction(action);
+  if (!eligible) return;
+  const current = await pool.query(
+    `SELECT id, status FROM scan_entries WHERE id = ANY($1)`,
+    [entryIds]
+  );
+  const found = new Map<number, string>(current.rows.map((row: { id: number; status: string }) => [row.id, row.status]));
+  for (const id of entryIds) {
+    const status = found.get(id);
+    if (!status) throw new Error('Entry not found');
+    if (status === newStatus) continue;
+    if (!eligible.includes(status)) {
+      throw new EntryActionConflictError(`Cannot ${action} entry ${id} from status ${status}`);
+    }
+  }
+}
+
 const X_MONITOR_RESTORE_ROUTES = new Set(['publish', 'source_check']);
 const X_MONITOR_RESTORABLE_STATUSES = new Set(['archived', 'declined', 'skipped']);
 
@@ -284,6 +339,7 @@ export async function singleEntryAction(
   // Dry run: return what would happen without committing. Restore dry runs
   // still enter the guarded transaction so lifecycle conflicts are visible.
   if (opts.dryRun && action !== 'restore') {
+    await assertActionEligible(pool, [entryId], action, newStatus);
     const response: SingleActionResult = {
       success: true,
       newStatus,
@@ -295,14 +351,11 @@ export async function singleEntryAction(
   const distributable = opts.quiet ? false : true;
   const result = action === 'restore'
     ? { rows: await restoreEntryRows(pool, [entryId], opts) }
-    : await pool.query(
-    `UPDATE scan_entries SET status = $1, distributable = $2, actioned_by = COALESCE($3, actioned_by), action_reason = COALESCE($4, action_reason), updated_at = NOW() WHERE id = $5
-     RETURNING id, status, wire, name, description, enriched_summary, quality_score, amount, deadline, source_url, org_id, program_id, scan_date, tags`,
-    [newStatus, distributable, opts.actor || null, opts.reason || null, entryId]
-  );
+    : await applyStatusChange(pool, [entryId], action, newStatus, distributable, opts);
 
   if (result.rows.length === 0) {
-    throw new Error('Entry not found');
+    await assertActionEligible(pool, [entryId], action, newStatus);
+    return { success: true, newStatus, warnings: approvalWarnings.length > 0 ? approvalWarnings : undefined };
   }
 
   if (opts.dryRun) {
@@ -323,6 +376,7 @@ export async function singleEntryAction(
         summary: row.enriched_summary || row.description || '',
         wire: row.wire,
         qualityScore: row.quality_score,
+        scanEntryId: row.id,
         entities: {
           amounts: row.amount ? [row.amount] : [],
           deadlines: row.deadline ? [row.deadline] : [],
@@ -409,19 +463,16 @@ export async function bulkEntryAction(
 
   // Dry run: restore still validates lifecycle ownership and routing.
   if (opts.dryRun && action !== 'restore') {
+    await assertActionEligible(pool, entryIds, action, newStatus);
     return { success: true, updated: entryIds.length, newStatus, summaryIds: {} };
   }
 
-  // Bulk update status
+  // Bulk update status — only rows still eligible change. Already-at-target
+  // rows are skipped so a double-click cannot re-fire approve side effects.
   const distributable = opts.quiet ? false : true;
   const result = action === 'restore'
     ? { rows: await restoreEntryRows(pool, entryIds, opts) }
-    : await pool.query(
-    `UPDATE scan_entries SET status = $1, distributable = $2, actioned_by = COALESCE($3, actioned_by), action_reason = COALESCE($4, action_reason), updated_at = NOW()
-     WHERE id = ANY($5)
-     RETURNING id, status, wire, name, description, enriched_summary, quality_score, amount, deadline, source_url, org_id, program_id, scan_date, tags`,
-    [newStatus, distributable, opts.actor || null, opts.reason || null, entryIds]
-  );
+    : await applyStatusChange(pool, entryIds, action, newStatus, distributable, opts);
 
   const updated = result.rows;
   if (opts.dryRun) {
@@ -439,6 +490,7 @@ export async function bulkEntryAction(
           summary: row.enriched_summary || row.description || '',
           wire: row.wire,
           qualityScore: row.quality_score,
+          scanEntryId: row.id,
           entities: {
             amounts: row.amount ? [row.amount] : [],
             deadlines: row.deadline ? [row.deadline] : [],

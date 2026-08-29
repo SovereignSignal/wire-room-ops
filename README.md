@@ -29,8 +29,7 @@ Deployed as the Sovereign Signal Grant Wires (crypto/AI/OSS grants) but designed
    - `approve` -> `status = 'approved'`
    - `decline` -> `status = 'declined'`
    - `reviewlater` -> `status = 'skipped'`
-6. Operator triggers distribution from the feed page -- approved entries are sent to configured channels (Telegram, Discord, Slack, X/Twitter, newsletter).
-7. Approved entries can be distributed to configured channels (Telegram, Discord, Slack, X, newsletter/email). Dashboard approvals auto-distribute unless `quiet` is used; internal agent approvals are quiet by default. Note: the-wire-room frontend (thewireroom.xyz) is deprecated; distribution now goes directly to channels under the Sovereign Signal brand.
+6. Dashboard Approve to Wires publishes to configured channels immediately (Telegram is the live path). Use Approve to Programs or `quiet` to store without sending. Internal agent approvals are always quiet. Manual batch distribute remains available for approved-but-undistributed entries. The retired thewireroom.xyz frontend is not in this flow.
 
 ## Features
 
@@ -205,8 +204,6 @@ Notes:
 ## Quality Scoring
 
 Quality scoring is done by the Grok LLM classifier (`src/services/classifier.ts`) in a single API call that classifies entries (GRANT/NEWS/EXPIRED/NOISE), assigns a 0-100 quality score, extracts metadata, and returns an `operator_route`. Current queue/archive behavior is source-specific: scan execution archives `NOISE`, raw background processing queues complete non-duplicates, and Telegram/manual intake uses `operator_route`. The score is a review and ranking signal, not a universal queue threshold.
-
-The legacy rule-based scorer (`src/services/quality-scorer.ts`) is still in the codebase but is no longer used in the main pipeline.
 
 ## Distribution
 
