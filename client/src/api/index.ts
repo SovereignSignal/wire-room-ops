@@ -29,10 +29,40 @@ export async function fetchPromptResults(promptId: string, limit = 20): Promise<
   };
 }
 
-export async function fetchEntries(params: { status?: string; wire?: string; limit?: number; offset?: number; minScore?: number; excludeSources?: string } = {}): Promise<{ entries: ScanEntry[]; total: number }> {
-  const effectiveParams = { limit: 100, offset: 0, ...params };
+export class EntryActionBlockedError extends Error {
+  issues: string[];
+  warnings: string[];
+  blocked?: Array<{ id: number; errors: string[]; warnings: string[] }>;
+
+  constructor(message: string, body: { issues?: string[]; warnings?: string[]; blocked?: Array<{ id: number; errors: string[]; warnings: string[] }>; error?: string }) {
+    super(message);
+    this.name = 'EntryActionBlockedError';
+    this.issues = body.issues || [];
+    this.warnings = body.warnings || [];
+    this.blocked = body.blocked;
+  }
+}
+
+export async function fetchEntries(params: {
+  status?: string;
+  wire?: string;
+  limit?: number;
+  offset?: number;
+  minScore?: number;
+  maxScore?: number;
+  classification?: string;
+  route?: string;
+  dateStatus?: string;
+  unscored?: boolean;
+  excludeSources?: string;
+} = {}): Promise<{ entries: ScanEntry[]; total: number }> {
+  const query: Record<string, string | number | boolean> = { limit: 100, offset: 0 };
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === false || value === '') continue;
+    query[key] = value;
+  }
   const q = new URLSearchParams(
-    Object.fromEntries(Object.entries(effectiveParams).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)]))
+    Object.fromEntries(Object.entries(query).map(([k, v]) => [k, String(v)]))
   ).toString();
   const res = await authFetch(`${BASE}/scan/entries${q ? "?" + q : ""}`);
   if (!res.ok) throw new Error(`Failed to fetch entries: ${res.status}`);
@@ -73,62 +103,49 @@ const STATUS_TO_ACTION: Record<string, string> = {
   queued: 'restore',
 };
 
-export async function updateEntryStatus(id: number | string, status: string) {
+type ActionOptions = { force?: boolean; quiet?: boolean };
+
+async function parseActionResponse(res: Response) {
+  const body = await res.json().catch(() => ({}));
+  if (res.ok) return body;
+  if (res.status === 422) {
+    const issues = body.issues
+      || (Array.isArray(body.blocked) ? body.blocked.flatMap((row: { errors?: string[] }) => row.errors || []) : []);
+    throw new EntryActionBlockedError(issues.join('; ') || body.error || 'Approval blocked', body);
+  }
+  throw new Error(String(body.issues?.join('; ') || body.error || res.status));
+}
+
+function actionUrl(path: string, opts?: ActionOptions): string {
+  return opts?.force ? `${path}?force=true` : path;
+}
+
+export async function updateEntryStatus(id: number | string, status: string, opts: ActionOptions = {}) {
   const action = STATUS_TO_ACTION[status] || status;
-  const res = await authFetch(`${BASE}/scan/entries/${id}/action`, {
+  const res = await authFetch(actionUrl(`${BASE}/scan/entries/${id}/action`, opts), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action }),
+    body: JSON.stringify({ action, quiet: opts.quiet }),
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    const detail = body.issues?.join('; ') || body.error || res.status;
-    throw new Error(String(detail));
-  }
-  return res.json();
+  return parseActionResponse(res);
 }
 
-export async function bulkUpdateEntryStatus(ids: (number | string)[], status: string) {
+export async function bulkUpdateEntryStatus(ids: (number | string)[], status: string, opts: ActionOptions = {}) {
   const action = STATUS_TO_ACTION[status] || status;
-  const res = await authFetch(`${BASE}/scan/entries/bulk-action`, {
+  const res = await authFetch(actionUrl(`${BASE}/scan/entries/bulk-action`, opts), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ids, action }),
+    body: JSON.stringify({ ids, action, quiet: opts.quiet }),
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    const detail = body.issues?.join('; ') || body.error || res.status;
-    throw new Error(String(detail));
-  }
-  return res.json();
+  return parseActionResponse(res);
 }
 
-export async function quietApproveEntry(id: number | string) {
-  const res = await authFetch(`${BASE}/scan/entries/${id}/action`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: 'approve', quiet: true }),
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    const detail = body.issues?.join('; ') || body.error || res.status;
-    throw new Error(String(detail));
-  }
-  return res.json();
+export async function quietApproveEntry(id: number | string, opts: ActionOptions = {}) {
+  return updateEntryStatus(id, 'approved', { ...opts, quiet: true });
 }
 
-export async function bulkQuietApprove(ids: (number | string)[]) {
-  const res = await authFetch(`${BASE}/scan/entries/bulk-action`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ids, action: 'approve', quiet: true }),
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    const detail = body.issues?.join('; ') || body.error || res.status;
-    throw new Error(String(detail));
-  }
-  return res.json();
+export async function bulkQuietApprove(ids: (number | string)[], opts: ActionOptions = {}) {
+  return bulkUpdateEntryStatus(ids, 'approved', { ...opts, quiet: true });
 }
 
 export async function updateEntryWire(id: number | string, wire: string) {

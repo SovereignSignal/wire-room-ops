@@ -1,26 +1,16 @@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { FilterState } from '@/types';
 import { SlidersHorizontal, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import type { QueueQueryFilters, QueueScoreBand, QueueTimeline } from '@/lib/queue-filters';
 
 interface FilterBarProps {
-  filters: FilterState;
-  onFilterChange: (filters: FilterState) => void;
-  verticals: string[];
+  filters: QueueQueryFilters;
+  onFilterChange: (filters: QueueQueryFilters) => void;
+  onClearAll: () => void;
+  hasActiveFilters: boolean;
 }
 
-export function FilterBar({ filters, onFilterChange, verticals }: FilterBarProps) {
-  const hasActiveFilters = filters.wire || filters.scoreMin !== null || filters.dateStatus !== 'all';
-
-  const clearFilters = () => {
-    onFilterChange({
-      wire: null,
-      scoreMin: null,
-      scoreMax: null,
-      dateStatus: 'all',
-    });
-  };
-
+export function FilterBar({ filters, onFilterChange, onClearAll, hasActiveFilters }: FilterBarProps) {
   return (
     <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4 p-4 glow-card min-w-0">
       <div className="flex items-center gap-2 text-xs text-muted-foreground font-display tracking-wider shrink-0">
@@ -31,60 +21,35 @@ export function FilterBar({ filters, onFilterChange, verticals }: FilterBarProps
       <div className="hidden sm:block h-6 w-px bg-border" />
       
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:flex lg:items-center gap-3 sm:gap-4 flex-1 w-full min-w-0">
-        {/* Vertical Filter */}
-        <div className="flex items-center justify-between sm:justify-start gap-2 min-w-0">
-          <span className="text-[10px] text-muted-foreground uppercase tracking-wider shrink-0">Vertical</span>
-          <Select 
-            value={filters.wire || 'all'} 
-            onValueChange={(v) => onFilterChange({ ...filters, wire: v === 'all' ? null : v })}
-          >
-            <SelectTrigger className="flex-1 min-w-0 sm:flex-none sm:w-32 h-8 text-xs bg-muted/50 border-border font-mono">
-              <SelectValue placeholder="All" />
-            </SelectTrigger>
-            <SelectContent className="bg-card border-border">
-              <SelectItem value="all" className="font-mono text-xs">All</SelectItem>
-              {verticals.map(v => (
-                <SelectItem key={v} value={v} className="font-mono text-xs">{v}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        {/* Score Range Filter */}
         <div className="flex items-center justify-between sm:justify-start gap-2 min-w-0">
           <span className="text-[10px] text-muted-foreground uppercase tracking-wider shrink-0">Signal</span>
           <Select 
-            value={filters.scoreMin?.toString() || 'all'} 
+            value={filters.scoreBand || 'all'} 
             onValueChange={(v) => {
-              if (v === 'all') {
-                onFilterChange({ ...filters, scoreMin: null, scoreMax: null });
-              } else if (v === '70') {
-                onFilterChange({ ...filters, scoreMin: 70, scoreMax: 100 });
-              } else if (v === '50') {
-                onFilterChange({ ...filters, scoreMin: 50, scoreMax: 69 });
-              } else {
-                onFilterChange({ ...filters, scoreMin: 0, scoreMax: 49 });
-              }
+              onFilterChange({
+                ...filters,
+                scoreBand: v === 'all' ? null : v as QueueScoreBand,
+              });
             }}
           >
-            <SelectTrigger className="flex-1 min-w-0 sm:flex-none sm:w-32 h-8 text-xs bg-muted/50 border-border font-mono">
+            <SelectTrigger className="flex-1 min-w-0 sm:flex-none sm:w-36 h-8 text-xs bg-muted/50 border-border font-mono">
               <SelectValue placeholder="Any" />
             </SelectTrigger>
             <SelectContent className="bg-card border-border">
               <SelectItem value="all" className="font-mono text-xs">Any</SelectItem>
-              <SelectItem value="70" className="font-mono text-xs">Strong (70+)</SelectItem>
-              <SelectItem value="50" className="font-mono text-xs">Medium (50-69)</SelectItem>
-              <SelectItem value="0" className="font-mono text-xs">Weak (&lt;50)</SelectItem>
+              <SelectItem value="strong" className="font-mono text-xs">Strong (70+)</SelectItem>
+              <SelectItem value="medium" className="font-mono text-xs">Medium (50-69)</SelectItem>
+              <SelectItem value="weak" className="font-mono text-xs">Weak (&lt;50)</SelectItem>
+              <SelectItem value="unscored" className="font-mono text-xs">Unscored</SelectItem>
             </SelectContent>
           </Select>
         </div>
 
-        {/* Date Status Filter */}
         <div className="flex items-center justify-between sm:justify-start gap-2 min-w-0">
           <span className="text-[10px] text-muted-foreground uppercase tracking-wider shrink-0">Timeline</span>
           <Select 
-            value={filters.dateStatus} 
-            onValueChange={(v) => onFilterChange({ ...filters, dateStatus: v as FilterState['dateStatus'] })}
+            value={filters.timeline} 
+            onValueChange={(v) => onFilterChange({ ...filters, timeline: v as QueueTimeline | 'all' })}
           >
             <SelectTrigger className="flex-1 min-w-0 sm:flex-none sm:w-32 h-8 text-xs bg-muted/50 border-border font-mono">
               <SelectValue />
@@ -103,7 +68,7 @@ export function FilterBar({ filters, onFilterChange, verticals }: FilterBarProps
         <Button 
           variant="ghost" 
           size="sm" 
-          onClick={clearFilters}
+          onClick={onClearAll}
           className="gap-1.5 self-start sm:self-auto text-muted-foreground hover:text-foreground font-display text-[10px] tracking-wider"
         >
           <X className="w-3 h-3" />

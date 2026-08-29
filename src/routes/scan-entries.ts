@@ -21,7 +21,8 @@
  */
 
 import { Router, Request, Response } from 'express';
-import { getPool, getAvailableWires, getEntriesByStatus, getStatusCounts, getSeenUrlStats, getSeenUrlsList, getDistributionLogs, getDistributionStatusForEntries } from '../db';
+import { getPool, getAvailableWires, getEntriesByStatus, getStatusCounts, getSeenUrlStats, getSeenUrlsList, getDistributionLogs, getDistributionStatusForEntries, isCoreWire } from '../db';
+import { isQueueClassification, isQueueDateStatus, isQueueRoute } from '../db/entry-query';
 import { rateLimit } from '../middleware/rate-limit';
 import { isValidUuid, isValidFeedKey } from '../utils/validation';
 import { buildSubmission, buildBatchSubmission } from '../services/intake';
@@ -368,7 +369,14 @@ router.get('/entries', async (req: Request, res: Response) => {
     const wire = req.query.wire as string | undefined;
     const date = req.query.date as string | undefined;
     const promptId = req.query.promptId as string | undefined;
+    const classification = req.query.classification as string | undefined;
+    const route = req.query.route as string | undefined;
+    const dateStatus = req.query.dateStatus as string | undefined;
     const includeDistributionStatus = req.query.includeDistributionStatus === '1' || req.query.includeDistributionStatus === 'true';
+    if (wire && !isCoreWire(wire)) {
+      res.status(400).json({ error: `Invalid wire "${wire}".` });
+      return;
+    }
     if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD.' });
       return;
@@ -377,15 +385,43 @@ router.get('/entries', async (req: Request, res: Response) => {
       res.status(400).json({ error: 'Invalid promptId format.' });
       return;
     }
+    if (classification && !isQueueClassification(classification)) {
+      res.status(400).json({ error: 'Invalid classification filter.' });
+      return;
+    }
+    if (route && !isQueueRoute(route)) {
+      res.status(400).json({ error: 'Invalid route filter.' });
+      return;
+    }
+    if (dateStatus && !isQueueDateStatus(dateStatus)) {
+      res.status(400).json({ error: 'Invalid dateStatus filter.' });
+      return;
+    }
     const limit = Math.min(Math.max(parseInt(req.query.limit as string, 10) || 100, 1), 500);
     const offset = Math.max(parseInt(req.query.offset as string, 10) || 0, 0);
     const rawMinScore = parseInt(req.query.minScore as string, 10);
     const minScore = isNaN(rawMinScore) ? undefined : Math.max(0, Math.min(100, rawMinScore));
+    const rawMaxScore = parseInt(req.query.maxScore as string, 10);
+    const maxScore = isNaN(rawMaxScore) ? undefined : Math.max(0, Math.min(100, rawMaxScore));
+    const unscored = req.query.unscored === '1' || req.query.unscored === 'true';
     const excludeSources = req.query.excludeSources ? (req.query.excludeSources as string).split(',').map(s => s.trim()).filter(Boolean) : undefined;
 
     const autoSummarizeFailed = req.query.autoSummarizeFailed === 'true';
 
-    let { entries, total } = await getEntriesByStatus(statuses, { wire, date, promptId, limit, offset, minScore, excludeSources });
+    let { entries, total } = await getEntriesByStatus(statuses, {
+      wire,
+      date,
+      promptId,
+      limit,
+      offset,
+      minScore,
+      maxScore,
+      unscored: unscored || undefined,
+      excludeSources,
+      classification,
+      route,
+      dateStatus: dateStatus && isQueueDateStatus(dateStatus) ? dateStatus : undefined,
+    });
 
     if (autoSummarizeFailed) {
       const pool = getPool();

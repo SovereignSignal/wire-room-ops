@@ -16,14 +16,15 @@
  */
 
 import type { Pool } from 'pg';
-import type {
-  PromptVariant,
-  RawScanResult,
-  ScanSource,
-  ScanSubmission,
-  ScanEntry,
-  IntakeRunSummary,
-  IntakeJobConfig,
+import {
+  DEFAULT_DEDUPE_WINDOW_DAYS,
+  type PromptVariant,
+  type RawScanResult,
+  type ScanSource,
+  type ScanSubmission,
+  type ScanEntry,
+  type IntakeRunSummary,
+  type IntakeJobConfig,
 } from '../types/intake';
 import {
   parseStructuredOutput,
@@ -47,7 +48,7 @@ import { applyKnownProgramCycleGuard, type Classification } from '../services/cl
 
 const DEFAULT_CONFIG: IntakeJobConfig = {
   qualityThreshold: 40,
-  dedupeWindow: 180,
+  dedupeWindow: DEFAULT_DEDUPE_WINDOW_DAYS,
   sendBriefing: false,
   briefingMinScore: 60,
 };

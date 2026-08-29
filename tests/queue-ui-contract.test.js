@@ -8,6 +8,7 @@ const read = (rel) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
 const queueTab = read('client/src/components/dashboard/QueueTab.tsx');
 const actionBar = read('client/src/components/dashboard/ActionBar.tsx');
 const indexPage = read('client/src/pages/Index.tsx');
+const entrySheet = read('client/src/components/dashboard/EntryDetailsSheet.tsx');
 
 test('card and desktop queue rows expose the same three labelled decisions', () => {
   for (const decision of ['WIRES_DECISION', 'PROGRAMS_DECISION', 'REJECT_DECISION']) {
@@ -61,4 +62,28 @@ test('page wiring names the quiet approval path for its operator-facing destinat
   assert.match(indexPage, /handleApproveToPrograms/);
   assert.match(indexPage, /onApproveToPrograms=\{handleApproveToPrograms\}/);
   assert.match(indexPage, /Approved to Programs/);
+});
+
+test('queue filters are server-side and survive tab changes', () => {
+  assert.match(queueTab, /Filters apply to the full queue/);
+  assert.doesNotMatch(queueTab, /Filters apply to the \{entries\.length\} loaded rows/);
+  assert.match(indexPage, /hidden=\{activeTab !== 'queue'\}/);
+  assert.match(indexPage, /queueFiltersToApi/);
+  assert.match(indexPage, /onNavigateToQueue=\{\(wire\) => \{/);
+  assert.match(indexPage, /DecisionConfirmDialog/);
+});
+
+test('entry details sheet can complete the same three queue decisions', () => {
+  for (const decision of ['WIRES_DECISION', 'PROGRAMS_DECISION', 'REJECT_DECISION']) {
+    assert.match(entrySheet, new RegExp(`aria-label=\\{${decision}\\.label\\}`));
+    assert.match(entrySheet, new RegExp(`\\{${decision}\\.label\\}`));
+  }
+  assert.match(entrySheet, /onApproveToWires/);
+  assert.match(entrySheet, /entry.status === 'queued'/);
+});
+
+test('approve-to-wires confirm is required before the live publish call', () => {
+  assert.match(indexPage, /This publishes to Telegram immediately/);
+  assert.match(indexPage, /Approve anyway/);
+  assert.match(indexPage, /requestDecision\('wires'/);
 });
