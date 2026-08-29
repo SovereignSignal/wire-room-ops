@@ -34,13 +34,27 @@ export function getEffectiveDbUrl(): string | null {
   return getDbConfigUrl() || process.env.DATABASE_URL || null;
 }
 
-export function getDbConfigMeta(): { configured: boolean; host: string | null; database: string | null; source: string } {
+/** Production must not let the dashboard retarget the live database. */
+export function isDatabaseUrlChangeAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.NODE_ENV !== 'production';
+}
+
+export interface DbConfigMeta {
+  configured: boolean;
+  host: string | null;
+  database: string | null;
+  source: string;
+  urlChangeAllowed: boolean;
+}
+
+export function getDbConfigMeta(): DbConfigMeta {
   const configFileUrl = getDbConfigUrl();
   const envUrl = process.env.DATABASE_URL || null;
   const effectiveUrl = configFileUrl || envUrl;
+  const urlChangeAllowed = isDatabaseUrlChangeAllowed();
 
   if (!effectiveUrl) {
-    return { configured: false, host: null, database: null, source: 'none' };
+    return { configured: false, host: null, database: null, source: 'none', urlChangeAllowed };
   }
 
   try {
@@ -50,6 +64,7 @@ export function getDbConfigMeta(): { configured: boolean; host: string | null; d
       host: parsed.hostname,
       database: parsed.pathname.replace(/^\//, '') || null,
       source: configFileUrl ? 'config_file' : 'env_var',
+      urlChangeAllowed,
     };
   } catch {
     return {
@@ -57,6 +72,7 @@ export function getDbConfigMeta(): { configured: boolean; host: string | null; d
       host: null,
       database: null,
       source: configFileUrl ? 'config_file' : 'env_var',
+      urlChangeAllowed,
     };
   }
 }

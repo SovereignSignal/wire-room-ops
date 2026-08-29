@@ -10,6 +10,7 @@ import { updateEntryWires, fetchWires } from '@/api';
 import { effectiveOperatorRoute, visibleSelection } from '@/lib/dashboard-state';
 import { queueFiltersActive, type QueueClassificationFilter, type QueueQueryFilters, type QueueRouteFilter } from '@/lib/queue-filters';
 import { getQueueDecision, queueDecisionButtonClass } from './queue-decisions';
+import { PasteIntakePanel } from './PasteIntakePanel';
 
 const WIRES_DECISION = getQueueDecision('wires');
 const PROGRAMS_DECISION = getQueueDecision('programs');
@@ -262,11 +263,13 @@ interface QueueTabProps {
   total: number;
   loadingMore: boolean;
   onLoadMore: () => void;
+  onIntakeComplete?: () => void;
 }
 
-export function QueueTab({ entries, filters, onFiltersChange, onUpdateStatus, onViewDetails, onSingleAction, onApproveToPrograms, onEntryUpdated, total, loadingMore, onLoadMore }: QueueTabProps) {
+export function QueueTab({ entries, filters, onFiltersChange, onUpdateStatus, onViewDetails, onSingleAction, onApproveToPrograms, onEntryUpdated, total, loadingMore, onLoadMore, onIntakeComplete }: QueueTabProps) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [availableWires, setAvailableWires] = useState<{ key: string; displayName: string }[]>([]);
+  const [pasteOpen, setPasteOpen] = useState(false);
 
   useEffect(() => {
     fetchWires().then(wires => {
@@ -339,7 +342,27 @@ export function QueueTab({ entries, filters, onFiltersChange, onUpdateStatus, on
     <div className={`space-y-4 ${selectedVisibleIds.size > 0 ? 'pb-28 sm:pb-20' : ''}`}>
       <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] font-mono text-muted-foreground">
         <span>SHOWING {entries.length} OF {total}{hasActiveFilters ? ' MATCHING' : ' QUEUED'}</span>
+        <button
+          type="button"
+          onClick={() => setPasteOpen(open => !open)}
+          aria-label="Paste intake"
+          className={`px-3 py-1.5 rounded text-[10px] font-display font-medium uppercase tracking-wider border transition-colors ${
+            pasteOpen
+              ? 'bg-primary/20 text-primary border-primary/50'
+              : 'bg-muted/30 text-muted-foreground border-border hover:text-foreground hover:bg-muted/50'
+          }`}
+        >
+          PASTE
+        </button>
       </div>
+
+      {pasteOpen && (
+        <PasteIntakePanel
+          wires={availableWires}
+          onComplete={onIntakeComplete}
+          onClose={() => setPasteOpen(false)}
+        />
+      )}
 
       {/* Quick wire filter buttons + classify action */}
       <div className="flex items-center gap-2 flex-wrap">

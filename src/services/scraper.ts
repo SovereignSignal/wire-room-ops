@@ -1,6 +1,9 @@
 import { sleep } from '../utils/async';
+import { isSafeHttpUrl, safePublicFetch } from '../utils/ssrf';
 import { logApiUsage } from './api-usage';
 import { getCachedProvider, isProviderExplicitlyDisabled } from './api-provider';
+
+const SHORTENER_UA = 'Mozilla/5.0 (compatible; WireRoomOps/1.0)';
 
 export interface ScrapeResult {
   success: boolean;
@@ -50,48 +53,45 @@ export function isShortUrl(url: string): boolean {
   }
 }
 
-// Resolve shortened URL to final destination
+// Resolve shortened URL to final destination. Every hop goes through
+// safePublicFetch so a shortener cannot bounce into loopback/metadata.
 export async function resolveUrl(url: string): Promise<string> {
   if (!isShortUrl(url)) {
+    return url;
+  }
+  if (!isSafeHttpUrl(url)) {
+    console.log(`    Blocked unsafe shortener URL: ${url}`);
     return url;
   }
 
   try {
     console.log(`    Resolving shortened URL: ${url}`);
-    const response = await fetch(url, {
+    const response = await safePublicFetch(url, {
       method: 'HEAD',
-      redirect: 'follow',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; WireRoomOps/1.0)',
-      },
+      headers: { 'User-Agent': SHORTENER_UA },
     });
-
-    const resolvedUrl = response.url;
-    if (resolvedUrl && resolvedUrl !== url) {
-      console.log(`    Resolved to: ${resolvedUrl}`);
-      return resolvedUrl;
+    if (!response) {
+      console.log(`    Blocked SSRF hop resolving: ${url}`);
+      return url;
+    }
+    if (response.url && response.url !== url) {
+      console.log(`    Resolved to: ${response.url}`);
+      return response.url;
     }
     return url;
-  } catch (error) {
-    // If HEAD fails, try GET with manual redirect following
+  } catch {
     try {
-      const response = await fetch(url, {
+      const response = await safePublicFetch(url, {
         method: 'GET',
-        redirect: 'manual',
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; WireRoomOps/1.0)',
-        },
+        headers: { 'User-Agent': SHORTENER_UA },
       });
-
-      const location = response.headers.get('location');
-      if (location) {
-        // Handle relative redirects
-        if (location.startsWith('/')) {
-          const parsed = new URL(url);
-          return `${parsed.protocol}//${parsed.host}${location}`;
-        }
-        console.log(`    Resolved to: ${location}`);
-        return location;
+      if (!response) {
+        console.log(`    Blocked SSRF hop resolving: ${url}`);
+        return url;
+      }
+      if (response.url && response.url !== url) {
+        console.log(`    Resolved to: ${response.url}`);
+        return response.url;
       }
     } catch {
       // Ignore secondary error
@@ -121,6 +121,15 @@ export async function extractAndResolveUrls(text: string): Promise<Map<string, s
 }
 
 export async function scrapeUrl(url: string): Promise<ScrapeResult> {
+  if (!isSafeHttpUrl(url)) {
+    return {
+      success: false,
+      content: '',
+      url,
+      error: 'URL is not a safe public HTTP(S) target',
+    };
+  }
+
   const provider = getCachedProvider('firecrawl');
   if (!provider?.api_key) {
     return {
@@ -161,6 +170,14 @@ export async function scrapeUrl(url: string): Promise<ScrapeResult> {
 }
 
 async function scrapeWithFirecrawl(url: string): Promise<ScrapeResult> {
+  if (!isSafeHttpUrl(url)) {
+    return {
+      success: false,
+      content: '',
+      url,
+      error: 'URL is not a safe public HTTP(S) target',
+    };
+  }
   const provider = getCachedProvider('firecrawl');
   if (!provider?.api_key) throw new Error('Firecrawl provider unavailable');
   const apiKey = provider.api_key;

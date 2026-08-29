@@ -61,22 +61,45 @@ export const STARTUP_MIGRATIONS: ReadonlyArray<{ name: string; run: () => Promis
   { name: 'api-usage', run: ensureApiUsageTables },
 ];
 
+export interface StartupMigrationHealth {
+  ran: boolean;
+  failed: number;
+  errors: string[];
+}
+
+let lastStartupMigrationHealth: StartupMigrationHealth = {
+  ran: false,
+  failed: 0,
+  errors: [],
+};
+
+/** Last runStartupMigrations() outcome. Used by /ready so a failed boot migration is visible. */
+export function getStartupMigrationHealth(): StartupMigrationHealth {
+  return lastStartupMigrationHealth;
+}
+
 /**
  * Run every startup migration in order.
  * fatal=false (production boot): a failed step logs and the rest continue —
- * a single bad migration must not prevent the app from serving.
+ * a single bad migration must not prevent the app from serving, but /ready
+ * returns 503 until the errors are cleared on a later boot.
  * fatal=true (CI): any failure throws so the pipeline goes red.
  */
 export async function runStartupMigrations(opts: { fatal?: boolean } = {}): Promise<void> {
+  const errors: string[] = [];
   for (const m of STARTUP_MIGRATIONS) {
     try {
       await m.run();
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      errors.push(`${m.name}: ${message}`);
       if (opts.fatal) {
-        throw new Error(`[Migrations] '${m.name}' failed: ${err instanceof Error ? err.message : String(err)}`);
+        lastStartupMigrationHealth = { ran: true, failed: errors.length, errors };
+        throw new Error(`[Migrations] '${m.name}' failed: ${message}`);
       }
       console.error(`[Migrations] '${m.name}' failed (non-fatal):`, err);
     }
   }
+  lastStartupMigrationHealth = { ran: true, failed: errors.length, errors };
   console.log(`[Migrations] ${STARTUP_MIGRATIONS.length} startup migrations processed`);
 }

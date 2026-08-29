@@ -375,6 +375,7 @@ const Index = () => {
               total={queueTotal}
               loadingMore={loadingMoreQueue}
               onLoadMore={handleLoadMoreQueue}
+              onIntakeComplete={loadData}
             />
           </div>
           {activeTab === 'database' && (

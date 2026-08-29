@@ -1275,6 +1275,7 @@ export function parseBatchEntries(text: string): Array<{ name: string; descripti
 export async function processBatchMessage(
   msg: IntakeMessage,
   scanSource = 'telegram',
+  options: IntakeOptions = {},
 ): Promise<BatchIntakeResult> {
   const text = msg.text.trim();
   const wires = await getActiveWires();
@@ -1315,9 +1316,10 @@ export async function processBatchMessage(
       continue;
     }
 
-    // Detect wire from combined name + description
+    const hinted = options.wireHint?.trim().toLowerCase();
+    const hintedWire = hinted && wires.includes(hinted) ? hinted : null;
     const combined = `${entry.name} ${entry.description}`;
-    const wire = detectWire(combined, wires);
+    const wire = hintedWire || detectWire(combined, wires);
 
     if (!wire) {
       // Default to 'crypto' if available — most unclassified grant content is crypto.

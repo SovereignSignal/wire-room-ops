@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { EntryDistributionLog, ScanEntry } from '@/types';
-import { fetchEntryDistribution } from '@/api';
+import { fetchEntryDistribution, redistributeEntry } from '@/api';
+import { useToast } from '@/hooks/use-toast';
 import {
   Sheet,
   SheetContent,
@@ -45,7 +46,15 @@ interface EntryDetailsSheetProps {
 }
 
 export function EntryDetailsSheet({ entry, onClose, onApproveToWires, onApproveToPrograms, onReject }: EntryDetailsSheetProps) {
+  const { toast } = useToast();
   const [distributionLogs, setDistributionLogs] = useState<EntryDistributionLog[]>([]);
+  const [retrying, setRetrying] = useState(false);
+
+  const loadDistribution = (id: string) => {
+    return fetchEntryDistribution(id)
+      .then(logs => setDistributionLogs(logs))
+      .catch(() => { /* Without a successful log, the truthful label is Approved. */ });
+  };
 
   useEffect(() => {
     let active = true;
@@ -63,7 +72,25 @@ export function EntryDetailsSheet({ entry, onClose, onApproveToWires, onApproveT
     () => [...new Set(distributionLogs.filter(log => log.status === 'success').map(log => log.channel))],
     [distributionLogs],
   );
+  const failedLogs = useMemo(
+    () => distributionLogs.filter(log => log.status === 'failed'),
+    [distributionLogs],
+  );
   const hasPublicationProof = successfulChannels.length > 0;
+
+  const handleRetryFailedSends = async () => {
+    if (!entry || retrying) return;
+    setRetrying(true);
+    try {
+      await redistributeEntry(entry.id);
+      toast({ title: 'Retry sent', description: 'Failed channels were queued again.' });
+      await loadDistribution(entry.id);
+    } catch (err) {
+      toast({ title: 'Retry failed', description: err instanceof Error ? err.message : 'Could not redistribute' });
+    } finally {
+      setRetrying(false);
+    }
+  };
 
   return (
     <Sheet open={!!entry} onOpenChange={(open) => !open && onClose()}>
@@ -261,13 +288,33 @@ export function EntryDetailsSheet({ entry, onClose, onApproveToWires, onApproveT
                 </div>
               )}
 
-              {successfulChannels.length > 0 && (
+              {entry.status === 'approved' && distributionLogs.length > 0 && (
                 <div className="glow-card p-4 space-y-3">
                   <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground uppercase tracking-wider border-b border-border pb-2">
                     <Activity className="w-3 h-3" />
                     Distribution
                   </div>
-                  <DistributionBadges channels={successfulChannels} />
+                  {successfulChannels.length > 0 && (
+                    <DistributionBadges channels={successfulChannels} />
+                  )}
+                  {failedLogs.length > 0 && (
+                    <div className="space-y-2">
+                      {failedLogs.map(log => (
+                        <div key={log.id} className="text-xs font-mono text-status-danger">
+                          {log.channel} failed{log.errorMessage ? `: ${log.errorMessage}` : ''}
+                        </div>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={handleRetryFailedSends}
+                        disabled={retrying}
+                        aria-label="Retry failed sends"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-[10px] font-display tracking-wider uppercase border border-status-danger/40 text-status-danger hover:bg-status-danger/10 disabled:opacity-50"
+                      >
+                        {retrying ? 'RETRYING…' : 'RETRY FAILED SENDS'}
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 

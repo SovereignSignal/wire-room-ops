@@ -55,7 +55,7 @@ function enforceAgentRateLimit(req: Request, res: Response, next: NextFunction):
   const actor = (req as any).agentSession?.userId || 'agent:unknown';
   const url = req.originalUrl || req.path || '';
   const isWrite = req.method !== 'GET' && req.method !== 'HEAD';
-  const isSubmit = /\/submit(?:-batch)?(?:\?|$)/.test(url);
+  const isSubmit = /\/(?:submit(?:-batch)?|telegram-batch|manual-intake)(?:\?|$)/.test(url);
   const max = !isWrite ? AGENT_READ_MAX : isSubmit ? AGENT_SUBMIT_MAX : AGENT_WRITE_MAX;
   const bucket = isSubmit ? 'submit' : isWrite ? 'write' : 'read';
   if (!rateLimit(`agent:${actor}:${bucket}`, max, AGENT_WRITE_WINDOW_MS)) {

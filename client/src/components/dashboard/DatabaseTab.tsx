@@ -77,7 +77,7 @@ export function DatabaseTab() {
 
   // DB connection panel
   const [configOpen, setConfigOpen] = useState(false);
-  const [dbConfig, setDbConfig] = useState<{ configured: boolean; host: string | null; database: string | null; source: string } | null>(null);
+  const [dbConfig, setDbConfig] = useState<{ configured: boolean; host: string | null; database: string | null; source: string; urlChangeAllowed?: boolean } | null>(null);
   const [newDbUrl, setNewDbUrl] = useState('');
   const [testResult, setTestResult] = useState<{ success: boolean; latencyMs: number; version?: string; error?: string } | null>(null);
   const [testing, setTesting] = useState(false);
@@ -212,6 +212,8 @@ export function DatabaseTab() {
   }
 
   // If DB not configured, show setup instructions
+  const urlChangeAllowed = dbConfig?.urlChangeAllowed !== false;
+
   if (dbConfig && !dbConfig.configured) {
     return (
       <div className="space-y-6">
@@ -219,8 +221,11 @@ export function DatabaseTab() {
           <Database className="w-12 h-12 mx-auto mb-4 text-muted-foreground opacity-50" />
           <h3 className="font-display text-sm tracking-wider mb-2">NO DATABASE CONFIGURED</h3>
           <p className="text-muted-foreground text-sm mb-6">
-            Configure a PostgreSQL connection to introspect your live database.
+            {urlChangeAllowed
+              ? 'Configure a PostgreSQL connection to introspect your live database.'
+              : 'DATABASE_URL cannot be changed in production.'}
           </p>
+          {urlChangeAllowed && (
           <div className="max-w-lg mx-auto space-y-3">
             <Input
               placeholder="postgresql://user:pass@host:5432/dbname"
@@ -253,6 +258,7 @@ export function DatabaseTab() {
               </div>
             )}
           </div>
+          )}
         </div>
       </div>
     );
@@ -565,7 +571,11 @@ export function DatabaseTab() {
                 </div>
               </div>
 
-              {!showUrlInput ? (
+              {!urlChangeAllowed ? (
+                <p className="text-xs text-muted-foreground font-mono">
+                  DATABASE_URL cannot be changed in production.
+                </p>
+              ) : !showUrlInput ? (
                 <Button
                   variant="outline"
                   size="sm"

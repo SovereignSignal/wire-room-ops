@@ -18,10 +18,14 @@ interface DistributionTabProps {
 }
 
 const CHANNEL_TYPES = [
-  { value: 'telegram', label: 'Telegram', icon: '✈️' },
-  { value: 'discord', label: 'Discord', icon: '🎮' },
-  { value: 'slack', label: 'Slack', icon: '💬' },
+  { value: 'telegram', label: 'Telegram', icon: '✈️', unused: false },
+  { value: 'discord', label: 'Discord (unused)', icon: '🎮', unused: true },
+  { value: 'slack', label: 'Slack (unused)', icon: '💬', unused: true },
 ];
+
+function isUnusedChannel(type: string): boolean {
+  return CHANNEL_TYPES.find(ct => ct.value === type)?.unused === true;
+}
 
 const CHANNEL_HELP: Record<string, string> = {
   telegram: 'Bot token from @BotFather. Chat ID for channel (e.g. -100123...)',
@@ -207,7 +211,8 @@ export function DistributionTab(_: DistributionTabProps) {
         <div>
           <h2 className="text-base sm:text-lg font-display tracking-wider glow-text">DISTRIBUTION CHANNELS</h2>
           <p className="text-xs text-muted-foreground mt-1">
-            {channels.length} channel{channels.length !== 1 ? 's' : ''} configured.
+            Telegram is the live channel. Discord and Slack are unused in production.
+            {channels.length > 0 ? ` ${channels.length} channel${channels.length !== 1 ? 's' : ''} configured.` : ''}
           </p>
         </div>
         <button
@@ -223,7 +228,7 @@ export function DistributionTab(_: DistributionTabProps) {
         <div className="border border-dashed border-border rounded-lg p-12 text-center">
           <div className="text-4xl mb-3">📡</div>
           <p className="text-sm text-muted-foreground">No distribution channels configured yet.</p>
-          <p className="text-xs text-muted-foreground mt-1">Click "Add Channel" to set up Telegram, Discord, or Slack delivery.</p>
+          <p className="text-xs text-muted-foreground mt-1">Click "Add Channel" to set up Telegram delivery. Discord and Slack are unused.</p>
         </div>
       ) : (
         <div className="border border-border rounded-lg overflow-x-auto">
@@ -245,6 +250,9 @@ export function DistributionTab(_: DistributionTabProps) {
                   <td className="px-4 py-3 text-sm">
                     <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-card border border-border text-xs">
                       {channelIcon(ch.channel)} {ch.channel}
+                      {isUnusedChannel(ch.channel) && (
+                        <span className="text-[9px] uppercase tracking-wider text-muted-foreground">unused</span>
+                      )}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-sm font-mono text-muted-foreground">{ch.wire}</td>

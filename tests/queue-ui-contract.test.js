@@ -82,6 +82,27 @@ test('entry details sheet can complete the same three queue decisions', () => {
   assert.match(entrySheet, /entry.status === 'queued'/);
 });
 
+test('queue exposes manual paste intake for the highest-approval channel', () => {
+  assert.match(queueTab, /PasteIntakePanel/);
+  assert.match(queueTab, /aria-label="Paste intake"/);
+  assert.match(queueTab, /onIntakeComplete/);
+  const paste = read('client/src/components/dashboard/PasteIntakePanel.tsx');
+  assert.match(paste, /submitManualIntake/);
+  assert.match(paste, /manual-intake/);
+  assert.match(indexPage, /onIntakeComplete=\{loadData\}/);
+  const api = read('client/src/api/index.ts');
+  assert.match(api, /\/scan\/manual-intake/);
+});
+
+test('entry details sheet retries failed distribution sends', () => {
+  assert.match(entrySheet, /redistributeEntry/);
+  assert.match(entrySheet, /aria-label="Retry failed sends"/);
+  assert.match(entrySheet, /RETRY FAILED SENDS/);
+  assert.match(entrySheet, /failedLogs/);
+  const api = read('client/src/api/index.ts');
+  assert.match(api, /\/redistribute/);
+});
+
 test('approve-to-wires confirm is required before the live publish call', () => {
   assert.match(indexPage, /This publishes to Telegram immediately/);
   assert.match(indexPage, /Approve anyway/);
