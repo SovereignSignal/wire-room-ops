@@ -31,6 +31,7 @@ test('queue search params round-trip and ignore unknown values', () => {
     scoreBand: 'unscored',
     timeline: 'upcoming',
     entryId: '42',
+    hideTweets: true,
   });
   assert.equal(
     serializeQueueSearch(parsed),
@@ -40,11 +41,25 @@ test('queue search params round-trip and ignore unknown values', () => {
   assert.equal(parseQueueSearch('?score=loud').scoreBand, null);
 });
 
+test('tweets stay hidden by default and only appear when tweets=1', () => {
+  const empty = emptyQueueFilters();
+  assert.equal(empty.hideTweets, true);
+  assert.equal(parseQueueSearch('').hideTweets, true);
+  assert.equal(parseQueueSearch('?wire=ai').hideTweets, true);
+  assert.equal(parseQueueSearch('?tweets=1').hideTweets, false);
+  assert.equal(serializeQueueSearch(empty), '');
+  assert.equal(serializeQueueSearch({ ...empty, hideTweets: false }), '?tweets=1');
+  assert.deepEqual(queueFiltersToApi(empty), { hideTweets: true });
+  assert.deepEqual(queueFiltersToApi({ ...empty, hideTweets: false }), {});
+  assert.equal(queueFiltersActive(empty), false);
+  assert.equal(queueFiltersActive({ ...empty, hideTweets: false }), false);
+});
+
 test('score bands map to server query params and leave unscored entries out of numeric bands', () => {
-  assert.deepEqual(queueFiltersToApi({ ...emptyQueueFilters(), scoreBand: 'strong' }), { minScore: 70 });
-  assert.deepEqual(queueFiltersToApi({ ...emptyQueueFilters(), scoreBand: 'medium' }), { minScore: 50, maxScore: 69 });
-  assert.deepEqual(queueFiltersToApi({ ...emptyQueueFilters(), scoreBand: 'weak' }), { minScore: 0, maxScore: 49 });
-  assert.deepEqual(queueFiltersToApi({ ...emptyQueueFilters(), scoreBand: 'unscored' }), { unscored: true });
+  assert.deepEqual(queueFiltersToApi({ ...emptyQueueFilters(), scoreBand: 'strong' }), { hideTweets: true, minScore: 70 });
+  assert.deepEqual(queueFiltersToApi({ ...emptyQueueFilters(), scoreBand: 'medium' }), { hideTweets: true, minScore: 50, maxScore: 69 });
+  assert.deepEqual(queueFiltersToApi({ ...emptyQueueFilters(), scoreBand: 'weak' }), { hideTweets: true, minScore: 0, maxScore: 49 });
+  assert.deepEqual(queueFiltersToApi({ ...emptyQueueFilters(), scoreBand: 'unscored' }), { hideTweets: true, unscored: true });
 });
 
 test('queue filter activity and equality ignore only matching snapshots', () => {
@@ -54,4 +69,5 @@ test('queue filter activity and equality ignore only matching snapshots', () => 
   assert.equal(queueFiltersActive(wired), true);
   assert.equal(queueFiltersEqual(wired, { ...wired }), true);
   assert.equal(queueFiltersEqual(wired, { ...wired, route: 'publish' }), false);
+  assert.equal(queueFiltersEqual(empty, { ...empty, hideTweets: false }), false);
 });

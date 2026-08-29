@@ -15,6 +15,7 @@ export interface QueueQueryFilters {
   scoreBand: QueueScoreBand | null;
   timeline: QueueTimeline | 'all';
   entryId: string | null;
+  hideTweets: boolean;
 }
 
 export interface QueueApiParams {
@@ -25,6 +26,7 @@ export interface QueueApiParams {
   maxScore?: number;
   unscored?: boolean;
   dateStatus?: QueueTimeline;
+  hideTweets?: boolean;
 }
 
 const CORE_WIRES = ['crypto', 'ai', 'oss'] as const;
@@ -41,6 +43,7 @@ export function emptyQueueFilters(): QueueQueryFilters {
     scoreBand: null,
     timeline: 'all',
     entryId: null,
+    hideTweets: true,
   };
 }
 
@@ -54,6 +57,7 @@ export function parseQueueSearch(search: string): QueueQueryFilters {
     scoreBand: oneOf(params.get('score'), QUEUE_SCORE_BANDS),
     timeline: oneOf(params.get('timeline'), QUEUE_TIMELINES) || 'all',
     entryId: params.get('entry'),
+    hideTweets: params.get('tweets') !== '1',
   };
 }
 
@@ -65,6 +69,7 @@ export function serializeQueueSearch(filters: QueueQueryFilters): string {
   if (filters.scoreBand) params.set('score', filters.scoreBand);
   if (filters.timeline !== 'all') params.set('timeline', filters.timeline);
   if (filters.entryId) params.set('entry', filters.entryId);
+  if (!filters.hideTweets) params.set('tweets', '1');
   const qs = params.toString();
   return qs ? `?${qs}` : '';
 }
@@ -75,6 +80,7 @@ export function queueFiltersToApi(filters: QueueQueryFilters): QueueApiParams {
   if (filters.classification) params.classification = filters.classification;
   if (filters.route) params.route = filters.route;
   if (filters.timeline !== 'all') params.dateStatus = filters.timeline;
+  if (filters.hideTweets) params.hideTweets = true;
   if (filters.scoreBand === 'strong') {
     params.minScore = 70;
   } else if (filters.scoreBand === 'medium') {
@@ -105,5 +111,6 @@ export function queueFiltersEqual(a: QueueQueryFilters, b: QueueQueryFilters): b
     && a.route === b.route
     && a.scoreBand === b.scoreBand
     && a.timeline === b.timeline
-    && a.entryId === b.entryId;
+    && a.entryId === b.entryId
+    && a.hideTweets === b.hideTweets;
 }
