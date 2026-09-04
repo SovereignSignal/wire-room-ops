@@ -131,3 +131,25 @@ test('hidden Telegram text_link URLs are materialized for compact batch parsing'
   assert.equal(parsed[0].name, names[0]);
   assert.equal(parsed[1].sourceUrl, 'https://x.com/GOATNetwork/status/2087971190572794275');
 });
+
+// Senders bracket their links ("Source: [https://...]"). The closing bracket used
+// to survive into source_url and every X link 404'd for the operator.
+test('bracketed source links do not carry their closing bracket into source_url', () => {
+  const text = [
+    '1. **Syndicate Hackathon**',
+    '30-hour AI agent engineering hackathon with $10,000 prize pool.',
+    'Deadline: September 6, 2026',
+    'Source: [https://x.com/agent_wrapper/status/2095089614679933370]',
+    '',
+    '2. **Sui AI + DeFi Builder Program**',
+    'Sui Foundation $10M ecosystem fund providing milestone-based grants.',
+    'Link: [https://x.com/YellowMedia_HQ/status/2095764892100018588]',
+  ].join('\n');
+
+  assert.equal(isBatchMessage(text), true);
+  const parsed = parseBatchEntries(text);
+  assert.equal(parsed.length, 2);
+  assert.equal(parsed[0].sourceUrl, 'https://x.com/agent_wrapper/status/2095089614679933370');
+  assert.equal(parsed[1].sourceUrl, 'https://x.com/YellowMedia_HQ/status/2095764892100018588');
+  for (const item of parsed) assert.doesNotMatch(item.sourceUrl, /[\])]$/);
+});
