@@ -858,8 +858,15 @@ export interface BatchIntakeResult {
  * when emitting URL lists, creating dead links like /status/<tweet-id>18.
  * Current X snowflake IDs are 19 digits, so trim obvious overlong IDs.
  */
+/**
+ * Prose punctuation that ends a URL rather than belonging to it. Senders wrap
+ * links in brackets ("Source: [https://x.com/a/status/1]") and end sentences on
+ * them; every capture path funnels through here so the list lives in one place.
+ */
+const TRAILING_URL_PUNCTUATION = /[\]),.;]+$/;
+
 function normalizeParsedSourceUrl(url: string): string {
-  let normalized = url.replace(/\/?$/, '');
+  let normalized = url.replace(TRAILING_URL_PUNCTUATION, '').replace(/\/?$/, '');
 
   normalized = normalized.replace(/(https?:\/\/(?:www\.)?(?:x|twitter)\.com\/[^\s/]+\/status\/)(\d{20,})(.*)$/i,
     (_match, prefix: string, id: string, suffix: string) => `${prefix}${id.slice(0, 19)}${suffix}`);
@@ -1045,9 +1052,9 @@ function extractStructuredSourceUrl(chunk: string): string {
   const sourceMd = chunk.match(/Source:\s*\[[^\]]*\]\((https?:\/\/[^)]+)\)/i);
   const sourceBare = chunk.match(/Source:\s*<?(\bhttps?:\/\/[^\s>]+)/i);
   const linkMatch = chunk.match(/Link:\s*<?(\bhttps?:\/\/[^\s>]+)/i);
-  const anyUrl = chunk.match(/\bhttps?:\/\/[^\s<>)]+/);
+  const anyUrl = chunk.match(/\bhttps?:\/\/[^\s<>)\]]+/);
   const raw = (sourceMd?.[1] || sourceBare?.[1] || linkMatch?.[1] || anyUrl?.[0] || '').trim();
-  return raw ? normalizeParsedSourceUrl(raw.replace(/[),.;]+$/, '')) : '';
+  return raw ? normalizeParsedSourceUrl(raw) : '';
 }
 
 /**
@@ -1090,7 +1097,7 @@ export function parseCompactUrlListEntries(
       continue;
     }
 
-    const cleanedUrls = rawUrls.map(url => normalizeParsedSourceUrl(url.replace(/[),.;]+$/, '')));
+    const cleanedUrls = rawUrls.map(url => normalizeParsedSourceUrl(url));
     const sourceUrl = pickCompactSourceUrl(cleanedUrls);
     let nameSource = line;
     for (const url of rawUrls) nameSource = nameSource.replace(url, '');

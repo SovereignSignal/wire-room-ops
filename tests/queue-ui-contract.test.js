@@ -9,6 +9,7 @@ const queueTab = read('client/src/components/dashboard/QueueTab.tsx');
 const actionBar = read('client/src/components/dashboard/ActionBar.tsx');
 const indexPage = read('client/src/pages/Index.tsx');
 const entrySheet = read('client/src/components/dashboard/EntryDetailsSheet.tsx');
+const decisions = read('client/src/components/dashboard/queue-decisions.ts');
 
 test('card and desktop queue rows expose the same three labelled decisions', () => {
   for (const decision of ['WIRES_DECISION', 'PROGRAMS_DECISION', 'REJECT_DECISION']) {
@@ -61,7 +62,14 @@ test('curator stays attached to entry context instead of consuming its own table
 test('page wiring names the quiet approval path for its operator-facing destination', () => {
   assert.match(indexPage, /handleApproveToPrograms/);
   assert.match(indexPage, /onApproveToPrograms=\{handleApproveToPrograms\}/);
-  assert.match(indexPage, /Approved to Programs/);
+  assert.match(decisions, /label: 'Approve to Programs'/);
+});
+
+test('queue decisions succeed silently — only failures raise a toast', () => {
+  assert.doesNotMatch(indexPage, /Successfully updated status to/);
+  assert.doesNotMatch(indexPage, /Publishing to selected wires/);
+  assert.doesNotMatch(indexPage, /Stored without Wire distribution/);
+  assert.match(indexPage, /title: kind === 'programs' \? 'Program approval blocked' : 'Action blocked'/);
 });
 
 test('queue filters are server-side and survive tab changes', () => {
@@ -103,8 +111,11 @@ test('entry details sheet retries failed distribution sends', () => {
   assert.match(api, /\/redistribute/);
 });
 
-test('approve-to-wires confirm is required before the live publish call', () => {
-  assert.match(indexPage, /This publishes to Telegram immediately/);
-  assert.match(indexPage, /Approve anyway/);
+test('approve publishes on click; only the approval guard stops for a dialog', () => {
   assert.match(indexPage, /requestDecision\('wires'/);
+  assert.match(indexPage, /void executeDecision\(\{ kind, ids \}\)/);
+  assert.doesNotMatch(indexPage, /This publishes to Telegram immediately/);
+  assert.match(indexPage, /title="Approval blocked"/);
+  assert.match(indexPage, /confirmLabel="Approve anyway"/);
+  assert.match(indexPage, /executeDecision\(blockedDecision, true\)/);
 });
