@@ -28,7 +28,7 @@ import {
   serializeQueueSearch,
   type QueueQueryFilters,
 } from '@/lib/queue-filters';
-import { getQueueDecision, type QueueDecisionKey } from '@/components/dashboard/queue-decisions';
+import type { QueueDecisionKey } from '@/components/dashboard/queue-decisions';
 
 const DatabaseTab = lazy(() => import('@/components/dashboard/DatabaseTab').then(module => ({ default: module.DatabaseTab })));
 const ScanPromptsTab = lazy(() => import('@/components/dashboard/ScanPromptsTab').then(module => ({ default: module.ScanPromptsTab })));
@@ -44,11 +44,13 @@ const initialAvailability: DashboardDataAvailability = {
 };
 const QUEUE_PAGE_SIZE = 100;
 
-type PendingDecision = {
+type QueueDecision = {
   kind: QueueDecisionKey;
   ids: string[];
-  issues?: string[];
 };
+
+/** An approve the guard refused: the only case that still stops for a dialog. */
+type BlockedDecision = QueueDecision & { issues: string[] };
 
 function queueHref(filters: QueueQueryFilters): string {
   return `/queue${serializeQueueSearch(filters)}`;
@@ -74,7 +76,7 @@ const Index = () => {
   const [health, setHealth] = useState<DashboardHealth>('offline');
   const [availability, setAvailability] = useState<DashboardDataAvailability>(initialAvailability);
   const [loadingMoreQueue, setLoadingMoreQueue] = useState(false);
-  const [pendingDecision, setPendingDecision] = useState<PendingDecision | null>(null);
+  const [blockedDecision, setBlockedDecision] = useState<BlockedDecision | null>(null);
   const [decisionBusy, setDecisionBusy] = useState(false);
   const { toast } = useToast();
   const queueQuery = useMemo(() => queueFiltersToApi(queueFilters), [queueFilters]);
@@ -230,33 +232,25 @@ const Index = () => {
     handleQueueFiltersChange({ ...queueFilters, entryId: null });
   }, [handleQueueFiltersChange, queueFilters]);
 
-  const executeDecision = useCallback(async (pending: PendingDecision, force = false) => {
-    const { kind, ids } = pending;
+  const executeDecision = useCallback(async (decision: QueueDecision, force = false) => {
+    const { kind, ids } = decision;
     setDecisionBusy(true);
     try {
       if (kind === 'programs') {
         if (ids.length === 1) await quietApproveEntry(ids[0], { force });
         else await bulkQuietApprove(ids, { force });
-        toast({
-          title: `Approved to Programs: ${ids.length} item${ids.length > 1 ? 's' : ''}`,
-          description: 'Stored without Wire distribution',
-        });
       } else {
         const status = kind === 'reject' ? 'declined' : 'approved';
         if (ids.length === 1) await updateEntryStatus(ids[0], status, { force });
         else await bulkUpdateEntryStatus(ids, status, { force });
-        toast({
-          title: `${ids.length} item${ids.length > 1 ? 's' : ''} ${status}`,
-          description: kind === 'wires' ? 'Publishing to selected wires' : `Successfully updated status to ${status}`,
-        });
       }
-      setPendingDecision(null);
+      setBlockedDecision(null);
       if (selectedEntry && ids.includes(selectedEntry.id)) closeSelectedEntry();
       await loadData();
     } catch (err) {
       console.error('Failed to update status:', err);
       if (err instanceof EntryActionBlockedError && kind !== 'reject') {
-        setPendingDecision({ ...pending, issues: err.issues.length ? err.issues : [err.message] });
+        setBlockedDecision({ kind, ids, issues: err.issues.length ? err.issues : [err.message] });
         return;
       }
       const msg = err instanceof Error ? err.message : 'Unknown error';
@@ -268,11 +262,7 @@ const Index = () => {
 
   const requestDecision = useCallback((kind: QueueDecisionKey, ids: string[]) => {
     if (ids.length === 0) return;
-    if (kind === 'reject' && ids.length === 1) {
-      void executeDecision({ kind, ids });
-      return;
-    }
-    setPendingDecision({ kind, ids });
+    void executeDecision({ kind, ids });
   }, [executeDecision]);
 
   const handleUpdateStatus = (ids: string[], newStatus: ScanEntry['status']) => {
@@ -308,10 +298,9 @@ const Index = () => {
     }
   };
 
-  const pendingNames = pendingDecision
-    ? queueEntries.filter(entry => pendingDecision.ids.includes(entry.id)).map(entry => entry.name)
+  const blockedNames = blockedDecision
+    ? queueEntries.filter(entry => blockedDecision.ids.includes(entry.id)).map(entry => entry.name)
     : [];
-  const pendingMeta = pendingDecision ? getQueueDecision(pendingDecision.kind) : null;
 
   if (loading) {
     return (
@@ -409,29 +398,17 @@ const Index = () => {
       />
 
       <DecisionConfirmDialog
-        open={!!pendingDecision}
-        title={pendingDecision?.issues?.length
-          ? 'Approval blocked'
-          : pendingMeta?.label || 'Confirm'}
-        description={pendingDecision?.issues?.length
-          ? 'The approval guard blocked this publish. Review the issues, then approve anyway only if you still want it live.'
-          : pendingDecision?.kind === 'wires'
-            ? 'This publishes to Telegram immediately.'
-            : pendingDecision?.kind === 'programs'
-              ? 'Store these items without wire distribution.'
-              : 'Reject these items and keep the reviewed decision for duplicate checks.'}
-        confirmLabel={pendingMeta?.label || 'Confirm'}
-        tone={pendingMeta?.tone || 'warning'}
-        count={pendingDecision?.ids.length || 0}
-        names={pendingNames}
-        issues={pendingDecision?.issues}
-        forceLabel={pendingDecision?.issues?.length ? 'Approve anyway' : undefined}
+        open={!!blockedDecision}
+        title="Approval blocked"
+        description="The approval guard blocked this publish. Review the issues, then approve anyway only if you still want it live."
+        confirmLabel="Approve anyway"
+        tone="warning"
+        count={blockedDecision?.ids.length || 0}
+        names={blockedNames}
+        issues={blockedDecision?.issues}
         busy={decisionBusy}
-        onConfirm={() => pendingDecision && void executeDecision(pendingDecision)}
-        onForce={pendingDecision?.issues?.length
-          ? () => pendingDecision && void executeDecision(pendingDecision, true)
-          : undefined}
-        onCancel={() => !decisionBusy && setPendingDecision(null)}
+        onConfirm={() => blockedDecision && void executeDecision(blockedDecision, true)}
+        onCancel={() => !decisionBusy && setBlockedDecision(null)}
       />
     </>
   );
