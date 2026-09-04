@@ -390,3 +390,45 @@ test('history settlement returns pending when the webhook budget expires', async
   assert.ok(Date.now() - startedAt < 250);
   await new Promise(resolve => setTimeout(resolve, 310));
 });
+
+// The webhook is the human's door. It must keep the operator dumb pipe: no
+// origin option, so intake queues the paste unclassified as before.
+test('Telegram webhook batches stay operator-origin (no agent option)', async t => {
+  const originalBatchCheck = intakeCore.isBatchMessage;
+  const originalProcessBatch = intakeCore.processBatchMessage;
+  const originalFetch = global.fetch;
+  t.after(() => {
+    intakeCore.isBatchMessage = originalBatchCheck;
+    intakeCore.processBatchMessage = originalProcessBatch;
+    global.fetch = originalFetch;
+  });
+  const db = require('../src/db');
+  const decidedRecheck = require('../src/jobs/decided-recheck');
+  const originalGetPool = db.getPool;
+  const originalRun = decidedRecheck.runDecidedRecheckForIds;
+  t.after(() => {
+    db.getPool = originalGetPool;
+    decidedRecheck.runDecidedRecheckForIds = originalRun;
+  });
+  let seen;
+  intakeCore.isBatchMessage = () => true;
+  intakeCore.processBatchMessage = async (msg, scanSource, options) => {
+    seen = { scanSource, options, channelUpdateId: msg.channelUpdateId };
+    return { inserted: 1, duplicates: 0, errors: 0, retryableErrors: 0, failed: 0, entries: [{ id: 7, name: 'Paste', wire: 'oss' }] };
+  };
+  db.getPool = () => ({
+    query: async () => ({
+      rows: [{ id: 7, status: 'queued', duplicate_of_id: null, duplicate_reason: null, decided_recheck: { verdict: 'distinct' }, duplicate_chain_error: null }],
+    }),
+  });
+  decidedRecheck.runDecidedRecheckForIds = async () => ({ checked: 1, duplicates: 0, updates: 0, distinct: 1, errors: 0 });
+  global.fetch = async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) });
+
+  await handleTelegramUpdate({
+    ...baseUpdate,
+    message: { ...baseUpdate.message, text: 'batch payload' },
+  });
+  assert.equal(seen.scanSource, 'telegram');
+  assert.equal(seen.options, undefined);
+  assert.ok(seen.channelUpdateId, 'webhook lineage id is carried');
+});

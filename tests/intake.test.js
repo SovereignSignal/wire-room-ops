@@ -571,6 +571,46 @@ test('compact batch keeps later URLs when the first link is already seen', async
   assert.ok(result.entries[2].id);
 });
 
+// Same batch text, two doors. A human paste stays on the queued dumb pipe; an
+// agent submission starts raw so process-raw runs Gate 2 before review.
+for (const [origin, expected] of [['operator', 'queued'], ['agent', 'raw'], [undefined, 'queued']]) {
+  test(`batch intake inserts ${expected} rows for ${origin ?? 'unspecified'} origin`, async t => {
+    const db = require('../src/db');
+    const originalGetAllFeeds = db.getAllFeeds;
+    const originalGetPool = db.getPool;
+    t.after(() => {
+      db.getAllFeeds = originalGetAllFeeds;
+      db.getPool = originalGetPool;
+    });
+    db.getAllFeeds = async () => [{ key: 'crypto' }, { key: 'ai' }, { key: 'oss' }];
+
+    const insertedStatuses = [];
+    const client = {
+      query: async (sql, params) => {
+        if (/INSERT INTO scan_entries/i.test(sql)) {
+          insertedStatuses.push(params.find(value => value === 'raw' || value === 'queued'));
+          return { rows: [{ id: 900 + insertedStatuses.length }], rowCount: 1 };
+        }
+        if (/INSERT INTO seen_urls/i.test(sql)) return { rows: [{ id: 1 }], rowCount: 1 };
+        return { rows: [], rowCount: 0 };
+      },
+      release() {},
+    };
+    db.getPool = () => ({ connect: async () => client, query: async () => ({ rows: [] }) });
+
+    const result = await processBatchMessage({
+      text: [
+        'GOAT Network AI Builder Grants - https://x.com/GOATNetwork/status/2087971190572794275',
+        'Stacks Thesis Bounty - https://x.com/zeroauthdao/status/2088309922328903811',
+      ].join('\n'),
+      senderId: origin === 'agent' ? 'agent:stringer' : 'telegram:1',
+    }, 'telegram', origin ? { origin } : {});
+
+    assert.equal(result.inserted, 2);
+    assert.deepEqual(insertedStatuses, [expected, expected]);
+  });
+}
+
 test('dedup checks raw entries so rapid double-pastes do not slip through', async () => {
   const calls = [];
   const pool = {
@@ -648,6 +688,11 @@ test('x-monitor starts raw and retains tweet copy as provenance while operator i
   assert.equal(determineInitialIntakeStatus('x-monitor'), 'raw');
   assert.equal(determineInitialIntakeStatus('telegram'), 'queued');
   assert.equal(determineInitialIntakeStatus('manual-intake'), 'queued');
+  // Only a human's own paste is trusted onto the queue unclassified. An agent
+  // using the same doors starts raw so Gate 2 runs, whatever the lane label.
+  assert.equal(determineInitialIntakeStatus('telegram', 'operator'), 'queued');
+  assert.equal(determineInitialIntakeStatus('telegram', 'agent'), 'raw');
+  assert.equal(determineInitialIntakeStatus('manual-intake', 'agent'), 'raw');
   const metadata = buildIntakeMetadata({
     name: 'Canonical title',
     description: 'Canonical source description',
