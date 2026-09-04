@@ -75,7 +75,7 @@ test('POST /api/scan/manual-intake uses processBatchMessage with manual-intake +
   let seen;
   intake.isBatchMessage = () => true;
   intake.processBatchMessage = async (msg, scanSource, options) => {
-    seen = { senderId: msg.senderId, scanSource, wireHint: options?.wireHint, text: msg.text };
+    seen = { senderId: msg.senderId, scanSource, wireHint: options?.wireHint, origin: options?.origin, text: msg.text };
     return {
       inserted: 1,
       duplicates: 0,
@@ -97,12 +97,16 @@ test('POST /api/scan/manual-intake uses processBatchMessage with manual-intake +
   assert.equal(seen.scanSource, 'manual-intake');
   assert.equal(seen.wireHint, 'ai');
   assert.equal(seen.senderId, 'agent:stringer');
+  // The dashboard door does not make an internal-key caller an operator.
+  assert.equal(seen.origin, 'agent');
+  assert.equal(json.processing, 'background');
 });
 
 test('POST /api/scan/manual-intake falls through to processIntakeMessage for a single item', async () => {
   intake.isBatchMessage = () => false;
-  intake.processIntakeMessage = async (msg, scanSource) => {
+  intake.processIntakeMessage = async (msg, scanSource, options) => {
     assert.equal(scanSource, 'manual-intake');
+    assert.equal(options?.origin, 'agent');
     return { status: 'inserted', entryId: 12, confirmText: 'Captured' };
   };
 

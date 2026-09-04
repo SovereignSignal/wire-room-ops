@@ -168,6 +168,7 @@ Key endpoints:
 - `GET /api/scan/queue` — queued entries
 - `GET /api/scan/entries` — filtered entries
 - `GET /api/scan/deadline-digest` — entries closing soon
+- `POST /api/scan/telegram-batch` — batch text intake. As an agent my rows start `raw` and Gate 2 classifies them in the background within ~5 minutes (the response says `processing: 'background'`). Do NOT retry a 200; only a 503 with `Retry-After` is retryable.
 - `GET /api/accounts/monitored` — monitored X accounts
 
 ### Distribution

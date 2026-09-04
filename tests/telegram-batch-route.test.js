@@ -80,11 +80,11 @@ test('POST /api/scan/telegram-batch rejects oversized text', async () => {
   assert.match(json.error, /20000/);
 });
 
-test('POST /api/scan/telegram-batch uses processBatchMessage (telegram source)', async () => {
+test('POST /api/scan/telegram-batch uses processBatchMessage (telegram source, agent origin)', async () => {
   let seen;
   intake.isBatchMessage = () => true;
-  intake.processBatchMessage = async (msg, scanSource) => {
-    seen = { senderId: msg.senderId, scanSource, text: msg.text };
+  intake.processBatchMessage = async (msg, scanSource, options) => {
+    seen = { senderId: msg.senderId, scanSource, text: msg.text, origin: options?.origin };
     return {
       inserted: 1,
       duplicates: 1,
@@ -108,6 +108,11 @@ test('POST /api/scan/telegram-batch uses processBatchMessage (telegram source)',
   assert.equal(seen.scanSource, 'telegram');
   assert.equal(seen.senderId, 'agent:stringer');
   assert.equal(seen.text, BATCH_TEXT);
+  // An internal-key caller is an agent: rows start raw and Gate 2 runs in the
+  // background, so the receipt must say so and warn against retrying.
+  assert.equal(seen.origin, 'agent');
+  assert.equal(json.processing, 'background');
+  assert.match(json.note, /Do NOT retry/);
 });
 
 test('POST /api/scan/telegram-batch returns 503 on retryable persistence errors', async () => {
@@ -128,9 +133,10 @@ test('POST /api/scan/telegram-batch returns 503 on retryable persistence errors'
 
 test('POST /api/scan/telegram-batch falls through to processIntakeMessage for a single item', async () => {
   intake.isBatchMessage = () => false;
-  intake.processIntakeMessage = async (msg, scanSource) => {
+  intake.processIntakeMessage = async (msg, scanSource, options) => {
     assert.equal(scanSource, 'telegram');
     assert.equal(msg.senderId, 'agent:stringer');
+    assert.equal(options?.origin, 'agent');
     return { status: 'rejected', errorMessage: 'Duplicate: already seen as "Base Batches 004"' };
   };
 

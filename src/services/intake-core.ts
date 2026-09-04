@@ -176,11 +176,20 @@ export interface IntakeResult {
   errorMessage?: string;
 }
 
+export type IntakeOrigin = 'operator' | 'agent';
+
 export interface IntakeOptions {
   /** Trusted source-lane wire. Applied only when it matches an active wire. */
   wireHint?: string;
   /** Original source copy retained as provenance when intake uses a canonical URL. */
   sourceContext?: string;
+  /**
+   * Who submitted. Operator intake (a human pasting into the bot or the
+   * dashboard) is trusted onto the wide-net queue unclassified. Agent intake
+   * over the internal API key starts raw and earns its queue slot through
+   * Gate 2 like every other automated lane. Absent = operator.
+   */
+  origin?: IntakeOrigin;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -561,8 +570,10 @@ export function determinePostClassificationStatus(result: {
   return 'queued';
 }
 
-export function determineInitialIntakeStatus(scanSource = 'manual-intake'): 'raw' | 'queued' {
-  return scanSource === 'x-monitor' ? 'raw' : 'queued';
+export function determineInitialIntakeStatus(scanSource = 'manual-intake', origin: IntakeOrigin = 'operator'): 'raw' | 'queued' {
+  // Only a human's own paste skips classification. Discovery lanes and agent
+  // submissions settle through process-raw before they can be reviewed.
+  return scanSource === 'x-monitor' || origin === 'agent' ? 'raw' : 'queued';
 }
 
 export function normalizeDeadlineForDb(value?: string | null, referenceDate = new Date().toISOString().slice(0, 10)): string | null {
@@ -705,7 +716,7 @@ export async function processIntakeMessage(
   }
 
   const scanDate = new Date().toISOString().slice(0, 10);
-  const initialStatus = determineInitialIntakeStatus(scanSource);
+  const initialStatus = determineInitialIntakeStatus(scanSource, options.origin);
 
   // Source lanes with an explicit wire assignment should not be reclassified
   // from sparse post text. Ignore stale/invalid hints and fall back to content
@@ -754,8 +765,8 @@ export async function processIntakeMessage(
         };
       }
       const id = inserted.id;
-      // Operator-authored intake remains a wide-net queue. x-monitor starts as
-      // raw and must settle through classification before it can be visible.
+      // Operator-authored intake remains a wide-net queue. Discovery lanes and
+      // agent submissions start raw and settle through classification first.
       return {
         status: 'inserted',
         entryId: id,
@@ -809,8 +820,8 @@ export async function processIntakeMessage(
       };
     }
     const id = inserted.id;
-    // Operator-authored intake remains a wide-net queue. x-monitor starts as
-    // raw and must settle through classification before it can be visible.
+    // Operator-authored intake remains a wide-net queue. Discovery lanes and
+    // agent submissions start raw and settle through classification first.
     return {
       status: 'inserted',
       entryId: id,
@@ -1287,6 +1298,7 @@ export async function processBatchMessage(
   const text = msg.text.trim();
   const wires = await getActiveWires();
   const scanDate = new Date().toISOString().slice(0, 10);
+  const initialStatus = determineInitialIntakeStatus(scanSource, options.origin);
   let entries = parseBatchEntries(text);
   const parsedCount = entries.length;
   const bestBySemanticKey = new Map<string, typeof entries[number]>();
@@ -1412,7 +1424,7 @@ export async function processBatchMessage(
         scanDate,
         submittedBy: msg.senderId,
         scanSource,
-        status: 'queued',
+        status: initialStatus,
         deadline: normalizeDeadlineForDb(entry.deadline, scanDate),
         sourceNeedsVerification,
         operatorRoute: sourceNeedsVerification ? 'source_check' : undefined,

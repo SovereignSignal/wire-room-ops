@@ -34,7 +34,7 @@ import { rewriteEntrySource, rewriteEntryWires, linkEntryDuplicate, EntryMainten
 import { buildCuratorStamp } from '../services/curator';
 import { retryDistribution } from '../services/distribution';
 import { PROMPT_VARIANTS, SCAN_SOURCES } from '../types/intake';
-import { isBatchMessage, processBatchMessage, processIntakeMessage } from '../services/intake-core';
+import { isBatchMessage, processBatchMessage, processIntakeMessage, type IntakeOptions } from '../services/intake-core';
 import { runDecidedRecheckForIds } from '../jobs/decided-recheck';
 
 const router = Router();
@@ -199,7 +199,17 @@ async function handleTextIntake(
     senderId: actor,
     channelMessageId: `http-${Date.now()}`,
   };
-  const intakeOptions = opts.wireHint ? { wireHint: opts.wireHint } : {};
+  // Same signal /submit uses: an internal-key caller is an agent, so its rows
+  // start raw and the 5-min process-raw cycle classifies them. A human session
+  // keeps the operator dumb pipe (queued, unclassified, wide net).
+  const isAgent = Boolean((req as any).agentSession?.isAgent);
+  const intakeOptions: IntakeOptions = {
+    origin: isAgent ? 'agent' : 'operator',
+    ...(opts.wireHint ? { wireHint: opts.wireHint } : {}),
+  };
+  const backgroundNote = isAgent
+    ? { processing: 'background', note: 'Entries inserted raw; dedup/classification completes in the background within ~5 minutes. Do NOT retry this request.' }
+    : {};
 
   try {
     if (isBatchMessage(text)) {
@@ -235,6 +245,7 @@ async function handleTextIntake(
         errors: batch.errors,
         retryableErrors: batch.retryableErrors,
         entries: batch.entries,
+        ...backgroundNote,
       });
       return;
     }
@@ -245,7 +256,7 @@ async function handleTextIntake(
       res.status(503).json({ error: result.errorMessage || `${opts.logLabel} intake failed`, result });
       return;
     }
-    res.json({ success: result.status === 'inserted', result });
+    res.json({ success: result.status === 'inserted', result, ...(result.status === 'inserted' ? backgroundNote : {}) });
   } catch (error) {
     console.error(`${opts.logLabel} intake failed:`, error);
     res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
