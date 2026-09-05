@@ -234,6 +234,54 @@ export function formatYieldAnomalies(rows: LaneYieldRow[], days: number = 3): st
     .map(r => `Lane ${r.source}: 0 net-new in ${days} days (${r.total} fetched)`);
 }
 
+// ── Silent producer anomalies ──────────────────────────────────────────────
+// A producer that fed the pipeline most days this week and sent nothing in the
+// last 24h. Expectation is derived from the producer's own recent cadence, so
+// there is no schedule registry to keep in sync and no new state: a lane that
+// runs three days a week never trips it, a lane that runs daily trips it the
+// morning after its first miss.
+
+export interface ProducerActivityRow {
+  /** scan_source, suffixed with the agent identity for internal-key submissions
+   *  so Grok Build (`telegram / agent:stringer`) is a producer distinct from a
+   *  human pasting into the bot (`telegram`). */
+  producer: string;
+  activeDays7d: number;
+  rows24h: number;
+  rows7d: number;
+}
+
+/** Fewer active days than this in the trailing week is not a daily cadence. */
+const DAILY_PRODUCER_MIN_ACTIVE_DAYS = 5;
+
+export async function getProducerActivity(pool: Pool): Promise<ProducerActivityRow[]> {
+  const { rows } = await pool.query<{ producer: string; active_days_7d: number; rows_24h: number; rows_7d: number }>(`
+    SELECT
+      COALESCE(scan_source, 'unknown')
+        || CASE WHEN submitted_by LIKE 'agent:%' THEN ' / ' || submitted_by ELSE '' END AS producer,
+      COUNT(DISTINCT created_at::date)::int AS active_days_7d,
+      COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hours')::int AS rows_24h,
+      COUNT(*)::int AS rows_7d
+    FROM scan_entries
+    WHERE created_at >= NOW() - INTERVAL '7 days'
+    GROUP BY 1
+    ORDER BY rows_7d DESC
+  `);
+  return rows.map(r => ({ producer: r.producer, activeDays7d: r.active_days_7d, rows24h: r.rows_24h, rows7d: r.rows_7d }));
+}
+
+/** Daily cadence this week, nothing in the last 24h. The one rule this anomaly rests on. */
+export function isSilentProducer(row: ProducerActivityRow): boolean {
+  return row.activeDays7d >= DAILY_PRODUCER_MIN_ACTIVE_DAYS && row.rows24h === 0;
+}
+
+export function formatSilentProducerAnomalies(rows: ProducerActivityRow[]): string[] {
+  return rows
+    .filter(r => !NON_AUTOMATED_SOURCES.has(r.producer))
+    .filter(isSilentProducer)
+    .map(r => `Producer ${r.producer}: 0 rows in 24h after ${r.activeDays7d} active days this week (${r.rows7d} rows) — did its schedule fire?`);
+}
+
 // ── Stale source anomalies ─────────────────────────────────────────────────
 // Name each failing source and how long it has been failing, escalating at 2+ days.
 
@@ -635,6 +683,7 @@ export interface AssembleDigestDeps {
   deadlines: typeof runDeadlineDigest;
   cost: typeof getCostRecap;
   yield_: typeof getLaneYield;
+  producers: typeof getProducerActivity;
   send: typeof sendDailyDigestEmail;
   advance: (ids: number[]) => Promise<void>;
 }
@@ -646,6 +695,7 @@ const defaultAssembleDeps: AssembleDigestDeps = {
   deadlines: runDeadlineDigest,
   cost: getCostRecap,
   yield_: getLaneYield,
+  producers: getProducerActivity,
   send: sendDailyDigestEmail,
   advance: (ids) => advanceDigestWatermark(ids),
 };
@@ -697,6 +747,13 @@ export async function assembleAndSendDailyDigest(
     anomalies.push(...formatYieldAnomalies(laneYield, 3));
   } catch (e) {
     console.error('[DailyDigest] Lane yield check failed (non-fatal):', e instanceof Error ? e.message : e);
+  }
+
+  try {
+    const producers = await deps.producers(pool);
+    anomalies.push(...formatSilentProducerAnomalies(producers));
+  } catch (e) {
+    console.error('[DailyDigest] Silent producer check failed (non-fatal):', e instanceof Error ? e.message : e);
   }
 
   await deps.send(digest, config.app.url, opts.recipients, {
