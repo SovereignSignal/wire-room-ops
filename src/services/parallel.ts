@@ -16,6 +16,7 @@ import { logApiUsage } from './api-usage';
 import { getCachedProvider, isProviderExplicitlyDisabled } from './api-provider';
 import { blockedDomains } from './source-filter';
 import type { ScanUsagePurpose } from '../types/intake';
+import { DEFAULT_GROK_MODEL } from './grok';
 
 const PARALLEL_BASE_URL = 'https://api.parallel.ai';
 
@@ -39,7 +40,7 @@ async function grokChat(prompt: string, maxTokens: number, purpose: string, wire
   const provider = getCachedProvider('grok');
   const apiKey = provider?.api_key;
   const baseUrl = provider?.base_url || 'https://api.x.ai/v1';
-  const model = provider?.default_model || 'grok-4.20-beta-0309-non-reasoning';
+  const model = provider?.default_model || DEFAULT_GROK_MODEL;
   if (!apiKey) return null;
 
   const start = Date.now();

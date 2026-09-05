@@ -9,6 +9,7 @@
 import { config } from '../config';
 import { logApiUsage } from './api-usage';
 import { getCachedProvider } from './api-provider';
+import { DEFAULT_GROK_MODEL } from './grok';
 
 export type FitLine = 'grant_program_ops' | 'ops_sales_bd' | 'governance_ops' | 'none';
 
@@ -98,7 +99,7 @@ export async function qualifyOpportunities(
   const provider = getCachedProvider('grok');
   const apiKey = provider?.api_key;
   const baseUrl = provider?.base_url || config.apis.grok.baseUrl;
-  const model = provider?.default_model || 'grok-4.20-beta-0309-non-reasoning';
+  const model = provider?.default_model || DEFAULT_GROK_MODEL;
 
   const out: QualifiedOpportunity[] = [];
 
