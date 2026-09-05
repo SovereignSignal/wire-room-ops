@@ -19,6 +19,7 @@ import { config } from '../config';
 import { scrapeUrl } from './scraper';
 import { getCachedProvider } from './api-provider';
 import { logApiUsage } from './api-usage';
+import { DEFAULT_GROK_MODEL } from './grok';
 
 // --- Types ---
 
@@ -420,7 +421,7 @@ const SCRAPE_SCHEMA_HINT = `[{"name":"<program/RFP name>","description":"<one se
 
 async function llmExtractOpportunities(markdown: string, source: FeedSource): Promise<FeedItem[]> {
   const provider = getCachedProvider('grok');
-  const model = provider?.default_model || 'grok-4.20-beta-0309-non-reasoning';
+  const model = provider?.default_model || DEFAULT_GROK_MODEL;
   const apiKey = provider?.api_key;
   const baseUrl = provider?.base_url || config.apis.grok.baseUrl;
   if (!apiKey) return [];

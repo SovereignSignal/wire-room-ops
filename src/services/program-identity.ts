@@ -17,6 +17,7 @@ import { extractOrgFromName } from './org-extractor';
 import { normalizeUrl } from '../utils/url';
 import { scrapeUrl } from './scraper';
 import type { Pool, PoolClient } from 'pg';
+import { DEFAULT_GROK_MODEL } from './grok';
 
 // ── Key normalization ───────────────────────────────────────────────────
 // The primary identity key: lowercase alnum with round/cohort/date noise
@@ -541,7 +542,7 @@ ${entriesText}
   if (!provider?.api_key) return [];
   const apiKey = provider.api_key;
   const baseUrl = provider.base_url || config.apis.grok.baseUrl;
-  const model = provider?.default_model || 'grok-4.20-beta-0309-non-reasoning';
+  const model = provider?.default_model || DEFAULT_GROK_MODEL;
   try {
     const response = await fetchImpl(`${baseUrl}/chat/completions`, {
       method: 'POST',

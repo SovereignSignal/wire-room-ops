@@ -9,6 +9,7 @@
 import { config } from '../config';
 import { getPool } from '../db';
 import { getCachedProvider } from './api-provider';
+import { DEFAULT_GROK_MODEL } from './grok';
 
 // ============================================================
 // Known org aliases → canonical name mapping
@@ -464,7 +465,7 @@ Return ONLY valid JSON array, no explanation.`;
   const provider = getCachedProvider('grok');
   const apiKey = provider?.api_key;
   const baseUrl = provider?.base_url || config.apis.grok.baseUrl;
-  const model = provider?.default_model || 'grok-4.20-beta-0309-non-reasoning';
+  const model = provider?.default_model || DEFAULT_GROK_MODEL;
 
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',

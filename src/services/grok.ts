@@ -43,8 +43,12 @@ interface GrokResponse {
   }>;
 }
 
-// Default model if none specified - grok-4.20 non-reasoning: ~2x faster than grok-4.1, same quality
-const DEFAULT_GROK_MODEL = 'grok-4.20-beta-0309-non-reasoning';
+// Last-resort chat model when the grok provider row has no default_model.
+// The DB row is authoritative (it has pointed the slot at glm-5.2 on
+// ollama.com since 2026-07-11); this literal exists so a blank row fails on a
+// named model instead of an empty string. One definition — the six callers
+// that used to carry their own copy import this.
+export const DEFAULT_GROK_MODEL = 'grok-4.20-beta-0309-non-reasoning';
 const DEFAULT_GROK_BASE_URL = 'https://api.x.ai/v1';
 
 function requireGrokProvider() {

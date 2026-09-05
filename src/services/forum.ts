@@ -16,6 +16,7 @@ import type { RawScanResult } from '../types/intake';
 import { sleep } from '../utils/async';
 import { getCachedProvider } from './api-provider';
 import { logApiUsage } from './api-usage';
+import { DEFAULT_GROK_MODEL } from './grok';
 
 // --- Wire-to-category mapping (discuss.watch categories match wire keys) ---
 // Wire keys map 1:1 to discuss.watch categories today; keeping the map
@@ -588,7 +589,7 @@ export async function judgeForumCandidates(
   const progress = onProgress || (() => {});
 
   const provider = getCachedProvider('grok');
-  const model = provider?.default_model || 'grok-4.20-beta-0309-non-reasoning';
+  const model = provider?.default_model || DEFAULT_GROK_MODEL;
   const apiKey = provider?.api_key;
   const baseUrl = provider?.base_url || config.apis.grok.baseUrl;
 
