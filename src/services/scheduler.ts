@@ -14,6 +14,7 @@ import { runCsvExport } from '../jobs/csv-export';
 import { assembleAndSendDailyDigest, formatStaleSourceAnomalies } from '../jobs/daily-digest';
 import { runAccountMonitor } from '../jobs/account-monitor';
 import { ensureScheduleTable, getAllSchedules, getScheduleById, createSchedule, updateSchedule, deleteSchedule as dbDeleteSchedule, StoredScheduleConfig, ensureFeedsTable, ensureScanTables, ensureScanPromptsTable, ensureDistributionTables, getPool } from '../db';
+import { getAppState, setAppState } from '../db';
 import { getActiveWires } from './intake-core';
 
 export interface ScheduleConfig {
@@ -56,6 +57,7 @@ interface JobStatus {
   status: 'success' | 'failed' | null;
   error: string | null;
   retried?: boolean;
+  durationMs?: number;
 }
 let jobStatuses: Map<string, JobStatus> = new Map();
 let executingJobs: Set<string> = new Set(); // Prevents overlapping cron runs
@@ -284,13 +286,18 @@ function buildCronExpression(schedule: ScheduleConfig): string {
 }
 
 function createJobExecutor(schedule: ScheduleConfig) {
-  const executor = async function executeScheduledJob(): Promise<void> {
+  const executor = async function executeScheduledJob(attempt = 0): Promise<void> {
     // Prevent overlapping execution
     if (executingJobs.has(schedule.id)) {
       console.log(`[Scheduler] Job "${schedule.name}" is already running, skipping overlapping execution`);
       return;
     }
 
+    if (attempt === 0) {
+      const pending = pendingRetryTimers.get(schedule.id);
+      if (pending) clearTimeout(pending);
+      pendingRetryTimers.delete(schedule.id);
+    }
     const jobStartTime = new Date();
     console.log(`[Scheduler] Starting job for "${schedule.name}" at ${jobStartTime.toISOString()}`);
 
@@ -301,20 +308,21 @@ function createJobExecutor(schedule: ScheduleConfig) {
       return;
     }
 
+    executingJobs.add(schedule.id);
     // Re-check DB enabled flag — ensures disabling in DB takes effect without restart
     try {
       const pool = getPool();
       const freshCheck = await pool.query('SELECT enabled FROM schedules WHERE id = $1', [schedule.id]);
       if (!freshCheck.rows[0]?.enabled) {
         console.log(`[Scheduler] Schedule "${schedule.name}" disabled in DB, skipping`);
+        executingJobs.delete(schedule.id);
         return;
       }
     } catch (err) {
       console.warn(`[Scheduler] Could not verify enabled flag for "${schedule.name}", proceeding`);
     }
 
-    executingJobs.add(schedule.id);
-    const status: JobStatus = { lastRun: jobStartTime, status: null, error: null };
+    const status: JobStatus = { lastRun: jobStartTime, status: null, error: null, retried: attempt > 0 };
     jobStatuses.set(schedule.id, status);
 
     try {
@@ -331,8 +339,8 @@ function createJobExecutor(schedule: ScheduleConfig) {
           },
         });
 
-        status.status = 'success';
-        status.error = null;
+        status.status = scanResult.partial ? 'failed' : 'success';
+        status.error = scanResult.partial ? `${scanResult.promptsFailed} prompts failed or were deferred` : null;
         console.log(`[Scheduler] Scan "${currentScheduleData.name}" completed: ${scanResult.promptsExecuted} prompts, ${scanResult.totalResults} results, ${scanResult.intakeSummary.newUnique} unique`);
 
         // Per-scan email notifications are disabled.
@@ -372,6 +380,7 @@ function createJobExecutor(schedule: ScheduleConfig) {
         status.status = 'success';
         status.error = null;
         const failed = feedsResult.perSource.filter(s => s.error).length;
+        if (failed) { status.status = 'failed'; status.error = `${failed} sources failed`; }
         console.log(`[Scheduler] Source feeds "${currentScheduleData.name}" completed: ${feedsResult.totalFresh} fresh from ${feedsResult.perSource.length} sources (${failed} errored), ${feedsResult.intakeSummary.newUnique} unique`);
 
         if (config.watchtower.xListsEnabled) {
@@ -644,7 +653,7 @@ function createJobExecutor(schedule: ScheduleConfig) {
         }
 
         // Retry once after 5 minutes for transient failures (skip on quota exhaustion)
-        if (!status.retried && !isQuotaError) {
+        if (attempt === 0 && !isQuotaError) {
           status.retried = true;
           const scheduleId = schedule.id;
           console.log(`[Scheduler] Will retry "${schedule.name}" in 5 minutes...`);
@@ -656,7 +665,7 @@ function createJobExecutor(schedule: ScheduleConfig) {
               return;
             }
             console.log(`[Scheduler] Retrying "${schedule.name}"...`);
-            executor();
+            void executor(1);
           }, 5 * 60 * 1000);
           retryTimer.unref();
           pendingRetryTimers.set(scheduleId, retryTimer);
@@ -665,6 +674,9 @@ function createJobExecutor(schedule: ScheduleConfig) {
         }
       }
     } finally {
+      status.durationMs = Date.now() - jobStartTime.getTime();
+      await setAppState(`scheduler:last:${schedule.id}`, status).catch(error =>
+        console.error('[Scheduler] Failed to persist run health:', error));
       executingJobs.delete(schedule.id);
     }
   };
@@ -680,7 +692,8 @@ function startScheduleTask(schedule: ScheduleConfig): void {
 
   console.log(`[Scheduler] Starting task for "${schedule.name}" with cron: ${cronExpression}`);
 
-  const task = cron.schedule(cronExpression, createJobExecutor(schedule), {
+  const executor = createJobExecutor(schedule);
+  const task = cron.schedule(cronExpression, () => executor(), {
     timezone: schedule.timezone,
   });
 
@@ -720,6 +733,8 @@ export function stopScheduler(): void {
     console.log(`[Scheduler] Stopped task ${id}`);
   }
   scheduledTasks.clear();
+  for (const timer of pendingRetryTimers.values()) clearTimeout(timer);
+  pendingRetryTimers.clear();
   schedulerStartTime = null;
   console.log('[Scheduler] All schedulers stopped');
 }
@@ -794,6 +809,8 @@ export interface ScheduleStatus {
   lastJobRun: string | null;
   lastJobStatus: 'success' | 'failed' | null;
   lastJobError: string | null;
+  lastJobDurationMs: number | null;
+  lastJobRetried: boolean;
   nextRun: string | null;
   cronExpression: string | null;
   description: string;
@@ -801,6 +818,7 @@ export interface ScheduleStatus {
 }
 
 export interface SchedulerStatus {
+  initialized: boolean;
   isRunning: boolean;
   schedulerStartedAt: string | null;
   activeSchedules: number;
@@ -820,6 +838,8 @@ export function getSchedulerStatus(): SchedulerStatus {
       lastJobRun: jobStatus?.lastRun?.toISOString() || null,
       lastJobStatus: jobStatus?.status || null,
       lastJobError: jobStatus?.error || null,
+      lastJobDurationMs: jobStatus?.durationMs ?? null,
+      lastJobRetried: jobStatus?.retried ?? false,
       nextRun: getNextRunTime(schedule.id)?.toISOString() || null,
       cronExpression: buildCronExpression(schedule),
       description: formatScheduleDescription(schedule),
@@ -828,6 +848,7 @@ export function getSchedulerStatus(): SchedulerStatus {
   }
 
   return {
+    initialized: isInitialized,
     isRunning: scheduledTasks.size > 0,
     schedulerStartedAt: schedulerStartTime?.toISOString() || null,
     activeSchedules: scheduledTasks.size,
@@ -882,6 +903,10 @@ export async function initScheduler(): Promise<void> {
       console.log(`  - ${schedule.name} [${schedule.scheduleType}] wire=${schedule.wire} enabled=${schedule.enabled} cron=${buildCronExpression(schedule)}`);
     }
 
+    for (const schedule of schedules.values()) {
+      const saved = await getAppState<JobStatus>(`scheduler:last:${schedule.id}`);
+      if (saved) jobStatuses.set(schedule.id, { ...saved, lastRun: saved.lastRun ? new Date(saved.lastRun) : null });
+    }
     // Start all enabled schedules
     let enabledCount = 0;
     for (const schedule of schedules.values()) {

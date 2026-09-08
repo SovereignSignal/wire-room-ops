@@ -38,6 +38,8 @@ import { scanPromptRouter } from './routes/scan-prompts';
 import { scanEntryRouter } from './routes/scan-entries';
 import { grantsIntelRouter } from './routes/grants-intel';
 
+import { drainPublicationQueue } from './services/publication-queue';
+
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -57,7 +59,7 @@ app.get('/ready', async (_req: Request, res: Response) => {
   const checks = {
     db: false,
     schedulerInitialized: false,
-    startupMigrations: migrations.failed === 0,
+    startupMigrations: migrations.ran && migrations.failed === 0,
   };
 
   try {
@@ -68,9 +70,9 @@ app.get('/ready', async (_req: Request, res: Response) => {
   }
 
   const schedulerStatus = getSchedulerStatus();
-  checks.schedulerInitialized = schedulerStatus.totalSchedules > 0;
+  checks.schedulerInitialized = schedulerStatus.initialized;
 
-  const ready = checks.db && checks.startupMigrations;
+  const ready = checks.db && checks.startupMigrations && checks.schedulerInitialized;
   const payload = {
     status: ready ? 'ready' : 'not_ready',
     timestamp: new Date().toISOString(),
@@ -113,6 +115,10 @@ app.use('/api', requireAuthOrInternalKey, scanExecutionRouter);
 // resolves to the trigger above, not this CRUD router.
 app.use('/api/feeds', requireAuth, feedRouter);
 
+app.use('/api/grants-intel', requireAuthOrInternalKey, grantsIntelRouter);
+
+app.use('/api/accounts', requireAuthOrInternalKey, accountsRouter);
+
 // Schedule, digest & scheduler status API
 app.use('/api', requireAuth, scheduleRouter);
 
@@ -137,7 +143,6 @@ app.use('/api', requireAuth, providerRouter);
 app.use('/api/database', requireAuth, databaseRouter);
 
 // Grants intelligence intake / four-pillar review view
-app.use('/api/grants-intel', requireAuthOrInternalKey, grantsIntelRouter);
 
 // Org profiles API
 app.use('/api/orgs', requireAuth, orgRouter);
@@ -147,7 +152,6 @@ app.use('/api/integrations', requireAuth, integrationRouter);
 
 // Admin operations (migrations, backfills, purges)
 app.use('/api/admin', requireAuth, adminRouter);
-app.use('/api/accounts', requireAuthOrInternalKey, accountsRouter);
 
 // ── Static serving & SPA fallback ───────────────────────────
 
@@ -156,7 +160,7 @@ const clientDist = path.join(__dirname, '../dist/client');
 app.use(express.static(clientDist, {
   // Hashed assets (e.g. index-abc123.js) can be cached forever
   setHeaders: (res, filePath) => {
-    if (filePath.match(/\.(js|css)$/) && filePath.match(/[-\.][a-f0-9]{8}\./)) {
+    if (path.relative(clientDist, filePath).startsWith(`assets${path.sep}`)) {
       res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
     } else {
       // index.html and other non-hashed files: no cache
@@ -335,6 +339,15 @@ export async function startServer(): Promise<void> {
   // into the daily-digest cycle (scheduler.ts) — no standalone timers. The
   // digest-orgs lane was retired 2026-07-03.
 
+  const publishTick = () => {
+    const migrations = getStartupMigrationHealth();
+    if (!migrations.ran || migrations.failed) return;
+    return drainPublicationQueue().catch(error => console.error('[PublicationQueue]', error));
+  };
+  const publicationTimer = setInterval(publishTick, 30_000);
+  publicationTimer.unref();
+  void publishTick();
+
   const server = app.listen(config.app.port, () => {
     console.log(`Server running on port ${config.app.port}`);
   });
@@ -348,6 +361,7 @@ export async function startServer(): Promise<void> {
     jobQueue.stopPeriodicCleanup();
     clearInterval(processRawTimer);
     clearInterval(contactsSyncTimer);
+    clearInterval(publicationTimer);
     server.close(async () => {
       await closePool();
       console.log('[Server] Shutdown complete');

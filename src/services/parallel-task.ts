@@ -70,7 +70,7 @@ async function verifyOne(item: VerifyInput, wire?: string): Promise<VerifyResult
       body: JSON.stringify({ input, processor: 'core-fast', task_spec: { output_schema: { type: 'json', json_schema: VERIFY_SCHEMA } } }),
     });
     if (!create.ok) {
-      logApiUsage({ provider: 'parallel', model: 'task-core', purpose: 'weekly-verify', wire, duration_ms: Date.now() - start, success: false, error_message: String(create.status) });
+      logApiUsage({ provider: 'parallel', model: 'core-fast', purpose: 'weekly-verify', wire, duration_ms: Date.now() - start, success: false, error_message: String(create.status) });
       return null;
     }
     const created = await create.json() as { run_id?: string };
@@ -87,9 +87,10 @@ async function verifyOne(item: VerifyInput, wire?: string): Promise<VerifyResult
       const data = await res.json() as {
         output?: { content?: Record<string, unknown>; basis?: Array<{ field?: string; confidence?: string; citations?: Array<{ url?: string }> }> };
       };
-      logApiUsage({ provider: 'parallel', model: 'task-core', purpose: 'weekly-verify', wire, duration_ms: Date.now() - start });
+      logApiUsage({ provider: 'parallel', model: 'core-fast', purpose: 'weekly-verify', wire, duration_ms: Date.now() - start });
       const content = data.output?.content || {};
       const basis = data.output?.basis || [];
+      if (typeof content.is_open !== 'boolean') return null;
 
       // Prefer the citation + confidence backing the amount / apply_url claim.
       let citationUrl: string | null = null;

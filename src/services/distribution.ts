@@ -34,104 +34,22 @@ export interface DistributeResult {
  * Distribute all undistributed approved entries for a wire.
  */
 export async function distributeEntries(wire: string): Promise<DistributeResult> {
-  const configs = await getDistributionConfigs(wire);
-  const enabledConfigs = configs.filter(c => c.enabled && c.channel !== 'newsletter');
-
-  // Also load managed channels from distribution_channels table
-  const managedChannels = await getEnabledDistributionChannelsForWire(wire);
-
-  if (enabledConfigs.length === 0 && managedChannels.length === 0) {
-    return { wire, totalEntries: 0, distributed: 0, failed: 0, skipped: 0, details: [] };
-  }
-
-  // Get entries undistributed to ANY enabled channel
   const entries = await getUndistributedEntries(wire);
-  const result: DistributeResult = {
-    wire,
-    totalEntries: entries.length,
-    distributed: 0,
-    failed: 0,
-    skipped: 0,
-    details: [],
-  };
-
-  const telegramBotToken = getTelegramBotToken();
-
-  for (let i = 0; i < entries.length; i++) {
-    const entry = entries[i];
-    const detail: DistributeResult['details'][0] = {
-      entryId: entry.id,
-      name: entry.name,
-      channels: {},
-    };
-
+  const result: DistributeResult = { wire, totalEntries: entries.length, distributed: 0, failed: 0, skipped: 0, details: [] };
+  for (const entry of entries) {
     try {
-      const posts = await generatePosts({
-        name: entry.name,
-        description: entry.description || '',
-        amount: entry.amount,
-        deadline: entry.deadline,
-        sourceUrl: entry.source_url,
-      }, wire);
-
-      let anySuccess = false;
-
-      // Dispatch to legacy distribution_config channels
-      for (const cfg of enabledConfigs) {
-        const channelResult = await dispatchToChannel(cfg, entry, posts, telegramBotToken);
-        detail.channels[cfg.channel] = channelResult;
-        if (channelResult === 'success') anySuccess = true;
-        if (channelResult === 'failed') result.failed++;
-        if (channelResult === 'skipped') result.skipped++;
-      }
-
-      // Dispatch to managed distribution_channels
-      for (const mc of managedChannels) {
-        const channelResult = await dispatchToManagedChannel(mc, entry, posts);
-        const channelKey = `${mc.channel}:${mc.id.slice(0, 8)}`;
-        detail.channels[channelKey] = channelResult;
-        if (channelResult === 'success') anySuccess = true;
-        if (channelResult === 'failed') result.failed++;
-        if (channelResult === 'skipped') result.skipped++;
-      }
-
-      if (anySuccess) result.distributed++;
+      const sent = await distributeEntry(entry.id, wire, true);
+      if (sent.distributed) result.distributed++;
+      result.failed += sent.failed;
+      result.skipped += sent.skipped;
+      result.details.push(...sent.details);
     } catch (error) {
-      console.error(`[Distribution] Failed to distribute entry ${entry.id}:`, error);
-      // Log failures for each channel (entry-level failure, count once)
-      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-      for (const cfg of enabledConfigs) {
-        await logDistribution({
-          entryId: entry.id,
-          channel: cfg.channel,
-          wire,
-          status: 'failed',
-          errorMessage: errorMsg,
-        });
-        detail.channels[cfg.channel] = 'failed';
-      }
-      for (const mc of managedChannels) {
-        await logDistribution({
-          entryId: entry.id,
-          channel: mc.channel as DistributionChannel,
-          channelId: mc.id,
-          wire,
-          status: 'failed',
-          errorMessage: errorMsg,
-        });
-        detail.channels[`${mc.channel}:${mc.id.slice(0, 8)}`] = 'failed';
-      }
+      // A receipt failure must not fabricate failed logs for successful sends.
+      console.error(`[Distribution] Entry ${entry.id} needs recovery:`, error);
       result.failed++;
     }
-
-    result.details.push(detail);
-
-    // Rate-pacing: 3s delay between entries (X rate limits)
-    if (i < entries.length - 1) {
-      await sleep(3000);
-    }
+    if (entry !== entries[entries.length - 1]) await sleep(3000);
   }
-
   return result;
 }
 
@@ -226,6 +144,7 @@ async function dispatchToManagedChannel(
         try {
           const resp = await fetch(webhookUrl, {
             method: 'POST',
+            signal: AbortSignal.timeout(30000),
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ text: posts.telegram }),
           });
@@ -365,25 +284,40 @@ async function sendAfterClaim(params: {
     channel: params.channel,
     wire: params.wire,
     channelId: params.channelId,
+    postText: params.postText,
   });
   if (!slot) return 'skipped';
 
+  let result;
   try {
-    const result = await params.send();
-    await finalizeDistributionLog(slot.id, {
-      status: result.ok ? 'success' : 'failed',
-      postText: params.postText,
-      externalId: result.externalId,
-      errorMessage: result.ok ? undefined : result.errorMessage,
-    });
-    return result.ok ? 'success' : 'failed';
+    result = await params.send();
   } catch (error) {
-    await finalizeDistributionLog(slot.id, {
-      status: 'failed',
-      errorMessage: error instanceof Error ? error.message : 'Unknown error',
-    });
-    throw error;
+    await flagUncertainDelivery(slot.id, error instanceof Error ? error.message : 'Send outcome unknown');
+    return 'failed';
   }
+  // Legacy adapters return null for both network timeouts and API errors.
+  // Without a positive receipt, automatic resend could duplicate publication.
+  if (!result.ok) {
+    await flagUncertainDelivery(slot.id, result.errorMessage || 'Send outcome unknown');
+    return 'failed';
+  }
+  // Retry only receipt persistence, never a send that already succeeded.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await finalizeDistributionLog(slot.id, {
+        status: 'success', postText: params.postText, externalId: result.externalId,
+      });
+      return 'success';
+    } catch (error) {
+      if (attempt === 2) {
+        console.error(`[Distribution] Receipt for claim ${slot.id} needs reconciliation`, { externalId: result.externalId });
+        await flagUncertainDelivery(slot.id, 'Successful send; receipt persistence failed', result.externalId, params.postText);
+        throw error;
+      }
+      await sleep(100 * (attempt + 1));
+    }
+  }
+  return 'failed';
 }
 
 /**
@@ -391,7 +325,7 @@ async function sendAfterClaim(params: {
  * Used when an entry is approved via the dashboard — only sends that one entry,
  * not the entire backlog of approved-but-undistributed entries.
  */
-export async function distributeEntry(entryId: number, wire: string): Promise<DistributeResult> {
+export async function distributeEntry(entryId: number, wire: string, wireOnly = false): Promise<DistributeResult> {
   const pool = getPool();
   const entryResult = await pool.query(
     `SELECT * FROM scan_entries WHERE id = $1 AND status = 'approved' AND distributable IS NOT FALSE`,
@@ -409,7 +343,7 @@ export async function distributeEntry(entryId: number, wire: string): Promise<Di
   // Single-wire entries behave exactly as before. The unique partial index
   // on distribution_logs (entry_id, channel, channel_id) prevents double-posts
   // to the same channel across repeated calls.
-  const wireList: string[] = Array.from(new Set(
+  const wireList: string[] = wireOnly ? [wire] : Array.from(new Set(
     Array.isArray(entry.wires) && entry.wires.length > 0 ? entry.wires : [entry.wire || wire]
   ));
 
@@ -420,8 +354,12 @@ export async function distributeEntry(entryId: number, wire: string): Promise<Di
 
   for (const w of wireList) {
     const configs = await getDistributionConfigs(w);
-    const enabledConfigs = configs.filter(c => c.enabled && c.channel !== 'newsletter');
-    const managedChannels = await getEnabledDistributionChannelsForWire(w);
+    const logs = await getDistributionLogs(entryId);
+    const settled = (channel: string, channelId?: string) => logs.some(l =>
+      l.wire === w && l.channel === channel && (l.channelId || null) === (channelId || null)
+      && (l.status === 'success' || l.status === 'pending'));
+    const enabledConfigs = configs.filter(c => c.enabled && c.channel !== 'newsletter' && !settled(c.channel));
+    const managedChannels = (await getEnabledDistributionChannelsForWire(w)).filter(c => !settled(c.channel, c.id));
 
     if (enabledConfigs.length === 0 && managedChannels.length === 0) continue;
 
@@ -452,84 +390,18 @@ export async function distributeEntry(entryId: number, wire: string): Promise<Di
     }
   }
 
+  if (Object.keys(detail.channels).length === 0) result.totalEntries = 0;
   return result;
 }
 
 export async function retryDistribution(entryId: number, wire: string): Promise<DistributeResult> {
-  const pool = getPool();
-  const entryResult = await pool.query(
-    `SELECT * FROM scan_entries WHERE id = $1 AND status = 'approved'`,
-    [entryId]
-  );
+  return distributeEntry(entryId, wire);
+}
 
-  if (entryResult.rows.length === 0) {
-    return { wire, totalEntries: 0, distributed: 0, failed: 0, skipped: 0, details: [] };
-  }
-
-  // Only retry channels without a success or in-flight send. Failed logs are
-  // KEPT — they're the audit trail (and the unique partial index only covers
-  // pending/success, so old failures never block a new attempt).
-  const existingLogs = await getDistributionLogs(entryId);
-  const settledChannels = new Set<string>(
-    existingLogs.filter(l => l.status === 'success' || l.status === 'pending').map(l => l.channel)
-  );
-
-  const configs = await getDistributionConfigs(wire);
-  const retryConfigs = configs.filter(
-    c => c.enabled && c.channel !== 'newsletter' && !settledChannels.has(c.channel)
-  );
-  // Managed channels (distribution_channels) — the live production path.
-  // dispatchToManagedChannel has its own per-(entry, channel) pending/success
-  // guard, so calling it here can never double-post.
-  const managedChannels = (await getEnabledDistributionChannelsForWire(wire))
-    .filter(mc => !settledChannels.has(mc.channel));
-
-  if (retryConfigs.length === 0 && managedChannels.length === 0) {
-    return { wire, totalEntries: 0, distributed: 0, failed: 0, skipped: 0, details: [] };
-  }
-
-  const entry = entryResult.rows[0];
-  const telegramBotToken = getTelegramBotToken();
-  const posts = await generatePosts({
-    name: entry.name,
-    description: entry.description || '',
-    amount: entry.amount,
-    deadline: entry.deadline,
-    sourceUrl: entry.source_url,
-  }, wire);
-
-  const detail: DistributeResult['details'][0] = {
-    entryId: entry.id,
-    name: entry.name,
-    channels: {},
-  };
-
-  const result: DistributeResult = {
-    wire,
-    totalEntries: 1,
-    distributed: 0,
-    failed: 0,
-    skipped: 0,
-    details: [detail],
-  };
-
-  for (const cfg of retryConfigs) {
-    const channelResult = await dispatchToChannel(cfg, entry, posts, telegramBotToken);
-    detail.channels[cfg.channel] = channelResult;
-    if (channelResult === 'success') result.distributed++;
-    if (channelResult === 'failed') result.failed++;
-    if (channelResult === 'skipped') result.skipped++;
-  }
-
-  for (const mc of managedChannels) {
-    const channelResult = await dispatchToManagedChannel(mc, entry, posts);
-    detail.channels[`${mc.channel}:${mc.id.slice(0, 8)}`] = channelResult;
-    if (channelResult === 'success') result.distributed++;
-    if (channelResult === 'failed') result.failed++;
-    if (channelResult === 'skipped') result.skipped++;
-  }
-
-  return result;
+async function flagUncertainDelivery(id: number, message: string, externalId?: string, postText?: string): Promise<void> {
+  await getPool().query(`UPDATE distribution_logs SET needs_review = true, error_message = $2,
+    external_id = COALESCE($3, external_id), post_text = COALESCE($4, post_text)
+    WHERE id = $1 AND status = 'pending'`, [id, message, externalId || null, postText || null]);
 }
 
 /**

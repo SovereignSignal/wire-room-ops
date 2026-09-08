@@ -23,11 +23,9 @@ export interface MergeOptions {
 
 /**
  * Merge source org into target org:
- * 1. Relink all scan_entries from source → target
- * 2. Combine wires arrays (deduplicated)
- * 3. Store source name in target's aliases
- * 4. Update entry_count on target
- * 5. Delete source org
+ * Atomically preserve contacts, entries, programs, watched sources, and children;
+ * combine wires/aliases and delete the source. Conflicting contact identifiers
+ * require resolution before merging. External archival runs after commit.
  */
 export async function mergeOrgs(
   sourceId: number,
@@ -39,46 +37,92 @@ export async function mergeOrgs(
   const pool = getPool();
   const archiveNotion = opts.archiveNotion ?? true;
 
-  // Verify both exist
-  const [sourceRes, targetRes] = await Promise.all([
-    pool.query(`SELECT id, name, wires, aliases FROM org_profiles WHERE id = $1`, [sourceId]),
-    pool.query(`SELECT id, name, wires, aliases FROM org_profiles WHERE id = $1`, [targetId]),
-  ]);
+  const client = await pool.connect();
+  let source;
+  let target;
+  let entriesRelinked = 0;
+  try {
+    await client.query('BEGIN');
+    // Consistent lock order also serializes merges sharing either organization.
+    const { rows } = await client.query(
+      `SELECT id, name, wires, aliases, parent_org_id FROM org_profiles
+       WHERE id = ANY($1::int[]) ORDER BY id FOR UPDATE`,
+      [[sourceId, targetId]],
+    );
+    source = rows.find(row => row.id === sourceId);
+    target = rows.find(row => row.id === targetId);
+    if (!source) throw new Error(`Source org id=${sourceId} not found`);
+    if (!target) throw new Error(`Target org id=${targetId} not found`);
 
-  if (sourceRes.rows.length === 0) throw new Error(`Source org id=${sourceId} not found`);
-  if (targetRes.rows.length === 0) throw new Error(`Target org id=${targetId} not found`);
+    // Contact discovery creates this optional table on first use.
+    const contactsTable = await client.query(`SELECT to_regclass('discovered_contacts') AS name`);
+    if (contactsTable.rows[0].name) {
+      await client.query(
+        `SELECT id FROM discovered_contacts WHERE org_id = ANY($1::int[]) ORDER BY id FOR UPDATE`,
+        [[sourceId, targetId]],
+      );
+      const conflicts = await client.query(
+        `SELECT s.name FROM discovered_contacts s JOIN discovered_contacts t
+           ON t.name_norm = s.name_norm AND t.org_id = $2
+         WHERE s.org_id = $1 AND (
+           (s.notion_page_id IS NOT NULL AND t.notion_page_id IS NOT NULL AND s.notion_page_id <> t.notion_page_id)
+           OR (s.x_handle IS NOT NULL AND t.x_handle IS NOT NULL AND s.x_handle <> t.x_handle))`,
+        [sourceId, targetId],
+      );
+      if (conflicts.rows.length) {
+        throw new Error(`Resolve conflicting contact identifiers before merging: ${conflicts.rows.map(row => row.name).join(', ')}`);
+      }
+      // Combine complementary fields, keeping the target record's identity.
+      await client.query(
+        `UPDATE discovered_contacts t SET
+           x_handle = COALESCE(t.x_handle, s.x_handle),
+           notion_page_id = COALESCE(t.notion_page_id, s.notion_page_id),
+           created_at = LEAST(t.created_at, s.created_at)
+         FROM discovered_contacts s
+         WHERE s.org_id = $1 AND t.org_id = $2 AND s.name_norm = t.name_norm`,
+        [sourceId, targetId],
+      );
+      await client.query(
+        `DELETE FROM discovered_contacts s USING discovered_contacts t
+         WHERE s.org_id = $1 AND t.org_id = $2 AND s.name_norm = t.name_norm`,
+        [sourceId, targetId],
+      );
+      await client.query(`UPDATE discovered_contacts SET org_id = $2 WHERE org_id = $1`, [sourceId, targetId]);
+    }
 
-  const source = sourceRes.rows[0];
-  const target = targetRes.rows[0];
-
-  // 1. Relink entries
-  const relinked = await pool.query(
-    `UPDATE scan_entries SET org_id = $1 WHERE org_id = $2 RETURNING id`,
-    [targetId, sourceId]
-  );
-
-  // 2. Combine wires + 3. Store source name as alias on target
-  const combinedWires = [...new Set([...(target.wires || []), ...(source.wires || [])])];
-  const combinedAliases = [...new Set([...(target.aliases || []), source.name, ...(source.aliases || [])])];
-
-  await pool.query(
-    `UPDATE org_profiles SET
-      wires = $1,
-      aliases = $2,
-      entry_count = (SELECT COUNT(*) FROM scan_entries WHERE org_id = $3)::int,
-      updated_at = NOW()
-    WHERE id = $3`,
-    [combinedWires, combinedAliases, targetId]
-  );
-
-  // 4. Reparent any orgs that had source as parent
-  await pool.query(
-    `UPDATE org_profiles SET parent_org_id = $1 WHERE parent_org_id = $2`,
-    [targetId, sourceId]
-  );
-
-  // 5. Delete source
-  await pool.query(`DELETE FROM org_profiles WHERE id = $1`, [sourceId]);
+    const relinked = await client.query(
+      `UPDATE scan_entries SET org_id = $1 WHERE org_id = $2`, [targetId, sourceId],
+    );
+    entriesRelinked = relinked.rowCount ?? 0;
+    await client.query(
+      `UPDATE org_profiles SET wires = $1, aliases = $2,
+         entry_count = (SELECT COUNT(*) FROM scan_entries WHERE org_id = $3)::int,
+         updated_at = NOW() WHERE id = $3`,
+      [[...new Set([...(target.wires || []), ...(source.wires || [])])],
+       [...new Set([...(target.aliases || []), source.name, ...(source.aliases || [])])], targetId],
+    );
+    // A target that was the source's child inherits the source's parent.
+    await client.query(
+      `UPDATE org_profiles SET parent_org_id = CASE WHEN id = $1 THEN $3 ELSE $1 END
+       WHERE parent_org_id = $2`,
+      [targetId, sourceId, source.parent_org_id === targetId ? null : source.parent_org_id],
+    );
+    await client.query(
+      `UPDATE programs SET org_id = $1, org_name = $3, updated_at = NOW() WHERE org_id = $2`,
+      [targetId, sourceId, target.name],
+    );
+    await client.query(
+      `UPDATE watch_surfaces SET org_id = $1, org_name = $3, updated_at = NOW() WHERE org_id = $2`,
+      [targetId, sourceId, target.name],
+    );
+    await client.query(`DELETE FROM org_profiles WHERE id = $1`, [sourceId]);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 
   let notionArchived = 0;
   if (archiveNotion) {
@@ -90,10 +134,10 @@ export async function mergeOrgs(
     }
   }
 
-  console.log(`[OrgMerge] Merged "${source.name}" (id=${sourceId}) into "${target.name}" (id=${targetId}), relinked ${relinked.rowCount ?? 0} entries`);
+  console.log(`[OrgMerge] Merged "${source.name}" (id=${sourceId}) into "${target.name}" (id=${targetId}), relinked ${entriesRelinked} entries`);
 
   return {
-    entriesRelinked: relinked.rowCount ?? 0,
+    entriesRelinked,
     sourceDeleted: true,
     targetName: target.name,
     sourceName: source.name,

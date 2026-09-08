@@ -123,3 +123,12 @@ test('Telegram webhook without a configured secret returns 401 (not silently acc
   const res = await call('POST', '/api/telegram/intake-webhook');
   assert.equal(res.status, 401);
 });
+
+test('internal key reaches accounts and grants intelligence without unlocking session-only APIs', async () => {
+  for (const path of ['/api/accounts/monitored', '/api/grants-intel/summary']) {
+    const allowed = await call('GET', path, { key: KEY });
+    assert.equal(allowed.status, 200, path);
+    assert.equal((await call('GET', path)).status, 401);
+  }
+  assert.equal((await call('GET', '/api/distribution/review', { key: KEY })).status, 401);
+});

@@ -1,0 +1,241 @@
+{
+  "reviewDate": "2026-09-07",
+  "commit": "dac68c78bada3be0feff2bb7cb3e38b9776aa2ac",
+  "scope": "Local review with disposable PostgreSQL, real application orchestration, mocked external side effects, and fault injection. No production-impact claims.",
+  "runtime": {
+    "node": "26.8.1",
+    "postgresql": "17.11",
+    "ciNode": "22",
+    "ciPostgresql": "16"
+  },
+  "checks": {
+    "serverTypecheck": "passed",
+    "clientTypecheck": "passed",
+    "serverBuild": "passed",
+    "clientBuild": "passed",
+    "startupMigrationsPassed": 21,
+    "automatedTests": {
+      "passed": 695,
+      "failed": 0,
+      "skipped": 0
+    },
+    "browserQuietApproval": {
+      "status": "approved",
+      "distributable": false,
+      "deliveryLogs": 0
+    }
+  },
+  "reproductions": [
+    {
+      "id": "R1",
+      "name": "malformed-cookie-terminates-server",
+      "evidence": {
+        "method": "GET",
+        "path": "/api/scan/entries",
+        "cookie": "session=j:%7B%22test%22%3A1%7D",
+        "authenticationEnabled": true,
+        "connectionError": "UND_ERR_SOCKET",
+        "childExitCode": 1,
+        "exceptionCode": "ERR_INVALID_ARG_TYPE",
+        "exceptionLocation": "src/services/auth.ts:42",
+        "databaseLookupRequired": false
+      }
+    },
+    {
+      "id": "R2",
+      "name": "org-merge-deletes-discovered-contacts",
+      "evidence": {
+        "targetContactCount": 0,
+        "entryRelinked": true
+      }
+    },
+    {
+      "id": "R3",
+      "name": "duplicate-send-after-receipt-write-failure",
+      "evidence": {
+        "sendCount": 2,
+        "firstAttemptStatus": "failed",
+        "logs": [
+          {
+            "status": "success",
+            "externalId": "2"
+          },
+          {
+            "status": "failed",
+            "externalId": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "R4",
+      "name": "scheduler-retry-once-is-unbounded",
+      "evidence": {
+        "attempts": 4,
+        "retriesStillQueued": 1
+      }
+    },
+    {
+      "id": "R5",
+      "name": "partial-destination-retry-blocked",
+      "evidence": {
+        "retryTotal": 0,
+        "inBatch": false,
+        "sends": 0
+      }
+    },
+    {
+      "id": "R6",
+      "name": "pending-send-never-recovers",
+      "evidence": {
+        "ageDays": 7,
+        "reclaimed": null
+      }
+    },
+    {
+      "id": "R7",
+      "name": "weekly-all-unverified-still-checkpoints",
+      "evidence": {
+        "published": 41,
+        "verified": 0,
+        "emailed": true,
+        "checkpointAdvanced": true
+      }
+    },
+    {
+      "id": "R8",
+      "name": "weekly-verification-cap-starves-later-wire",
+      "evidence": {
+        "published": 41,
+        "verified": 40,
+        "hasOssSection": false
+      }
+    },
+    {
+      "id": "R9",
+      "name": "agent-route-shadowing",
+      "evidence": {
+        "/api/scan/entries": 200,
+        "/api/accounts/monitored": 401,
+        "/api/grants-intel/summary": 401
+      }
+    },
+    {
+      "id": "R10",
+      "name": "budget-ignores-other-scan-providers",
+      "evidence": {
+        "recordedPerplexityCost": 1000,
+        "allowed": true,
+        "spentUsd": 0,
+        "capUsd": 20
+      }
+    },
+    {
+      "id": "R11",
+      "name": "deployment-probes-liveness-not-readiness",
+      "evidence": {
+        "health": 200,
+        "ready": 503,
+        "configuredProbe": "/health"
+      }
+    }
+  ],
+  "dependencyAudits": {
+    "server": {
+      "counts": {
+        "info": 0,
+        "low": 0,
+        "moderate": 3,
+        "high": 0,
+        "critical": 0,
+        "total": 3
+      },
+      "packages": [
+        {
+          "name": "body-parser",
+          "severity": "moderate",
+          "affectedRange": "1.20.5 - 1.20.6",
+          "fixAvailable": {
+            "name": "express",
+            "version": "5.2.1",
+            "isSemVerMajor": true
+          },
+          "advisoryUrls": []
+        },
+        {
+          "name": "express",
+          "severity": "moderate",
+          "affectedRange": "4.22.2",
+          "fixAvailable": {
+            "name": "express",
+            "version": "5.2.1",
+            "isSemVerMajor": true
+          },
+          "advisoryUrls": []
+        },
+        {
+          "name": "qs",
+          "severity": "moderate",
+          "affectedRange": "2.2.5 - 6.15.3",
+          "fixAvailable": {
+            "name": "express",
+            "version": "5.2.1",
+            "isSemVerMajor": true
+          },
+          "advisoryUrls": [
+            "https://github.com/advisories/GHSA-x5fp-wj9c-mxmx",
+            "https://github.com/advisories/GHSA-4mjr-xmp4-gh2g"
+          ]
+        }
+      ]
+    },
+    "client": {
+      "counts": {
+        "info": 0,
+        "low": 1,
+        "moderate": 1,
+        "high": 1,
+        "critical": 0,
+        "total": 3
+      },
+      "packages": [
+        {
+          "name": "browserslist",
+          "severity": "high",
+          "affectedRange": "<=4.28.6",
+          "fixAvailable": true,
+          "advisoryUrls": [
+            "https://github.com/advisories/GHSA-c83g-rgw3-j3cx",
+            "https://github.com/advisories/GHSA-73wf-gq98-2v4g"
+          ]
+        },
+        {
+          "name": "postcss",
+          "severity": "moderate",
+          "affectedRange": "<=8.5.22",
+          "fixAvailable": true,
+          "advisoryUrls": [
+            "https://github.com/advisories/GHSA-fxqj-rqcc-2cmp"
+          ]
+        },
+        {
+          "name": "postcss-selector-parser",
+          "severity": "low",
+          "affectedRange": "6.1.0 - 6.1.2",
+          "fixAvailable": true,
+          "advisoryUrls": [
+            "https://github.com/advisories/GHSA-w9m9-85wc-3x92"
+          ]
+        }
+      ]
+    }
+  },
+  "assetCacheObservation": {
+    "builtJsCssAssets": 11,
+    "immutableRegexMatches": 0,
+    "sampleFilenames": [
+      "index-CQ-2ooDf.js",
+      "api-D3-U5739.js"
+    ]
+  }
+}

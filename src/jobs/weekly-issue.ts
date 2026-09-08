@@ -25,6 +25,7 @@ import { landWeeklyInPasteLog } from '../services/weekly-notion';
 import { getAppState, setAppState } from '../db';
 
 interface SpineItem {
+  id: number;
   wire: string;
   name: string;
   url: string;
@@ -65,6 +66,7 @@ export interface WeeklyIssueResult {
   hadPriorIssue: boolean;
   markdown: string;
   emailed: boolean;
+  deferredCount: number;
 }
 
 const PRIOR_ISSUE_KEY = 'weekly:last-issue';   // { date, markdown }
@@ -207,28 +209,29 @@ function fallbackDesc(it: SpineItem, kind: 'featured' | 'alsoopen'): string {
 // ---------------------------------------------------------------------------
 
 /** The week's distributed-and-approved items since the last issue — the spine of the recap. */
-async function gatherSpine(pool: Pool, windowStart: string): Promise<SpineItem[]> {
+async function gatherSpine(pool: Pool, windowStart: string, deferredIds: number[] = []): Promise<SpineItem[]> {
   const { rows } = await pool.query(
     `
     with deduped as (
-      select distinct on (se.id)
-        coalesce(dl.wire, se.wire) as wire, se.name, se.source_url,
+      select distinct on (se.id, dl.wire)
+        se.id, coalesce(dl.wire, se.wire) as wire, se.name, se.source_url,
         se.amount, se.deadline, se.quality_score, se.metadata
       from distribution_logs dl
       join scan_entries se on se.id = dl.entry_id
       where dl.status = 'success'
-        and dl.created_at >= $1
+        and (dl.created_at >= $1 OR se.id = ANY($2::int[]))
         and coalesce(se.status,'') = 'approved'
         and coalesce(se.classification,'') <> 'NOISE'
-      order by se.id, dl.created_at asc
+      order by se.id, dl.wire, dl.created_at asc
     )
     select * from deduped
     order by wire, quality_score desc nulls last`,
-    [windowStart],
+    [windowStart, deferredIds],
   );
   return rows
     .filter((r) => r.name && r.source_url)
     .map((r) => ({
+      id: r.id,
       wire: (r.wire || 'crypto').toLowerCase(),
       name: r.name,
       url: r.source_url,
@@ -325,8 +328,8 @@ ITEMS:
 ${lines}`;
 }
 
-export function parseVerify(text: string): Map<number, { open: boolean; amount: string | null; deadline: string | null }> {
-  const m = new Map<number, { open: boolean; amount: string | null; deadline: string | null }>();
+export function parseVerify(text: string): Map<number, { open: boolean; known: boolean; amount: string | null; deadline: string | null }> {
+  const m = new Map<number, { open: boolean; known: boolean; amount: string | null; deadline: string | null }>();
   try {
     const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
     const s = cleaned.indexOf('['), e = cleaned.lastIndexOf(']');
@@ -338,6 +341,7 @@ export function parseVerify(text: string): Map<number, { open: boolean; amount: 
             // This parser feeds a public-draft verification gate. Require an
             // explicit positive verdict instead of treating omissions as open.
             open: o.open === true,
+            known: typeof o.open === 'boolean',
             amount: typeof o.amount === 'string' && o.amount.toLowerCase() !== 'null' ? o.amount : null,
             deadline: typeof o.deadline === 'string' && o.deadline.toLowerCase() !== 'null' ? o.deadline : null,
           });
@@ -374,9 +378,9 @@ export function assertWeeklyCheckpointAllowed(input: {
  * currently-open opportunity, correcting amount/deadline. Drops closed/unverifiable
  * items (including X-only sources with no canonical page). Bounded for cost.
  */
-async function verifyItems(items: SpineItem[], label: string, cap: number): Promise<SpineItem[]> {
+async function verifyItems(items: SpineItem[], label: string, cap: number): Promise<VerificationBatch> {
   const toCheck = items.slice(0, cap);
-  if (!toCheck.length) return [];
+  if (!toCheck.length) return { verified: [], unresolved: [] };
 
   const scraped: Scraped[] = await mapLimit(toCheck, 5, async (it) => {
     if (!isScrapableUrl(it.url)) return { it, content: null, scrapable: false };
@@ -389,6 +393,7 @@ async function verifyItems(items: SpineItem[], label: string, cap: number): Prom
   });
 
   const verified: SpineItem[] = [];
+  const unresolved: SpineItem[] = [];
   const BATCH = 8;
   for (let b = 0; b < scraped.length; b += BATCH) {
     const batch = scraped.slice(b, b + BATCH);
@@ -399,14 +404,14 @@ async function verifyItems(items: SpineItem[], label: string, cap: number): Prom
     } catch { parsed = null; }
 
     batch.forEach((s, i) => {
-      if (!parsed || parsed.size === 0) return;
-      const v = parsed.get(i + 1);
-      if (!v || !v.open) return; // closed / unverifiable → drop
+      const v = parsed?.get(i + 1);
+      if (!s.content || !v?.known) { unresolved.push(s.it); return; }
+      if (!v.open) return;
       verified.push({ ...s.it, amount: v.amount || s.it.amount, deadline: v.deadline || s.it.deadline });
     });
   }
   console.log(`[Weekly] verify ${label}: ${toCheck.length} checked -> ${verified.length} open`);
-  return verified;
+  return { verified, unresolved };
 }
 
 /**
@@ -415,22 +420,23 @@ async function verifyItems(items: SpineItem[], label: string, cap: number): Prom
  * Drops items Parallel marks closed or cannot verify. Publication candidates
  * must carry an explicit open verdict, a cited source, and usable confidence.
  */
-async function verifyViaParallel(items: SpineItem[], label: string, cap: number): Promise<SpineItem[]> {
+async function verifyViaParallel(items: SpineItem[], label: string, cap: number): Promise<VerificationBatch> {
   const toCheck = items.slice(0, cap);
-  if (!toCheck.length) return [];
+  if (!toCheck.length) return { verified: [], unresolved: [] };
   const results = await verifyOpportunities(
     toCheck.map(it => ({ name: it.name, amount: it.amount, deadline: it.deadline, url: it.url })),
     { wire: label },
   );
   const out: SpineItem[] = [];
+  const unresolved: SpineItem[] = [];
   let verified = 0, dropped = 0, unverified = 0;
   toCheck.forEach((it, i) => {
     const r = results[i];
-    if (!r) { unverified++; return; }
+    if (!r) { unverified++; unresolved.push(it); return; }
     const applyUrl = r.apply_url || it.url;
     if (!isPublishableVerification(r, it.url)) {
-      if (!r.is_open) dropped++;
-      else unverified++;
+      if (r.is_open === false && isPublishableVerification({ ...r, is_open: true }, it.url)) dropped++;
+      else { unverified++; unresolved.push(it); }
       return;
     }
     verified++;
@@ -444,12 +450,29 @@ async function verifyViaParallel(items: SpineItem[], label: string, cap: number)
     });
   });
   console.log(`[Weekly] parallel-verify ${label}: ${toCheck.length} checked -> ${verified} verified-open, ${unverified} unverified-dropped, ${dropped} closed`);
-  return out;
+  return { verified: out, unresolved };
 }
 
 // ---------------------------------------------------------------------------
 // Orchestrator
 // ---------------------------------------------------------------------------
+
+interface VerificationBatch { verified: SpineItem[]; unresolved: SpineItem[] }
+
+/** Round-robin across wires; preserve the rest for a later issue. */
+export function selectVerificationBatch<T extends { wire: string }>(items: T[], cap: number): { selected: T[]; deferred: T[] } {
+  const groups = new Map<string, T[]>();
+  for (const item of items) groups.set(item.wire, [...(groups.get(item.wire) || []), item]);
+  const selected: T[] = [];
+  while (selected.length < cap && [...groups.values()].some(items => items.length)) {
+    for (const group of groups.values()) {
+      if (selected.length >= cap) break;
+      const item = group.shift();
+      if (item) selected.push(item);
+    }
+  }
+  return { selected, deferred: [...groups.values()].flat() };
+}
 
 export async function runWeeklyIssue(
   pool: Pool,
@@ -458,30 +481,35 @@ export async function runWeeklyIssue(
   const progress = options.onProgress || (() => {});
   const runDate = new Date().toISOString().split('T')[0];
 
-  const prior = await getAppState<{ date: string; markdown: string }>(PRIOR_ISSUE_KEY).catch(() => null);
+  const prior = await getAppState<{ date: string; markdown: string; deferredEntryIds?: number[] }>(PRIOR_ISSUE_KEY);
   const windowStart = prior?.date
     ? `${prior.date}T00:00:00Z`
     : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
   progress('Gathering published feed since last issue...', 8);
-  const spineRaw = await gatherSpine(pool, windowStart);
-
-  // Verify against live sources. Parallel Task API (cited + confidence) is the primary
-  // path; the Firecrawl scrape+judge loop is the fallback when Parallel is unavailable.
-  const useParallel = parallelAvailable();
-  progress(`Verifying ${spineRaw.length} published via ${useParallel ? 'Parallel (cited)' : 'scrape'}...`, 22);
-  let spine: SpineItem[];
-  if (useParallel) {
-    try {
-      spine = await verifyViaParallel(spineRaw, 'spine', 40);
-    } catch (e) {
-      console.error('[Weekly] Parallel verify failed, falling back to scrape:', e instanceof Error ? e.message : e);
-      spine = await verifyItems(spineRaw, 'spine', 40);
+  const gathered = await gatherSpine(pool, windowStart, prior?.deferredEntryIds || []);
+  const candidates = WIRES.flatMap(w => stripPriorIssueItems(
+    dedupeItems(gathered.filter(it => it.wire === w.key)), prior?.markdown || null));
+  const deferredOrder = new Map((prior?.deferredEntryIds || []).map((id, i) => [id, i]));
+  candidates.sort((a, b) => (deferredOrder.get(a.id) ?? Infinity) - (deferredOrder.get(b.id) ?? Infinity));
+  const { selected, deferred } = selectVerificationBatch(candidates, 40);
+  progress(`Verifying ${selected.length} published items...`, 22);
+  let verification: VerificationBatch;
+  if (parallelAvailable()) {
+    try { verification = await verifyViaParallel(selected, 'spine', 40); }
+    catch { verification = { verified: [], unresolved: selected }; }
+    if (verification.unresolved.length) {
+      const fallback = await verifyItems(verification.unresolved, 'fallback', 40);
+      verification = { verified: [...verification.verified, ...fallback.verified], unresolved: fallback.unresolved };
     }
   } else {
-    spine = await verifyItems(spineRaw, 'spine', 40);
+    verification = await verifyItems(selected, 'spine', 40);
   }
-  console.log(`[Weekly] verified: spine ${spineRaw.length}->${spine.length}`);
+  const spine = verification.verified;
+  if (selected.length && !spine.length && verification.unresolved.length) {
+    throw new Error('Weekly verification incomplete: no verified items; checkpoint unchanged');
+  }
+  const deferredEntryIds = [...new Set([...deferred, ...verification.unresolved].map(it => it.id))];
 
   // Per-beat selection: dedupe, drop last week's repeats, split top 5-6 featured / rest also-open.
   // Featured AND also-open both come only from what actually published (fidelity to the channels).
@@ -547,11 +575,11 @@ export async function runWeeklyIssue(
   // propagate so the scheduler reports an anomaly instead of silently skipping
   // the issue from next week's window.
   if (!options.skipStore) {
-    await setAppState(PRIOR_ISSUE_KEY, { date: runDate, markdown });
+    await setAppState(PRIOR_ISSUE_KEY, { date: runDate, markdown, deferredEntryIds });
     await setAppState(WEEK_NUMBER_KEY, weekNumber);
   }
 
   progress('Weekly issue complete', 100);
   console.log(`[Weekly] ${runDate}: week=${weekNumber}, featured=${spineCount}, alsoOpen=${alsoOpenCount}, prior=${prior ? 'yes' : 'no'}, emailed=${emailed}`);
-  return { runDate, weekNumber, spineCount, alsoOpenCount, hadPriorIssue: !!prior, markdown, emailed };
+  return { runDate, weekNumber, spineCount, alsoOpenCount, hadPriorIssue: !!prior, markdown, emailed, deferredCount: deferredEntryIds.length };
 }

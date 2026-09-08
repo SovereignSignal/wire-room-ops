@@ -1,3 +1,4 @@
+import { getPool } from '../db';
 /**
  * API Provider, Usage & Pricing Routes
  *
@@ -16,6 +17,29 @@ import { getAllProviders, upsertProvider, testProviderConnection } from '../serv
 import { getUsageSummary, getUsageTimeline, getRecentUsage, getModelPricing, upsertModelPricing } from '../services/api-usage';
 
 const router = Router();
+
+// Attribute only receipts and usage actually linked to an entry; no inferred lane ROI.
+router.get('/usage/outcomes', async (_req, res) => {
+  try {
+    const { rows } = await getPool().query(`SELECT se.scan_source AS source,
+      COUNT(*)::int AS entries, COUNT(DISTINCT se.program_id)::int AS linked_programs,
+      COUNT(*) FILTER (WHERE se.status = 'approved')::int AS approvals,
+      COUNT(*) FILTER (WHERE se.actioned_by LIKE 'user:%' AND se.status IN ('approved','declined'))::int AS human_decisions,
+      COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM distribution_logs dl
+        WHERE dl.entry_id = se.id AND dl.status = 'success'))::int AS published_entries,
+      COALESCE(SUM(cost.amount),0)::float AS attributed_cost,
+      COALESCE(SUM(cost.unpriced),0)::int AS unpriced_calls
+      FROM scan_entries se LEFT JOIN LATERAL (
+        SELECT SUM(estimated_cost_usd) AS amount,
+          COUNT(*) FILTER (WHERE estimated_cost_usd IS NULL) AS unpriced
+        FROM api_usage_log WHERE entry_id = se.id
+      ) cost ON true
+      WHERE se.created_at >= NOW() - INTERVAL '30 days'
+      GROUP BY se.scan_source ORDER BY published_entries DESC, approvals DESC`);
+    res.json(rows);
+  } catch { res.status(500).json({ error: 'Could not load source outcomes' }); }
+});
+
 
 const KNOWN_PROVIDERS = new Set(['grok', 'anthropic', 'ollama', 'firecrawl', 'perplexity', 'parallel', 'resend', 'telegram', 'telegram-intake']);
 

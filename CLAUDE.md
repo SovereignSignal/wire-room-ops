@@ -25,7 +25,7 @@ Both services share the **same PostgreSQL database** (Railway project `wire-room
 
 ### Approve = Publish Flow
 
-When an operator clicks "Approve" on a queued scan entry (via the dashboard), the entry's status changes to `approved`, the entry is written through to `summaries` when available, and per-entry distribution is triggered unless the approval is quiet. Internal API-key agent approvals are forced quiet. Operators can also run manual batch distribution.
+When an operator clicks "Approve" on a queued scan entry (via the dashboard), the entry's status changes to `approved`, the entry is written through to `summaries` when available, and publication work is durably enqueued in the same database statement unless the approval is quiet. Internal API-key agent approvals are forced quiet. Operators can also run manual batch distribution.
 
 A partial index `idx_scan_entries_approved` on `(wire, created_at DESC) WHERE status = 'approved'` optimizes queries against approved entries.
 
@@ -144,6 +144,7 @@ src/
 │   ├── dedup.ts          # URL exact-match + exact-name dedup (fuzzy layer disabled) + alternate-source annotation
 │   ├── discord-channel.ts # Discord channel posting via REST API (built, unused in prod)
 │   ├── distribution.ts   # Distribution orchestrator: send entries to channels, retry, newsletter
+│   ├── publication-queue.ts # Durable approval delivery worker, leases, and operator reconciliation
 │   ├── email.ts          # Resend email templates (digest, weekly draft, CSV, alerts, login)
 │   ├── entry-actions.ts  # Approve/decline/restore business logic + approve side-effects (audit: actor/reason/dryRun)
 │   ├── forum.ts          # discuss.watch client: pre-classified /grants feed pull + governance allowlist, age gate, LLM thread judge
@@ -236,7 +237,7 @@ Server-rendered views (login/error only):
 | **Scan pipeline** | `scan_entries`, `seen_urls`, `seen_names`, `intake_runs`, `scan_prompts` | Core intake/dedup/queue pipeline |
 | **Watchtower** | `watch_surfaces` | Discovery registry: one row per watchable surface of an org (grants page, blog, forum, RSS, X account, ...) with tier/wire and per-surface machine state (last checked/changed, failure streak). Seeded 2026-07-03 with 1,136 surfaces via `src/scripts/import-watch-surfaces*.ts`; humans edit orgs in Notion, machine state lives only here. Phase 1 consumes it: `src/jobs/registry-watch.ts` polls the rss-tagged surfaces and hash-diffs the grants_page/application ones, writing checked-state back to this table |
 | **tele-sum legacy** | `messages`, `summaries`, `categories`, `users`, `telegram_bots`, `channel_configs` | Telegram ingestion (bridged via `summary-sync.ts`) |
-| **Distribution** | `distribution_channels`, `distribution_logs`, `distribution_config` (legacy) | Channel output tracking |
+| **Distribution** | `distribution_channels`, `distribution_logs`, `publication_queue`, `distribution_config` (legacy) | Channel output tracking |
 | **Config** | `feeds`, `schedules`, `integration_config` | Wire/schedule/integration config |
 | **API management** | `api_providers`, `api_usage_log`, `model_pricing` | DB-backed API keys, usage tracking, cost estimation |
 | **Identity** | `org_profiles`, `sessions` | Organization tracking + auth sessions |
@@ -465,7 +466,7 @@ Per-feed multi-channel distribution of approved scan entries. **Approve = publis
 
 ### Database Tables
 - **`distribution_channels`**: Managed channels (UUID PK, per-channel credentials in JSONB). CRUD via Settings > Distribution tab.
-- **`distribution_logs`**: Per-entry, per-channel send status. Unique partial index on `(entry_id, channel) WHERE status IN ('pending','success')` prevents double-posts. **Read by tele-sum**: its import guard matches `channel='telegram' AND status='success'` rows on `external_id` (Telegram message id) + `wire` to skip re-ingesting distributed posts — don't change those columns' semantics without updating tele-sum's `distribution_guard.py`.
+- **`distribution_logs`**: Per-entry, per-channel send status. Unique partial index on `(entry_id, wire, channel, COALESCE(channel_id, zero UUID)) WHERE status IN ('pending','success')` prevents duplicate destination claims. **Read by tele-sum**: its import guard matches `channel='telegram' AND status='success'` rows on `external_id` (Telegram message id) + `wire` to skip re-ingesting distributed posts — don't change those columns' semantics without updating tele-sum's `distribution_guard.py`.
 
 ### User Flow
 Approve entries → configure channels in Settings > Distribution → click "Distribute to Channels" for a wire → distribution status shown as colored pills (TG/X/NL) on the approved tab. Failed pills are clickable for retry.
@@ -477,7 +478,8 @@ Approve entries → configure channels in Settings > Distribution → click "Dis
 - **3-second inter-entry delay**: Respects X/Twitter rate limits during batch distribution
 - **Concurrent execution guard**: Prevents double-posting if distribution is triggered while already running (returns 409 with existing job ID)
 - **Config merge on partial update**: PUT to config endpoint merges new fields into existing JSONB, preventing accidental credential loss
-- **Retry sends only to failed channels**: Redistribution skips channels that already have a `success` or `pending` log entry
+- **Retry sends only to missing destinations**: Redistribution compares wire, platform, and managed channel ID. Successful and pending claims block resend. Expired pending leases become operator-review items, never automatic retries.
+- **Durable publishing**: Non-quiet approvals atomically insert `publication_queue` work. A bounded worker runs after approval and every 30 seconds, processes at most ten entries per pass, and permits at most two attempts after execution errors. It never seeds old approvals. Receipt persistence retries cannot resend an already successful message. Settings > Distribution exposes uncertain sends and stalled queue jobs. Human resolution records actor and time; Telegram confirmation requires its message ID.
 
 ### Key Endpoints
 - `POST /api/distribution/run/:wire` — trigger distribution for a wire
@@ -527,14 +529,15 @@ All LLM API calls are logged for cost monitoring (`src/services/api-usage.ts`):
 - **`model_pricing`** table: per-model cost rates (input/output per million tokens)
 - `logApiUsage()` is fire-and-forget (never blocks the caller)
 - Dashboard API exposes usage aggregation and pricing CRUD
-- Cost estimation computed from usage logs joined with model pricing
+- Missing model prices or token counts remain unknown and are flagged in Settings > Usage; they are never presented as complete zero-cost accounting. Discovery gating counts covered Grok, Perplexity, Parallel, Anthropic, and Firecrawl usage, plus X reads. Paid scan attempts serialize on a database advisory lock and settle usage writes before admitting another attempt. Unknown costs block discovery pending pricing review. A single in-flight provider operation can exceed the remaining estimated allowance; use provider-side limits for a hard monetary ceiling.
+- Settings > Usage includes recorded source outcomes, human decisions, confirmed publication counts, and entry-attributed costs. Unlinked discovery costs are explicitly excluded from that attribution.
 
 ## Organization Management
 
 Org profiles track organizations mentioned in entries (`org_profiles` table). Contact discovery revisits each org every 90 days (`contacts_checked_at` gate) rather than one-shot-forever:
 - **Extractor** (`src/services/org-extractor.ts`): Pattern matching + LLM-based extraction of canonical org names from entry text. Auto-links entries to `org_profiles` on approve.
 - **Enricher** (`src/services/org-enricher.ts`): LLM + web enrichment of org profiles — **BD lens since 2026-07-03 (PR #62)**: description covers how the org RUNS funding/programs (named teams/leads when sourced), `last_signal` is a dated org-side trigger, and `operator_read` is one grounded sentence on the operator need an outsider could serve (never invented — "no visible gap" is a valid answer). Also fills taxonomy fields (type, source_type, website, tier, tags). Grok Responses + web_search + url-verify guard (dead URLs dropped, not written). Selection: >30-day staleness, `entry_count DESC`, chunks of 10; `enrichBatch({force, limit})` caps limit at 200. Runs daily in the digest fold; admin endpoint for batch enrichment. `operator_read` renders into the Notion Action(s) block between description and "Latest:".
-- **Merge** (`src/services/org-merge.ts`): Merge duplicate org profiles (source -> target), relink all entries. Admin endpoint for manual dedup.
+- **Merge** (`src/services/org-merge.ts`): Transactionally merge duplicate org profiles (source -> target), preserving discovered contacts, entries, programs, watched sources, and child links. Complementary contact fields combine; conflicting handles or Notion page IDs abort the merge without changes. Notion archival runs after the database commit. Admin endpoint for manual dedup.
 - **Notion sync** (`src/services/notion-sync.ts`): Sync org profiles to the Notion CRM. Config stored in `integration_config` table (DB-backed, not env vars). **The Notion Orgs db is a pruned 10-field HUMAN VIEW** (Name, Type, Wire, Relationship, Website, Action(s), Quality Score, Tier, Contacts, Last Checked — CRM simplification 2026-07-03); Twitter/GitHub/Tags/Source Type/Items Sourced live only in Postgres `org_profiles`. Do not add Notion property writes without adding the schema field in the same change (tests/notion-sync-props.test.js pins this).
 - Admin endpoints: `/api/admin/clean-orgs`, `/api/admin/dedup-orgs`, `/api/admin/enrich-orgs`
 
@@ -544,7 +547,7 @@ Cross-wire CSV export via `src/jobs/csv-export.ts`. `GET /api/export/csv?hoursBa
 
 ## Weekly Grant Wire Issue
 
-`src/jobs/weekly-issue.ts` — runs **Fridays only inside the daily-digest fold** (no separate cron). Gathers the week's distributed+approved entries (spine = `distribution_logs` success joined to approved `scan_entries`, window from the prior issue's date) plus currently-open queued/approved GRANT items ("Also open"); verifies each item is still open via Parallel Task API (primary, cited) or Firecrawl scrape + Sonnet judge (fallback), correcting amounts/deadlines and dropping closed items; synthesizes the locked Substack shape with `claude-opus-4-8`; emails the draft (`sendWeeklyDraftEmail`) and lands it in the Notion "Weekly Summaries Paste Log" (`src/services/weekly-notion.ts`). Continuity via `app_state` keys `weekly:last-issue` and `weekly:week-number`. Publishing to Substack stays human. Manual tooling: `src/scripts/weekly-run-once.ts` (`--no-email`), `weekly-preview.ts`, `weekly-seed-prior.ts`.
+`src/jobs/weekly-issue.ts` — runs **Fridays only inside the daily-digest fold** (no separate cron). Gathers the week's distributed+approved entries (spine = `distribution_logs` success joined to approved `scan_entries`, window from the prior issue's date) (both featured and "Also open" come only from published entries); verifies each item is still open via Parallel Task API (primary, cited) or Firecrawl scrape + Sonnet judge (fallback), correcting amounts/deadlines and dropping closed items; synthesizes the locked Substack shape with `claude-opus-4-8`; emails the draft (`sendWeeklyDraftEmail`) and lands it in the Notion "Weekly Summaries Paste Log" (`src/services/weekly-notion.ts`). Continuity via `app_state` keys `weekly:last-issue` and `weekly:week-number`. Verification is capped at 40 with round-robin wire coverage. Unresolved and capped entries persist as `deferredEntryIds` within `weekly:last-issue` and are reloaded from current approved/published records. Total verification failure cannot send an empty draft or advance the checkpoint. Publishing to Substack stays human. Manual tooling: `src/scripts/weekly-run-once.ts` (`--no-email`), `weekly-preview.ts`, `weekly-seed-prior.ts`.
 
 ## Rate Limiting
 
@@ -569,3 +572,10 @@ In-memory `rateLimit()` helper in `src/middleware/rate-limit.ts` (15-min cleanup
 
 - **Slack/Discord intake adapters** (same `intake-core.ts` interface, new inbound channel adapters -- distribution already works)
 - **Email inbound ingestion** (URL extraction from forwarded emails)
+
+## Reliability controls
+
+- Scheduler retry allowance belongs to one occurrence, with one retry maximum. A new occurrence cancels a pending old retry; shutdown cancels all retries. Latest status, duration, and retry state persist under `scheduler:last:<id>` in `app_state`; partial scan/source-feed results are marked degraded through failed status and an explanatory error.
+- Railway deployment admission uses `/ready`, requiring DB connectivity, completed successful migrations, and scheduler initialization. `/health` remains liveness only.
+- Hashed build assets under `/assets` use immutable caching; the HTML entry stays uncached.
+- `qs` is temporarily overridden to a patched compatible 6.x release because Express 4 pins an affected transitive range. Remove the override when the installed Express 4 dependency chain natively resolves a patched version, after rerunning authentication and parser checks.

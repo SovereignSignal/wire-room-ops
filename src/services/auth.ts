@@ -64,7 +64,11 @@ export function createMagicLink(email: string, fileId: string): string {
   return `${config.app.url}/download?token=${token}`;
 }
 
-export function validateMagicLink(token: string): { valid: boolean; fileId?: string; email?: string; error?: string } {
+export function validateMagicLink(token: unknown): { valid: boolean; fileId?: string; email?: string; error?: string } {
+  // Download tokens are UUIDs; magic-link tokens are hexadecimal strings.
+  if (typeof token !== 'string' || !token) {
+    return { valid: false, error: 'Invalid or expired link' };
+  }
   const hashedToken = hashToken(token);
   const tokenData = tokens.get(hashedToken);
   
@@ -117,7 +121,8 @@ export async function createSessionToken(email: string): Promise<string> {
   return token;
 }
 
-export async function getSessionEmail(token: string): Promise<string | null> {
+export async function getSessionEmail(token: unknown): Promise<string | null> {
+  if (typeof token !== 'string' || !/^[a-f0-9]{64}$/.test(token)) return null;
   const hashedToken = hashToken(token);
 
   // Check in-memory cache first
@@ -161,11 +166,12 @@ export async function getSessionEmail(token: string): Promise<string | null> {
   }
 }
 
-export async function validateSession(token: string): Promise<boolean> {
+export async function validateSession(token: unknown): Promise<boolean> {
   return (await getSessionEmail(token)) !== null;
 }
 
-export async function invalidateSession(token: string): Promise<void> {
+export async function invalidateSession(token: unknown): Promise<void> {
+  if (typeof token !== 'string' || !/^[a-f0-9]{64}$/.test(token)) return;
   const hashedToken = hashToken(token);
   sessionCache.delete(hashedToken);
   try {

@@ -26,7 +26,7 @@ import { executeParallelScan } from '../services/parallel';
 import { parseStructuredOutput } from '../services/intake';
 import { withRetry } from '../services/processor';
 import { runDailyIntake } from './daily-intake';
-import { checkBudget } from '../services/budget-guard';
+import { checkBudget, withDiscoveryBudget } from '../services/budget-guard';
 
 // ============================================================
 // Types
@@ -122,10 +122,10 @@ export async function runScanExecution(
   // gating them individually. Same shape as x-lists' budget skip.
   const budget = await checkBudget(pool);
   if (!budget.allowed) {
-    console.warn(`[ScanExec] SKIPPED — monthly watchtower budget reached ($${budget.spentUsd} of $${budget.capUsd})`);
+    console.warn(`[ScanExec] Discovery paused: $${budget.spentUsd} of $${budget.capUsd}; ${budget.unpricedCalls} unpriced calls`);
     return {
       promptsExecuted: 0,
-      promptsFailed: 0,
+      promptsFailed: prompts.length,
       totalResults: 0,
       intakeSummary: {
         runDate: today,
@@ -140,7 +140,8 @@ export async function runScanExecution(
       },
       perPrompt: [],
       totalDurationMs: Date.now() - startTime,
-      partial: false,
+      partial: true,
+      partialReason: `Discovery paused by budget guard: $${budget.spentUsd} of $${budget.capUsd}; ${budget.unpricedCalls} unpriced calls`,
     };
   }
 
@@ -168,7 +169,7 @@ export async function runScanExecution(
     try {
       // Route to the correct model provider based on tool_type
       const scanResult = await withRetry(
-        () => {
+        () => withDiscoveryBudget(pool, async () => {
           if (prompt.toolType === 'perplexity') {
             return executePerplexityScan(prompt.promptText, {
               model: prompt.model || undefined,
@@ -197,7 +198,7 @@ export async function runScanExecution(
             responseFormat: prompt.responseFormat,
             toolType: prompt.toolType,
           });
-        },
+        }),
         2 // 2 total attempts (1 retry) — these are expensive calls
       );
 

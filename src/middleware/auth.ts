@@ -2,7 +2,7 @@
  * Auth middleware — Privy JWT verification + session-based auth
  */
 
-import { Request, Response } from 'express';
+import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import jwksClient from 'jwks-rsa';
 import { config } from '../config';
@@ -35,17 +35,21 @@ export function verifyPrivyToken(token: string): Promise<jwt.JwtPayload> {
 export const isDevMode = process.env.DEV_MODE === 'true';
 
 // Auth middleware - checks session from HttpOnly cookie only
-export async function requireAuth(req: Request, res: Response, next: Function): Promise<void> {
+export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (isDevMode) {
     (req as any).authSession = { userId: 'user:dev', isAgent: false };
     return next();
   }
-  const session = req.cookies?.session as string;
-  const email = session ? await getSessionEmail(session) : null;
-  if (!email) {
-    res.status(401).json({ error: 'Unauthorized' });
+  try {
+    const email = await getSessionEmail(req.cookies?.session);
+    if (!email) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    (req as any).authSession = { userId: `user:${email}`, isAgent: false };
+  } catch (error) {
+    next(error);
     return;
   }
-  (req as any).authSession = { userId: `user:${email}`, isAgent: false };
   next();
 }

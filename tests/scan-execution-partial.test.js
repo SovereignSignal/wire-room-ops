@@ -12,6 +12,7 @@ const originals = {
   getAllScanPrompts: db.getAllScanPrompts,
   executeScanPrompt: grok.executeScanPrompt,
   checkBudget: budgetGuard.checkBudget,
+  withDiscoveryBudget: budgetGuard.withDiscoveryBudget,
   runDailyIntake: dailyIntake.runDailyIntake,
 };
 
@@ -38,6 +39,7 @@ test('quota exhaustion after a successful prompt ingests completed results and r
     prompt('00000000-0000-0000-0000-000000000002', 'quota', 1),
     prompt('00000000-0000-0000-0000-000000000003', 'skipped', 2),
   ];
+  budgetGuard.withDiscoveryBudget = async (_pool, run) => run();
   budgetGuard.checkBudget = async () => ({ allowed: true, spentUsd: 1, capUsd: 20 });
 
   let providerCalls = 0;
@@ -88,5 +90,6 @@ test.after(() => {
   db.getAllScanPrompts = originals.getAllScanPrompts;
   grok.executeScanPrompt = originals.executeScanPrompt;
   budgetGuard.checkBudget = originals.checkBudget;
+  budgetGuard.withDiscoveryBudget = originals.withDiscoveryBudget;
   dailyIntake.runDailyIntake = originals.runDailyIntake;
 });
