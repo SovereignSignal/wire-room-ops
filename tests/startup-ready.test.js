@@ -36,6 +36,18 @@ test('deployment readiness rejects incomplete migrations, scheduler startup fail
   t.mock.method(db, 'getPool', () => ({ query: async () => { if (!dbOk) throw new Error('fixture unavailable'); return { rows: [] }; } }));
   t.mock.method(migrations, 'getStartupMigrationHealth', () => ({ ran, failed, errors: [] }));
   t.mock.method(scheduler, 'getSchedulerStatus', () => ({ initialized, totalSchedules: 0 }));
+  // Exercise the real static middleware with a private fixture, even before Vite builds.
+  const fixtureRoot = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'wireops-ready-'));
+  t.after(() => fs.rmSync(fixtureRoot, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(fixtureRoot, 'assets'));
+  const assetBody = 'console.log("readiness fixture");';
+  fs.writeFileSync(path.join(fixtureRoot, 'assets', 'index-fixture.js'), assetBody);
+  const express = require('express');
+  const serveStatic = express.static;
+  t.mock.method(express, 'static', (root, options) => serveStatic(fixtureRoot, {
+    ...options,
+    setHeaders: (res, filePath, stat) => options.setHeaders(res, path.join(root, path.relative(fixtureRoot, filePath)), stat),
+  }));
   const { app } = require('../src/server');
   const server = app.listen(0, '127.0.0.1');
   await new Promise(resolve => server.once('listening', resolve));
@@ -49,8 +61,9 @@ test('deployment readiness rejects incomplete migrations, scheduler startup fail
     failed = 1; assert.equal(await status('/ready'), 503);
     failed = 0; dbOk = false; assert.equal(await status('/ready'), 503);
     assert.equal(JSON.parse(fs.readFileSync(path.join(__dirname, '../railway.json'))).deploy.healthcheckPath, '/ready');
-    const assets = fs.readdirSync(path.join(__dirname, '../dist/client/assets')).filter(name => name.endsWith('.js'));
-    const asset = await fetch(base + '/assets/' + assets[0]);
-    assert.match(asset.headers.get('cache-control'), /immutable/); await asset.text();
+    const asset = await fetch(base + '/assets/index-fixture.js');
+    assert.equal(asset.status, 200);
+    assert.match(asset.headers.get('cache-control'), /immutable/);
+    assert.equal(await asset.text(), assetBody);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
