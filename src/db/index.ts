@@ -1509,9 +1509,7 @@ export async function ensureDistributionTables(): Promise<void> {
         )
       `);
       if (!hasConfigCol.rows[0].exists) {
-        await client.query(`DROP TABLE IF EXISTS distribution_logs`);
-        await client.query(`DROP TABLE IF EXISTS distribution_config`);
-        console.log('[DB] Dropped old distribution tables (schema migration)');
+        throw new Error('Legacy distribution schema requires an explicit data-preserving migration; no tables were dropped');
       }
     }
 

@@ -480,10 +480,7 @@ export async function runContactDiscovery(
   const stats = { orgsProcessed: 0, contactsCreated: 0, skipped: 0, errors: 0 };
   const limit = opts?.limit ?? 20;
 
-  // Step 1: ensure table
-  await ensureDiscoveredContactsTable(pool);
-
-  // Step 2: resolve SimpleCRM Notion integration
+  // Tables are prepared by the migration command. Resolve the CRM integration.
   const integrations = await getIntegrationConfigs('notion');
   const crm = integrations.find((i) => i.name === 'SimpleCRM - Notion' && i.enabled);
   if (!crm) {

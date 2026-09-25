@@ -11,6 +11,8 @@ interface DbConfigFile {
 }
 
 export function getDbConfigUrl(): string | null {
+  // A historical dashboard override must not bypass the deployed runtime role.
+  if (process.env.NODE_ENV === 'production') return null;
   try {
     if (!fs.existsSync(CONFIG_FILE)) return null;
     const raw = fs.readFileSync(CONFIG_FILE, 'utf-8');

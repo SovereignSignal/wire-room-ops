@@ -76,7 +76,7 @@ src/
 │   ├── brand.ts          # Deployment-agnostic brand config (audience, contentType, contentVerb)
 │   └── db-config.ts      # Persistent DB config file storage
 ├── db/
-│   ├── startup-migrations.ts # THE ordered migration list — server boot + CI both run it; add schema changes HERE
+│   ├── startup-migrations.ts # Ordered migration list + schema version; migration CLI/CI apply it, server verifies it read-only
 │   └── index.ts          # Postgres queries + ensure*/DDL implementations (schedules, feeds, scan tables, scan prompts, distribution, app_state). CHECK constraints defined here — see enum-lockstep warning below
 ├── middleware/
 │   ├── auth.ts           # Privy session auth (requireAuth middleware)
@@ -210,12 +210,18 @@ Server-rendered views (login/error only):
 ### Adding an Enum Value (status / scan_source / prompt_variant / tool_type / schedule_type)
 1. Add the value to the ONE canonical const in `src/types/intake.ts`
 2. Done — DDL CHECK constraints, TS unions, and route validators derive from it
-3. `tests/enum-lockstep.test.js` verifies the wiring; deploy applies the new constraint at boot
+3. Increment `SCHEMA_VERSION`, apply the migration command before deployment, and run `tests/enum-lockstep.test.js`
 
 ### Adding a Table or Column
 1. Write/extend the `ensure*` function (usually in `src/db/index.ts`)
 2. Add ONE entry to `STARTUP_MIGRATIONS` in `src/db/startup-migrations.ts` (order matters)
-3. Server boot and CI both run the same list — never call `ensure*` ad hoc from startup paths
+3. Increment `SCHEMA_VERSION` and update `scripts/database-runtime-grants.sql` for any new runtime table
+4. The explicit `db:migrate -- --apply` command and CI run this list. Server boot only verifies the recorded version. Never call `ensure*` from runtime paths.
+
+Production runtime uses a non-owner login. Supply the owner connection only to
+the separate migration process, then apply the explicit runtime grants before
+deployment. `wro_schema_migrations` is writable only by the migration owner.
+Missing or incompatible versions stop startup before any background work begins.
 
 ### Adding Environment Variables
 1. Add to `src/config/index.ts` in the `config` object

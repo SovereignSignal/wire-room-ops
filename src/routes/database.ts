@@ -14,6 +14,7 @@ function getLazyPool(): Pool {
   if (!lazyPool) {
     lazyPool = new Pool({
       connectionString: url,
+      application_name: 'wire-room-ops-inspector',
       ssl: url.includes('localhost') || url.includes('127.0.0.1')
         ? false
         : { rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED !== 'false' },

@@ -1,16 +1,16 @@
 /**
  * CI test-database bootstrap.
- * Runs THE canonical startup-migration list (src/db/startup-migrations.ts) —
- * the exact schema path production boots with — against DATABASE_URL, fatally.
+ * Runs the same explicit migration command as release preparation against
+ * DATABASE_URL. Application startup subsequently verifies its schema version.
  */
-import { runStartupMigrations } from '../src/db/startup-migrations';
+import { migrateDatabase } from '../src/db/startup-migrations';
 import { closePool } from '../src/db';
 
 async function main(): Promise<void> {
   if (!process.env.DATABASE_URL) {
     throw new Error('DATABASE_URL must be set');
   }
-  await runStartupMigrations({ fatal: true });
+  await migrateDatabase();
   await closePool();
   console.log('[CI] Database schema ready');
 }

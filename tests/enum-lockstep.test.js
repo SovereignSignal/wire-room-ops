@@ -82,17 +82,18 @@ test('TS unions derive from the consts (typeof X[number])', () => {
   assert.ok(sched.includes('scheduleType?: ScheduleType;'), 'ScheduleConfig must use the shared ScheduleType');
 });
 
-test('the startup-migration list is the only schema path (no ad-hoc ensures in boot code)', () => {
+test('the migration command owns schema changes and server boot only verifies them', () => {
   const mig = read('src/db/startup-migrations.ts');
   const listed = [...mig.matchAll(/\{ name: '([a-z-]+)', run: (ensure\w+) \}/g)];
   assert.ok(listed.length >= 16, `expected >=16 migrations, found ${listed.length}`);
 
   const server = read('src/server.ts');
-  assert.ok(server.includes('runStartupMigrations()'), 'server boot must run the canonical list');
+  assert.ok(server.includes('verifyDatabaseSchema()'), 'server boot must verify the applied schema');
+  assert.ok(!server.includes('runStartupMigrations'), 'server boot must not run migrations');
   assert.ok(!/await ensure\w+\(\)/.test(server), 'server.ts must not call ensure* directly');
 
   const ci = read('scripts/ci-db-setup.ts');
-  assert.ok(ci.includes('runStartupMigrations({ fatal: true })'), 'CI must run the canonical list fatally');
+  assert.ok(ci.includes('migrateDatabase()'), 'CI must use the release migration command');
   assert.ok(!/await ensure\w+\(\)/.test(ci), 'ci-db-setup must not call ensure* directly');
 
   const sched = read('src/services/scheduler.ts');

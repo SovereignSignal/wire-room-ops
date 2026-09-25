@@ -623,9 +623,6 @@ export async function runOrgExtraction(): Promise<{
   const pool = getPool();
   const stats = { processed: 0, linked: 0, newOrgs: 0, errors: 0 };
 
-  // Ensure table exists
-  await ensureOrgProfilesTable();
-
   // Get unlinked entries
   const { rows: entries } = await pool.query(`
     SELECT id, name, description, wire, scan_date

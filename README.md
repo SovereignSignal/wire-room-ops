@@ -83,6 +83,16 @@ Optional API keys (warn on startup if missing; can also be set via Settings > AP
 
 ### 3. Run
 
+Apply the schema once with the database owner connection before starting a new
+schema version. The command defaults to a dry run:
+
+```bash
+npm run db:migrate
+npm run db:migrate -- --apply
+```
+
+Then run the application with its runtime database connection:
+
 ```bash
 npm run dev
 ```
@@ -91,8 +101,17 @@ Production:
 
 ```bash
 npm run build
+node dist/scripts/migrate-database.js --apply
 npm start
 ```
+
+Supply the owner connection only to the separate migration process. The running
+app needs a non-owner login with the grants in `scripts/database-runtime-grants.sql`;
+it checks `wro_schema_migrations` on startup and fails before starting jobs if the
+schema version is missing or incompatible. Do not store an owner connection as a
+second application variable. Apply migrations and grants before deploying a new
+schema version. Existing legacy distribution tables are preserved and require an
+explicit migration if their shape is incompatible.
 
 ### 4. Verify
 
@@ -107,6 +126,7 @@ npm start
 - `npm run dev` - run with `ts-node`
 - `npm run build` - compile TypeScript
 - `npm start` - run compiled server
+- `npm run db:migrate` - preview schema steps; add `-- --apply` to apply with the owner connection
 - `npm run typecheck` - TS typecheck
 - `npm run lint` - alias for typecheck
 - `npm run test` - parser/intake tests
