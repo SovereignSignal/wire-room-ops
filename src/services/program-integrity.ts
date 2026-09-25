@@ -375,7 +375,11 @@ export async function runProgramIntegrityRepair(
       throw new Error(`Refusing repair with ${plan.baseline.linkedSyntheticEntries} linked synthetic entries`);
     }
 
-    const programRows = await refreshProgramCounters(client, plan.planned.programRows.map(row => row.programId));
+    // This command applies only the fields in its own reviewed plan. Organization
+    // links have a separate evidence plan and must not become an implicit repair.
+    const programRows = await refreshProgramCounters(
+      client, plan.planned.programRows.map(row => row.programId), { linkOrganizations: false },
+    );
     if (programRows !== plan.planned.programRows.length) {
       throw new Error(`Program repair count changed: planned ${plan.planned.programRows.length}, updated ${programRows}`);
     }

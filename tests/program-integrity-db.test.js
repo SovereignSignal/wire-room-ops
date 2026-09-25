@@ -141,6 +141,14 @@ test('normal approval counter refresh and later org extraction both fill the pro
   assert.equal((await pool.query('SELECT org_id FROM programs WHERE id=1')).rows[0].org_id, 1);
 });
 
+test('the historical counter-repair command does not apply unreviewed organization links', async () => {
+  await orgLinkFixture();
+  const plan = await runProgramIntegrityRepair(pool, { apply: false });
+  await runProgramIntegrityRepair(pool, { apply: true, expectedPlanHash: plan.planHash });
+  assert.equal((await pool.query('SELECT org_id FROM programs WHERE id=1')).rows[0].org_id, null);
+  assert.equal((await planProgramOrgLinks(pool)).links.length, 1);
+});
+
 test('org extraction rolls back the entry link if program reconciliation fails', async () => {
   await orgLinkFixture();
   await pool.query('UPDATE scan_entries SET org_id=NULL');
