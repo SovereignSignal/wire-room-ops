@@ -287,10 +287,10 @@ test('finalizeProgramForEntry: a new program records its first sighting and cano
     global.fetch = previousFetch;
   }
 
-  const sighting = pool.calls.find(call => /entry_count = entry_count \+ 1/.test(call.sql));
+  const sighting = pool.calls.find(call => /entry_count = s\.total/.test(call.sql));
   assert.ok(sighting, 'new program must count its first linked entry');
-  assert.match(sighting.sql, /canonical_entry_id = COALESCE\(canonical_entry_id, \$6\)/);
-  assert.equal(sighting.params[5], 501);
+  assert.match(sighting.sql, /canonical_entry_id = s\.exemplar/);
+  assert.match(sighting.sql, /duplicate_of_id IS NULL/);
   const linkIndex = pool.calls.findIndex(call => /UPDATE scan_entries SET program_id/.test(call.sql));
   const sightingIndex = pool.calls.indexOf(sighting);
   assert.ok(linkIndex >= 0 && sightingIndex > linkIndex, 'count the sighting only after the entry link succeeds');
@@ -304,7 +304,7 @@ test('finalizeProgramForEntry: retrying an existing link does not increment the 
   });
   await finalizeProgramForEntry(pool, { id: 500, name: 'X Round 3', wire: 'ai' },
     { programId: 1, confidence: 0.95, verdict: 'same_round', roundLabel: null, historyLine: 'seen 1×' });
-  assert.equal(pool.calls.some(call => /entry_count = entry_count \+ 1/.test(call.sql)), false);
+  assert.equal(pool.calls.some(call => /entry_count = s\.total/.test(call.sql)), false);
   assert.ok(pool.calls.some(call => /WHERE id = \$1 AND program_id = \$2/.test(call.sql)));
   assert.ok(pool.calls.some(call => call.sql === 'COMMIT'));
 });

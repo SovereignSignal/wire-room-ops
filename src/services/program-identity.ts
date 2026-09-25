@@ -382,18 +382,19 @@ export async function recordSighting(
     `UPDATE programs SET
        aliases = (SELECT ARRAY(SELECT DISTINCT unnest(aliases || ARRAY[$2]::text[]))),
        url_domains = CASE WHEN $3::text IS NULL OR $3 = ANY(url_domains) THEN url_domains ELSE url_domains || ARRAY[$3]::text[] END,
-       entry_count = entry_count + 1,
-       canonical_entry_id = COALESCE(canonical_entry_id, $6),
        latest_round_label = COALESCE($4, latest_round_label),
        latest_deadline = CASE
          WHEN NULLIF($5, '') IS NULL THEN latest_deadline
          WHEN latest_deadline IS NULL THEN NULLIF($5, '')::date
          ELSE GREATEST(latest_deadline, NULLIF($5, '')::date)
        END,
-       last_seen = CURRENT_DATE, updated_at = NOW()
+       updated_at = NOW()
      WHERE id = $1`,
-    [programId, entry.name, dom, entry.roundLabel ?? null, deadline, entry.id ?? null],
+    [programId, entry.name, dom, entry.roundLabel ?? null, deadline],
   );
+  // The entry is already linked in this transaction. Its actual status and
+  // creation date determine counts, history and a valid canonical exemplar.
+  await refreshProgramCounters(pool, [programId]);
 }
 
 /** Accept only real ISO calendar dates for the programs.latest_deadline column. */
