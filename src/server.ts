@@ -15,7 +15,7 @@ import { processRawEntries } from './jobs/process-raw';
 import { runDecidedRecheck } from './jobs/decided-recheck';
 import { publishPublicSnapshot } from './jobs/public-snapshot';
 import { refreshProviderCache, getCachedProvider } from './services/api-provider';
-import { getStartupMigrationHealth, runStartupMigrations } from './db/startup-migrations';
+import { getStartupMigrationHealth, verifyDatabaseSchema } from './db/startup-migrations';
 import { csrfGuard } from './middleware/csrf';
 
 // Route modules
@@ -59,7 +59,7 @@ app.get('/ready', async (_req: Request, res: Response) => {
   const checks = {
     db: false,
     schedulerInitialized: false,
-    startupMigrations: migrations.failed === 0,
+    startupMigrations: migrations.ran && migrations.failed === 0,
   };
 
   try {
@@ -186,10 +186,9 @@ app.use((err: Error, _req: Request, res: Response, _next: express.NextFunction) 
 });
 
 export async function startServer(): Promise<void> {
-  // Run THE canonical, ordered startup-migration list (shared with CI via
-  // scripts/ci-db-setup.ts — see src/db/startup-migrations.ts). Each step is
-  // non-fatal in production so one bad migration can't take the app down.
-  await runStartupMigrations();
+  // Fail before starting any background work if the separately applied schema
+  // does not match this release. The runtime connection needs no DDL privileges.
+  await verifyDatabaseSchema();
 
   // Fire-and-forget: recompute org derived fields (avg_quality_score, tier)
   computeDerivedFields().catch(err =>

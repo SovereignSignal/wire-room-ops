@@ -1,12 +1,10 @@
 /**
  * THE single ordered list of startup schema migrations.
  *
- * Three callers iterate this exact list, in this exact order:
- *   1. src/server.ts startServer()      — production boot (non-fatal per step)
- *   2. scripts/ci-db-setup.ts           — CI test-database bootstrap (fatal)
- *   3. (scheduler init no longer runs its own ensures — it relies on this)
+ * The explicit migration command and CI iterate this list. Application startup
+ * only verifies the recorded schema version; it never changes table structure.
  *
- * Adding a table/column? Add ONE entry here — every environment picks it up.
+ * Adding a table/column? Add ONE entry here and increment SCHEMA_VERSION.
  * Do NOT call ensure* functions ad hoc from startup code paths; scattered
  * callers are how the June-2026 constraint-drift incidents happened.
  *
@@ -14,6 +12,7 @@
  * and feeds before anything that reads the wire list.
  */
 import {
+  getPool,
   ensureFeedsTable,
   ensureScanTables,
   ensureClassificationColumns,
@@ -36,6 +35,11 @@ import { ensureApiProviderTables } from '../services/api-provider';
 import { ensureApiUsageTables } from '../services/api-usage';
 import { ensureTelegramIntakeReceiptsTable } from '../services/telegram-intake-receipts';
 import { ensureGrantsIntelTables } from '../routes/grants-intel';
+import { ensureFilesTable } from '../services/storage';
+import { ensureDiscoveredContactsTable } from '../services/contact-discovery';
+
+// Increment whenever the schema contract changes, including enum constants.
+export const SCHEMA_VERSION = 1;
 
 export const STARTUP_MIGRATIONS: ReadonlyArray<{ name: string; run: () => Promise<void> }> = [
   { name: 'sessions', run: ensureSessionsTable },
@@ -48,6 +52,7 @@ export const STARTUP_MIGRATIONS: ReadonlyArray<{ name: string; run: () => Promis
   { name: 'schedules', run: ensureScheduleTable },
   { name: 'distribution', run: ensureDistributionTables },
   { name: 'org-profiles', run: ensureOrgProfilesTable },
+  { name: 'discovered-contacts', run: () => ensureDiscoveredContactsTable(getPool()) },
   { name: 'programs', run: ensureProgramsTable },
   { name: 'watch-surfaces', run: ensureWatchSurfacesTable },
   { name: 'integration-config', run: ensureIntegrationConfigTable },
@@ -59,6 +64,7 @@ export const STARTUP_MIGRATIONS: ReadonlyArray<{ name: string; run: () => Promis
   { name: 'monitored-accounts', run: ensureMonitoredAccountsTable },
   { name: 'api-providers', run: ensureApiProviderTables },
   { name: 'api-usage', run: ensureApiUsageTables },
+  { name: 'generated-files', run: ensureFilesTable },
 ];
 
 export interface StartupMigrationHealth {
@@ -73,17 +79,61 @@ let lastStartupMigrationHealth: StartupMigrationHealth = {
   errors: [],
 };
 
-/** Last runStartupMigrations() outcome. Used by /ready so a failed boot migration is visible. */
+/** Last migration or read-only schema check. Used by /ready. */
 export function getStartupMigrationHealth(): StartupMigrationHealth {
   return lastStartupMigrationHealth;
 }
 
+/** Read-only startup gate. A missing/outdated migration must stop background work. */
+export async function verifyDatabaseSchema(): Promise<void> {
+  try {
+    const { rows } = await getPool().query<{ version: number }>(
+      'SELECT version FROM public.wro_schema_migrations ORDER BY version DESC LIMIT 1',
+    );
+    if (rows[0]?.version !== SCHEMA_VERSION) {
+      throw new Error(`Expected schema version ${SCHEMA_VERSION}; run the database migration command before starting this release`);
+    }
+    lastStartupMigrationHealth = { ran: true, failed: 0, errors: [] };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    lastStartupMigrationHealth = { ran: true, failed: 1, errors: [message] };
+    throw new Error(`[Schema] ${message}`);
+  }
+}
+
+/** Run with a separately supplied migration-owner connection, never from the server. */
+export async function migrateDatabase(): Promise<void> {
+  const client = await getPool().connect();
+  let locked = false;
+  try {
+    // A session lock covers the ensure functions even though they use pooled clients.
+    const { rows } = await client.query('SELECT pg_try_advisory_lock(184736, 1) AS locked');
+    locked = rows[0].locked;
+    if (!locked) throw new Error('Another database migration is already running');
+    await client.query(`CREATE TABLE IF NOT EXISTS public.wro_schema_migrations (
+      version INTEGER PRIMARY KEY,
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+    const applied = await client.query<{ version: number }>('SELECT version FROM public.wro_schema_migrations ORDER BY version DESC LIMIT 1');
+    if ((applied.rows[0]?.version ?? 0) > SCHEMA_VERSION) {
+      throw new Error('Database schema is newer than this migration command; refusing to downgrade');
+    }
+    if (applied.rows[0]?.version === SCHEMA_VERSION) return;
+    await runStartupMigrations({ fatal: true });
+    await client.query('INSERT INTO public.wro_schema_migrations(version) VALUES ($1)', [SCHEMA_VERSION]);
+  } finally {
+    try {
+      if (locked) await client.query('SELECT pg_advisory_unlock(184736, 1)');
+    } finally {
+      client.release();
+    }
+  }
+}
+
 /**
  * Run every startup migration in order.
- * fatal=false (production boot): a failed step logs and the rest continue —
- * a single bad migration must not prevent the app from serving, but /ready
- * returns 503 until the errors are cleared on a later boot.
- * fatal=true (CI): any failure throws so the pipeline goes red.
+ * fatal=true (release command and CI): any failure throws before recording the
+ * version. Diagnostic callers may collect every error with fatal=false.
  */
 export async function runStartupMigrations(opts: { fatal?: boolean } = {}): Promise<void> {
   const errors: string[] = [];

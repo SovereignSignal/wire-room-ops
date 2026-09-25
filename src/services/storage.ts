@@ -6,7 +6,7 @@ import { getPool } from '../db';
 const filesCache = new Map<string, StoredFile>();
 let cacheLoaded = false;
 
-async function ensureFilesTable(): Promise<void> {
+export async function ensureFilesTable(): Promise<void> {
   const pool = getPool();
   await pool.query(`
     CREATE TABLE IF NOT EXISTS generated_files (
@@ -24,7 +24,6 @@ async function loadFilesFromDb(): Promise<void> {
   if (cacheLoaded) return;
   
   try {
-    await ensureFilesTable();
     const pool = getPool();
     const result = await pool.query(`
       SELECT id, filename, content, created_at, date_range_start, date_range_end
@@ -58,8 +57,6 @@ export async function storeFile(
   dateRange: { start: Date; end: Date },
   filename?: string
 ): Promise<StoredFile> {
-  await ensureFilesTable();
-
   const id = uuidv4();
   const now = new Date();
 

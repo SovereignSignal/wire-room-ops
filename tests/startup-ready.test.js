@@ -16,7 +16,7 @@ test('startup migration health starts clean before a run', () => {
 test('/ready fails when startup migrations failed', () => {
   const source = fs.readFileSync(path.join(__dirname, '../src/server.ts'), 'utf8');
   assert.match(source, /getStartupMigrationHealth/);
-  assert.match(source, /startupMigrations: migrations\.failed === 0/);
+  assert.match(source, /startupMigrations: migrations\.ran && migrations\.failed === 0/);
   assert.match(source, /checks\.db && checks\.startupMigrations/);
   assert.match(source, /migrationErrors/);
 });
