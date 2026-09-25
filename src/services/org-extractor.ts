@@ -9,6 +9,7 @@
 import { config } from '../config';
 import { getPool } from '../db';
 import { getCachedProvider } from './api-provider';
+import { fillMissingProgramOrgLinks } from './program-org-links';
 
 // ============================================================
 // Known org aliases → canonical name mapping
@@ -607,8 +608,24 @@ export async function upsertOrgProfile(
  * Link a scan_entry to an org profile.
  */
 export async function linkEntryToOrg(entryId: number, orgId: number): Promise<void> {
-  const pool = getPool();
-  await pool.query(`UPDATE scan_entries SET org_id = $1 WHERE id = $2`, [orgId, entryId]);
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      `UPDATE scan_entries SET org_id = $1 WHERE id = $2 RETURNING program_id`, [orgId, entryId],
+    );
+    const programId = rows[0]?.program_id;
+    if (programId != null) {
+      await client.query('SELECT id FROM programs WHERE id = $1 FOR UPDATE', [programId]);
+      await fillMissingProgramOrgLinks(client, [programId]);
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 /**

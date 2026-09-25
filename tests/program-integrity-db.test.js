@@ -8,6 +8,8 @@ const { buildProgramIntegrityPlan, runProgramIntegrityRepair } = require('../src
 const { purgeSourceEntries } = require('../src/services/source-purge');
 const { demoteEntryToDuplicateInTransaction } = require('../src/services/duplicate-chain');
 const { linkEntryDuplicate } = require('../src/services/entry-maintenance');
+const { planProgramOrgLinks, fillMissingProgramOrgLinks, repairProgramOrgLinks } = require('../src/services/program-org-links');
+const { linkEntryToOrg } = require('../src/services/org-extractor');
 
 const DB_URL = process.env.DATABASE_URL;
 if (!DB_URL) {
@@ -22,11 +24,13 @@ const pool = new Pool({ connectionString: DB_URL, options: `-c search_path=${sch
 test.before(async () => {
   await admin.query(`CREATE SCHEMA ${schema}`);
   await pool.query(`
+    CREATE TABLE org_profiles (id SERIAL PRIMARY KEY, name TEXT NOT NULL);
     CREATE TABLE programs (
       id SERIAL PRIMARY KEY,
       canonical_name TEXT NOT NULL,
       normalized_key TEXT NOT NULL UNIQUE,
       org_name TEXT,
+      org_id INTEGER REFERENCES org_profiles(id),
       wire TEXT,
       aliases TEXT[] NOT NULL DEFAULT '{}',
       canonical_url TEXT,
@@ -59,6 +63,7 @@ test.before(async () => {
       operator_notes TEXT,
       metadata JSONB DEFAULT '{}',
       program_id INTEGER REFERENCES programs(id),
+      org_id INTEGER REFERENCES org_profiles(id),
       duplicate_of_id INTEGER REFERENCES scan_entries(id),
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -79,7 +84,77 @@ test.before(async () => {
 });
 
 test.beforeEach(async () => {
-  await pool.query('TRUNCATE distribution_logs, seen_urls, seen_names, scan_entries, programs RESTART IDENTITY CASCADE');
+  await pool.query('TRUNCATE distribution_logs, seen_urls, seen_names, scan_entries, programs, org_profiles RESTART IDENTITY CASCADE');
+});
+
+async function orgLinkFixture() {
+  await pool.query(`INSERT INTO org_profiles (name) VALUES ('Example Foundation'), ('Different Foundation');
+    INSERT INTO programs (canonical_name, normalized_key, org_name)
+      VALUES ('Example Grants', 'example', ' Example Foundation ');
+    INSERT INTO scan_entries (name, program_id, org_id, status)
+      VALUES ('Example round', 1, 1, 'approved')`);
+}
+
+test('program org links require exact names and approved nonduplicate member agreement', async () => {
+  await orgLinkFixture();
+  assert.deepEqual((await planProgramOrgLinks(pool)).links.map(x => [x.programId, x.orgId, x.evidenceEntryIds]), [[1, 1, [1]]]);
+  await pool.query("UPDATE programs SET org_name = 'Example'");
+  assert.equal((await planProgramOrgLinks(pool)).links.length, 0, 'no substring inference');
+  await pool.query("UPDATE programs SET org_name = 'Example Foundation'; UPDATE scan_entries SET status='queued'");
+  assert.equal((await planProgramOrgLinks(pool)).links.length, 0, 'a queued sighting is insufficient');
+  await pool.query("UPDATE scan_entries SET status='approved', duplicate_of_id=1");
+  assert.equal((await planProgramOrgLinks(pool)).links.length, 0, 'a linked duplicate is insufficient');
+});
+
+test('program org links leave contradictory members, holds and ambiguous org names unresolved', async () => {
+  await orgLinkFixture();
+  await pool.query("INSERT INTO scan_entries (name, program_id, org_id, status) VALUES ('Conflicting sighting',1,2,'duplicate')");
+  assert.equal((await planProgramOrgLinks(pool)).links.length, 0);
+  await pool.query('DELETE FROM scan_entries WHERE id=2');
+  await pool.query("UPDATE scan_entries SET operator_notes='Curator HOLD: check identity'");
+  assert.equal((await planProgramOrgLinks(pool)).links.length, 0);
+  await pool.query("UPDATE scan_entries SET operator_notes=NULL; INSERT INTO org_profiles (name) VALUES ('example foundation')");
+  assert.equal((await planProgramOrgLinks(pool)).links.length, 0);
+});
+
+test('program org repair rejects drift, fills missing links once and preserves resolved links', async () => {
+  await orgLinkFixture();
+  const plan = await repairProgramOrgLinks(pool);
+  assert.equal(plan.applied, 0);
+  await assert.rejects(() => repairProgramOrgLinks(pool, '0'.repeat(64)), /plan changed/);
+  assert.equal((await pool.query('SELECT org_id FROM programs WHERE id=1')).rows[0].org_id, null);
+  assert.equal((await repairProgramOrgLinks(pool, plan.planHash)).applied, 1);
+  assert.equal((await repairProgramOrgLinks(pool)).links.length, 0);
+  await pool.query('UPDATE programs SET org_id=2');
+  assert.equal(await fillMissingProgramOrgLinks(pool, [1]), 0);
+  assert.equal((await pool.query('SELECT org_id FROM programs WHERE id=1')).rows[0].org_id, 2);
+});
+
+test('normal approval counter refresh and later org extraction both fill the program link', async () => {
+  await orgLinkFixture();
+  await refreshProgramCounters(pool, [1]);
+  assert.equal((await pool.query('SELECT org_id FROM programs WHERE id=1')).rows[0].org_id, 1);
+  await pool.query('UPDATE programs SET org_id=NULL; UPDATE scan_entries SET org_id=NULL');
+  const db = require('../src/db'); const original = db.getPool;
+  db.getPool = () => pool;
+  try { await linkEntryToOrg(1, 1); } finally { db.getPool = original; }
+  assert.equal((await pool.query('SELECT org_id FROM programs WHERE id=1')).rows[0].org_id, 1);
+});
+
+test('org extraction rolls back the entry link if program reconciliation fails', async () => {
+  await orgLinkFixture();
+  await pool.query('UPDATE scan_entries SET org_id=NULL');
+  const db = require('../src/db'); const original = db.getPool;
+  db.getPool = () => ({ connect: async () => {
+    const client = await pool.connect();
+    return { release: () => client.release(), query: (sql, params) => {
+      if (sql.includes('WITH eligible')) throw new Error('reconciliation failed');
+      return client.query(sql, params);
+    } };
+  } });
+  try { await assert.rejects(() => linkEntryToOrg(1, 1), /reconciliation failed/); }
+  finally { db.getPool = original; }
+  assert.equal((await pool.query('SELECT org_id FROM scan_entries WHERE id=1')).rows[0].org_id, null);
 });
 
 test('refreshProgramCounters repairs empty programs and never selects a duplicate canonical', async () => {

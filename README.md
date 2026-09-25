@@ -371,3 +371,17 @@ To run this engine for a different vertical (e.g. consulting leads, research int
 - Wire list is DB-driven (from `feeds` table), not hardcoded. Fallback via `INTAKE_WIRES` env var.
 - Brand/audience config is env-var driven via `src/config/brand.ts` — AI prompts, emails, and scoring use `getBrand()` instead of hardcoded values.
 - The queue/status model is the publication contract with distribution channels (Telegram, X, newsletter, email).
+
+### Repair missing program organization links
+
+The runtime fills a missing `programs.org_id` only when its organization name exactly
+matches one profile, an approved nonduplicate member already links that profile, and
+no member has a conflicting organization or curator hold. Existing links are preserved.
+This carries forward recorded editorial relationships; it does not merge organizations
+or turn the operational program table into a vetted public registry.
+
+The operator can review the same rules across historical records with
+`npx ts-node src/scripts/program-org-links.ts`. After reviewing that dry run, apply its
+exact plan with `--apply --expect-plan-hash=<reviewed hash>`. The repair locks the relevant
+tables briefly and aborts if the plan has changed. Use an owner connection for that repair;
+normal runtime reconciliation uses the restricted application's existing grants.

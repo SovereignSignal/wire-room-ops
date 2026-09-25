@@ -15,6 +15,7 @@ import { logApiUsage } from './api-usage';
 import { getCachedProvider } from './api-provider';
 import { extractOrgFromName } from './org-extractor';
 import { normalizeUrl } from '../utils/url';
+import { fillMissingProgramOrgLinks } from './program-org-links';
 import { scrapeUrl } from './scraper';
 import type { Pool, PoolClient } from 'pg';
 
@@ -462,6 +463,7 @@ export async function refreshProgramCounters(pool: QueryPool, programIds: number
      RETURNING p.id`,
     [ids],
   );
+  await fillMissingProgramOrgLinks(pool, ids);
   return rows.length;
 }
 
