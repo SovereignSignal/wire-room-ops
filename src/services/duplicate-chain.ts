@@ -1,4 +1,5 @@
 import { Pool } from 'pg';
+import { refreshProgramCounters } from './program-identity';
 
 export interface DuplicateChainResolution {
   id: number | null;
@@ -60,8 +61,8 @@ export async function resolveDuplicateChain(
   return { id: terminal.id, status: terminal.status, depth: terminal.depth, error: null };
 }
 
-/** Keep exact URL dedup ownership pointed at the terminal canonical entry. */
-export async function reassignSeenUrlOwnership(
+/** Reconcile URL ownership and entry-derived program state in the decision transaction. */
+export async function reconcileDuplicateReferences(
   db: Queryable,
   duplicateEntryId: number,
   canonicalEntryId: number,
@@ -72,6 +73,12 @@ export async function reassignSeenUrlOwnership(
      WHERE first_seen_entry_id = $1`,
     [duplicateEntryId, canonicalEntryId],
   );
+  const programs = await db.query(
+    `SELECT DISTINCT program_id FROM scan_entries
+     WHERE id = ANY($1::int[]) AND program_id IS NOT NULL`,
+    [[duplicateEntryId, canonicalEntryId]],
+  );
+  await refreshProgramCounters(db, programs.rows.map(row => Number(row.program_id)));
 }
 
 export interface DuplicateDemotionOptions {
@@ -216,6 +223,6 @@ export async function demoteEntryToDuplicateInTransaction(
     return { outcome: 'stale', canonicalParentId: null };
   }
 
-  await reassignSeenUrlOwnership(db, opts.targetId, resolution.id);
+  await reconcileDuplicateReferences(db, opts.targetId, resolution.id);
   return { outcome: 'linked', canonicalParentId: resolution.id };
 }

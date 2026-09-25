@@ -27,7 +27,7 @@ import { isBlockedHost, isSafeHttpUrl } from '../utils/ssrf';
 import { getCachedProvider } from '../services/api-provider';
 import { logApiUsage } from '../services/api-usage';
 import { classifySourceLink, type SourceLinkClass } from '../services/source-filter';
-import { lockDuplicateGraph, reassignSeenUrlOwnership, resolveDuplicateChain } from '../services/duplicate-chain';
+import { lockDuplicateGraph, reconcileDuplicateReferences, resolveDuplicateChain } from '../services/duplicate-chain';
 import { EntryMaintenanceError, rewriteEntrySource } from '../services/entry-maintenance';
 import { normalizeUrl } from '../services/intake';
 import { config } from '../config';
@@ -467,7 +467,7 @@ export async function applyVerdict(pool: Pool, target: RecheckTarget, candidates
         return 'stale';
       }
 
-      await reassignSeenUrlOwnership(client, target.id, resolvedId);
+      await reconcileDuplicateReferences(client, target.id, resolvedId);
       await client.query('COMMIT');
       return 'duplicate';
     } catch (error) {

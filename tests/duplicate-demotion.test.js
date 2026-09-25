@@ -50,6 +50,7 @@ function fakeDb(overrides = {}) {
         return { rows: rowCount ? [{ id: 10 }] : [], rowCount };
       }
       if (/UPDATE seen_urls/.test(sql)) return { rows: [], rowCount: 1 };
+      if (/SELECT DISTINCT program_id FROM scan_entries/.test(sql)) return { rows: [], rowCount: 0 };
       throw new Error(`Unexpected SQL: ${sql}`);
     },
     get resolutionCalls() { return resolutionCalls; },

@@ -6,6 +6,8 @@ const { Pool } = require('pg');
 const { finalizeProgramForEntry, refreshProgramCounters } = require('../src/services/program-identity');
 const { buildProgramIntegrityPlan, runProgramIntegrityRepair } = require('../src/services/program-integrity');
 const { purgeSourceEntries } = require('../src/services/source-purge');
+const { demoteEntryToDuplicateInTransaction } = require('../src/services/duplicate-chain');
+const { linkEntryDuplicate } = require('../src/services/entry-maintenance');
 
 const DB_URL = process.env.DATABASE_URL;
 if (!DB_URL) {
@@ -50,6 +52,10 @@ test.before(async () => {
       wire TEXT NOT NULL DEFAULT 'ai',
       scan_source TEXT NOT NULL DEFAULT 'forum',
       status TEXT NOT NULL DEFAULT 'queued',
+      distributable BOOLEAN NOT NULL DEFAULT true,
+      duplicate_reason TEXT,
+      actioned_by TEXT,
+      action_reason TEXT,
       operator_notes TEXT,
       metadata JSONB DEFAULT '{}',
       program_id INTEGER REFERENCES programs(id),
@@ -139,6 +145,69 @@ test('finalizeProgramForEntry links and counts one entry exactly once across ret
   assert.equal(state.rows[0].canonical_entry_id, entry.rows[0].id);
   const repeatNotes = (linked.rows[0].operator_notes || '').match(/Program repeat/g) || [];
   assert.equal(repeatNotes.length, 1, 'same-round history note lands exactly once across retries');
+});
+
+test('linking historical approved and duplicate entries derives counts, dates and a valid canonical', async () => {
+  const programId = (await pool.query("INSERT INTO programs (canonical_name, normalized_key) VALUES ('History', 'history') RETURNING id")).rows[0].id;
+  const entries = (await pool.query(`INSERT INTO scan_entries (name, status, created_at, updated_at)
+    VALUES ('Old duplicate', 'duplicate', '2024-01-10T12:00:00Z', '2024-01-11T12:00:00Z'),
+           ('Reviewed grant', 'approved', '2024-02-10T12:00:00Z', '2024-02-11T12:00:00Z') RETURNING id, name`)).rows;
+  const resolution = { programId, confidence: 0.95, verdict: 'same_round', roundLabel: null, historyLine: 'existing program' };
+  await finalizeProgramForEntry(pool, entries[0], resolution);
+  assert.equal((await pool.query('SELECT canonical_entry_id FROM programs WHERE id=$1', [programId])).rows[0].canonical_entry_id, null);
+  await finalizeProgramForEntry(pool, entries[1], resolution);
+  const state = (await pool.query(`SELECT entry_count, approved_count, canonical_entry_id,
+    first_seen::text, last_seen::text, last_decision FROM programs WHERE id=$1`, [programId])).rows[0];
+  assert.deepEqual(state, { entry_count: 2, approved_count: 1, canonical_entry_id: entries[1].id,
+    first_seen: '2024-01-10', last_seen: '2024-02-10', last_decision: 'approved 2024-02-11' });
+});
+
+async function demotionFixture() {
+  const programId = (await pool.query("INSERT INTO programs (canonical_name, normalized_key) VALUES ('Demotion', 'demotion') RETURNING id")).rows[0].id;
+  const entries = (await pool.query(`INSERT INTO scan_entries (name, status, program_id)
+    VALUES ('Former canonical', 'approved', $1), ('Surviving canonical', 'queued', $1) RETURNING id, source_url`, [programId])).rows;
+  const [target, parent] = entries;
+  await refreshProgramCounters(pool, [programId]);
+  await pool.query('INSERT INTO seen_urls (first_seen_entry_id) VALUES ($1)', [target.id]);
+  return { programId, target, parent };
+}
+
+for (const mode of ['automatic', 'operator']) {
+  test(`${mode} duplicate demotion refreshes the former canonical and its decision counts in the transaction`, async () => {
+    const { programId, target, parent } = await demotionFixture();
+    if (mode === 'automatic') {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await demoteEntryToDuplicateInTransaction(client, { targetId: target.id, requestedParentId: parent.id,
+          expectedStatus: 'approved', expectedSourceUrl: target.source_url, reason: 'Confirmed repeat' });
+        await client.query('COMMIT');
+      } catch (error) { await client.query('ROLLBACK'); throw error; }
+      finally { client.release(); }
+    } else {
+      await linkEntryDuplicate(pool, target.id, { duplicateOfId: parent.id, expectedStatus: 'approved',
+        expectedSourceUrl: target.source_url, actor: 'user:test', reason: 'Confirmed repeat' });
+    }
+    const state = (await pool.query('SELECT entry_count, approved_count, canonical_entry_id, last_decision FROM programs WHERE id=$1', [programId])).rows[0];
+    assert.deepEqual(state, { entry_count: 2, approved_count: 0, canonical_entry_id: parent.id, last_decision: null });
+    assert.equal((await pool.query('SELECT first_seen_entry_id FROM seen_urls')).rows[0].first_seen_entry_id, parent.id);
+  });
+}
+
+test('a program refresh failure rolls back the duplicate decision and URL transfer', async () => {
+  const { programId, target, parent } = await demotionFixture();
+  await pool.query(`CREATE FUNCTION reject_program_update() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'program refresh unavailable'; END $$`);
+  await pool.query('CREATE TRIGGER reject_program_update BEFORE UPDATE ON programs FOR EACH ROW EXECUTE FUNCTION reject_program_update()');
+  try {
+    await assert.rejects(linkEntryDuplicate(pool, target.id, { duplicateOfId: parent.id, expectedStatus: 'approved',
+      expectedSourceUrl: target.source_url, actor: 'user:test', reason: 'Confirmed repeat' }), /program refresh unavailable/);
+    assert.equal((await pool.query('SELECT status FROM scan_entries WHERE id=$1', [target.id])).rows[0].status, 'approved');
+    assert.equal((await pool.query('SELECT first_seen_entry_id FROM seen_urls')).rows[0].first_seen_entry_id, target.id);
+    assert.equal((await pool.query('SELECT canonical_entry_id FROM programs WHERE id=$1', [programId])).rows[0].canonical_entry_id, target.id);
+  } finally {
+    await pool.query('DROP TRIGGER reject_program_update ON programs');
+    await pool.query('DROP FUNCTION reject_program_update()');
+  }
 });
 
 test('purgeSourceEntries replaces a deleted canonical and reparents surviving duplicates', async () => {
