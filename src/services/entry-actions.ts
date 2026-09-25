@@ -279,7 +279,7 @@ function scheduleApproveSideEffects(
     });
   }
 
-  // Org linking + enrichment (with fuzzy dedup)
+  // Org linking + enrichment (unique exact name or recorded alias)
   if (!row.org_id) {
     setImmediate(async () => {
       try {

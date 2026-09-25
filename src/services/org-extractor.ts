@@ -95,6 +95,21 @@ const ORG_ALIASES: Record<string, string> = {
   'ecmwf': 'ECMWF',
 };
 
+// A title can start with a program run by a known organization. Prefer the
+// most specific alias, so Google DeepMind never falls through to Google.
+const TITLE_ALIASES = Object.entries(ORG_ALIASES).sort(([a], [b]) => b.length - a.length);
+
+function knownOrgAtStart(title: string): string | null {
+  const lower = title.replace(/\s+/g, ' ').trim()
+    .replace(/^\[([^\]]+)\](?=\s|$)/, '$1').toLowerCase();
+  for (const [alias, canonical] of TITLE_ALIASES) {
+    if (lower === alias || (lower.startsWith(alias) && /^(?:[\s:—–]|-\s)/.test(lower.slice(alias.length)))) {
+      return canonical;
+    }
+  }
+  return null;
+}
+
 // ============================================================
 // Prevention guards — reject bad candidates before they become orgs
 // ============================================================
@@ -215,28 +230,19 @@ export function shouldArchiveOrgProfile(org: OrgArchiveFields): boolean {
 }
 
 // ============================================================
-// Fuzzy matching against existing orgs
+// Exact identity matching against existing orgs
 // ============================================================
 
 /**
- * Normalize a string for comparison: strip non-alphanum, lowercase.
+ * Ignore case and whitespace, preserving punctuation that can distinguish orgs.
  */
 function normalizeForComparison(s: string): string {
-  return s.replace(/[^a-z0-9]/gi, '').toLowerCase();
+  return s.replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
 /**
- * Tokenize a name for overlap comparison.
- */
-function tokenize(s: string): Set<string> {
-  return new Set(
-    s.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(t => t.length > 0)
-  );
-}
-
-/**
- * Find a similar existing org by normalized exact match, alias match,
- * substring containment, or token overlap.
+ * Reuse a unique exact name or explicitly recorded alias. Related names are
+ * insufficient evidence to link records. Ambiguity aborts the caller's link.
  */
 export async function findSimilarOrg(candidateName: string): Promise<{ id: number; name: string } | null> {
   const pool = getPool();
@@ -244,49 +250,15 @@ export async function findSimilarOrg(candidateName: string): Promise<{ id: numbe
   if (orgs.length === 0) return null;
 
   const normCandidate = normalizeForComparison(candidateName);
-  const candidateTokens = tokenize(candidateName);
-
-  for (const org of orgs) {
-    // 1. Exact match after normalization
-    if (normalizeForComparison(org.name) === normCandidate) {
-      return { id: org.id, name: org.name };
-    }
-
-    // 1b. Check aliases
-    const aliases: string[] = org.aliases || [];
-    for (const alias of aliases) {
-      if (normalizeForComparison(alias) === normCandidate) {
-        return { id: org.id, name: org.name };
-      }
-    }
-  }
-
-  for (const org of orgs) {
-    // 2. Substring containment (min 4 chars to avoid "AI" matching "ARIA")
-    const normOrg = normalizeForComparison(org.name);
-    if (normCandidate.length >= 4 && normOrg.length >= 4) {
-      if (normOrg.includes(normCandidate) || normCandidate.includes(normOrg)) {
-        return { id: org.id, name: org.name };
-      }
-    }
-  }
-
-  for (const org of orgs) {
-    // 3. Token overlap >= 70% of shorter set with >= 2 shared tokens
-    const orgTokens = tokenize(org.name);
-    const shorter = Math.min(candidateTokens.size, orgTokens.size);
-    if (shorter < 2) continue;
-
-    let shared = 0;
-    for (const t of candidateTokens) {
-      if (orgTokens.has(t)) shared++;
-    }
-    if (shared >= 2 && shared / shorter >= 0.7) {
-      return { id: org.id, name: org.name };
-    }
-  }
-
-  return null;
+  if (!normCandidate) return null;
+  const exact = orgs.filter(org => normalizeForComparison(org.name) === normCandidate);
+  const canonical = normalizeForComparison(canonicalizeOrgName(candidateName));
+  const matches = exact.length ? exact : orgs.filter(org =>
+    normalizeForComparison(org.name) === canonical ||
+    (org.aliases || []).some((alias: string) => normalizeForComparison(alias) === normCandidate)
+  );
+  if (matches.length > 1) throw new Error(`Ambiguous organization match for "${candidateName}"`);
+  return matches.length ? { id: matches[0].id, name: matches[0].name } : null;
 }
 
 // ============================================================
@@ -300,6 +272,8 @@ export async function findSimilarOrg(candidateName: string): Promise<{ id: numbe
  */
 export function extractOrgFromName(entryName: string): string | null {
   const name = entryName.trim();
+  const known = knownOrgAtStart(name);
+  if (known) return known;
 
   // Pattern 1: "@handle: rest" (X post format) — strip the @
   const xHandle = name.match(/^@?(\w+):\s+/);
@@ -327,15 +301,6 @@ export function extractOrgFromName(entryName: string): string | null {
     }
   }
 
-  // Pattern 4: Check if the entry name starts with a known org
-  const lowerName = name.toLowerCase();
-  for (const [alias, canonical] of Object.entries(ORG_ALIASES)) {
-    if (lowerName.startsWith(alias + ' ') || lowerName.startsWith(alias + ':') ||
-        lowerName.startsWith(alias + ' —') || lowerName === alias) {
-      return canonical; // Known aliases always pass guards
-    }
-  }
-
   return null;
 }
 
@@ -357,6 +322,8 @@ export function canonicalizeOrgName(raw: string): string {
 function normalizeOrgName(raw: string): string {
   const cleaned = raw
     .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^\[(.*)\]$/, '$1')
     .replace(/^[@#]/, '')
     .replace(/\s*@[a-zA-Z0-9_]+/g, '')
     .trim();
@@ -364,11 +331,6 @@ function normalizeOrgName(raw: string): string {
   // Check alias map
   const lower = cleaned.toLowerCase();
   if (ORG_ALIASES[lower]) return ORG_ALIASES[lower];
-
-  // Check partial matches
-  for (const [alias, canonical] of Object.entries(ORG_ALIASES)) {
-    if (lower.includes(alias) && alias.length > 3) return canonical;
-  }
 
   return cleaned;
 }
@@ -399,8 +361,7 @@ export async function extractOrgsFromEntries(
     const org = extractOrgFromName(entry.name);
     if (org) {
       // Check if it came from alias map
-      const lower = entry.name.toLowerCase();
-      const isAlias = Object.keys(ORG_ALIASES).some(a => lower.includes(a));
+      const isAlias = knownOrgAtStart(entry.name) !== null;
       results.push({
         entryId: entry.id,
         orgName: org,
@@ -661,10 +622,6 @@ export async function runOrgExtraction(): Promise<{
   const extractions = await extractOrgsFromEntries(entries);
   stats.processed = entries.length;
 
-  // Check which orgs already exist
-  const { rows: existingOrgs } = await pool.query(`SELECT id, name FROM org_profiles`);
-  const orgMap = new Map(existingOrgs.map(o => [o.name.toLowerCase(), o.id]));
-
   for (const extraction of extractions) {
     if (!extraction.orgName) continue;
 
@@ -672,18 +629,9 @@ export async function runOrgExtraction(): Promise<{
       const entry = entries.find(e => e.id === extraction.entryId);
       if (!entry) continue;
 
-      // Check if org exists (exact match first, then fuzzy)
-      let existingId = orgMap.get(extraction.orgName.toLowerCase());
+      // Use the same ambiguity checks as approval-time linking.
+      const existingId = (await findSimilarOrg(extraction.orgName))?.id;
       let orgId: number;
-
-      // Try fuzzy match if no exact match
-      if (!existingId) {
-        const similar = await findSimilarOrg(extraction.orgName);
-        if (similar) {
-          existingId = similar.id;
-          console.log(`[OrgExtractor] Fuzzy matched "${extraction.orgName}" → "${similar.name}" (id=${similar.id})`);
-        }
-      }
 
       if (existingId) {
         // Update existing org
@@ -699,7 +647,6 @@ export async function runOrgExtraction(): Promise<{
       } else {
         // Create new org
         orgId = await upsertOrgProfile(extraction.orgName, entry.wire, entry.scan_date);
-        orgMap.set(extraction.orgName.toLowerCase(), orgId);
         stats.newOrgs++;
       }
 
