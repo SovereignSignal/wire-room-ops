@@ -15,6 +15,7 @@ import { logApiUsage } from './api-usage';
 import { getCachedProvider } from './api-provider';
 import { extractOrgFromName } from './org-extractor';
 import { normalizeUrl } from '../utils/url';
+import { fillMissingProgramOrgLinks } from './program-org-links';
 import { scrapeUrl } from './scraper';
 import type { Pool, PoolClient } from 'pg';
 
@@ -408,7 +409,11 @@ export function normalizeProgramDeadline(value: string | null | undefined): stri
 }
 
 /** Recompute all entry-derived program state, including empty programs, idempotently. */
-export async function refreshProgramCounters(pool: QueryPool, programIds: number[]): Promise<number> {
+export async function refreshProgramCounters(
+  pool: QueryPool,
+  programIds: number[],
+  options: { linkOrganizations?: boolean } = {},
+): Promise<number> {
   const ids = [...new Set(programIds.filter(Number.isSafeInteger))];
   if (ids.length === 0) return 0;
   const { rows } = await pool.query(
@@ -462,6 +467,7 @@ export async function refreshProgramCounters(pool: QueryPool, programIds: number
      RETURNING p.id`,
     [ids],
   );
+  if (options.linkOrganizations !== false) await fillMissingProgramOrgLinks(pool, ids);
   return rows.length;
 }
 
