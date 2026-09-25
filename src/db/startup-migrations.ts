@@ -37,9 +37,10 @@ import { ensureTelegramIntakeReceiptsTable } from '../services/telegram-intake-r
 import { ensureGrantsIntelTables } from '../routes/grants-intel';
 import { ensureFilesTable } from '../services/storage';
 import { ensureDiscoveredContactsTable } from '../services/contact-discovery';
+import { ensureOrgMetrics } from './org-metrics';
 
 // Increment whenever the schema contract changes, including enum constants.
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export const STARTUP_MIGRATIONS: ReadonlyArray<{ name: string; run: () => Promise<void> }> = [
   { name: 'sessions', run: ensureSessionsTable },
@@ -65,6 +66,7 @@ export const STARTUP_MIGRATIONS: ReadonlyArray<{ name: string; run: () => Promis
   { name: 'api-providers', run: ensureApiProviderTables },
   { name: 'api-usage', run: ensureApiUsageTables },
   { name: 'generated-files', run: ensureFilesTable },
+  { name: 'org-metrics', run: ensureOrgMetrics },
 ];
 
 export interface StartupMigrationHealth {
