@@ -30,6 +30,7 @@ export interface UsageSummaryRow {
   tokens_out: number;
   estimated_cost_usd: number;
   errors: number;
+  unpriced_calls: number;
 }
 
 export interface UsageTimelineRow {
@@ -77,15 +78,16 @@ export async function refreshPricingCache(): Promise<void> {
   }
 }
 
-function estimateCost(provider: string, model: string | undefined, tokensIn?: number, tokensOut?: number): number {
-  if (!model) return 0;
+export function estimateCost(provider: string, model: string | undefined, tokensIn?: number, tokensOut?: number): number | null {
+  if (!model) return null;
   const pricing = pricingCache.get(pricingKey(provider, model));
-  if (!pricing) return 0;
+  if (!pricing) return null;
 
   if (pricing.perRequest != null) {
     return pricing.perRequest;
   }
 
+  if (tokensIn == null && tokensOut == null) return null;
   const inCost = (tokensIn || 0) / 1_000_000 * pricing.inputPer1M;
   const outCost = (tokensOut || 0) / 1_000_000 * pricing.outputPer1M;
   return inCost + outCost;
@@ -167,11 +169,18 @@ export async function ensureApiUsageTables(): Promise<void> {
 
 // ---- Fire-and-forget logging ----
 
+const pendingUsageWrites = new Set<Promise<void>>();
+let usageWriteFailure: Error | null = null;
+export async function flushUsageLogs(): Promise<void> {
+  await Promise.all([...pendingUsageWrites]);
+  if (usageWriteFailure) throw usageWriteFailure;
+}
+
 export function logApiUsage(params: UsageLogParams): void {
   const cost = estimateCost(params.provider, params.model, params.tokens_in, params.tokens_out);
 
   const pool = getPool();
-  pool.query(
+  const write = pool.query(
     `INSERT INTO api_usage_log (provider, model, purpose, tokens_in, tokens_out, estimated_cost_usd, wire, entry_id, duration_ms, success, error_message)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
     [
@@ -180,16 +189,19 @@ export function logApiUsage(params: UsageLogParams): void {
       params.purpose,
       params.tokens_in || null,
       params.tokens_out || null,
-      cost || null,
+      cost,
       params.wire || null,
       params.entry_id ?? null,
       params.duration_ms,
       params.success ?? true,
       params.error_message || null,
     ]
-  ).catch(err => {
+  ).then(() => undefined).catch(err => {
+    usageWriteFailure = new Error('Usage accounting unavailable; discovery paused until restart');
     console.error('[ApiUsage] Failed to log usage:', err.message);
   });
+  pendingUsageWrites.add(write);
+  void write.finally(() => pendingUsageWrites.delete(write));
 }
 
 // ---- Query functions ----
@@ -226,6 +238,7 @@ export async function getUsageSummary(opts: {
        COALESCE(SUM(tokens_in), 0)::int AS tokens_in,
        COALESCE(SUM(tokens_out), 0)::int AS tokens_out,
        COALESCE(SUM(estimated_cost_usd), 0)::numeric AS estimated_cost_usd,
+       COUNT(*) FILTER (WHERE estimated_cost_usd IS NULL)::int AS unpriced_calls,
        COUNT(*) FILTER (WHERE NOT success)::int AS errors
      FROM api_usage_log
      WHERE ${conditions.join(' AND ')}

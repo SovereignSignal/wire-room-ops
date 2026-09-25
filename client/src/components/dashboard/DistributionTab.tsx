@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { PublicationReview } from './PublicationReview';
 import { useToast } from '@/hooks/use-toast';
 
 interface DistributionChannel {
@@ -222,6 +223,8 @@ export function DistributionTab(_: DistributionTabProps) {
           + ADD CHANNEL
         </button>
       </div>
+
+      <PublicationReview />
 
       {/* Channel table */}
       {channels.length === 0 && !showForm ? (

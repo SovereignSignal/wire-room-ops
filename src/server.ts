@@ -38,6 +38,8 @@ import { scanPromptRouter } from './routes/scan-prompts';
 import { scanEntryRouter } from './routes/scan-entries';
 import { grantsIntelRouter } from './routes/grants-intel';
 
+import { drainPublicationQueue } from './services/publication-queue';
+
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -335,6 +337,15 @@ export async function startServer(): Promise<void> {
   // into the daily-digest cycle (scheduler.ts) — no standalone timers. The
   // digest-orgs lane was retired 2026-07-03.
 
+  const publishTick = () => {
+    const migrations = getStartupMigrationHealth();
+    if (!migrations.ran || migrations.failed) return;
+    return drainPublicationQueue().catch(error => console.error('[PublicationQueue]', error));
+  };
+  const publicationTimer = setInterval(publishTick, 30_000);
+  publicationTimer.unref();
+  void publishTick();
+
   const server = app.listen(config.app.port, () => {
     console.log(`Server running on port ${config.app.port}`);
   });
@@ -348,6 +359,7 @@ export async function startServer(): Promise<void> {
     jobQueue.stopPeriodicCleanup();
     clearInterval(processRawTimer);
     clearInterval(contactsSyncTimer);
+    clearInterval(publicationTimer);
     server.close(async () => {
       await closePool();
       console.log('[Server] Shutdown complete');

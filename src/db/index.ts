@@ -12,6 +12,7 @@ export function getPool(): Pool {
   if (!pool) {
     pool = new Pool({
       connectionString: config.database.url,
+      application_name: process.env.PGAPPNAME || 'wire-room-ops',
       ssl: config.database.url.includes('localhost') ? false : {
         rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED !== 'false',
       },
@@ -1595,10 +1596,24 @@ export async function ensureDistributionTables(): Promise<void> {
     // New index includes channel_id so each managed channel instance gets its own log row.
     await client.query(`DROP INDEX IF EXISTS idx_dist_logs_no_dupes`);
     await client.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_dist_logs_no_dupes
-      ON distribution_logs(entry_id, channel, COALESCE(channel_id, '00000000-0000-0000-0000-000000000000'))
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_dist_logs_destination
+      ON distribution_logs(entry_id, wire, channel, COALESCE(channel_id, '00000000-0000-0000-0000-000000000000'))
       WHERE status IN ('pending', 'success')
     `);
+
+    await client.query(`ALTER TABLE distribution_logs ADD COLUMN IF NOT EXISTS needs_review BOOLEAN NOT NULL DEFAULT false`);
+    await client.query(`ALTER TABLE distribution_logs ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE distribution_logs ALTER COLUMN lease_expires_at SET DEFAULT (NOW() + INTERVAL '5 minutes')`);
+    await client.query(`ALTER TABLE distribution_logs ADD COLUMN IF NOT EXISTS resolved_by TEXT`);
+    await client.query(`ALTER TABLE distribution_logs ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ`);
+    await client.query(`CREATE TABLE IF NOT EXISTS publication_queue (
+      entry_id INTEGER PRIMARY KEY REFERENCES scan_entries(id) ON DELETE CASCADE,
+      status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'done', 'review')),
+      attempts INTEGER NOT NULL DEFAULT 0,
+      lease_token UUID, lease_expires_at TIMESTAMPTZ,
+      available_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      error_message TEXT, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
 
     // updated_at trigger for distribution_config
     await client.query(`
@@ -1687,22 +1702,28 @@ export async function getUndistributedEntries(
   channel?: DistributionChannel
 ): Promise<any[]> {
   const pool = getPool();
-  // Find approved entries that don't have a success/pending log for the given channel(s)
-  const channels = channel ? [channel] : ['telegram', 'x'];
   const result = await pool.query(`
-    SELECT se.*
-    FROM scan_entries se
-    WHERE se.wire = $1
-      AND se.status = 'approved'
-      AND se.distributable IS NOT FALSE
-      AND NOT EXISTS (
-        SELECT 1 FROM distribution_logs dl
-        WHERE dl.entry_id = se.id
-          AND dl.channel = ANY($2)
-          AND dl.status IN ('pending', 'success')
-      )
-    ORDER BY se.created_at DESC
-  `, [wire, channels]);
+    WITH destinations AS (
+      SELECT channel, id AS channel_id FROM distribution_channels
+      WHERE wire = $1 AND enabled AND channel IN ('telegram','discord','slack')
+      UNION ALL
+      SELECT channel, NULL::uuid FROM distribution_config
+      WHERE wire = $1 AND enabled AND channel IN ('telegram','x')
+    )
+    SELECT se.* FROM scan_entries se
+    WHERE (se.wire = $1 OR $1 = ANY(se.wires))
+      AND se.status = 'approved' AND se.distributable IS NOT FALSE
+      AND (
+        ($2::text = 'newsletter' AND NOT EXISTS (
+          SELECT 1 FROM distribution_logs dl WHERE dl.entry_id = se.id AND dl.wire = $1
+            AND dl.channel = 'newsletter' AND dl.status IN ('pending','success')))
+        OR ($2::text IS DISTINCT FROM 'newsletter' AND EXISTS (
+          SELECT 1 FROM destinations d WHERE ($2::text IS NULL OR d.channel = $2)
+          AND NOT EXISTS (SELECT 1 FROM distribution_logs dl WHERE dl.entry_id = se.id
+            AND dl.wire = $1 AND dl.channel = d.channel AND dl.channel_id IS NOT DISTINCT FROM d.channel_id
+            AND dl.status IN ('pending','success'))))
+      ) ORDER BY se.created_at DESC
+  `, [wire, channel || null]);
   return result.rows;
 }
 
@@ -1740,6 +1761,7 @@ export async function claimDistributionLog(params: {
   channel: DistributionChannel;
   wire: string;
   channelId?: string;
+  postText?: string;
 }): Promise<DistributionLog | null> {
   try {
     return await logDistribution({
@@ -1748,6 +1770,7 @@ export async function claimDistributionLog(params: {
       wire: params.wire,
       channelId: params.channelId,
       status: 'pending',
+      postText: params.postText,
     });
   } catch (err: any) {
     if (err?.code === '23505') return null;
@@ -1765,15 +1788,16 @@ export async function finalizeDistributionLog(
   },
 ): Promise<void> {
   const pool = getPool();
-  await pool.query(
+  const result = await pool.query(
     `UPDATE distribution_logs
      SET status = $1,
          post_text = COALESCE($2, post_text),
          external_id = COALESCE($3, external_id),
          error_message = $4
-     WHERE id = $5`,
+     WHERE id = $5 AND status = 'pending' AND NOT needs_review`,
     [patch.status, patch.postText ?? null, patch.externalId ?? null, patch.errorMessage ?? null, id]
   );
+  if (result.rowCount !== 1) throw new Error(`Delivery claim ${id} is no longer active`);
 }
 
 export async function getDistributionLogs(entryId: number): Promise<DistributionLog[]> {

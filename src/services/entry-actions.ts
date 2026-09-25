@@ -4,14 +4,14 @@
  * Extracted from server.ts HTTP handlers so that both REST endpoints
  * and autonomous agents (The Stringer) can call the same functions.
  *
- * All fire-and-forget side effects (distribution, auto-summarize,
- * org linking) stay as setImmediate to preserve existing behavior.
+ * Publication work is durably queued with approval. Auto-summarize and org
+ * linking retain their existing fire-and-forget behavior.
  */
 
 import { getPool } from '../db';
 import { insertApprovedSummary } from '../db';
 import { validateForApproval } from './approval-guard';
-import { distributeEntry } from './distribution';
+import { drainPublicationQueue } from './publication-queue';
 import { autoSummarizeOnApprove } from './auto-summarize';
 import { extractOrgFromName, upsertOrgProfile, linkEntryToOrg, findSimilarOrg } from './org-extractor';
 import { enrichSingleOrg } from './org-enricher';
@@ -123,11 +123,16 @@ async function applyStatusChange(
 ): Promise<{ rows: any[] }> {
   const eligible = eligibleStatusesForAction(action);
   const result = await pool.query(
-    `UPDATE scan_entries
+    `WITH changed AS (UPDATE scan_entries
      SET status = $1, distributable = $2, actioned_by = COALESCE($3, actioned_by), action_reason = COALESCE($4, action_reason), updated_at = NOW()
      WHERE id = ANY($5)
        AND ($6::text[] IS NULL OR status = ANY($6))
-     RETURNING id, status, wire, name, description, enriched_summary, quality_score, amount, deadline, source_url, org_id, program_id, scan_date, tags`,
+     RETURNING id, status, wire, name, description, enriched_summary, quality_score, amount, deadline, source_url, org_id, program_id, scan_date, tags),
+     queued AS (INSERT INTO publication_queue (entry_id)
+       SELECT id FROM changed WHERE $1 = 'approved' AND $2
+       ON CONFLICT (entry_id) DO UPDATE SET status = 'queued', attempts = 0,
+         available_at = NOW(), lease_token = NULL, updated_at = NOW())
+     SELECT * FROM changed`,
     [newStatus, distributable, opts.actor || null, opts.reason || null, entryIds, eligible ? [...eligible] : null]
   );
   return result;
@@ -258,7 +263,7 @@ function scheduleApproveSideEffects(
   // Distribution (skip if quiet)
   if (!quiet) {
     setImmediate(() => {
-      distributeEntry(row.id, row.wire).catch(err => {
+      drainPublicationQueue().catch(err => {
         console.error(`[Distribution] Auto-distribute failed for entry ${row.id}:`, err);
       });
     });
