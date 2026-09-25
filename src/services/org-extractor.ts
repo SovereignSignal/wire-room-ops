@@ -540,7 +540,7 @@ function slugify(name: string): string {
 }
 
 /**
- * Upsert an org profile — creates if new, updates counts if existing.
+ * Upsert profile metadata. Counts come from actual linked entries in the DB.
  */
 export async function upsertOrgProfile(
   orgName: string,
@@ -552,12 +552,11 @@ export async function upsertOrgProfile(
   const date = scanDate || new Date().toISOString().split('T')[0];
 
   const result = await pool.query(`
-    INSERT INTO org_profiles (name, slug, wires, first_seen, last_seen, entry_count)
-    VALUES ($1, $2, ARRAY[$3], $4::date, $4::date, 1)
+    INSERT INTO org_profiles (name, slug, wires, first_seen, last_seen)
+    VALUES ($1, $2, ARRAY[$3], $4::date, $4::date)
     ON CONFLICT (name) DO UPDATE SET
       wires = (SELECT ARRAY(SELECT DISTINCT unnest(org_profiles.wires || ARRAY[$3]))),
       last_seen = GREATEST(org_profiles.last_seen, $4::date),
-      entry_count = org_profiles.entry_count + 1,
       updated_at = NOW()
     RETURNING id
   `, [orgName, slug, wire, date]);
@@ -640,7 +639,6 @@ export async function runOrgExtraction(): Promise<{
           UPDATE org_profiles SET
             wires = (SELECT ARRAY(SELECT DISTINCT unnest(wires || ARRAY[$1]))),
             last_seen = GREATEST(last_seen, $2::date),
-            entry_count = entry_count + 1,
             updated_at = NOW()
           WHERE id = $3
         `, [entry.wire, entry.scan_date, orgId]);

@@ -507,29 +507,8 @@ export async function enrichSingleOrg(orgId: number): Promise<void> {
 export async function computeDerivedFields(): Promise<{ updated: number }> {
   const pool = getPool();
 
-  const result = await pool.query(`
-    UPDATE org_profiles op SET
-      entry_count = sub.real_entry_count,
-      avg_quality_score = sub.avg_score,
-      tier = CASE
-        WHEN sub.real_entry_count >= 5 AND sub.avg_score >= 60 THEN 'Tier 1 - Official'
-        WHEN sub.real_entry_count >= 2 OR sub.avg_score >= 50 THEN 'Tier 2 - Secondary'
-        ELSE 'Tier 3 - Monitor'
-      END,
-      updated_at = NOW()
-    FROM (
-      SELECT
-        op2.id,
-        COUNT(se.id)::int AS real_entry_count,
-        ROUND(AVG(se.quality_score)::numeric, 1) AS avg_score
-      FROM org_profiles op2
-      LEFT JOIN scan_entries se ON se.org_id = op2.id AND se.status IN ('queued', 'approved')
-      GROUP BY op2.id
-    ) sub
-    WHERE op.id = sub.id
-  `);
-
-  const updated = result.rowCount ?? 0;
+  const result = await pool.query<{ updated: number }>('SELECT wro_refresh_org_metrics() AS updated');
+  const updated = result.rows[0].updated;
   console.log(`[OrgEnricher] Computed derived fields for ${updated} orgs`);
   return { updated };
 }

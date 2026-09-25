@@ -65,7 +65,6 @@ export async function mergeOrgs(
     `UPDATE org_profiles SET
       wires = $1,
       aliases = $2,
-      entry_count = (SELECT COUNT(*) FROM scan_entries WHERE org_id = $3)::int,
       updated_at = NOW()
     WHERE id = $3`,
     [combinedWires, combinedAliases, targetId]
