@@ -21,6 +21,7 @@
  */
 
 import { Router, Request, Response } from 'express';
+import { listPublicationReview, resolvePublication, listQueuedPublicationReview, retryQueuedPublication } from '../services/publication-queue';
 import {
   getDistributionConfigs,
   upsertDistributionConfig,
@@ -39,6 +40,30 @@ import { rateLimit } from '../middleware/rate-limit';
 import { isValidUuid, isValidFeedKey } from '../utils/validation';
 
 const router = Router();
+
+router.get('/distribution/review', async (_req, res) => {
+  try { res.json({ items: await listPublicationReview(), jobs: await listQueuedPublicationReview() }); }
+  catch { res.status(500).json({ error: 'Could not load publication review' }); }
+});
+router.post('/distribution/queue/:id/retry', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isSafeInteger(id) || id < 1) { res.status(400).json({ error: 'Invalid entry ID' }); return; }
+  try { await retryQueuedPublication(id); res.json({ ok: true }); }
+  catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'Retry failed' }); }
+});
+router.post('/distribution/review/:id/resolve', async (req, res) => {
+  const id = Number(req.params.id);
+  const { delivered, externalId } = req.body;
+  if (!Number.isSafeInteger(id) || id < 1 || typeof delivered !== 'boolean'
+    || (externalId !== undefined && (typeof externalId !== 'string' || externalId.length > 200))) {
+    res.status(400).json({ error: 'Provide a valid delivery ID and confirmation' }); return;
+  }
+  try {
+    await resolvePublication(id, delivered, externalId?.trim(), (req as any).authSession.userId);
+    res.json({ ok: true });
+  } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'Resolution failed' }); }
+});
+
 
 // Concurrent execution guard for distribution runs (per wire)
 const distributionRunning = new Set<string>();

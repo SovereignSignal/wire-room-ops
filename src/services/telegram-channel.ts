@@ -17,6 +17,7 @@ export async function sendChannelMessage(
   try {
     const resp = await fetch(`${TELEGRAM_API}/bot${botToken}/sendMessage`, {
       method: 'POST',
+      signal: AbortSignal.timeout(30000),
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         chat_id: channelId,

@@ -43,6 +43,8 @@ function relativeTime(dateStr: string): string {
 
 export function UsageTab() {
   const [period, setPeriod] = useState<Period>(7);
+  const [outcomeError, setOutcomeError] = useState('');
+  const [outcomes, setOutcomes] = useState<Array<{ source: string; entries: number; linked_programs: number; approvals: number; human_decisions: number; published_entries: number; attributed_cost: number; unpriced_calls: number }>>([]);
   const [summary, setSummary] = useState<UsageSummaryRow[]>([]);
   const [recent, setRecent] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -56,6 +58,12 @@ export function UsageTab() {
       ]);
       setSummary(s);
       setRecent(r);
+      try {
+        const outcomeResponse = await fetch('/api/usage/outcomes');
+        if (!outcomeResponse.ok) throw new Error('Could not load source outcomes');
+        setOutcomes(await outcomeResponse.json()); setOutcomeError('');
+      } catch { setOutcomeError('Source outcomes are unavailable. Usage totals are still shown below.'); }
+
     } catch (err) {
       console.error('Failed to load usage data:', err);
     } finally {
@@ -69,29 +77,32 @@ export function UsageTab() {
 
   // Aggregate totals from summary rows
   const totalCalls = summary.reduce((a, r) => a + r.calls, 0);
+  const unpricedCalls = summary.reduce((a, r) => a + (r.unpriced_calls || 0), 0);
   const totalCost = summary.reduce((a, r) => a + r.estimated_cost_usd, 0);
   const totalTokens = summary.reduce((a, r) => a + r.tokens_in + r.tokens_out, 0);
   const totalErrors = summary.reduce((a, r) => a + r.errors, 0);
   const errorRate = totalCalls > 0 ? (totalErrors / totalCalls) * 100 : 0;
 
   // Group by provider
-  const byProvider = summary.reduce<Record<string, { calls: number; tokens_in: number; tokens_out: number; cost: number; errors: number }>>((acc, r) => {
+  const byProvider = summary.reduce<Record<string, { calls: number; tokens_in: number; tokens_out: number; cost: number; errors: number; unpriced: number }>>((acc, r) => {
     const p = r.provider;
-    if (!acc[p]) acc[p] = { calls: 0, tokens_in: 0, tokens_out: 0, cost: 0, errors: 0 };
+    if (!acc[p]) acc[p] = { calls: 0, tokens_in: 0, tokens_out: 0, cost: 0, errors: 0, unpriced: 0 };
     acc[p].calls += r.calls;
     acc[p].tokens_in += r.tokens_in;
     acc[p].tokens_out += r.tokens_out;
     acc[p].cost += r.estimated_cost_usd;
     acc[p].errors += r.errors;
+    acc[p].unpriced += r.unpriced_calls || 0;
     return acc;
   }, {});
 
   // Group by purpose
-  const byPurpose = summary.reduce<Record<string, { calls: number; cost: number }>>((acc, r) => {
+  const byPurpose = summary.reduce<Record<string, { calls: number; cost: number; unpriced: number }>>((acc, r) => {
     const p = r.purpose;
-    if (!acc[p]) acc[p] = { calls: 0, cost: 0 };
+    if (!acc[p]) acc[p] = { calls: 0, cost: 0, unpriced: 0 };
     acc[p].calls += r.calls;
     acc[p].cost += r.estimated_cost_usd;
+    acc[p].unpriced += r.unpriced_calls || 0;
     return acc;
   }, {});
 
@@ -118,6 +129,21 @@ export function UsageTab() {
 
   return (
     <div className="space-y-6">
+      {unpricedCalls > 0 && <p role="status" className="text-sm text-amber-500">
+        Costs are incomplete: {unpricedCalls} {unpricedCalls === 1 ? 'call has' : 'calls have'} unknown cost. Review model pricing before relying on these totals.
+      </p>}
+      <details className="border border-border rounded-lg p-4">
+        <summary>Source outcomes for entries found in the last 30 days</summary>
+        {outcomeError && <p role="status">{outcomeError}</p>}
+        <p className="text-xs text-muted-foreground my-3">Publication requires a saved delivery receipt. Attributed cost includes only calls linked to an entry; discovery calls without entry links are excluded. These costs are incomplete when calls are unpriced.</p>
+        <div className="overflow-x-auto"><Table><TableHeader><TableRow>
+          {['Source','Entries','Programs','Approvals','Human decisions','Published','Attributed cost','Unpriced calls'].map(h => <TableHead key={h}>{h}</TableHead>)}
+        </TableRow></TableHeader><TableBody>{outcomes.map(row => <TableRow key={row.source}>
+          <TableCell>{row.source}</TableCell><TableCell>{row.entries}</TableCell><TableCell>{row.linked_programs}</TableCell>
+          <TableCell>{row.approvals}</TableCell><TableCell>{row.human_decisions}</TableCell><TableCell>{row.published_entries}</TableCell>
+          <TableCell>{fmtCost(row.attributed_cost)}{row.unpriced_calls > 0 ? ' + unknown' : ''}</TableCell><TableCell>{row.unpriced_calls}</TableCell>
+        </TableRow>)}</TableBody></Table></div>
+      </details>
       {/* Header + period selector */}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
@@ -151,7 +177,7 @@ export function UsageTab() {
         </div>
         <div className="border border-border rounded-lg bg-card/80 p-4">
           <div className="text-[10px] font-display tracking-widest text-muted-foreground mb-1">ESTIMATED SPEND</div>
-          <div className="text-2xl font-display glow-text">{fmtCost(totalCost)}</div>
+          <div className="text-2xl font-display glow-text">{fmtCost(totalCost)}{unpricedCalls > 0 ? ' + unknown' : ''}</div>
         </div>
         <div className="border border-border rounded-lg bg-card/80 p-4">
           <div className="text-[10px] font-display tracking-widest text-muted-foreground mb-1">TOTAL TOKENS</div>
@@ -190,7 +216,7 @@ export function UsageTab() {
                       <TableCell className="font-mono text-sm text-right">{fmt(d.calls)}</TableCell>
                       <TableCell className="font-mono text-sm text-right text-muted-foreground">{fmt(d.tokens_in)}</TableCell>
                       <TableCell className="font-mono text-sm text-right text-muted-foreground">{fmt(d.tokens_out)}</TableCell>
-                      <TableCell className="font-mono text-sm text-right">{fmtCost(d.cost)}</TableCell>
+                      <TableCell className="font-mono text-sm text-right">{fmtCost(d.cost)}{d.unpriced > 0 ? ' + unknown' : ''}</TableCell>
                       <TableCell className="font-mono text-sm text-right">
                         {d.calls > 0 ? fmtPct((d.errors / d.calls) * 100) : '0.0%'}
                       </TableCell>
@@ -224,7 +250,7 @@ export function UsageTab() {
                     <TableRow key={purpose} className="hover:bg-primary/5">
                       <TableCell className="font-mono text-sm">{purpose}</TableCell>
                       <TableCell className="font-mono text-sm text-right">{fmt(d.calls)}</TableCell>
-                      <TableCell className="font-mono text-sm text-right">{fmtCost(d.cost)}</TableCell>
+                      <TableCell className="font-mono text-sm text-right">{fmtCost(d.cost)}{d.unpriced > 0 ? ' + unknown' : ''}</TableCell>
                     </TableRow>
                   ))}
               </TableBody>

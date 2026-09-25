@@ -114,9 +114,9 @@ test('retryDistribution skips channels that already have a success or pending lo
       return { rows: [], rowCount: 0 };
     },
   });
-  db.getDistributionLogs = async () => [{ channel: 'telegram', status: 'success' }];
+  db.getDistributionLogs = async () => [{ channel: 'telegram', channelId: 'abcd1234-0000', wire: 'crypto', status: 'success' }];
   db.getDistributionConfigs = async () => [];
-  // One managed telegram channel exists — but telegram already succeeded, so
+  // The exact managed Telegram destination already succeeded, so
   // the retry must treat it as settled and never even generate posts.
   db.getEnabledDistributionChannelsForWire = async () => [{ id: 'abcd1234-0000', channel: 'telegram', wire: 'crypto', enabled: true, credentials: {} }];
   postGen.generatePosts = async () => { postsGenerated++; return { tweet: 't', telegramHtml: '<b>t</b>' }; };

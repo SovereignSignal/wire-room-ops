@@ -17,6 +17,7 @@ export async function sendDiscordMessage(
   try {
     const resp = await fetch(`${DISCORD_API}/channels/${channelId}/messages`, {
       method: 'POST',
+      signal: AbortSignal.timeout(30000),
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bot ${botToken}`,
