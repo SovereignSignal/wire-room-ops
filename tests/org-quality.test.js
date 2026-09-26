@@ -127,3 +127,31 @@ test('planKnownOrgMerges renames missing targets and aliases leftovers without a
     assert.equal(plans[1].archiveNotionSource, false);
   }
 });
+
+test('automatic program guard covers missing offering forms without redefining archive policy', () => {
+  const { isProgramOrgName } = require('../src/services/org-extractor');
+  for (const name of [
+    'Google Research Scholar Program', 'Laude Institute Moonshot Program',
+    'World Foundation Mini App Grants', 'Paradex Bug Bounty on Sherlock',
+    'Wikimedia Rapid Grants', 'Stellar Academic Research Grants',
+    'Whitechain Builders Program', 'Q3 2026 Grants Are Open',
+    'Unitary Fund Microgrants', 'Example Scholarships 2026',
+    'Example Research Awards', 'Example Research Programme',
+  ]) assert.equal(isProgramOrgName(name), true, name);
+  for (const name of ['United Nations Development Programme', 'Zcash Community Grants',
+    'AI Grant', 'ETC Grants DAO', 'Deep Funding', 'Long-Term Future Fund', 'Example Foundation']) {
+    assert.equal(isProgramOrgName(name), false, name);
+  }
+  // A stricter automatic guard must not silently enlarge the deletion list.
+  assert.equal(shouldArchiveOrgProfile({ name: 'Google Research Scholar Program' }), false);
+  assert.equal(shouldArchiveOrgProfile({ name: 'Laude Institute Moonshot Program' }), false);
+});
+
+test('title extraction leaves unverified program owners unresolved but retains known owners', () => {
+  for (const title of ['Laude Institute Moonshot Program — apply', 'World Foundation Mini App Grants — apply',
+    'Whitechain Builders Program — applications', 'Wikimedia Rapid Grants — funding',
+    'Paradex Bug Bounty on Sherlock — rewards']) assert.equal(extractOrgFromName(title), null, title);
+  assert.equal(extractOrgFromName('Google Research Scholar Program — applications'), 'Google');
+  assert.equal(extractOrgFromName('United Nations Development Programme — funding'), 'United Nations Development Programme');
+  assert.equal(extractOrgFromName('ETC Grants DAO — applications'), 'ETC Grants DAO');
+});

@@ -292,7 +292,7 @@ function scheduleApproveSideEffects(
         } else {
           orgId = await upsertOrgProfile(orgName, row.wire, row.scan_date?.toISOString?.()?.split('T')[0]);
         }
-        await linkEntryToOrg(row.id, orgId);
+        if (!await linkEntryToOrg(row.id, orgId)) return;
         if (config.crm.enrichEnabled) {
           await enrichSingleOrg(orgId).catch(err =>
             console.error(`[OrgEnrich] Failed for entry ${row.id}:`, err)

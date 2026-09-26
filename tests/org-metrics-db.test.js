@@ -20,7 +20,7 @@ test.before(async () => {
     first_seen date, last_seen date, parent_org_id integer,
     entry_count integer DEFAULT 0, avg_quality_score numeric(5,1), tier text, updated_at timestamptz DEFAULT now());
     CREATE TABLE scan_entries (id serial PRIMARY KEY, org_id integer REFERENCES org_profiles(id),
-      status text, quality_score integer, program_id integer, description text);`);
+      status text, quality_score integer, program_id integer, description text, operator_notes text, action_reason text);`);
   db.getPool = () => pool;
   await ensureOrgMetrics();
   await admin.query(`CREATE ROLE ${role}; GRANT USAGE ON SCHEMA ${schema} TO ${role};
@@ -127,4 +127,42 @@ test('restricted entry writers maintain metrics without profile grants or tempor
     await client.query('BEGIN'); await client.query(`SET LOCAL ROLE ${role}`);
     await assert.rejects(client.query(`CREATE TRIGGER hijack AFTER INSERT ON pg_temp.scan_entries FOR EACH STATEMENT EXECUTE FUNCTION ${schema}.wro_entry_org_metrics()`), /permission denied/);
   } finally { await client.query('ROLLBACK'); await client.query('DROP TABLE IF EXISTS pg_temp.org_profiles, pg_temp.scan_entries'); client.release(); }
+});
+
+test('profile creation and direct automatic linking refuse program identities without changing rows', async () => {
+  await assert.rejects(upsertOrgProfile('Example Research Grants', 'ai'), /requires review/);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM org_profiles')).rows[0].n, 0);
+  await pool.query("INSERT INTO org_profiles(name) VALUES ('Example Scholar Program'); INSERT INTO scan_entries(status,quality_score) VALUES('approved',80)");
+  await assert.rejects(linkEntryToOrg(1, 1), /identity review/);
+  assert.equal((await pool.query('SELECT org_id FROM scan_entries')).rows[0].org_id, null);
+  assert.deepEqual(await metrics(), expected(0, null, 'Tier 3 - Monitor'));
+});
+
+test('automatic linking preserves existing curator links and both hold fields', async () => {
+  await pool.query("INSERT INTO org_profiles(name) VALUES ('First Foundation'),('Second Foundation'); INSERT INTO scan_entries(org_id,status,operator_notes,action_reason) VALUES(1,'approved',NULL,NULL),(NULL,'approved','HOLD: verify funder',NULL),(NULL,'approved',NULL,'hold pending review')");
+  const before=(await pool.query('SELECT * FROM scan_entries ORDER BY id')).rows;
+  assert.equal(await linkEntryToOrg(1, 2), false);
+  assert.equal(await linkEntryToOrg(2, 2), false);
+  assert.equal(await linkEntryToOrg(3, 2), false);
+  assert.deepEqual((await pool.query('SELECT * FROM scan_entries ORDER BY id')).rows, before);
+});
+
+test('a curator link committed while extraction waits wins over automatic linking', async () => {
+  await pool.query("INSERT INTO org_profiles(name) VALUES ('First Foundation'),('Second Foundation'); INSERT INTO scan_entries(status) VALUES('approved')");
+  const curator=await pool.connect();let pending;
+  try {
+    await curator.query('BEGIN');
+    await curator.query('UPDATE scan_entries SET org_id=1 WHERE id=1');
+    pending=linkEntryToOrg(1,2);
+    let waiting=false;
+    for(let n=0;n<100;n++) {
+      waiting=(await admin.query("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE '%AS held%') waiting")).rows[0].waiting;
+      if(waiting) break;
+      await new Promise(resolve=>setTimeout(resolve,10));
+    }
+    assert.equal(waiting,true);
+    await curator.query('COMMIT');
+    assert.equal(await pending,false);
+    assert.equal((await pool.query('SELECT org_id FROM scan_entries')).rows[0].org_id,1);
+  } finally { await curator.query('ROLLBACK'); if(pending)await pending.catch(()=>{}); curator.release(); }
 });

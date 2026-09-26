@@ -82,3 +82,31 @@ test('batch extraction preserves an unlinked entry when profile identity is ambi
   assert.deepEqual(stats, { processed: 1, linked: 0, newOrgs: 0, errors: 1 });
   assert.equal(calls.some(sql => /UPDATE|INSERT|DELETE|ALTER|CREATE/.test(sql)), false);
 });
+
+test('automatic lookup refuses enriched program profiles and their aliases', async t => {
+  orgRows(t, [{ id: 1, name: 'Laude Institute Moonshot Program', aliases: ['Laude Institute'], org_type: 'Non-Profit/NGO', website: 'https://example.org', description: 'Enriched program' }]);
+  await assert.rejects(findSimilarOrg('Laude Institute Moonshot Program'), /requires review/);
+  await assert.rejects(findSimilarOrg('Laude Institute'), /requires review/);
+});
+
+test('explicit recorded aliases can still identify a genuine organization', async t => {
+  orgRows(t, [{ id: 1, name: 'Example Foundation', aliases: ['Example Scholarship Program'] }]);
+  assert.deepEqual(await findSimilarOrg('Example Scholarship Program'), { id: 1, name: 'Example Foundation' });
+});
+
+test('a rejected exact program profile does not silently fall through to another identity', async t => {
+  orgRows(t, [{ id: 1, name: 'Example Scholarship Program' }, { id: 2, name: 'Example Foundation', aliases: ['Example Scholarship Program'] }]);
+  await assert.rejects(findSimilarOrg('Example Scholarship Program'), /requires review/);
+});
+
+test('Grok fallback cannot return a program as the funding organization', async t => {
+  const provider = require('../src/services/api-provider');
+  const { extractOrgsFromEntries } = require('../src/services/org-extractor');
+  t.mock.method(provider, 'getCachedProvider', () => ({ api_key: 'test-only', base_url: 'https://provider.invalid' }));
+  t.mock.method(global, 'fetch', async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify([
+    { id: 1, org: 'Example Scholar Program' }, { id: 2, org: 'Example Research Grants' },
+    { id: 3, org: 'Example Foundation' }, { id: 4, org: 'United Nations Development Programme' },
+  ]) } }] }) }));
+  const result = await extractOrgsFromEntries([1,2,3,4].map(id => ({ id, name: 'Unresolved opportunity', description: '', wire: 'ai' })));
+  assert.deepEqual(result.map(x => x.orgName), [null, null, 'Example Foundation', 'United Nations Development Programme']);
+});

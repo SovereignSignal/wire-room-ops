@@ -183,6 +183,23 @@ function looksLikeProgramOffering(candidate: string): boolean {
   ].some(p => p.test(candidate));
 }
 
+/** Explicit organization/committee names that resemble program labels.
+ * Sources and the separate historical-cleanup contract: docs/org-identity.md. */
+const PROGRAM_NAMED_ORGS = new Set([
+  'united nations development programme', 'zcash community grants', 'ai grant',
+]);
+
+/** Conservative automatic-link guard. A rejected name needs identity review;
+ * it is not permission to archive the existing profile or guess its parent. */
+export function isProgramOrgName(name: string): boolean {
+  const candidate = normalizeOrgName(name);
+  if (PROGRAM_NAMED_ORGS.has(candidate.toLowerCase())) return false;
+  return looksLikeProgramOffering(candidate) ||
+    /\b(program(?:me)?s?|scholarships?|microgrants?|grants?|awards?|cohorts?|hackathons?)\s*(?:20\d{2})?$/i.test(candidate) ||
+    /\bbug bount(?:y|ies)\b/i.test(candidate) ||
+    /\bgrants?\s+(?:are\s+)?open\b/i.test(candidate);
+}
+
 /**
  * Classify a candidate org-profile name. Used both to block new junk at
  * extract time and to decide which existing rows the CRM cleanup may archive.
@@ -258,7 +275,11 @@ export async function findSimilarOrg(candidateName: string): Promise<{ id: numbe
     (org.aliases || []).some((alias: string) => normalizeForComparison(alias) === normCandidate)
   );
   if (matches.length > 1) throw new Error(`Ambiguous organization match for "${candidateName}"`);
-  return matches.length ? { id: matches[0].id, name: matches[0].name } : null;
+  const match = matches[0];
+  if (match && isProgramOrgName(match.name)) {
+    throw new Error(`Program-shaped organization profile requires review: "${match.name}"`);
+  }
+  return match ? { id: match.id, name: match.name } : null;
 }
 
 // ============================================================
@@ -309,7 +330,7 @@ export function extractOrgFromName(entryName: string): string | null {
  * Returns true if the candidate should be accepted.
  */
 function passesGuards(candidate: string): boolean {
-  return classifyOrgName(candidate) === 'org';
+  return classifyOrgName(candidate) === 'org' && !isProgramOrgName(candidate);
 }
 
 /**
@@ -412,7 +433,7 @@ async function extractOrgsWithGrok(
   const prompt = `Extract the primary organization or foundation name from each grant/funding entry below. Return ONLY a JSON array of objects with "id" (the entry ID number) and "org" (canonical organization name, or null if unclear).
 
 Rules:
-- Return the FUNDING ORGANIZATION, not the recipient
+- Return the FUNDING ORGANIZATION, not the recipient or the name of its program, grant, award, fellowship, or bounty
 - Use canonical names (e.g., "Gitcoin" not "Gitcoin Grants", "Ethereum Foundation" not "EF ESP")
 - If the entry is from an X post by a random user sharing info about a grant, extract the org that RUNS the grant, not the poster
 - If you can't determine the org with confidence, return null
@@ -456,7 +477,7 @@ Return ONLY valid JSON array, no explanation.`;
     const parsed = JSON.parse(jsonMatch[0]) as Array<{ id: number; org: string | null }>;
     return parsed.map(p => {
       const orgName = p.org ? normalizeOrgName(p.org) : null;
-      const accepted = orgName && classifyOrgName(orgName) === 'org' ? orgName : null;
+      const accepted = orgName && passesGuards(orgName) ? orgName : null;
       return {
         entryId: p.id,
         orgName: accepted,
@@ -548,6 +569,8 @@ export async function upsertOrgProfile(
   scanDate?: string
 ): Promise<number> {
   const pool = getPool();
+  orgName = normalizeOrgName(orgName);
+  if (!passesGuards(orgName)) throw new Error(`Organization name requires review: "${orgName}"`);
   const slug = slugify(orgName);
   const date = scanDate || new Date().toISOString().split('T')[0];
 
@@ -565,12 +588,29 @@ export async function upsertOrgProfile(
 }
 
 /**
- * Link a scan_entry to an org profile.
+ * Automatically fill an unlinked, unheld entry with an organization profile.
+ * Returns false when the entry no longer needs an automatic association.
  */
-export async function linkEntryToOrg(entryId: number, orgId: number): Promise<void> {
+export async function linkEntryToOrg(entryId: number, orgId: number): Promise<boolean> {
   const client = await getPool().connect();
   try {
     await client.query('BEGIN');
+    // Re-read after locking: extraction may finish after an operator resolves
+    // the entry or places it on hold. Automatic linking never overrides either.
+    const { rows: entries } = await client.query(
+      `SELECT org_id, concat_ws(' ', operator_notes, action_reason) ~* '\\mhold\\M' AS held
+       FROM scan_entries WHERE id = $1 FOR UPDATE`, [entryId],
+    );
+    if (!entries.length || entries[0].org_id != null || entries[0].held) {
+      await client.query('COMMIT');
+      return false;
+    }
+    const { rows: orgs } = await client.query(
+      'SELECT name FROM org_profiles WHERE id = $1 FOR NO KEY UPDATE', [orgId],
+    );
+    if (!orgs.length || isProgramOrgName(orgs[0].name)) {
+      throw new Error(`Organization profile ${orgId} requires identity review`);
+    }
     const { rows } = await client.query(
       `UPDATE scan_entries SET org_id = $1 WHERE id = $2 RETURNING program_id`, [orgId, entryId],
     );
@@ -580,6 +620,7 @@ export async function linkEntryToOrg(entryId: number, orgId: number): Promise<vo
       await fillMissingProgramOrgLinks(client, [programId]);
     }
     await client.query('COMMIT');
+    return true;
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
@@ -649,8 +690,7 @@ export async function runOrgExtraction(): Promise<{
       }
 
       // Link entry
-      await linkEntryToOrg(extraction.entryId, orgId);
-      stats.linked++;
+      if (await linkEntryToOrg(extraction.entryId, orgId)) stats.linked++;
     } catch (err) {
       console.error(`[OrgExtractor] Failed to process entry ${extraction.entryId}:`, err);
       stats.errors++;
