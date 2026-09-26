@@ -110,3 +110,64 @@ test('Grok fallback cannot return a program as the funding organization', async 
   const result = await extractOrgsFromEntries([1,2,3,4].map(id => ({ id, name: 'Unresolved opportunity', description: '', wire: 'ai' })));
   assert.deepEqual(result.map(x => x.orgName), [null, null, 'Example Foundation', 'United Nations Development Programme']);
 });
+
+test('ambiguous Base titles abstain while explicit and reviewed Coinbase programs resolve', () => {
+  for (const name of ['BASE Fellowship Fall 2026', 'Base Fellowship — apply', '[BASE] Fellowship', 'base: grants', 'Base Research — fellowship', 'BASE']) {
+    assert.equal(extractOrgFromName(name), null, name);
+  }
+  for (const name of ['Base (Coinbase) — grants', 'Base Batches 003 Startup Track', 'Base Ecosystem Fund Request for Builders']) {
+    assert.equal(extractOrgFromName(name), 'Base (Coinbase)', name);
+  }
+  assert.equal(canonicalizeOrgName('BASE'), 'BASE');
+  assert.equal(canonicalizeOrgName('Base'), 'Base');
+  assert.equal(extractOrgFromName('Base Batcheship — funding'), null);
+});
+
+test('reviewed program titles resolve owners without normalizing programs into organizations', () => {
+  const { isProgramOrgName, shouldArchiveOrgProfile } = require('../src/services/org-extractor');
+  for (const [name, owner] of [['BNB Hack', 'BNB Chain'], ['Acquia Fair Trade Initiative', 'Acquia']]) {
+    assert.equal(extractOrgFromName(`${name}: applications`), owner);
+    assert.equal(extractOrgFromName(`  ${name.toUpperCase()} — support`), owner);
+    assert.equal(canonicalizeOrgName(name), name);
+    assert.equal(isProgramOrgName(name), true);
+    assert.equal(shouldArchiveOrgProfile({ name }), false);
+  }
+  for (const name of ['Hack Club', 'Community Initiatives', 'Chan Zuckerberg Initiative']) {
+    assert.equal(isProgramOrgName(name), false, name);
+  }
+});
+
+test('bare Base cannot select a profile through exact names or recorded aliases', async t => {
+  orgRows(t, [{ id: 1, name: 'BASE' }, { id: 2, name: 'Base (Coinbase)', aliases: ['base'] }]);
+  await assert.rejects(findSimilarOrg('BASE'), /requires review/);
+  await assert.rejects(findSimilarOrg('base'), /requires review/);
+  assert.deepEqual(await findSimilarOrg('Base (Coinbase)'), { id: 2, name: 'Base (Coinbase)' });
+  orgRows(t, [{ id: 1, name: 'BASE', aliases: ['Black in AI Safety and Ethics'] }]);
+  await assert.rejects(findSimilarOrg('Black in AI Safety and Ethics'), /requires review/);
+});
+
+test('reviewed program profiles cannot be reused through enrichment or owner aliases', async t => {
+  for (const [name, owner] of [['BNB Hack', 'BNB Chain'], ['Acquia Fair Trade Initiative', 'Acquia']]) {
+    orgRows(t, [{ id: 1, name, aliases: [owner], website: 'https://example.test', description: 'Previously enriched' }]);
+    await assert.rejects(findSimilarOrg(name), /requires review/);
+    await assert.rejects(findSimilarOrg(owner), /requires review/);
+  }
+});
+
+test('unresolved Base identity cannot be overridden by model fallback or an extra model result', async t => {
+  const provider = require('../src/services/api-provider');
+  const { extractOrgsFromEntries } = require('../src/services/org-extractor');
+  t.mock.method(provider, 'getCachedProvider', () => ({ api_key: 'test-only', base_url: 'https://provider.invalid' }));
+  const requests = [];
+  t.mock.method(global, 'fetch', async (_url, options) => {
+    requests.push(JSON.parse(options.body));
+    return { ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify([
+      { id: 1, org: 'Base (Coinbase)' }, { id: 2, org: 'BNB Hack' },
+      { id: 3, org: 'Acquia Fair Trade Initiative' }, { id: 4, org: 'BASE' }, { id: 5, org: 'Example Foundation' },
+    ]) } }] }) };
+  });
+  const result = await extractOrgsFromEntries([1,2,3,4,5].map(id => ({ id, name: id === 1 ? 'BASE Fellowship Fall 2026' : 'Unresolved opportunity', description: '', wire: 'ai' })));
+  assert.deepEqual(result.map(x => [x.entryId, x.orgName]), [[1,null],[2,null],[3,null],[4,null],[5,'Example Foundation']]);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].messages[0].content.includes('BASE Fellowship'), false);
+});
