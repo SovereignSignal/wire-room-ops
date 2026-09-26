@@ -20,7 +20,7 @@ test.before(async () => {
     first_seen date, last_seen date, parent_org_id integer,
     entry_count integer DEFAULT 0, avg_quality_score numeric(5,1), tier text, updated_at timestamptz DEFAULT now());
     CREATE TABLE scan_entries (id serial PRIMARY KEY, org_id integer REFERENCES org_profiles(id),
-      status text, quality_score integer, program_id integer, description text, operator_notes text, action_reason text);`);
+      name text, status text, quality_score integer, program_id integer, description text, operator_notes text, action_reason text);`);
   db.getPool = () => pool;
   await ensureOrgMetrics();
   await admin.query(`CREATE ROLE ${role}; GRANT USAGE ON SCHEMA ${schema} TO ${role};
@@ -165,4 +165,38 @@ test('a curator link committed while extraction waits wins over automatic linkin
     assert.equal(await pending,false);
     assert.equal((await pool.query('SELECT org_id FROM scan_entries')).rows[0].org_id,1);
   } finally { await curator.query('ROLLBACK'); if(pending)await pending.catch(()=>{}); curator.release(); }
+});
+
+test('ambiguous Base and reviewed program profiles cannot be created or linked by ID', async () => {
+  for (const name of ['BASE', 'Base', 'BNB Hack', 'Acquia Fair Trade Initiative']) {
+    await assert.rejects(upsertOrgProfile(name, 'ai'), /requires review/);
+  }
+  assert.equal((await pool.query('SELECT count(*)::int n FROM org_profiles')).rows[0].n, 0);
+  await pool.query("INSERT INTO org_profiles(name) VALUES ('BASE'),('BNB Hack'),('Acquia Fair Trade Initiative'),('Base (Coinbase)'); INSERT INTO scan_entries(name,status) VALUES ('Unresolved opportunity','approved'),('BASE Fellowship Fall 2026','approved'),('Base Batches 003','approved')");
+  for (const id of [1,2,3]) await assert.rejects(linkEntryToOrg(1, id), /identity review/);
+  await assert.rejects(linkEntryToOrg(2, 4), /identity review/);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM scan_entries WHERE org_id IS NOT NULL')).rows[0].n, 0);
+  assert.equal(await linkEntryToOrg(3, 4), true);
+  assert.equal((await pool.query('SELECT org_id FROM scan_entries WHERE id=3')).rows[0].org_id, 4);
+});
+
+test('locked current title wins when identity changes while extraction waits', async () => {
+  await pool.query("INSERT INTO org_profiles(name) VALUES ('Base (Coinbase)'); INSERT INTO scan_entries(name,status) VALUES ('Base Batches 003','approved')");
+  const curator = await pool.connect(); let pending;
+  try {
+    await curator.query('BEGIN');
+    await curator.query("UPDATE scan_entries SET name='BASE Fellowship Fall 2026' WHERE id=1");
+    // Attach a rejection handler immediately while we inspect the real lock wait.
+    pending = linkEntryToOrg(1, 1).then(() => null, error => error);
+    let waiting = false;
+    for (let n=0; n<100; n++) {
+      waiting = (await admin.query("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE '%AS held%') waiting")).rows[0].waiting;
+      if (waiting) break;
+      await new Promise(resolve => setTimeout(resolve,10));
+    }
+    assert.equal(waiting, true);
+    await curator.query('COMMIT');
+    assert.match((await pending)?.message || '', /identity review/);
+    assert.equal((await pool.query('SELECT org_id FROM scan_entries WHERE id=1')).rows[0].org_id, null);
+  } finally { await curator.query('ROLLBACK'); if (pending) await pending; curator.release(); }
 });

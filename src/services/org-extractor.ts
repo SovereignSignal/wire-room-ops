@@ -44,7 +44,7 @@ const ORG_ALIASES: Record<string, string> = {
   'chainlink': 'Chainlink',
   'starknet': 'Starknet Foundation',
   'starknet foundation': 'Starknet Foundation',
-  'base': 'Base (Coinbase)',
+  'base (coinbase)': 'Base (Coinbase)',
   'coinbase': 'Base (Coinbase)',
   'sui': 'Sui Foundation',
   'sui foundation': 'Sui Foundation',
@@ -97,13 +97,40 @@ const ORG_ALIASES: Record<string, string> = {
 
 // A title can start with a program run by a known organization. Prefer the
 // most specific alias, so Google DeepMind never falls through to Google.
-const TITLE_ALIASES = Object.entries(ORG_ALIASES).sort(([a], [b]) => b.length - a.length);
+// Verified program owners apply to title extraction only. A program profile
+// still fails automatic creation and selection. Sources: docs/org-identity.md.
+const PROGRAM_OWNERS: Record<string, string> = {
+  'bnb hack': 'BNB Chain',
+  'acquia fair trade initiative': 'Acquia',
+  'base batches': 'Base (Coinbase)',
+  'base ecosystem fund': 'Base (Coinbase)',
+};
+const TITLE_ALIASES = Object.entries({ ...ORG_ALIASES, ...PROGRAM_OWNERS })
+  .sort(([a], [b]) => b.length - a.length);
+
+function titleKey(title: string): string {
+  return title.replace(/\s+/g, ' ').trim()
+    .replace(/^\[([^\]]+)\](?=\s|$)/, '$1').toLowerCase();
+}
+
+function hasTitlePrefix(title: string, prefix: string): boolean {
+  return title === prefix || (title.startsWith(prefix) && /^(?:[\s:—–]|-\s)/.test(title.slice(prefix.length)));
+}
+
+function isAmbiguousBaseName(name: string): boolean {
+  return normalizeOrgName(name).toLowerCase() === 'base';
+}
+
+// Capitalization cannot distinguish Coinbase's Base from BASE Research.
+// Unknown Base titles stay unresolved, including at the model and write gates.
+function needsBaseIdentityReview(title: string): boolean {
+  return hasTitlePrefix(titleKey(title), 'base') && knownOrgAtStart(title) === null;
+}
 
 function knownOrgAtStart(title: string): string | null {
-  const lower = title.replace(/\s+/g, ' ').trim()
-    .replace(/^\[([^\]]+)\](?=\s|$)/, '$1').toLowerCase();
+  const lower = titleKey(title);
   for (const [alias, canonical] of TITLE_ALIASES) {
-    if (lower === alias || (lower.startsWith(alias) && /^(?:[\s:—–]|-\s)/.test(lower.slice(alias.length)))) {
+    if (hasTitlePrefix(lower, alias)) {
       return canonical;
     }
   }
@@ -194,7 +221,8 @@ const PROGRAM_NAMED_ORGS = new Set([
 export function isProgramOrgName(name: string): boolean {
   const candidate = normalizeOrgName(name);
   if (PROGRAM_NAMED_ORGS.has(candidate.toLowerCase())) return false;
-  return looksLikeProgramOffering(candidate) ||
+  return Object.keys(PROGRAM_OWNERS).some(program => hasTitlePrefix(titleKey(candidate), program)) ||
+    looksLikeProgramOffering(candidate) ||
     /\b(program(?:me)?s?|scholarships?|microgrants?|grants?|awards?|cohorts?|hackathons?)\s*(?:20\d{2})?$/i.test(candidate) ||
     /\bbug bount(?:y|ies)\b/i.test(candidate) ||
     /\bgrants?\s+(?:are\s+)?open\b/i.test(candidate);
@@ -262,6 +290,7 @@ function normalizeForComparison(s: string): string {
  * insufficient evidence to link records. Ambiguity aborts the caller's link.
  */
 export async function findSimilarOrg(candidateName: string): Promise<{ id: number; name: string } | null> {
+  if (isAmbiguousBaseName(candidateName)) throw new Error('Ambiguous Base organization requires review');
   const pool = getPool();
   const { rows: orgs } = await pool.query(`SELECT id, name, aliases FROM org_profiles`);
   if (orgs.length === 0) return null;
@@ -276,8 +305,8 @@ export async function findSimilarOrg(candidateName: string): Promise<{ id: numbe
   );
   if (matches.length > 1) throw new Error(`Ambiguous organization match for "${candidateName}"`);
   const match = matches[0];
-  if (match && isProgramOrgName(match.name)) {
-    throw new Error(`Program-shaped organization profile requires review: "${match.name}"`);
+  if (match && (isProgramOrgName(match.name) || isAmbiguousBaseName(match.name))) {
+    throw new Error(`Organization profile requires review: "${match.name}"`);
   }
   return match ? { id: match.id, name: match.name } : null;
 }
@@ -293,6 +322,7 @@ export async function findSimilarOrg(candidateName: string): Promise<{ id: numbe
  */
 export function extractOrgFromName(entryName: string): string | null {
   const name = entryName.trim();
+  if (needsBaseIdentityReview(name)) return null;
   const known = knownOrgAtStart(name);
   if (known) return known;
 
@@ -330,7 +360,7 @@ export function extractOrgFromName(entryName: string): string | null {
  * Returns true if the candidate should be accepted.
  */
 function passesGuards(candidate: string): boolean {
-  return classifyOrgName(candidate) === 'org' && !isProgramOrgName(candidate);
+  return !isAmbiguousBaseName(candidate) && classifyOrgName(candidate) === 'org' && !isProgramOrgName(candidate);
 }
 
 /**
@@ -379,6 +409,10 @@ export async function extractOrgsFromEntries(
 
   // Phase 1: Pattern matching
   for (const entry of entries) {
+    if (needsBaseIdentityReview(entry.name)) {
+      results.push({ entryId: entry.id, orgName: null, confidence: 'low', method: 'pattern' });
+      continue;
+    }
     const org = extractOrgFromName(entry.name);
     if (org) {
       // Check if it came from alias map
@@ -475,7 +509,9 @@ Return ONLY valid JSON array, no explanation.`;
 
   try {
     const parsed = JSON.parse(jsonMatch[0]) as Array<{ id: number; org: string | null }>;
-    return parsed.map(p => {
+    // Only the entries in this request can receive a model result. An extra
+    // result must not bypass an identity review excluded from the request.
+    return parsed.filter(p => entries.some(entry => entry.id === p.id)).map(p => {
       const orgName = p.org ? normalizeOrgName(p.org) : null;
       const accepted = orgName && passesGuards(orgName) ? orgName : null;
       return {
@@ -598,17 +634,20 @@ export async function linkEntryToOrg(entryId: number, orgId: number): Promise<bo
     // Re-read after locking: extraction may finish after an operator resolves
     // the entry or places it on hold. Automatic linking never overrides either.
     const { rows: entries } = await client.query(
-      `SELECT org_id, concat_ws(' ', operator_notes, action_reason) ~* '\\mhold\\M' AS held
+      `SELECT name, org_id, concat_ws(' ', operator_notes, action_reason) ~* '\\mhold\\M' AS held
        FROM scan_entries WHERE id = $1 FOR UPDATE`, [entryId],
     );
     if (!entries.length || entries[0].org_id != null || entries[0].held) {
       await client.query('COMMIT');
       return false;
     }
+    if (needsBaseIdentityReview(entries[0].name || '')) {
+      throw new Error(`Entry ${entryId} requires Base identity review`);
+    }
     const { rows: orgs } = await client.query(
       'SELECT name FROM org_profiles WHERE id = $1 FOR NO KEY UPDATE', [orgId],
     );
-    if (!orgs.length || isProgramOrgName(orgs[0].name)) {
+    if (!orgs.length || isProgramOrgName(orgs[0].name) || isAmbiguousBaseName(orgs[0].name)) {
       throw new Error(`Organization profile ${orgId} requires identity review`);
     }
     const { rows } = await client.query(
