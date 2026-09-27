@@ -2,6 +2,15 @@ name: Test Backup Restore
 
 on:
   workflow_dispatch:
+    inputs:
+      database:
+        description: Database backup to restore in the disposable test
+        type: choice
+        options:
+          - wire-room
+          - grantswatch
+        default: wire-room
+        required: true
 
 permissions:
   contents: read
@@ -10,6 +19,9 @@ jobs:
   test-restore:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      BACKUP_PREFIX: ${{ inputs.database == 'grantswatch' && 'grantswatch/' || '' }}
+      RESTORE_PROFILE: ${{ inputs.database }}
 
     services:
       postgres:
@@ -45,10 +57,10 @@ jobs:
           AWS_DEFAULT_REGION: auto
           R2_ENDPOINT: https://${{ secrets.CF_ACCOUNT_ID }}.r2.cloudflarestorage.com
         run: |
-          LATEST=$(aws s3 ls "s3://wire-room-backups/" --endpoint-url "$R2_ENDPOINT" | awk '{print $4}' | grep -E '^backup-[0-9]{8}-[0-9]{6}\.sql\.gz$' | sort | tail -1)
+          LATEST=$(aws s3 ls "s3://wire-room-backups/${BACKUP_PREFIX}" --endpoint-url "$R2_ENDPOINT" | awk '{print $4}' | grep -E '^backup-[0-9]{8}-[0-9]{6}\.sql\.gz$' | sort | tail -1)
           test -n "$LATEST"
           echo "Downloading: ${LATEST}"
-          aws s3 cp "s3://wire-room-backups/${LATEST}" backup.sql.gz --endpoint-url "$R2_ENDPOINT"
+          aws s3 cp "s3://wire-room-backups/${BACKUP_PREFIX}${LATEST}" backup.sql.gz --endpoint-url "$R2_ENDPOINT"
           gunzip backup.sql.gz
           echo "Decompressed: $(du -h backup.sql | cut -f1)"
 
@@ -74,7 +86,7 @@ jobs:
           PGDATABASE: restore_test
         run: |
           python3 -m unittest discover -s tests -p 'test_sql_restore.py'
-          python3 scripts/verify-sql-restore.py backup.sql | tee restore-verification.json
+          python3 scripts/verify-sql-restore.py backup.sql --profile "$RESTORE_PROFILE" | tee restore-verification.json
           cat restore-verification.json >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4

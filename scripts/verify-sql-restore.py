@@ -34,10 +34,17 @@ def copy_counts(lines):
     return counts
 
 
-def verify(expected, actual):
+def verify(expected, actual, profile="wire-room"):
     if expected != actual:
         raise ValueError('Restored table inventory or exact row counts differ from the dump')
-    for table in ('scan_entries', 'summaries', 'feeds'):
+    required = {
+        'wire-room': ('scan_entries', 'summaries', 'feeds'),
+        'grantswatch': ('desk_proposals', 'desk_verdicts', 'ingest_state', 'desk_applied_changes'),
+    }[profile]
+    if not set(required).issubset(expected):
+        raise ValueError('Required database tables are missing for profile: ' + profile)
+    nonempty = required if profile == 'wire-room' else ('desk_proposals', 'desk_verdicts')
+    for table in nonempty:
         if expected.get(table, 0) <= 0:
             raise ValueError('Required source table is missing or empty: ' + table)
 
@@ -45,6 +52,7 @@ def verify(expected, actual):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('dump')
+    parser.add_argument('--profile', choices=('wire-room', 'grantswatch'), default='wire-room')
     args = parser.parse_args()
     if os.environ.get('PGHOST') not in ('localhost', '127.0.0.1') or os.environ.get('PGDATABASE') != 'restore_test':
         raise ValueError('Verification is restricted to the disposable restore_test database')
@@ -54,10 +62,10 @@ def main():
         return subprocess.check_output(['psql', '-X', '-A', '-t', '-v', 'ON_ERROR_STOP=1', '-c', sql], text=True).strip()
     tables = json.loads(query("SELECT coalesce(json_agg(quote_ident(tablename) ORDER BY tablename),'[]') FROM pg_tables WHERE schemaname='public'"))
     actual = {table: int(query('SELECT count(*) FROM public.' + table)) for table in tables}
-    verify(expected, actual)
+    verify(expected, actual, args.profile)
     if int(query("SELECT count(*) FROM pg_constraint WHERE connamespace='public'::regnamespace AND NOT convalidated")):
         raise ValueError('Restored database contains unvalidated constraints')
-    print(json.dumps({'tables_verified': len(actual), 'total_rows': sum(actual.values()), 'exact_counts_match': True, 'unvalidated_constraints': 0, 'scope': 'table inventory and rows; credentials and external configuration require separate recovery'}, indent=2))
+    print(json.dumps({'profile': args.profile, 'tables_verified': len(actual), 'total_rows': sum(actual.values()), 'exact_counts_match': True, 'unvalidated_constraints': 0, 'scope': 'table inventory and rows; credentials and external configuration require separate recovery'}, indent=2))
 
 
 if __name__ == '__main__':
