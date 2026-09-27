@@ -47,3 +47,5 @@ result. Existing links and operator holds still take precedence. Model results
 for entries outside the submitted chunk are ignored so they cannot bypass an
 excluded identity review. No schema change, data rewrite, provider run, or
 schedule change is required by this fix.
+
+Crypto World's Fair is a Colosseum event, including its regional tracks. Title extraction maps straight and curly apostrophe spellings to Colosseum; event profiles remain excluded from automatic reuse. Source: https://colosseum.com/worldsfair. This owner mapping does not certify track prize or eligibility details.

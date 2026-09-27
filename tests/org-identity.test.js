@@ -171,3 +171,15 @@ test('unresolved Base identity cannot be overridden by model fallback or an extr
   assert.equal(requests.length, 1);
   assert.equal(requests[0].messages[0].content.includes('BASE Fellowship'), false);
 });
+
+
+test('Colosseum event titles resolve to their owner without reusing event profiles', async t => {
+  for (const title of ["Colosseum Crypto World's Fair — Superteam Argentina Track", "Colosseum Crypto World’s Fair Zcash Track", "Crypto World's Fair — Colosseum", "Crypto World’s Fair — Colosseum"]) {
+    assert.equal(extractOrgFromName(title), 'Colosseum', title);
+  }
+  assert.equal(extractOrgFromName('ColosseumX grants'), null);
+  assert.equal(extractOrgFromName("Crypto World's Fairground grants"), null);
+  orgRows(t, [{ id: 1, name: "Crypto World's Fair" }, { id: 2, name: 'Colosseum' }]);
+  await assert.rejects(findSimilarOrg("Crypto World's Fair"), /requires review/);
+  assert.deepEqual(await findSimilarOrg('Colosseum'), {id: 2, name: 'Colosseum'});
+});

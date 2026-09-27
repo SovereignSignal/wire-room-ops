@@ -18,6 +18,7 @@ const ORG_ALIASES: Record<string, string> = {
   // Crypto
   'uniswap': 'Uniswap Foundation',
   'uniswap foundation': 'Uniswap Foundation',
+  'colosseum': 'Colosseum',
   'gitcoin': 'Gitcoin',
   'gitcoin grants': 'Gitcoin',
   'arbitrum': 'Arbitrum Foundation',
@@ -100,6 +101,8 @@ const ORG_ALIASES: Record<string, string> = {
 // Verified program owners apply to title extraction only. A program profile
 // still fails automatic creation and selection. Sources: docs/org-identity.md.
 const PROGRAM_OWNERS: Record<string, string> = {
+  "colosseum crypto world's fair": 'Colosseum',
+  "crypto world's fair": 'Colosseum',
   'bnb hack': 'BNB Chain',
   'acquia fair trade initiative': 'Acquia',
   'base batches': 'Base (Coinbase)',
@@ -109,7 +112,7 @@ const TITLE_ALIASES = Object.entries({ ...ORG_ALIASES, ...PROGRAM_OWNERS })
   .sort(([a], [b]) => b.length - a.length);
 
 function titleKey(title: string): string {
-  return title.replace(/\s+/g, ' ').trim()
+  return title.replace(/[‘’]/g, "'").replace(/\s+/g, ' ').trim()
     .replace(/^\[([^\]]+)\](?=\s|$)/, '$1').toLowerCase();
 }
 
