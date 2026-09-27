@@ -23,6 +23,7 @@ export interface UsageLogParams {
 }
 
 export interface UsageSummaryRow {
+  models: (string | null)[];
   provider: string;
   purpose: string;
   calls: number;
@@ -234,6 +235,7 @@ export async function getUsageSummary(opts: {
     `SELECT
        provider,
        purpose,
+       array_agg(DISTINCT model) AS models,
        COUNT(*)::int AS calls,
        COALESCE(SUM(tokens_in), 0)::int AS tokens_in,
        COALESCE(SUM(tokens_out), 0)::int AS tokens_out,

@@ -1,4 +1,5 @@
 import { getPool } from '../db';
+import { getDiscoveryCoverage } from '../services/discovery-coverage';
 /**
  * API Provider, Usage & Pricing Routes
  *
@@ -17,6 +18,11 @@ import { getAllProviders, upsertProvider, testProviderConnection } from '../serv
 import { getUsageSummary, getUsageTimeline, getRecentUsage, getModelPricing, upsertModelPricing } from '../services/api-usage';
 
 const router = Router();
+
+router.get('/usage/coverage', async (_req, res) => {
+  try { res.json(await getDiscoveryCoverage(getPool())); }
+  catch { res.status(500).json({ error: 'Could not load discovery coverage' }); }
+});
 
 // Attribute only receipts and usage actually linked to an entry; no inferred lane ROI.
 router.get('/usage/outcomes', async (_req, res) => {

@@ -28,6 +28,8 @@ test('rss lane: first run baselines (marks seen, submits nothing), second run su
   assert.equal(deps.submitted, undefined);
   const r2 = await runRegistryWatch({}, { dryRun: false }, deps);
   assert.equal(r2.rss.fresh, 1);
+  assert.equal(r2.mode, 'live');
+  assert.equal(r2.submitted, 1);
   assert.ok(deps.submitted && deps.submitted.length === 1);
   assert.equal(deps.submitted[0].results[0].sourceUrl, 'https://o.org/b');
   assert.ok(marked.every(m => m.id === 1));
@@ -55,6 +57,9 @@ test('diff lane: unchanged page extracts nothing; changed page extracts once and
   const r = await runRegistryWatch({}, { dryRun: true }, deps); // changed -> extract, but dryRun blocks intake
   assert.equal(extracted, 1);
   assert.equal(r.diff.changed, 1);
+  assert.equal(r.mode, 'dry-run');
+  assert.equal(r.submitted, 0);
+  assert.equal(r.deferred_surfaces, 1);
   assert.equal(st.map.get('ws:hash:2'), baselineHash, 'dry-run must leave changed content available for a live intake');
   assert.equal(st.map.has('ws:seen:2'), false);
 });
@@ -77,6 +82,8 @@ test('budget check failure fails closed and leaves the changed hash retryable', 
   const baselineHash = st.map.get('ws:hash:3');
   page = '<p>Grants: OPEN</p>';
   const r = await runRegistryWatch({}, { dryRun: true }, deps); // changed, but budget probe throws
+  assert.equal(r.diff.errors, 1);
+  assert.equal(r.deferred_surfaces, 1);
   assert.equal(extracted, 0);                                   // fail closed: no spend
   assert.equal(r.diff.changed, 1);                              // change still counted
   assert.ok(marked.some(m => m.id === 3 && m.changed === true)); // ...and recorded via markChecked

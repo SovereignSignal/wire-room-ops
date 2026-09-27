@@ -44,6 +44,8 @@ function relativeTime(dateStr: string): string {
 export function UsageTab() {
   const [period, setPeriod] = useState<Period>(7);
   const [outcomeError, setOutcomeError] = useState('');
+  const [coverage, setCoverage] = useState<{registry: {catalog:number; active:number; eligible:number; checked_ever:number; mode:string; rss_cap:number; page_cap:number; enabled_schedules:number}; accounts: {catalog:number; enabled:number; checked_ever:number; enabled_schedules:number}} | null>(null);
+  const [coverageError, setCoverageError] = useState('');
   const [outcomes, setOutcomes] = useState<Array<{ source: string; entries: number; linked_programs: number; approvals: number; human_decisions: number; published_entries: number; attributed_cost: number; unpriced_calls: number }>>([]);
   const [summary, setSummary] = useState<UsageSummaryRow[]>([]);
   const [recent, setRecent] = useState<any[]>([]);
@@ -58,6 +60,11 @@ export function UsageTab() {
       ]);
       setSummary(s);
       setRecent(r);
+      try {
+        const response = await fetch('/api/usage/coverage');
+        if (!response.ok) throw new Error('Coverage unavailable');
+        setCoverage(await response.json()); setCoverageError('');
+      } catch { setCoverage(null); setCoverageError('Discovery coverage is unavailable.'); }
       try {
         const outcomeResponse = await fetch('/api/usage/outcomes');
         if (!outcomeResponse.ok) throw new Error('Could not load source outcomes');
@@ -84,15 +91,16 @@ export function UsageTab() {
   const errorRate = totalCalls > 0 ? (totalErrors / totalCalls) * 100 : 0;
 
   // Group by provider
-  const byProvider = summary.reduce<Record<string, { calls: number; tokens_in: number; tokens_out: number; cost: number; errors: number; unpriced: number }>>((acc, r) => {
+  const byProvider = summary.reduce<Record<string, { calls: number; tokens_in: number; tokens_out: number; cost: number; errors: number; unpriced: number; models: Set<string> }>>((acc, r) => {
     const p = r.provider;
-    if (!acc[p]) acc[p] = { calls: 0, tokens_in: 0, tokens_out: 0, cost: 0, errors: 0, unpriced: 0 };
+    if (!acc[p]) acc[p] = { calls: 0, tokens_in: 0, tokens_out: 0, cost: 0, errors: 0, unpriced: 0, models: new Set() };
     acc[p].calls += r.calls;
     acc[p].tokens_in += r.tokens_in;
     acc[p].tokens_out += r.tokens_out;
     acc[p].cost += r.estimated_cost_usd;
     acc[p].errors += r.errors;
     acc[p].unpriced += r.unpriced_calls || 0;
+    for (const model of r.models || []) acc[p].models.add(model || 'Unrecorded');
     return acc;
   }, {});
 
@@ -144,12 +152,22 @@ export function UsageTab() {
           <TableCell>{fmtCost(row.attributed_cost)}{row.unpriced_calls > 0 ? ' + unknown' : ''}</TableCell><TableCell>{row.unpriced_calls}</TableCell>
         </TableRow>)}</TableBody></Table></div>
       </details>
+      <details className="border border-border rounded-lg p-4">
+        <summary>Discovery coverage and current operating mode</summary>
+        {coverageError && <p role="status">{coverageError}</p>}
+        {coverage && <div className="text-sm space-y-2 mt-3">
+          <p>Registry watch: {coverage.registry.mode}; {coverage.registry.enabled_schedules} enabled schedules. {coverage.registry.catalog} catalog surfaces, {coverage.registry.active} active, {coverage.registry.eligible} eligible by type and tier. Per-run limits: {coverage.registry.rss_cap} feeds and {coverage.registry.page_cap} pages.</p>
+          <p>{coverage.registry.checked_ever} registry surfaces have a historical check timestamp. A check may record a baseline, skipped overlap or failed attempt; it does not prove successful intake. Dry-run can fetch and extract evidence but does not submit discoveries.</p>
+          <p>Account monitoring: {coverage.accounts.enabled_schedules === 0 ? 'no enabled polling schedule' : `${coverage.accounts.enabled_schedules} enabled polling schedules`}; {coverage.accounts.enabled} enabled accounts of {coverage.accounts.catalog}, {coverage.accounts.checked_ever} with a historical check timestamp.</p>
+          <p>Catalog size and enabled settings describe configuration. Individual run receipts establish what actually executed.</p>
+        </div>}
+      </details>
       {/* Header + period selector */}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h2 className="text-base sm:text-lg font-display tracking-wider glow-text">API USAGE</h2>
           <p className="text-xs text-muted-foreground mt-1">
-            Token consumption, costs, and error rates across providers.
+            Recorded integration slots and models. A slot name does not establish the actual vendor; estimates are not invoices. Internal job events may also appear here.
           </p>
         </div>
         <div className="flex gap-1">
@@ -193,13 +211,13 @@ export function UsageTab() {
       {Object.keys(byProvider).length > 0 && (
         <div className="glow-card overflow-hidden">
           <div className="p-4 border-b border-border bg-card/50">
-            <h3 className="font-display text-xs tracking-wider text-muted-foreground">PROVIDER BREAKDOWN</h3>
+            <h3 className="font-display text-xs tracking-wider text-muted-foreground">INTEGRATION BREAKDOWN</h3>
           </div>
           <div className="overflow-auto">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="font-display text-[10px] tracking-wider uppercase">PROVIDER</TableHead>
+                  <TableHead className="font-display text-[10px] tracking-wider uppercase">INTEGRATION SLOT</TableHead>
                   <TableHead className="font-display text-[10px] tracking-wider uppercase text-right">CALLS</TableHead>
                   <TableHead className="font-display text-[10px] tracking-wider uppercase text-right">TOKENS IN</TableHead>
                   <TableHead className="font-display text-[10px] tracking-wider uppercase text-right">TOKENS OUT</TableHead>
@@ -212,7 +230,7 @@ export function UsageTab() {
                   .sort(([, a], [, b]) => b.cost - a.cost)
                   .map(([provider, d]) => (
                     <TableRow key={provider} className="hover:bg-primary/5">
-                      <TableCell className="font-mono text-sm">{provider}</TableCell>
+                      <TableCell className="font-mono text-sm">{provider}<div className="text-xs text-muted-foreground">Recorded models: {[...d.models].join(', ') || 'Unrecorded'}</div></TableCell>
                       <TableCell className="font-mono text-sm text-right">{fmt(d.calls)}</TableCell>
                       <TableCell className="font-mono text-sm text-right text-muted-foreground">{fmt(d.tokens_in)}</TableCell>
                       <TableCell className="font-mono text-sm text-right text-muted-foreground">{fmt(d.tokens_out)}</TableCell>
@@ -274,7 +292,7 @@ export function UsageTab() {
               <TableHeader>
                 <TableRow>
                   <TableHead className="font-display text-[10px] tracking-wider uppercase">TIME</TableHead>
-                  <TableHead className="font-display text-[10px] tracking-wider uppercase">PROVIDER</TableHead>
+                  <TableHead className="font-display text-[10px] tracking-wider uppercase">INTEGRATION SLOT</TableHead>
                   <TableHead className="font-display text-[10px] tracking-wider uppercase">MODEL</TableHead>
                   <TableHead className="font-display text-[10px] tracking-wider uppercase">PURPOSE</TableHead>
                   <TableHead className="font-display text-[10px] tracking-wider uppercase text-right">TOKENS</TableHead>
@@ -300,7 +318,7 @@ export function UsageTab() {
                         {tokens > 0 ? fmt(tokens) : '--'}
                       </TableCell>
                       <TableCell className="font-mono text-xs text-right">
-                        {row.estimated_cost_usd != null ? fmtCost(row.estimated_cost_usd) : '--'}
+                        {row.estimated_cost_usd != null ? fmtCost(row.estimated_cost_usd) : 'Unknown'}
                       </TableCell>
                       <TableCell className="text-center">
                         <span

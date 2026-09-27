@@ -57,6 +57,9 @@ export interface LaneStat {
 
 export interface RegistryWatchResult {
   ran: boolean;
+  mode: 'disabled' | 'dry-run' | 'live';
+  submitted: number;
+  deferred_surfaces: number;
   reason?: string;
   rss: LaneStat;
   diff: LaneStat;
@@ -170,7 +173,7 @@ export async function runRegistryWatch(
   // Read at call time (not module load) so tests don't need require-cache
   // gymnastics to flip it; the scheduler's own gate is the module-load-time one.
   if (process.env.REGISTRY_WATCH_ENABLED !== 'true') {
-    return { ran: false, reason: 'disabled', rss: emptyStat(), diff: emptyStat() };
+    return { ran: false, mode: 'disabled', submitted: 0, deferred_surfaces: 0, reason: 'disabled', rss: emptyStat(), diff: emptyStat() };
   }
 
   const getDueImpl = deps.getDue ?? getDueSurfaces;
@@ -255,6 +258,7 @@ export async function runRegistryWatch(
   // Budget is consulted at most once per run, lazily, the first time a page
   // is found actually changed (and not a baseline) — not paid up front for
   // pages that never change, and not paid again once we know the answer.
+  let deferredSurfaces = 0;
   let budgetChecked = false;
   let budgetAllowed = true;
   let extractedThisRun = 0;
@@ -328,17 +332,20 @@ export async function runRegistryWatch(
         // Fail closed on spend and leave the prior hash intact. The same page
         // change will be retried on the next due run.
         budgetAllowed = false;
+        diffStat.errors++;
         console.warn(`[RegistryWatch] budget check failed — failing closed, no extraction this run: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
     if (!budgetAllowed) {
+      deferredSurfaces++;
       console.log('[RegistryWatch] extraction skipped — budget reached');
       await markImpl(pool, surf.id, { changed: true });
       continue;
     }
 
     if (extractedThisRun >= extractCap) {
+      deferredSurfaces++;
       console.log(`[RegistryWatch] extraction cap reached (${extractCap}/run) — deferring change to the next run`);
       await markImpl(pool, surf.id, { changed: true });
       continue;
@@ -415,6 +422,6 @@ export async function runRegistryWatch(
     }
   }
 
-  logApiUsage({ provider: 'watchtower', model: 'registry-watch', purpose: 'watchtower-registry-run', duration_ms: Date.now() - start, success: true });
-  return { ran: true, rss: rssStat, diff: diffStat };
+  logApiUsage({ provider: 'watchtower', model: 'registry-watch', purpose: 'watchtower-registry-run', duration_ms: Date.now() - start, success: rssStat.errors + diffStat.errors === 0, error_message: rssStat.errors + diffStat.errors > 0 ? 'Partial run: some surfaces failed' : undefined });
+  return { ran: true, mode: dryRun ? 'dry-run' : 'live', submitted: dryRun ? 0 : totalFresh, deferred_surfaces: deferredSurfaces + (dryRun ? pendingDeliveries.length : 0), rss: rssStat, diff: diffStat };
 }

@@ -386,7 +386,7 @@ function createJobExecutor(schedule: ScheduleConfig) {
         if (config.watchtower.registryWatchEnabled) {
           try {
             const rw = await runRegistryWatch(pool);
-            if (rw.ran) console.log(`[Scheduler] Registry watch: rss ${rw.rss.surfaces}/${rw.rss.fresh} fresh, diff ${rw.diff.surfaces}/${rw.diff.changed ?? 0} changed, ${rw.diff.extracted ?? 0} extracted`);
+            if (rw.ran) console.log(`[Scheduler] Registry watch (${rw.mode}): rss ${rw.rss.surfaces} selected/${rw.rss.fresh} fresh, diff ${rw.diff.surfaces} selected/${rw.diff.changed ?? 0} changed, ${rw.diff.extracted ?? 0} extracted, ${rw.submitted} submitted, ${rw.deferred_surfaces} surfaces deferred, ${rw.rss.errors + rw.diff.errors} errors`);
           } catch (err) {
             console.error('[Scheduler] Registry watch failed:', err instanceof Error ? err.message : err);
           }
@@ -464,7 +464,7 @@ function createJobExecutor(schedule: ScheduleConfig) {
         if (config.watchtower.registryWatchEnabled) {
           try {
             const rw = await runRegistryWatch(pool);
-            if (rw.ran) console.log(`[Scheduler] Registry watch: rss ${rw.rss.surfaces}/${rw.rss.fresh} fresh, diff ${rw.diff.surfaces}/${rw.diff.changed ?? 0} changed, ${rw.diff.extracted ?? 0} extracted`);
+            if (rw.ran) console.log(`[Scheduler] Registry watch (${rw.mode}): rss ${rw.rss.surfaces} selected/${rw.rss.fresh} fresh, diff ${rw.diff.surfaces} selected/${rw.diff.changed ?? 0} changed, ${rw.diff.extracted ?? 0} extracted, ${rw.submitted} submitted, ${rw.deferred_surfaces} surfaces deferred, ${rw.rss.errors + rw.diff.errors} errors`);
           } catch (err) {
             console.error('[Scheduler] Registry watch failed:', err instanceof Error ? err.message : err);
           }
