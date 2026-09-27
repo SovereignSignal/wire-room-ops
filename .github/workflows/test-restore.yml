@@ -3,6 +3,9 @@ name: Test Backup Restore
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   test-restore:
     runs-on: ubuntu-latest
@@ -23,6 +26,8 @@ jobs:
           --health-retries 5
 
     steps:
+      - uses: actions/checkout@v4
+
       - name: Install PostgreSQL 17 client
         run: |
           sudo apt-get update -qq
@@ -40,7 +45,8 @@ jobs:
           AWS_DEFAULT_REGION: auto
           R2_ENDPOINT: https://${{ secrets.CF_ACCOUNT_ID }}.r2.cloudflarestorage.com
         run: |
-          LATEST=$(aws s3 ls "s3://wire-room-backups/" --endpoint-url "$R2_ENDPOINT" | sort | tail -1 | awk '{print $4}')
+          LATEST=$(aws s3 ls "s3://wire-room-backups/" --endpoint-url "$R2_ENDPOINT" | awk '{print $4}' | grep -E '^backup-[0-9]{8}-[0-9]{6}\.sql\.gz$' | sort | tail -1)
+          test -n "$LATEST"
           echo "Downloading: ${LATEST}"
           aws s3 cp "s3://wire-room-backups/${LATEST}" backup.sql.gz --endpoint-url "$R2_ENDPOINT"
           gunzip backup.sql.gz
@@ -56,7 +62,7 @@ jobs:
         run: |
           /usr/lib/postgresql/17/bin/psql -c "SELECT version();"
           echo "--- Restoring backup ---"
-          /usr/lib/postgresql/17/bin/psql < backup.sql 2>&1
+          /usr/lib/postgresql/17/bin/psql -X --set=ON_ERROR_STOP=1 --single-transaction --file=backup.sql > restore.log 2>&1 || { echo "::error::Restore failed; no success receipt will be emitted"; exit 1; }
           echo "--- Restore complete ---"
 
       - name: Verify restored data
@@ -67,31 +73,12 @@ jobs:
           PGPASSWORD: testpass
           PGDATABASE: restore_test
         run: |
-          echo "=== Table Count ==="
-          /usr/lib/postgresql/17/bin/psql -t -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public';"
+          python3 -m unittest discover -s tests -p 'test_sql_restore.py'
+          python3 scripts/verify-sql-restore.py backup.sql | tee restore-verification.json
+          cat restore-verification.json >> "$GITHUB_STEP_SUMMARY"
 
-          echo "=== Tables and Row Counts ==="
-          /usr/lib/postgresql/17/bin/psql -c "
-            SELECT schemaname, tablename
-            FROM pg_tables
-            WHERE schemaname = 'public'
-            ORDER BY tablename;
-          "
-
-          echo "=== Row counts per table ==="
-          /usr/lib/postgresql/17/bin/psql -t -c "
-            SELECT relname, n_live_tup
-            FROM pg_stat_user_tables
-            ORDER BY relname;
-          "
-
-          echo "=== Key table spot checks ==="
-          /usr/lib/postgresql/17/bin/psql -c "SELECT count(*) AS scan_entries FROM scan_entries;"
-          /usr/lib/postgresql/17/bin/psql -c "SELECT count(*) AS summaries FROM summaries;"
-          /usr/lib/postgresql/17/bin/psql -c "SELECT count(*) AS feeds FROM feeds;"
-          /usr/lib/postgresql/17/bin/psql -c "SELECT count(*) AS scan_prompts FROM scan_prompts;"
-
-          echo "=== Index Count ==="
-          /usr/lib/postgresql/17/bin/psql -t -c "SELECT count(*) FROM pg_indexes WHERE schemaname = 'public';"
-
-          echo "=== RESTORE TEST PASSED ==="
+      - uses: actions/upload-artifact@v4
+        with:
+          name: restore-verification
+          path: restore-verification.json
+          retention-days: 30

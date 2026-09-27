@@ -56,6 +56,9 @@ jobs:
       - name: Run checks
         run: npm run check
 
+      - name: Test backup verification
+        run: python3 -m unittest discover -s tests -p test_sql_restore.py
+
       - name: Build server
         run: npm run build:server
 
