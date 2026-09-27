@@ -421,6 +421,7 @@ export async function fetchModels(): Promise<Record<string, ModelInfo[]>> {
 // --- API Usage ---
 
 export interface UsageSummaryRow {
+  models: (string | null)[];
   unpriced_calls: number;
   provider: string;
   purpose: string;
