@@ -2,6 +2,15 @@ name: Test Backup Restore
 
 on:
   workflow_dispatch:
+    inputs:
+      database:
+        description: Database backup to restore in the disposable test
+        type: choice
+        options:
+          - wire-room
+          - grantswatch
+        default: wire-room
+        required: true
 
 permissions:
   contents: read
@@ -10,10 +19,14 @@ jobs:
   test-restore:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      BACKUP_PREFIX: ${{ inputs.database == 'grantswatch' && 'grantswatch/' || '' }}
+      RESTORE_PROFILE: ${{ inputs.database }}
+      PG_MAJOR: ${{ inputs.database == 'grantswatch' && '18' || '17' }}
 
     services:
       postgres:
-        image: postgres:17
+        image: postgres:${{ inputs.database == 'grantswatch' && '18' || '17' }}
         env:
           POSTGRES_PASSWORD: testpass
           POSTGRES_DB: restore_test
@@ -28,7 +41,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install PostgreSQL 17 client
+      - name: Install matching PostgreSQL client
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq curl ca-certificates
@@ -36,7 +49,7 @@ jobs:
           sudo curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc --fail https://www.postgresql.org/media/keys/ACCC4CF8.asc
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
           sudo apt-get update -qq
-          sudo apt-get install -y -qq postgresql-client-17
+          sudo apt-get install -y -qq "postgresql-client-${PG_MAJOR}"
 
       - name: Download latest backup from R2
         env:
@@ -45,10 +58,10 @@ jobs:
           AWS_DEFAULT_REGION: auto
           R2_ENDPOINT: https://${{ secrets.CF_ACCOUNT_ID }}.r2.cloudflarestorage.com
         run: |
-          LATEST=$(aws s3 ls "s3://wire-room-backups/" --endpoint-url "$R2_ENDPOINT" | awk '{print $4}' | grep -E '^backup-[0-9]{8}-[0-9]{6}\.sql\.gz$' | sort | tail -1)
+          LATEST=$(aws s3 ls "s3://wire-room-backups/${BACKUP_PREFIX}" --endpoint-url "$R2_ENDPOINT" | awk '{print $4}' | grep -E '^backup-[0-9]{8}-[0-9]{6}\.sql\.gz$' | sort | tail -1)
           test -n "$LATEST"
           echo "Downloading: ${LATEST}"
-          aws s3 cp "s3://wire-room-backups/${LATEST}" backup.sql.gz --endpoint-url "$R2_ENDPOINT"
+          aws s3 cp "s3://wire-room-backups/${BACKUP_PREFIX}${LATEST}" backup.sql.gz --endpoint-url "$R2_ENDPOINT"
           gunzip backup.sql.gz
           echo "Decompressed: $(du -h backup.sql | cut -f1)"
 
@@ -60,9 +73,9 @@ jobs:
           PGPASSWORD: testpass
           PGDATABASE: restore_test
         run: |
-          /usr/lib/postgresql/17/bin/psql -c "SELECT version();"
+          /usr/lib/postgresql/${PG_MAJOR}/bin/psql -c "SELECT version();"
           echo "--- Restoring backup ---"
-          /usr/lib/postgresql/17/bin/psql -X --set=ON_ERROR_STOP=1 --single-transaction --file=backup.sql > restore.log 2>&1 || { echo "::error::Restore failed; no success receipt will be emitted"; exit 1; }
+          /usr/lib/postgresql/${PG_MAJOR}/bin/psql -X --set=ON_ERROR_STOP=1 --single-transaction --file=backup.sql > restore.log 2>&1 || { echo "::error::Restore failed; no success receipt will be emitted"; exit 1; }
           echo "--- Restore complete ---"
 
       - name: Verify restored data
@@ -74,7 +87,7 @@ jobs:
           PGDATABASE: restore_test
         run: |
           python3 -m unittest discover -s tests -p 'test_sql_restore.py'
-          python3 scripts/verify-sql-restore.py backup.sql | tee restore-verification.json
+          python3 scripts/verify-sql-restore.py backup.sql --profile "$RESTORE_PROFILE" | tee restore-verification.json
           cat restore-verification.json >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4

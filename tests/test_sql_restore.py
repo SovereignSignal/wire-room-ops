@@ -26,6 +26,20 @@ class RestoreChecks(unittest.TestCase):
             with self.assertRaises(ValueError):
                 restore.verify(expected, actual)
 
+    def test_website_profile_rejects_wrong_database_and_preserves_empty_state_tables(self):
+        website = {'desk_proposals': 3, 'desk_verdicts': 2, 'ingest_state': 0, 'desk_applied_changes': 0}
+        restore.verify(website, dict(website), 'grantswatch')
+        with self.assertRaises(ValueError):
+            restore.verify(website, dict(website), 'wire-room')
+        wire = {'scan_entries': 3, 'feeds': 1, 'summaries': 2}
+        with self.assertRaises(ValueError):
+            restore.verify(wire, dict(wire), 'grantswatch')
+        with self.assertRaises(ValueError):
+            restore.verify(website, {**website, 'desk_proposals': 2}, 'grantswatch')
+        incomplete = {'desk_proposals': 3, 'desk_verdicts': 2}
+        with self.assertRaises(ValueError):
+            restore.verify(incomplete, dict(incomplete), 'grantswatch')
+
     def test_empty_required_table_fails(self):
         with self.assertRaises(ValueError):
             restore.verify({'scan_entries': 0}, {'scan_entries': 0})

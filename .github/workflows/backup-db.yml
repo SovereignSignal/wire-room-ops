@@ -9,9 +9,24 @@ jobs:
   backup:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - database: wire-room
+            pg_major: 17
+            secret: DATABASE_URL
+            prefix: ''
+          - database: grantswatch
+            pg_major: 18
+            secret: GRANTSWATCH_DATABASE_URL
+            prefix: grantswatch/
+    env:
+      BACKUP_PREFIX: ${{ matrix.prefix }}
+      PG_MAJOR: ${{ matrix.pg_major }}
 
     steps:
-      - name: Install PostgreSQL 17 client
+      - name: Install matching PostgreSQL client
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq curl ca-certificates
@@ -19,18 +34,23 @@ jobs:
           sudo curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc --fail https://www.postgresql.org/media/keys/ACCC4CF8.asc
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
           sudo apt-get update -qq
-          sudo apt-get install -y -qq postgresql-client-17
-          /usr/lib/postgresql/17/bin/pg_dump --version
+          sudo apt-get install -y -qq "postgresql-client-${PG_MAJOR}"
+          /usr/lib/postgresql/${PG_MAJOR}/bin/pg_dump --version
 
       - name: Dump database
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_URL: ${{ secrets[matrix.secret] }}
         run: |
+          set -euo pipefail
+          test -n "$DATABASE_URL"
           TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
           FILENAME="backup-${TIMESTAMP}.sql.gz"
           echo "BACKUP_FILE=${FILENAME}" >> "$GITHUB_ENV"
 
-          /usr/lib/postgresql/17/bin/pg_dump "$DATABASE_URL" --no-owner --no-acl 2>pg_dump_stderr.log | gzip > "$FILENAME"
+          if ! /usr/lib/postgresql/${PG_MAJOR}/bin/pg_dump "$DATABASE_URL" --no-owner --no-acl 2>pg_dump_stderr.log | gzip > "$FILENAME"; then
+            echo "::error::Database dump failed; no archive will be uploaded"
+            exit 1
+          fi
 
           if [ -s pg_dump_stderr.log ]; then
             echo "pg_dump warnings/errors:"
@@ -52,7 +72,7 @@ jobs:
           AWS_DEFAULT_REGION: auto
           R2_ENDPOINT: https://${{ secrets.CF_ACCOUNT_ID }}.r2.cloudflarestorage.com
         run: |
-          aws s3 cp "$BACKUP_FILE" "s3://wire-room-backups/${BACKUP_FILE}" \
+          aws s3 cp "$BACKUP_FILE" "s3://wire-room-backups/${BACKUP_PREFIX}${BACKUP_FILE}" \
             --endpoint-url "$R2_ENDPOINT"
           echo "Uploaded ${BACKUP_FILE} to R2"
 
@@ -70,14 +90,15 @@ jobs:
           # piping into `while` ran it in a subshell and the count always printed 0.
           while read -r line; do
             FILE=$(echo "$line" | awk '{print $4}')
-            # Extract date from filename: backup-YYYYMMDD-HHMMSS.sql.gz
-            FILE_DATE=$(echo "$FILE" | grep -oP '\d{8}' | head -1)
+            # Ignore prefix entries and unrelated objects in the shared bucket.
+            [[ "$FILE" =~ ^backup-[0-9]{8}-[0-9]{6}\.sql\.gz$ ]] || continue
+            FILE_DATE=${FILE:7:8}
             if [ -n "$FILE_DATE" ] && [ "$FILE_DATE" -lt "$CUTOFF" ]; then
-              aws s3 rm "s3://wire-room-backups/${FILE}" --endpoint-url "$R2_ENDPOINT"
+              aws s3 rm "s3://wire-room-backups/${BACKUP_PREFIX}${FILE}" --endpoint-url "$R2_ENDPOINT"
               echo "Pruned: ${FILE}"
               DELETED=$((DELETED + 1))
             fi
-          done < <(aws s3 ls "s3://wire-room-backups/" --endpoint-url "$R2_ENDPOINT")
+          done < <(aws s3 ls "s3://wire-room-backups/${BACKUP_PREFIX}" --endpoint-url "$R2_ENDPOINT")
 
           echo "Pruned ${DELETED} backup(s) older than 30 days"
 
@@ -88,7 +109,7 @@ jobs:
           AWS_DEFAULT_REGION: auto
           R2_ENDPOINT: https://${{ secrets.CF_ACCOUNT_ID }}.r2.cloudflarestorage.com
         run: |
-          TOTAL=$(aws s3 ls "s3://wire-room-backups/" --endpoint-url "$R2_ENDPOINT" | wc -l)
+          TOTAL=$(aws s3 ls "s3://wire-room-backups/${BACKUP_PREFIX}" --endpoint-url "$R2_ENDPOINT" | awk '$4 ~ /^backup-.*\.sql\.gz$/ { count++ } END { print count+0 }')
           echo "=== Backup Summary ==="
           echo "File: ${BACKUP_FILE}"
           echo "Size: ${BACKUP_SIZE}"
