@@ -2,7 +2,7 @@
 
 Extend the existing daily database backup workflow to include the website's separate PostgreSQL database. The existing 05:00 UTC timing and 30-day retention stay unchanged. The website copy uses a separate `grantswatch/` object prefix and a dedicated read-only credential supplied through `GRANTSWATCH_DATABASE_URL`.
 
-The two backup jobs run independently. A missing credential or failed dump fails the affected job; it cannot upload a partial dump as a success. Retention processes only correctly named backup files within that database's prefix, ignoring directory entries and unrelated objects.
+The two backup jobs run independently. Each uses a client matching its server major version: PostgreSQL 17 for Wire Room and PostgreSQL 18 for the website. The isolated restore service uses the same selected major version. A missing credential or failed dump fails the affected job; it cannot upload a partial dump as a success. Retention processes only correctly named backup files within that database's prefix, ignoring directory entries and unrelated objects.
 
 The manual restore workflow offers a database choice. Its default remains Wire Room. Both profiles require exact table inventory and row counts. The website profile additionally requires the four Desk tables and populated proposals/verdicts, preventing an unrelated database from passing as website recovery.
 
@@ -19,4 +19,4 @@ The recovery target is at most one completed daily backup interval of lost datab
 - A network-free retention rehearsal preserved recent files, unrelated objects and directory entries, and selected only the expired backup in each database's own prefix.
 - Both workflow files parse and retain the existing daily trigger.
 
-No production website role, repository backup secret or additional recurring coverage was enabled during preparation.
+Initial preparation left production unchanged. The approved rollout provisions and verifies the read-only role and secret before enabling the recurring workflow.

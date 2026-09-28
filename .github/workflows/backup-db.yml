@@ -14,16 +14,19 @@ jobs:
       matrix:
         include:
           - database: wire-room
+            pg_major: 17
             secret: DATABASE_URL
             prefix: ''
           - database: grantswatch
+            pg_major: 18
             secret: GRANTSWATCH_DATABASE_URL
             prefix: grantswatch/
     env:
       BACKUP_PREFIX: ${{ matrix.prefix }}
+      PG_MAJOR: ${{ matrix.pg_major }}
 
     steps:
-      - name: Install PostgreSQL 17 client
+      - name: Install matching PostgreSQL client
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq curl ca-certificates
@@ -31,8 +34,8 @@ jobs:
           sudo curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc --fail https://www.postgresql.org/media/keys/ACCC4CF8.asc
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
           sudo apt-get update -qq
-          sudo apt-get install -y -qq postgresql-client-17
-          /usr/lib/postgresql/17/bin/pg_dump --version
+          sudo apt-get install -y -qq "postgresql-client-${PG_MAJOR}"
+          /usr/lib/postgresql/${PG_MAJOR}/bin/pg_dump --version
 
       - name: Dump database
         env:
@@ -44,7 +47,10 @@ jobs:
           FILENAME="backup-${TIMESTAMP}.sql.gz"
           echo "BACKUP_FILE=${FILENAME}" >> "$GITHUB_ENV"
 
-          /usr/lib/postgresql/17/bin/pg_dump "$DATABASE_URL" --no-owner --no-acl 2>pg_dump_stderr.log | gzip > "$FILENAME"
+          if ! /usr/lib/postgresql/${PG_MAJOR}/bin/pg_dump "$DATABASE_URL" --no-owner --no-acl 2>pg_dump_stderr.log | gzip > "$FILENAME"; then
+            echo "::error::Database dump failed; no archive will be uploaded"
+            exit 1
+          fi
 
           if [ -s pg_dump_stderr.log ]; then
             echo "pg_dump warnings/errors:"

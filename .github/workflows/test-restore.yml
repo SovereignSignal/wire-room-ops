@@ -22,10 +22,11 @@ jobs:
     env:
       BACKUP_PREFIX: ${{ inputs.database == 'grantswatch' && 'grantswatch/' || '' }}
       RESTORE_PROFILE: ${{ inputs.database }}
+      PG_MAJOR: ${{ inputs.database == 'grantswatch' && '18' || '17' }}
 
     services:
       postgres:
-        image: postgres:17
+        image: postgres:${{ inputs.database == 'grantswatch' && '18' || '17' }}
         env:
           POSTGRES_PASSWORD: testpass
           POSTGRES_DB: restore_test
@@ -40,7 +41,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install PostgreSQL 17 client
+      - name: Install matching PostgreSQL client
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq curl ca-certificates
@@ -48,7 +49,7 @@ jobs:
           sudo curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc --fail https://www.postgresql.org/media/keys/ACCC4CF8.asc
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
           sudo apt-get update -qq
-          sudo apt-get install -y -qq postgresql-client-17
+          sudo apt-get install -y -qq "postgresql-client-${PG_MAJOR}"
 
       - name: Download latest backup from R2
         env:
@@ -72,9 +73,9 @@ jobs:
           PGPASSWORD: testpass
           PGDATABASE: restore_test
         run: |
-          /usr/lib/postgresql/17/bin/psql -c "SELECT version();"
+          /usr/lib/postgresql/${PG_MAJOR}/bin/psql -c "SELECT version();"
           echo "--- Restoring backup ---"
-          /usr/lib/postgresql/17/bin/psql -X --set=ON_ERROR_STOP=1 --single-transaction --file=backup.sql > restore.log 2>&1 || { echo "::error::Restore failed; no success receipt will be emitted"; exit 1; }
+          /usr/lib/postgresql/${PG_MAJOR}/bin/psql -X --set=ON_ERROR_STOP=1 --single-transaction --file=backup.sql > restore.log 2>&1 || { echo "::error::Restore failed; no success receipt will be emitted"; exit 1; }
           echo "--- Restore complete ---"
 
       - name: Verify restored data
