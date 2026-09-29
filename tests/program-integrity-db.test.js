@@ -384,3 +384,28 @@ test('program linking preserves human-review and structured holds on any member'
   await pool.query('UPDATE scan_entries SET metadata=$1 WHERE id=$2', [{ decided_recheck: { canonical_parent_blocked: false, cross_wire_blocked: false } },memberId]);
   assert.equal(await fillMissingProgramOrgLinks(pool, [1]), 1);
 });
+
+
+test('held entries remain counted but cannot become or remain program exemplars', async () => {
+  const holds = [
+    { operator_notes: 'HOLD pending review' },
+    { action_reason: 'Human review required.' },
+    { metadata: { decided_recheck: { canonical_parent_blocked: true } } },
+    { metadata: { decided_recheck: { cross_wire_blocked: true } } },
+  ];
+  for (const [index, hold] of holds.entries()) {
+    const id = (await pool.query("INSERT INTO programs (canonical_name,normalized_key) VALUES ($1,$1) RETURNING id", ['held-'+index])).rows[0].id;
+    const entry = (await pool.query(`INSERT INTO scan_entries (name,status,program_id,operator_notes,action_reason,metadata)
+      VALUES ('Held approval','approved',$1,$2,$3,$4) RETURNING *`, [id,hold.operator_notes||null,hold.action_reason||null,hold.metadata||null])).rows[0];
+    await pool.query('UPDATE programs SET canonical_entry_id=$2 WHERE id=$1',[id,entry.id]);
+    await refreshProgramCounters(pool,[id],{linkOrganizations:false});
+    assert.deepEqual((await pool.query('SELECT canonical_entry_id,entry_count,approved_count FROM programs WHERE id=$1',[id])).rows[0],{canonical_entry_id:null,entry_count:1,approved_count:1});
+    assert.deepEqual((await pool.query('SELECT * FROM scan_entries WHERE id=$1',[entry.id])).rows[0],entry,'hold and entry stay unchanged');
+    const safe = (await pool.query(`INSERT INTO scan_entries (name,status,program_id,metadata)
+      VALUES ('Reviewed entry','declined',$1,'{"decided_recheck":{"canonical_parent_blocked":false,"cross_wire_blocked":false}}') RETURNING id`,[id])).rows[0];
+    await refreshProgramCounters(pool,[id],{linkOrganizations:false});
+    assert.equal((await pool.query('SELECT canonical_entry_id FROM programs WHERE id=$1',[id])).rows[0].canonical_entry_id,safe.id);
+  }
+  const plan = await buildProgramIntegrityPlan(pool);
+  assert.equal(plan.planned.programRows.length,0,'repair planner agrees with runtime counter refresh');
+});

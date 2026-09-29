@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { normalizeProgramKey, refreshProgramCounters } from './program-identity';
+import { normalizeProgramKey, refreshProgramCounters, programEntryUnheldSql } from './program-identity';
 import type { QueryPool, TransactionPool } from './program-identity';
 
 const REPAIR_LOCK_KEY = 'wire-room-ops:program-integrity-repair';
@@ -20,7 +20,8 @@ const EXPECTED_PROGRAM_CTES = `
               CASE se.status WHEN 'approved' THEN 0 WHEN 'declined' THEN 1 WHEN 'queued' THEN 2 WHEN 'archived' THEN 3 END,
               se.created_at DESC, se.id DESC
             ) FILTER (WHERE se.status IN (${TERMINAL_STATUSES})
-                        AND se.duplicate_of_id IS NULL))[1] AS preferred_canonical_id
+                        AND se.duplicate_of_id IS NULL
+                        AND ${programEntryUnheldSql('se')}))[1] AS preferred_canonical_id
     FROM programs p
     LEFT JOIN scan_entries se ON se.program_id = p.id
     GROUP BY p.id
@@ -33,6 +34,7 @@ const EXPECTED_PROGRAM_CTES = `
                AND current_canonical.program_id = p.id
                AND current_canonical.status IN (${TERMINAL_STATUSES})
                AND current_canonical.duplicate_of_id IS NULL
+               AND ${programEntryUnheldSql('current_canonical')}
            ) AS current_canonical_valid
     FROM programs p
     JOIN expected e ON e.program_id = p.id
