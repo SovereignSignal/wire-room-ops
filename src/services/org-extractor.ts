@@ -15,6 +15,7 @@ import { fillMissingProgramOrgLinks } from './program-org-links';
 // Known org aliases → canonical name mapping
 // ============================================================
 const ORG_ALIASES: Record<string, string> = {
+  'rust foundation': 'Rust Foundation',
   // Crypto
   'uniswap': 'Uniswap Foundation',
   'uniswap foundation': 'Uniswap Foundation',
