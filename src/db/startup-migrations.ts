@@ -38,11 +38,12 @@ import { ensureGrantsIntelTables } from '../routes/grants-intel';
 import { ensureFilesTable } from '../services/storage';
 import { ensureDiscoveredContactsTable } from '../services/contact-discovery';
 import { ensureOrgMetrics } from './org-metrics';
+import { ensureProgramMetrics } from './program-metrics';
 
 // Increment whenever the schema contract changes, including enum constants.
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
-export const STARTUP_MIGRATIONS: ReadonlyArray<{ name: string; run: () => Promise<void> }> = [
+export const STARTUP_MIGRATIONS: ReadonlyArray<{ name: string; version?: number; run: () => Promise<void> }> = [
   { name: 'sessions', run: ensureSessionsTable },
   { name: 'feeds', run: ensureFeedsTable },
   { name: 'scan-tables', run: ensureScanTables },
@@ -66,7 +67,8 @@ export const STARTUP_MIGRATIONS: ReadonlyArray<{ name: string; run: () => Promis
   { name: 'api-providers', run: ensureApiProviderTables },
   { name: 'api-usage', run: ensureApiUsageTables },
   { name: 'generated-files', run: ensureFilesTable },
-  { name: 'org-metrics', run: ensureOrgMetrics },
+  { name: 'org-metrics', version: 2, run: ensureOrgMetrics },
+  { name: 'program-metrics', version: 3, run: ensureProgramMetrics },
 ];
 
 export interface StartupMigrationHealth {
@@ -121,7 +123,7 @@ export async function migrateDatabase(): Promise<void> {
       throw new Error('Database schema is newer than this migration command; refusing to downgrade');
     }
     if (applied.rows[0]?.version === SCHEMA_VERSION) return;
-    await runStartupMigrations({ fatal: true });
+    await runStartupMigrations({ fatal: true, fromVersion: applied.rows[0]?.version ?? 0 });
     await client.query('INSERT INTO public.wro_schema_migrations(version) VALUES ($1)', [SCHEMA_VERSION]);
   } finally {
     try {
@@ -133,13 +135,15 @@ export async function migrateDatabase(): Promise<void> {
 }
 
 /**
- * Run every startup migration in order.
+ * Run schema migrations in order, skipping contracts already recorded.
+ * Entries without a version belong to the original version 1 baseline.
  * fatal=true (release command and CI): any failure throws before recording the
  * version. Diagnostic callers may collect every error with fatal=false.
  */
-export async function runStartupMigrations(opts: { fatal?: boolean } = {}): Promise<void> {
+export async function runStartupMigrations(opts: { fatal?: boolean; fromVersion?: number } = {}): Promise<void> {
   const errors: string[] = [];
-  for (const m of STARTUP_MIGRATIONS) {
+  const pending = STARTUP_MIGRATIONS.filter(m => (m.version ?? 1) > (opts.fromVersion ?? 0));
+  for (const m of pending) {
     try {
       await m.run();
     } catch (err) {
@@ -153,5 +157,5 @@ export async function runStartupMigrations(opts: { fatal?: boolean } = {}): Prom
     }
   }
   lastStartupMigrationHealth = { ran: true, failed: errors.length, errors };
-  console.log(`[Migrations] ${STARTUP_MIGRATIONS.length} startup migrations processed`);
+  console.log(`[Migrations] ${pending.length} schema migrations processed`);
 }

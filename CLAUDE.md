@@ -229,6 +229,15 @@ Missing or incompatible versions stop startup before any background work begins.
 3. Update `.env.example`
 4. Update README.md environment variables table
 
+Program counts (`entry_count`, `approved_count`, `declined_count`) are maintained
+by database triggers for all entry writers, including direct SQL maintenance.
+Installation is schema version 3 through the migration-owner command. Upgrades
+apply only migration steps newer than the recorded version; unversioned entries
+belong to the original version 1 baseline. New contracts must carry their version.
+The count triggers do not change program identity, canonical representatives,
+organization links, source fields, or editorial decisions. Existing application
+refreshes still maintain program timelines and eligible representatives.
+
 ## Database Architecture
 
 ### Shared PostgreSQL Database
