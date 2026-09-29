@@ -14,7 +14,7 @@ test('Telegram receipt indexes run only after scan_entries metadata exists', () 
   assert.ok(names.indexOf('classification-columns') < names.indexOf('telegram-intake-receipts'));
 });
 
-test('a version 2 upgrade runs only the new contract and retries failures', async () => {
+test('a version 2 upgrade runs only newer contracts and retries failures', async () => {
   const { runStartupMigrations, getStartupMigrationHealth } = require('../src/db/startup-migrations');
   const originals=STARTUP_MIGRATIONS.map(m => m.run);
   const seen=[];
@@ -27,7 +27,7 @@ test('a version 2 upgrade runs only the new contract and retries failures', asyn
     assert.equal(getStartupMigrationHealth().failed,1);
     metrics.run=async()=>{ seen.push(metrics.name); };
     await runStartupMigrations({ fatal:true,fromVersion:2 });
-    assert.deepEqual(seen, ['program-metrics']);
+    assert.deepEqual(seen, ['program-metrics','program-decisions']);
     assert.equal(getStartupMigrationHealth().failed,0);
   } finally { STARTUP_MIGRATIONS.forEach((m,i)=>{m.run=originals[i];}); }
 });

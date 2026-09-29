@@ -331,7 +331,7 @@ const FRESH_FINDS_SELECT = `
            'seen ' || p.entry_count || '×'
            || CASE WHEN p.approved_count > 0 THEN ' · approved ' || p.approved_count || '×' ELSE '' END
            || CASE WHEN p.declined_count > 0 THEN ' · declined ' || p.declined_count || '×' ELSE '' END
-           || CASE WHEN p.last_decision IS NOT NULL THEN ' · last ' || p.last_decision ELSE '' END
+           || CASE WHEN p.last_decision IS NOT NULL THEN ' · last recorded ' || p.last_decision ELSE '' END
          END AS program_history
   FROM scan_entries q
   LEFT JOIN scan_entries m

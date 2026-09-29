@@ -1,3 +1,4 @@
+import { programLastDecisionSql } from '../db/program-decisions';
 import { createHash } from 'node:crypto';
 import { normalizeProgramKey, refreshProgramCounters, programEntryUnheldSql } from './program-identity';
 import type { QueryPool, TransactionPool } from './program-identity';
@@ -14,8 +15,7 @@ const EXPECTED_PROGRAM_CTES = `
            COUNT(se.id) FILTER (WHERE se.status = 'declined')::int AS expected_declined_count,
            MIN(se.created_at)::date AS expected_first_seen,
            MAX(se.created_at)::date AS expected_last_seen,
-           (ARRAY_AGG(se.status || ' ' || se.updated_at::date ORDER BY se.updated_at DESC, se.id DESC)
-             FILTER (WHERE se.status IN ('approved', 'declined')))[1] AS expected_last_decision,
+           ${programLastDecisionSql('se')} AS expected_last_decision,
            (ARRAY_AGG(se.id ORDER BY
               CASE se.status WHEN 'approved' THEN 0 WHEN 'declined' THEN 1 WHEN 'queued' THEN 2 WHEN 'archived' THEN 3 END,
               se.created_at DESC, se.id DESC
