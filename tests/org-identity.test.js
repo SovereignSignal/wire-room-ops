@@ -183,3 +183,12 @@ test('Colosseum event titles resolve to their owner without reusing event profil
   await assert.rejects(findSimilarOrg("Crypto World's Fair"), /requires review/);
   assert.deepEqual(await findSimilarOrg('Colosseum'), {id: 2, name: 'Colosseum'});
 });
+
+
+test('Rust Foundation grant titles resolve the existing organization without absorbing lookalikes', () => {
+  for (const title of ['Rust Foundation Fellowship Grants Program', 'Rust Foundation Community Grants Program']) {
+    assert.equal(extractOrgFromName(title), 'Rust Foundation');
+  }
+  assert.equal(extractOrgFromName('Rust Foundationary Research Grants'), null);
+  assert.equal(canonicalizeOrgName('rust foundation'), 'Rust Foundation');
+});
