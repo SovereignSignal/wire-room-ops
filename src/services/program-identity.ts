@@ -436,6 +436,14 @@ export function normalizeProgramDeadline(value: string | null | undefined): stri
     : trimmed;
 }
 
+// These aliases are internal SQL identifiers, never request input.
+export function programEntryUnheldSql(alias: string): string {
+  return `NOT COALESCE(
+    concat_ws(' ', ${alias}.operator_notes, ${alias}.action_reason) ~* '\\mhold\\M|human review required'
+    OR ${alias}.metadata #>> '{decided_recheck,canonical_parent_blocked}' = 'true'
+    OR ${alias}.metadata #>> '{decided_recheck,cross_wire_blocked}' = 'true', false)`;
+}
+
 /** Recompute all entry-derived program state, including empty programs, idempotently. */
 export async function refreshProgramCounters(
   pool: QueryPool,
@@ -458,7 +466,8 @@ export async function refreshProgramCounters(
                  CASE se.status WHEN 'approved' THEN 0 WHEN 'declined' THEN 1 WHEN 'queued' THEN 2 ELSE 3 END,
                  se.created_at DESC, se.id DESC
                ) FILTER (WHERE se.status IN ('approved', 'declined', 'queued', 'archived')
-                           AND se.duplicate_of_id IS NULL))[1] AS preferred_exemplar,
+                           AND se.duplicate_of_id IS NULL
+                           AND ${programEntryUnheldSql('se')}))[1] AS preferred_exemplar,
               (ARRAY_AGG(se.status || ' ' || se.updated_at::date ORDER BY se.updated_at DESC, se.id DESC)
                 FILTER (WHERE se.status IN ('approved', 'declined')))[1] AS last_decision
        FROM target t
@@ -472,6 +481,7 @@ export async function refreshProgramCounters(
                   AND current.program_id = p.id
                   AND current.status IN ('approved', 'declined', 'queued', 'archived')
                   AND current.duplicate_of_id IS NULL
+                  AND ${programEntryUnheldSql('current')}
               ) THEN p.canonical_entry_id ELSE s.preferred_exemplar END AS exemplar
        FROM stats s
        JOIN programs p ON p.id = s.program_id
