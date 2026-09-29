@@ -7,7 +7,8 @@ async function main(): Promise<void> {
   console.log(JSON.stringify({
     mode: args.includes('--apply') ? 'apply' : 'dry-run',
     schemaVersion: SCHEMA_VERSION,
-    steps: STARTUP_MIGRATIONS.map(step => step.name),
+    steps: STARTUP_MIGRATIONS.map(step => ({ name: step.name, version: step.version ?? 1 })),
+    upgradePolicy: 'Apply only steps newer than the recorded schema version',
     connection: 'DATABASE_URL supplied to this process only',
     startsApplication: false,
   }, null, 2));
