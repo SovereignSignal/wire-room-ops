@@ -168,6 +168,7 @@ export function sameOrgIdentity(a: string | null | undefined, b: string | null |
   return initials.length >= 2 && initials === short;
 }
 const tokensOf = (s: string) => new Set((s || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(t => t.length > 3));
+const genericProgramToken = /^(?:\d+|open|source|research|community|ecosystem|builders?|developers?|support|programs?|programmes?|grants?|funds?|funding|sponsorships?|fellows?|fellowships?|scholarships?|awards?|bount(?:y|ies)|hackathons?|cohorts?)$/;
 const domainOf = (url: string | null | undefined): string | null => {
   const m = (url || '').match(/^https?:\/\/(?:www\.)?([^/]+)/i);
   return m ? m[1].toLowerCase() : null;
@@ -293,6 +294,14 @@ export async function resolveProgram(
       if (shared.length >= 2 && shared.length / denom >= 0.6) pass = 'tokens';
     }
     if (!pass) continue;
+    // Sightings add aliases automatically, so an old mistaken attachment can
+    // poison this list. Alias-only evidence still needs a distinctive word
+    // from the canonical title, or independent organization/domain support.
+    const canonicalKey = normalizeProgramKey(p.canonical_name);
+    if (key !== p.normalized_key && key !== canonicalKey && orgAgrees !== true && !urlBoost) {
+      const canonicalTokens = tokensOf(p.canonical_name);
+      if (![...candTokens].some(token => !genericProgramToken.test(token) && canonicalTokens.has(token))) continue;
+    }
     // Generic words such as "fellowship", "2026", "open" and "source"
     // do not establish identity without organization or first-party support.
     if (pass === 'tokens' && orgAgrees !== true && !urlBoost) continue;

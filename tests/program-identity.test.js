@@ -550,3 +550,19 @@ test('resolveProgram: shared generic words do not group unrelated fellowships or
     assert.equal(await resolveProgram(programPool([p]), { name: incoming }), null);
   }
 });
+
+test('resolveProgram: previously polluted aliases cannot legitimize unrelated shared-host records', async () => {
+  for (const [canonical, alias] of [
+    ['Inuka Tech Fellowship', 'NTU AI-for-X Postdoctoral Fellowship 2026'],
+    ['Framework Computer Open Source Sponsorship Program', 'AnySearch Open Source Bounty Program'],
+    ['Framework Computer Open Source Sponsorship Program', 'GoKiteAI Open Source Bounty Program'],
+    ['Maximo AI Builders Grant', 'Open AGI Grant Program'],
+    ['Zcash Community Grant Program', 'KUB Community Grant'],
+  ]) {
+    const p = fakeProgram({ canonical_name: canonical, normalized_key: normalizeProgramKey(canonical), org_name: null, aliases: [canonical, alias], canonical_url: 'https://x.com/one/status/1', url_domains: ['x.com'] });
+    assert.equal(await resolveProgram(programPool([p]), { name: alias, sourceUrl: 'https://x.com/two/status/2' }), null, alias);
+  }
+  const p = fakeProgram({ aliases: ['Supported Renamed Offering'] });
+  assert.ok(await resolveProgram(programPool([p]), { name: 'Supported Renamed Offering', orgName: 'Anthropic' }));
+  assert.ok(await resolveProgram(programPool([p]), { name: 'Supported Renamed Offering', sourceUrl: 'https://alignment.anthropic.com/apply' }));
+});

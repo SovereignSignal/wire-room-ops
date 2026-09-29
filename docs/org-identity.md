@@ -79,3 +79,10 @@ one operator. Generic token overlap requires supporting organization agreement
 or a first-party domain; exact program keys and recorded aliases still work
 within the other identity guards. This prevents new shared-host conflation but
 does not certify existing aliases or repair previously mixed program groups.
+
+Recorded program aliases come from sightings and can contain old mistakes.
+Without organization/domain support, an alias must also share a distinctive
+word with the canonical title. Generic words such as "community", "open source"
+and "fellowship" cannot legitimize an unrelated alias. This deliberately leaves
+unsupported renamed programs for review; independently supported renames remain
+matchable. It does not edit the stored historical aliases.
