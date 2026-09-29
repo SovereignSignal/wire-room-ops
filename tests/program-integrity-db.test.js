@@ -48,6 +48,7 @@ test.before(async () => {
       updated_at TIMESTAMPTZ DEFAULT NOW()
     );
     CREATE TABLE scan_entries (
+      decision_at TIMESTAMPTZ,
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL,
       description TEXT,
@@ -242,7 +243,7 @@ test('linking historical approved and duplicate entries derives counts, dates an
   const state = (await pool.query(`SELECT entry_count, approved_count, canonical_entry_id,
     first_seen::text, last_seen::text, last_decision FROM programs WHERE id=$1`, [programId])).rows[0];
   assert.deepEqual(state, { entry_count: 2, approved_count: 1, canonical_entry_id: entries[1].id,
-    first_seen: '2024-01-10', last_seen: '2024-02-10', last_decision: 'approved 2024-02-11' });
+    first_seen: '2024-01-10', last_seen: '2024-02-10', last_decision: null });
 });
 
 async function demotionFixture() {

@@ -240,6 +240,17 @@ refreshes still maintain program timelines and eligible representatives.
 
 ## Database Architecture
 
+### Recorded decision dates
+
+Schema version 4 stamps `scan_entries.decision_at` only when an entry is inserted
+as approved/declined or changes into one of those statuses. General edits cannot
+change that timestamp. Existing entries retain NULL because their edit dates do
+not prove a decision date. Program `last_decision` is maintained transactionally
+for every writer and shown as the last *recorded* decision. The former edit-date
+labels are retained in `programs.legacy_last_decision` for historical review;
+they are never used as current decision evidence. This archive can be retired
+only after that historical review and a retained recovery copy.
+
 ### Shared PostgreSQL Database
 
 `wire-room-ops` and `tele-sum` share one PostgreSQL database hosted on Railway (`wire-room-db`). This repo is the primary writer. (The retired `the-wire-room` site's Railway service was deleted 2026-07-02.) The `grant-wire-scout` Railway services and the local `grant-wire-engine`/`grant-wire-weekly` tooling also connect to this database directly — treat its schema as a shared contract.

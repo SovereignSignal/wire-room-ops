@@ -162,7 +162,7 @@ test('assessRound: differing round label = new_round; same/absent = same_round; 
 });
 
 test('historyLine composes the display string', () => {
-  assert.equal(historyLine(fakeProgram()), 'seen 60× · approved 1× · declined 12× · last declined 2026-07-07');
+  assert.equal(historyLine(fakeProgram()), 'seen 60× · approved 1× · declined 12× · last recorded declined 2026-07-07');
   assert.equal(historyLine(fakeProgram({ approved_count: 0, declined_count: 0, last_decision: null, entry_count: 3 })), 'seen 3×');
 });
 

@@ -1,3 +1,4 @@
+import { programLastDecisionSql } from '../db/program-decisions';
 /**
  * Program-identity backfill — MANUAL, resumable, idempotent.
  *
@@ -161,7 +162,7 @@ async function main() {
                         COUNT(*) FILTER (WHERE status = 'declined')::int AS declined,
                         MIN(created_at)::date AS first_seen, MAX(created_at)::date AS last_seen,
                         (ARRAY_AGG(id ORDER BY CASE status WHEN 'approved' THEN 0 WHEN 'declined' THEN 1 WHEN 'queued' THEN 2 ELSE 3 END, created_at DESC))[1] AS exemplar,
-                        (ARRAY_AGG(status || ' ' || updated_at::date ORDER BY updated_at DESC) FILTER (WHERE status IN ('approved','declined')))[1] AS last_decision,
+                        ${programLastDecisionSql('scan_entries')} AS last_decision,
                         ARRAY_AGG(DISTINCT name) AS names
                  FROM scan_entries WHERE program_id = $1
                ) s

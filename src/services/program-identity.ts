@@ -1,3 +1,4 @@
+import { programLastDecisionSql } from '../db/program-decisions';
 /**
  * Program identity — canonical program registry + resolution.
  *
@@ -359,7 +360,7 @@ export function historyLine(p: ProgramRow): string {
   const parts = [`seen ${p.entry_count}×`];
   if (p.approved_count > 0) parts.push(`approved ${p.approved_count}×`);
   if (p.declined_count > 0) parts.push(`declined ${p.declined_count}×`);
-  if (p.last_decision) parts.push(`last ${p.last_decision}`);
+  if (p.last_decision) parts.push(`last recorded ${p.last_decision}`);
   return parts.join(' · ');
 }
 
@@ -468,8 +469,7 @@ export async function refreshProgramCounters(
                ) FILTER (WHERE se.status IN ('approved', 'declined', 'queued', 'archived')
                            AND se.duplicate_of_id IS NULL
                            AND ${programEntryUnheldSql('se')}))[1] AS preferred_exemplar,
-              (ARRAY_AGG(se.status || ' ' || se.updated_at::date ORDER BY se.updated_at DESC, se.id DESC)
-                FILTER (WHERE se.status IN ('approved', 'declined')))[1] AS last_decision
+              ${programLastDecisionSql('se')} AS last_decision
        FROM target t
        LEFT JOIN scan_entries se ON se.program_id = t.id
        GROUP BY t.id
