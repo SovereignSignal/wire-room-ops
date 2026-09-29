@@ -192,3 +192,29 @@ test('Rust Foundation grant titles resolve the existing organization without abs
   assert.equal(extractOrgFromName('Rust Foundationary Research Grants'), null);
   assert.equal(canonicalizeOrgName('rust foundation'), 'Rust Foundation');
 });
+
+test('reviewed organization titles resolve without absorbing lookalikes or program profiles', async t => {
+  const examples = [
+    ['Prezenti Sponsorship Track', 'Prezenti'],
+    ['Nebius AI Builder Program', 'Nebius'],
+    ['FLOSS/fund support for LibreOffice', 'FLOSS/fund'],
+    ['Unitary Foundation Grant', 'Unitary Foundation'],
+    ['Funding the Commons Forum San Francisco 2026', 'Funding the Commons'],
+    ['Foresight Institute AI-Powered Science RFP', 'Foresight Institute'],
+    ['BlueDot Impact Incubator Week', 'BlueDot Impact'],
+    ['PL Research Grant Program', 'Protocol Labs'],
+  ];
+  for (const [title, org] of examples) {
+    assert.equal(extractOrgFromName(title), org, title);
+    orgRows(t, [{ id: 1, name: org }]);
+    assert.deepEqual(await findSimilarOrg(extractOrgFromName(title)), { id: 1, name: org });
+  }
+  for (const title of ['PrezentiX Grants', 'NebiusLab Awards', 'FLOSS/funding Support',
+    'Unitary Foundationary Grant', 'Funding the Commonsense Forum',
+    'Foresight Institutional Grants', 'BlueDot Impactful Research', 'PL Research Grant Programmer']) {
+    assert.equal(extractOrgFromName(title), null, title);
+  }
+  assert.equal(canonicalizeOrgName('PL Research Grant Program'), 'PL Research Grant Program');
+  orgRows(t, [{ id: 1, name: 'PL Research Grant Program' }]);
+  await assert.rejects(findSimilarOrg('PL Research Grant Program'), /requires review/);
+});

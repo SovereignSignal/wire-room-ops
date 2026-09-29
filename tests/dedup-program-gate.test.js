@@ -58,9 +58,13 @@ test('program gate: resolver failure fails open', async () => {
   assert.equal(r.isDuplicate, false);
 });
 
-test('program gate: all 40 audited high-risk matches stay advisory', async () => {
+test('program gate: all 40 audited high-risk matches stay visible and unsupported aliases abstain', async () => {
   const rows = auditFixture.rows.filter(row => row.actor === 'program-gate');
   assert.equal(rows.length, 40);
+  // These learned aliases have no distinctive canonical name, organization,
+  // or first-party domain evidence: ReliefWeb versus generic AI Fellowship,
+  // Ted Yin versus Retro9000, and GovAI versus Cambridge ERA.
+  const unsupportedAliases = new Set([14023, 14303, 13178, 14233, 14416]);
 
   for (const [index, row] of rows.entries()) {
     const program = {
@@ -83,7 +87,11 @@ test('program gate: all 40 audited high-risk matches stay advisory', async () =>
       { programGate: true },
     );
     assert.equal(result.isDuplicate, false, `#${row.id} must stay visible`);
-    assert.ok(result.programResolution, `#${row.id} should retain advisory program context`);
+    if (unsupportedAliases.has(row.id)) {
+      assert.equal(result.programResolution, null, `#${row.id} must reject unsupported alias context`);
+    } else {
+      assert.ok(result.programResolution, `#${row.id} should retain supported advisory program context`);
+    }
   }
 });
 

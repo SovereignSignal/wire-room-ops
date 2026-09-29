@@ -365,3 +365,22 @@ test.after(async () => {
   await admin.query(`DROP SCHEMA ${schema} CASCADE`);
   await admin.end();
 });
+
+test('program linking preserves human-review and structured holds on any member', async () => {
+  await orgLinkFixture();
+  const { rows } = await pool.query("INSERT INTO scan_entries(name,program_id,status) VALUES('Review pending',1,'duplicate') RETURNING id");
+  const memberId = rows[0].id;
+  for (const [notes, reason, metadata] of [
+    ['Human review required.', null, {}],
+    [null, 'Human review required.', {}],
+    [null, null, { decided_recheck: { canonical_parent_blocked: true } }],
+    [null, null, { decided_recheck: { cross_wire_blocked: true } }],
+  ]) {
+    await pool.query('UPDATE scan_entries SET operator_notes=$1,action_reason=$2,metadata=$3 WHERE id=$4', [notes,reason,metadata,memberId]);
+    assert.equal((await planProgramOrgLinks(pool)).links.length, 0);
+    assert.equal(await fillMissingProgramOrgLinks(pool, [1]), 0);
+    assert.equal((await pool.query('SELECT org_id FROM programs WHERE id=1')).rows[0].org_id, null);
+  }
+  await pool.query('UPDATE scan_entries SET metadata=$1 WHERE id=$2', [{ decided_recheck: { canonical_parent_blocked: false, cross_wire_blocked: false } },memberId]);
+  assert.equal(await fillMissingProgramOrgLinks(pool, [1]), 1);
+});

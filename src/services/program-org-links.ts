@@ -24,7 +24,9 @@ const CANDIDATES = `
                     WHERE e.program_id = p.id AND e.org_id IS NOT NULL AND e.org_id <> o.id)
     AND NOT EXISTS (SELECT 1 FROM scan_entries e
                     WHERE e.program_id = p.id
-                      AND concat_ws(' ', e.operator_notes, e.action_reason) ~* '\\mhold\\M')
+                      AND (concat_ws(' ', e.operator_notes, e.action_reason) ~* '\\mhold\\M|human review required'
+                           OR e.metadata #>> '{decided_recheck,canonical_parent_blocked}' = 'true'
+                           OR e.metadata #>> '{decided_recheck,cross_wire_blocked}' = 'true'))
 `;
 
 export interface ProgramOrgLink {

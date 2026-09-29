@@ -49,3 +49,40 @@ excluded identity review. No schema change, data rewrite, provider run, or
 schedule change is required by this fix.
 
 Crypto World's Fair is a Colosseum event, including its regional tracks. Title extraction maps straight and curly apostrophe spellings to Colosseum; event profiles remain excluded from automatic reuse. Source: https://colosseum.com/worldsfair. This owner mapping does not certify track prize or eligibility details.
+
+## Reviewed organization coverage and review holds
+
+Approval-time extraction also recognizes these existing organization identities:
+[Prezenti](https://www.prezenti.xyz/), [Nebius](https://dev.nebius.com/builders),
+[FLOSS/fund](https://floss.fund/), [Unitary Foundation](https://unitary.foundation/grants/),
+[Funding the Commons](https://www.fundingthecommons.io/),
+[Foresight Institute](https://foresight.org/grants/ai-science-safety-nodes-rfp/), and
+[BlueDot Impact](https://bluedot.org/programs/incubator-week).
+Their complete names must occur at the existing title boundary. This does not
+infer owners from arbitrary domains or similar profile names.
+
+The [PL Research Grant Program](https://research.protocol.ai/categories/grants/index.html)
+is a verified Protocol Labs offering. It resolves at title extraction, while the
+program name remains ineligible as an organization profile.
+
+Entry and program linking both preserve the recorded `Human review required`
+marker, as well as `decided_recheck.canonical_parent_blocked` and
+`decided_recheck.cross_wire_blocked`. These structured review blocks must not
+be bypassed just because the notes omit the literal word `HOLD`. Resolved links
+and existing holds still take precedence. Historical repairs require separate
+review; this code change does not run extraction, start paid calls, or schedule
+backfills.
+
+Program matching also excludes social, event, form, recruitment and shared
+publishing hosts from organization-domain evidence. Two posts on X do not imply
+one operator. Generic token overlap requires supporting organization agreement
+or a first-party domain; exact program keys and recorded aliases still work
+within the other identity guards. This prevents new shared-host conflation but
+does not certify existing aliases or repair previously mixed program groups.
+
+Recorded program aliases come from sightings and can contain old mistakes.
+Without organization/domain support, an alias must also share a distinctive
+word with the canonical title. Generic words such as "community", "open source"
+and "fellowship" cannot legitimize an unrelated alias. This deliberately leaves
+unsupported renamed programs for review; independently supported renames remain
+matchable. It does not edit the stored historical aliases.

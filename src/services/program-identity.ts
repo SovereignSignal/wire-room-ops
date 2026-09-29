@@ -168,10 +168,27 @@ export function sameOrgIdentity(a: string | null | undefined, b: string | null |
   return initials.length >= 2 && initials === short;
 }
 const tokensOf = (s: string) => new Set((s || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(t => t.length > 3));
+const genericProgramToken = /^(?:\d+|open|source|research|community|ecosystem|builders?|developers?|support|programs?|programmes?|grants?|funds?|funding|sponsorships?|fellows?|fellowships?|scholarships?|awards?|bount(?:y|ies)|hackathons?|cohorts?)$/;
 const domainOf = (url: string | null | undefined): string | null => {
   const m = (url || '').match(/^https?:\/\/(?:www\.)?([^/]+)/i);
   return m ? m[1].toLowerCase() : null;
 };
+
+// A hosting platform is not a program operator. It must not pull unrelated
+// programs into the shortlist or override conflicting organization identities.
+const SHARED_PROGRAM_HOSTS = new Set([
+  'x.com', 'twitter.com', 't.co', 'facebook.com', 'linkedin.com',
+  'luma.com', 'lu.ma', 'github.com', 'docs.google.com', 'forms.gle',
+  'drive.google.com', 'notion.site', 'notion.so', 'substack.com',
+  'job-boards.greenhouse.io', 'jobs.ashbyhq.com', 'jobs.lever.co',
+  'opportunitiesforyouth.org', 'opportunities247.org',
+]);
+
+function programIdentityDomain(url: string | null | undefined): string | null {
+  const domain = domainOf(url);
+  if (!domain || [...SHARED_PROGRAM_HOSTS].some(host => domain === host || domain.endsWith(`.${host}`))) return null;
+  return domain;
+}
 
 // ── Link introspection ──────────────────────────────────────────────────
 const ATS_PATTERNS: Array<{ re: RegExp }> = [
@@ -252,11 +269,11 @@ export async function resolveProgram(
                 OR $2 LIKE left(lower(regexp_replace(a, '[^a-zA-Z0-9]', '', 'g')), 10) || '%'
            )
      LIMIT 25`,
-    [key, key.slice(0, 10), candidate.orgName ?? null, domainOf(candidate.sourceUrl) ?? null],
+    [key, key.slice(0, 10), candidate.orgName ?? null, programIdentityDomain(candidate.sourceUrl)],
   ) as { rows: ProgramRow[] };
   if (rows.length === 0) return null;
 
-  const candDomain = domainOf(candidate.sourceUrl);
+  const candDomain = programIdentityDomain(candidate.sourceUrl);
   const candTokens = tokensOf(candidate.name);
   const candOrg = candidate.orgName ? norm(candidate.orgName) : null;
 
@@ -277,6 +294,17 @@ export async function resolveProgram(
       if (shared.length >= 2 && shared.length / denom >= 0.6) pass = 'tokens';
     }
     if (!pass) continue;
+    // Sightings add aliases automatically, so an old mistaken attachment can
+    // poison this list. Alias-only evidence still needs a distinctive word
+    // from the canonical title, or independent organization/domain support.
+    const canonicalKey = normalizeProgramKey(p.canonical_name);
+    if (key !== p.normalized_key && key !== canonicalKey && orgAgrees !== true && !urlBoost) {
+      const canonicalTokens = tokensOf(p.canonical_name);
+      if (![...candTokens].some(token => !genericProgramToken.test(token) && canonicalTokens.has(token))) continue;
+    }
+    // Generic words such as "fellowship", "2026", "open" and "source"
+    // do not establish identity without organization or first-party support.
+    if (pass === 'tokens' && orgAgrees !== true && !urlBoost) continue;
     // A normalized name alone is insufficient when organization identity
     // disagrees. A shared canonical domain is the only safe override.
     if (orgAgrees === false && !urlBoost) continue;

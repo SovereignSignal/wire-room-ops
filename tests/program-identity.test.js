@@ -522,3 +522,47 @@ test('createProgram STILL forks the key for a genuinely different org', async ()
   const insert = pool.calls.find(c => /INSERT INTO programs/.test(c.sql));
   assert.match(insert.params[1], /--gitcoin$/);
 });
+
+test('resolveProgram: a shared host cannot establish operator identity or override conflicts', async () => {
+  for (const host of ['x.com', 'twitter.com', 'luma.com', 'www.linkedin.com', 'example.notion.site', 'jobs.ashbyhq.com']) {
+    const p = fakeProgram({ canonical_url: `https://${host}/other`, url_domains: [host] });
+    const pool = programPool([p]);
+    assert.equal(await resolveProgram(pool, {
+      name: 'Anthropic Fellows Program 2027', orgName: 'OpenAI', sourceUrl: `https://${host}/new`, wire: 'ai',
+    }), null, host);
+    assert.equal(pool.calls[0].params[3], null, 'shared host must not populate the SQL candidate shortlist');
+    const same = await resolveProgram(programPool([p]), {
+      name: 'Anthropic Fellows Program 2027', orgName: 'Anthropic', sourceUrl: `https://${host}/new`, wire: 'ai',
+    });
+    assert.equal(same.pass, 'key');
+    assert.equal(same.urlBoost, false);
+  }
+});
+
+test('resolveProgram: shared generic words do not group unrelated fellowships or sponsorships', async () => {
+  const cases = [
+    ['Inuka Tech Fellowship 2026', 'NTU AI-for-X Postdoctoral Fellowship 2026'],
+    ['Framework Computer Open Source Sponsorship Program', 'AnySearch Open Source Bounty Program'],
+  ];
+  for (const [existing, incoming] of cases) {
+    const p = fakeProgram({ canonical_name: existing, normalized_key: normalizeProgramKey(existing), aliases: [existing], org_name: null, canonical_url: 'https://x.com/one/status/1', url_domains: ['x.com'] });
+    assert.equal(await resolveProgram(programPool([p]), { name: incoming, sourceUrl: 'https://x.com/two/status/2' }), null);
+    assert.equal(await resolveProgram(programPool([p]), { name: incoming }), null);
+  }
+});
+
+test('resolveProgram: previously polluted aliases cannot legitimize unrelated shared-host records', async () => {
+  for (const [canonical, alias] of [
+    ['Inuka Tech Fellowship', 'NTU AI-for-X Postdoctoral Fellowship 2026'],
+    ['Framework Computer Open Source Sponsorship Program', 'AnySearch Open Source Bounty Program'],
+    ['Framework Computer Open Source Sponsorship Program', 'GoKiteAI Open Source Bounty Program'],
+    ['Maximo AI Builders Grant', 'Open AGI Grant Program'],
+    ['Zcash Community Grant Program', 'KUB Community Grant'],
+  ]) {
+    const p = fakeProgram({ canonical_name: canonical, normalized_key: normalizeProgramKey(canonical), org_name: null, aliases: [canonical, alias], canonical_url: 'https://x.com/one/status/1', url_domains: ['x.com'] });
+    assert.equal(await resolveProgram(programPool([p]), { name: alias, sourceUrl: 'https://x.com/two/status/2' }), null, alias);
+  }
+  const p = fakeProgram({ aliases: ['Supported Renamed Offering'] });
+  assert.ok(await resolveProgram(programPool([p]), { name: 'Supported Renamed Offering', orgName: 'Anthropic' }));
+  assert.ok(await resolveProgram(programPool([p]), { name: 'Supported Renamed Offering', sourceUrl: 'https://alignment.anthropic.com/apply' }));
+});

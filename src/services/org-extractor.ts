@@ -15,6 +15,13 @@ import { fillMissingProgramOrgLinks } from './program-org-links';
 // Known org aliases → canonical name mapping
 // ============================================================
 const ORG_ALIASES: Record<string, string> = {
+  'prezenti': 'Prezenti',
+  'nebius': 'Nebius',
+  'floss/fund': 'FLOSS/fund',
+  'unitary foundation': 'Unitary Foundation',
+  'funding the commons': 'Funding the Commons',
+  'foresight institute': 'Foresight Institute',
+  'bluedot impact': 'BlueDot Impact',
   'rust foundation': 'Rust Foundation',
   // Crypto
   'uniswap': 'Uniswap Foundation',
@@ -102,6 +109,7 @@ const ORG_ALIASES: Record<string, string> = {
 // Verified program owners apply to title extraction only. A program profile
 // still fails automatic creation and selection. Sources: docs/org-identity.md.
 const PROGRAM_OWNERS: Record<string, string> = {
+  'pl research grant program': 'Protocol Labs',
   "colosseum crypto world's fair": 'Colosseum',
   "crypto world's fair": 'Colosseum',
   'bnb hack': 'BNB Chain',
@@ -638,7 +646,10 @@ export async function linkEntryToOrg(entryId: number, orgId: number): Promise<bo
     // Re-read after locking: extraction may finish after an operator resolves
     // the entry or places it on hold. Automatic linking never overrides either.
     const { rows: entries } = await client.query(
-      `SELECT name, org_id, concat_ws(' ', operator_notes, action_reason) ~* '\\mhold\\M' AS held
+      `SELECT name, org_id,
+         (concat_ws(' ', operator_notes, action_reason) ~* '\\mhold\\M|human review required'
+          OR metadata #>> '{decided_recheck,canonical_parent_blocked}' = 'true'
+          OR metadata #>> '{decided_recheck,cross_wire_blocked}' = 'true') AS held
        FROM scan_entries WHERE id = $1 FOR UPDATE`, [entryId],
     );
     if (!entries.length || entries[0].org_id != null || entries[0].held) {
