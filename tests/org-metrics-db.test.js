@@ -20,7 +20,7 @@ test.before(async () => {
     first_seen date, last_seen date, parent_org_id integer,
     entry_count integer DEFAULT 0, avg_quality_score numeric(5,1), tier text, updated_at timestamptz DEFAULT now());
     CREATE TABLE scan_entries (id serial PRIMARY KEY, org_id integer REFERENCES org_profiles(id),
-      name text, status text, quality_score integer, program_id integer, description text, operator_notes text, action_reason text);`);
+      name text, status text, quality_score integer, program_id integer, description text, operator_notes text, action_reason text, metadata jsonb);`);
   db.getPool = () => pool;
   await ensureOrgMetrics();
   await admin.query(`CREATE ROLE ${role}; GRANT USAGE ON SCHEMA ${schema} TO ${role};
@@ -199,4 +199,22 @@ test('locked current title wins when identity changes while extraction waits', a
     assert.match((await pending)?.message || '', /identity review/);
     assert.equal((await pool.query('SELECT org_id FROM scan_entries WHERE id=1')).rows[0].org_id, null);
   } finally { await curator.query('ROLLBACK'); if (pending) await pending; curator.release(); }
+});
+
+test('automatic linking respects human-review text and structured identity holds', async () => {
+  await pool.query("INSERT INTO org_profiles(name) VALUES ('Prezenti')");
+  const cases = [
+    ['Human review required.', null, null],
+    [null, 'Human review required.', {}],
+    [null, null, { decided_recheck: { canonical_parent_blocked: true } }],
+    [null, null, { decided_recheck: { cross_wire_blocked: true } }],
+  ];
+  for (const [notes, reason, metadata] of cases) {
+    const { rows } = await pool.query("INSERT INTO scan_entries(name,status,operator_notes,action_reason,metadata) VALUES('Prezenti Sponsorship Track','approved',$1,$2,$3) RETURNING id", [notes, reason, metadata]);
+    const before = (await pool.query('SELECT * FROM scan_entries WHERE id=$1', [rows[0].id])).rows;
+    assert.equal(await linkEntryToOrg(rows[0].id, 1), false);
+    assert.deepEqual((await pool.query('SELECT * FROM scan_entries WHERE id=$1', [rows[0].id])).rows, before);
+  }
+  const { rows } = await pool.query("INSERT INTO scan_entries(name,status,metadata) VALUES('Prezenti Sponsorship Track','approved',$1) RETURNING id", [{ decided_recheck: { cross_wire_blocked: false, canonical_parent_blocked: false } }]);
+  assert.equal(await linkEntryToOrg(rows[0].id, 1), true);
 });
