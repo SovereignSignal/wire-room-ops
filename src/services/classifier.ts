@@ -11,6 +11,7 @@ import { logApiUsage } from './api-usage';
 import { getCachedProvider, isProviderExplicitlyDisabled } from './api-provider';
 import { computeOperatorSignals, formatSignalsForPrompt } from './operator-signals';
 import { blockedSourceDomain, classifySourceLink } from './source-filter';
+import { chatCompletionExtras } from './grok';
 
 export type Classification = 'GRANT' | 'EXPIRED' | 'NEWS' | 'NOISE' | 'UNCHECKED';
 export type OperatorRoute = 'publish' | 'source_check' | 'park' | 'decline' | 'relationship_signal';
@@ -379,6 +380,7 @@ export async function classifyEntry(entry: ClassificationEntry): Promise<Classif
         messages: [{ role: 'user', content: prompt }],
         max_tokens: 4000,
         temperature: 0.1,
+        ...chatCompletionExtras(baseUrl),
       }),
     });
   } catch (err) {
@@ -576,6 +578,7 @@ export async function tagBatch(
           messages: [{ role: 'user', content: prompt }],
           max_tokens: 4000,
           temperature: 0.1,
+          ...chatCompletionExtras(baseUrl),
         }),
       });
 
