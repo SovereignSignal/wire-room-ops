@@ -20,7 +20,9 @@ test.before(async () => {
     first_seen date, last_seen date, parent_org_id integer,
     entry_count integer DEFAULT 0, avg_quality_score numeric(5,1), tier text, updated_at timestamptz DEFAULT now());
     CREATE TABLE scan_entries (id serial PRIMARY KEY, org_id integer REFERENCES org_profiles(id),
-      name text, status text, quality_score integer, program_id integer, description text, operator_notes text, action_reason text, metadata jsonb);`);
+      name text, status text, quality_score integer, program_id integer, description text, operator_notes text, action_reason text, metadata jsonb);
+    CREATE TABLE programs (id serial PRIMARY KEY, org_id integer, org_name text, updated_at timestamptz DEFAULT now());
+    CREATE TABLE watch_surfaces (id serial PRIMARY KEY, org_id integer, org_name text, updated_at timestamptz DEFAULT now());`);
   db.getPool = () => pool;
   await ensureOrgMetrics();
   await admin.query(`CREATE ROLE ${role}; GRANT USAGE ON SCHEMA ${schema} TO ${role};
@@ -28,7 +30,7 @@ test.before(async () => {
   await ensureOrgMetrics(); // installing the same trigger contract is safe
 });
 test.after(async () => { db.getPool = original; await pool.end(); await admin.query(`DROP SCHEMA ${schema} CASCADE`); await admin.query(`DROP ROLE ${role}`); await admin.end(); });
-test.beforeEach(async () => { await pool.query('TRUNCATE scan_entries, org_profiles RESTART IDENTITY CASCADE'); });
+test.beforeEach(async () => { await pool.query('TRUNCATE scan_entries, org_profiles, programs, watch_surfaces RESTART IDENTITY CASCADE'); });
 async function metrics(id = 1) {
   return (await pool.query('SELECT entry_count,avg_quality_score,tier FROM org_profiles WHERE id=$1', [id])).rows[0];
 }
