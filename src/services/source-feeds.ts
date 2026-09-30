@@ -19,6 +19,7 @@ import { config } from '../config';
 import { scrapeUrl } from './scraper';
 import { getCachedProvider } from './api-provider';
 import { logApiUsage } from './api-usage';
+import { chatCompletionExtras } from './grok';
 
 // --- Types ---
 
@@ -431,7 +432,7 @@ async function llmExtractOpportunities(markdown: string, source: FeedSource): Pr
       method: 'POST',
       signal: AbortSignal.timeout(120000),
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], max_tokens: 6000, temperature: 0.1 }),
+      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], max_tokens: 6000, temperature: 0.1, ...chatCompletionExtras(baseUrl) }),
     });
     if (!r.ok) {
       logApiUsage({ provider: 'grok', model, purpose: source.usagePurpose || 'feed-scrape-extract', wire: source.wire, duration_ms: Date.now() - start, success: false, error_message: String(r.status) });

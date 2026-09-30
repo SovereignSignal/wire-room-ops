@@ -57,6 +57,22 @@ function requireGrokProvider() {
   return provider;
 }
 
+/**
+ * Extra chat-completion parameters for JSON-only callers, keyed by the provider
+ * slot's base URL. Ollama Cloud serves reasoning models (glm-5.2) that otherwise
+ * spend the whole max_tokens budget thinking and return truncated or empty
+ * content; reasoning_effort:"none" is honoured there and cuts output tokens
+ * roughly 8x. xAI rejects the parameter on non-reasoning models, so it is only
+ * sent to ollama.com.
+ */
+export function chatCompletionExtras(baseUrl: string | undefined): Record<string, unknown> {
+  try {
+    const host = new URL(baseUrl ?? '').hostname.toLowerCase();
+    if (host === 'ollama.com' || host.endsWith('.ollama.com')) return { reasoning_effort: 'none' };
+  } catch { /* not a URL: send nothing extra */ }
+  return {};
+}
+
 export async function summarizeWithGrok(entry: DatabaseEntry, model?: string): Promise<string> {
   // Fetch thread context for X.com URLs
   let threadContext: ThreadContext | null = null;
