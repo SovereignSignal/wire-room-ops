@@ -70,7 +70,7 @@ client/                       # React/Vite/Tailwind frontend (Lovable wireops-da
 └── ...
 src/
 ├── index.ts              # Entry point - validates config, starts server
-├── server.ts             # Express setup, route mounting (ORDER MATTERS — see Internal API Key Auth), runs STARTUP_MIGRATIONS, background interval timers
+├── server.ts             # Express setup, route mounting (ORDER MATTERS — see Internal API Key Auth), verifies the recorded schema version at boot (migrations run via `npm run db:migrate -- --apply` before deploy), background interval timers
 ├── config/
 │   ├── index.ts          # Environment variables and validation
 │   ├── brand.ts          # Deployment-agnostic brand config (audience, contentType, contentVerb)

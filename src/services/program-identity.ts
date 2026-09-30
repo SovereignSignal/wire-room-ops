@@ -404,7 +404,7 @@ export async function createProgram(
 export async function recordSighting(
   pool: QueryPool,
   programId: number,
-  entry: { id?: number; name: string; sourceUrl?: string | null; deadline?: string | null; roundLabel?: string | null },
+  entry: { id?: number; name: string; sourceUrl?: string | null; deadline?: string | Date | null; roundLabel?: string | null },
 ): Promise<void> {
   const dom = domainOf(entry.sourceUrl);
   const deadline = normalizeProgramDeadline(entry.deadline);
@@ -427,8 +427,17 @@ export async function recordSighting(
   await refreshProgramCounters(pool, [programId]);
 }
 
-/** Accept only real ISO calendar dates for the programs.latest_deadline column. */
-export function normalizeProgramDeadline(value: string | null | undefined): string | null {
+/**
+ * Accept only real ISO calendar dates for the programs.latest_deadline column.
+ * pg returns DATE columns (scan_entries.deadline_parsed) as a JS Date at local
+ * midnight, so format it from local components to keep the calendar day.
+ */
+export function normalizeProgramDeadline(value: string | Date | null | undefined): string | null {
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return null;
+    const pad = (n: number) => String(n).padStart(2, '0');
+    value = `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`;
+  }
   const trimmed = value?.trim();
   if (!trimmed || !/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return null;
   const parsed = new Date(`${trimmed}T00:00:00Z`);
@@ -620,7 +629,7 @@ export type ProgramResolutionStamp = {
  */
 export async function finalizeProgramForEntry(
   pool: TransactionPool,
-  entry: { id: number; name: string; sourceUrl?: string | null; wire?: string | null; deadline?: string | null; description?: string | null },
+  entry: { id: number; name: string; sourceUrl?: string | null; wire?: string | null; deadline?: string | Date | null; description?: string | null },
   resolution: ProgramResolutionStamp | null,
 ): Promise<void> {
   try {
