@@ -31,7 +31,7 @@ import { lockDuplicateGraph, reconcileDuplicateReferences, resolveDuplicateChain
 import { EntryMaintenanceError, rewriteEntrySource } from '../services/entry-maintenance';
 import { normalizeUrl } from '../services/intake';
 import { config } from '../config';
-import { chatCompletionExtras } from '../services/grok';
+import { chatCompletionExtras, DEFAULT_GROK_MODEL } from '../services/grok';
 
 let isRunning = false;
 
@@ -137,7 +137,7 @@ interface Verdict {
 
 async function judgeCandidates(target: RecheckTarget, candidates: Candidate[]): Promise<Verdict | null> {
   const provider = getCachedProvider('grok');
-  const model = provider?.default_model || 'grok-4.20-beta-0309-non-reasoning';
+  const model = provider?.default_model || DEFAULT_GROK_MODEL;
   const apiKey = provider?.api_key;
   const baseUrl = provider?.base_url || config.apis.grok.baseUrl;
   if (!apiKey) return null;

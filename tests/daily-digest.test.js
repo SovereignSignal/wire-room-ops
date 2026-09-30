@@ -241,6 +241,7 @@ function assemblyDeps(overrides = {}) {
       deadlines: async () => ([{ wire: 'ai', entries: [{ id: 9, name: 'EF', wire: 'ai', deadline: '2026-07-12', deadlineParsed: null, amount: null, sourceUrl: 'https://x.org/ef', daysUntil: 3 }], generatedAt: new Date() }]),
       cost: async () => ({ rows: [], total: 1.5 }),
       yield_: async () => ([]),
+      producers: async () => ([]),
       send: async (...args) => { sent.push(args); },
       advance: async (ids) => { advanced.push(ids); },
       ...overrides,
@@ -539,3 +540,54 @@ test('a stale-but-successful publish warns without raising an anomaly', async ()
   assert.match(lane.detail, /120m old/);
   assert.ok(!anomalies.some(a => /snapshot/i.test(a)));
 });
+
+// ── Silent producers ────────────────────────────────────────────────────────
+const { formatSilentProducerAnomalies, getProducerActivity, isSilentProducer } = require('../src/jobs/daily-digest');
+
+test('a daily producer with nothing in 24h is an issue, named for what it is', () => {
+  // 2026-09-05: Grok Build fed the queue 6 of 7 days, then its grok.com
+  // automations did not fire. Nothing noticed until a human looked.
+  const out = formatSilentProducerAnomalies([{ producer: 'telegram / agent:stringer', activeDays7d: 6, rows24h: 0, rows7d: 255 }]);
+  assert.equal(out.length, 1);
+  assert.match(out[0], /^Producer telegram \/ agent:stringer: 0 rows in 24h after 6 active days this week \(255 rows\)/);
+});
+
+test('a producer that ran today is not an issue, however thin', () => {
+  assert.deepEqual(formatSilentProducerAnomalies([{ producer: 'feed', activeDays7d: 6, rows24h: 2, rows7d: 21 }]), []);
+});
+
+test('a lane on a three-day-a-week cadence never trips the daily rule', () => {
+  assert.equal(isSilentProducer({ producer: 'grok-scout', activeDays7d: 3, rows24h: 0, rows7d: 29 }), false);
+  assert.deepEqual(formatSilentProducerAnomalies([{ producer: 'claude-code', activeDays7d: 3, rows24h: 0, rows7d: 9 }]), []);
+});
+
+test('the active-days floor is inclusive — 5 of 7 is a daily cadence', () => {
+  assert.equal(isSilentProducer({ producer: 'claude-cohort-notion', activeDays7d: 5, rows24h: 0, rows7d: 42 }), true);
+  assert.equal(isSilentProducer({ producer: 'claude-cohort-notion', activeDays7d: 4, rows24h: 0, rows7d: 42 }), false);
+});
+
+test('a human pasting into the bot is not a schedule', () => {
+  const rows = [
+    { producer: 'telegram', activeDays7d: 7, rows24h: 0, rows7d: 30 },
+    { producer: 'manual-intake', activeDays7d: 6, rows24h: 0, rows7d: 12 },
+  ];
+  assert.deepEqual(formatSilentProducerAnomalies(rows), []);
+});
+
+test('getProducerActivity keys agent submissions apart from the human door', async () => {
+  let captured = null;
+  const pool = { query: async (sql) => { captured = sql; return { rows: [] }; } };
+  await getProducerActivity(pool);
+  assert.match(captured, /submitted_by LIKE 'agent:%'/);
+  assert.match(captured, /COUNT\(DISTINCT created_at::date\)/);
+  assert.match(captured, /INTERVAL '24 hours'/);
+});
+
+test('assembleAndSendDailyDigest folds silent producers into anomalies', async () => {
+  const producers = async () => ([{ producer: 'telegram / agent:stringer', activeDays7d: 6, rows24h: 0, rows7d: 255 }]);
+  const { deps, sent } = assemblyDeps({ producers });
+  await assembleAndSendDailyDigest({}, {}, deps);
+  const opts = sent[0][3];
+  assert.ok(opts.anomalies.some(a => /^Producer telegram \/ agent:stringer/.test(a)));
+});
+

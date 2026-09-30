@@ -16,10 +16,9 @@ import { config } from '../config';
 import { getPool } from '../db';
 import { getCachedProvider } from './api-provider';
 import { fetchThreadContext, type ThreadContext } from './x-thread';
-import { isXcomUrl } from './grok';
+import { isXcomUrl, DEFAULT_GROK_MODEL } from './grok';
 import { ollamaAutoSummarize } from './ollama';
 
-const DEFAULT_GROK_MODEL = 'grok-4.20-beta-0309-non-reasoning';
 const DEFAULT_GROK_BASE_URL = 'https://api.x.ai/v1';
 
 export function cleanText(s: string): string {

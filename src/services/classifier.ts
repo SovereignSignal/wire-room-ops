@@ -11,7 +11,7 @@ import { logApiUsage } from './api-usage';
 import { getCachedProvider, isProviderExplicitlyDisabled } from './api-provider';
 import { computeOperatorSignals, formatSignalsForPrompt } from './operator-signals';
 import { blockedSourceDomain, classifySourceLink } from './source-filter';
-import { chatCompletionExtras } from './grok';
+import { chatCompletionExtras, DEFAULT_GROK_MODEL } from './grok';
 
 export type Classification = 'GRANT' | 'EXPIRED' | 'NEWS' | 'NOISE' | 'UNCHECKED';
 export type OperatorRoute = 'publish' | 'source_check' | 'park' | 'decline' | 'relationship_signal';
@@ -41,7 +41,6 @@ export interface ClassificationResult {
 const VALID_CLASSIFICATIONS = new Set<Classification>(['GRANT', 'EXPIRED', 'NEWS', 'NOISE']);
 const VALID_OPERATOR_ROUTES = new Set<OperatorRoute>(['publish', 'source_check', 'park', 'decline', 'relationship_signal']);
 const VALID_DETECTED_WIRES = new Set(['crypto', 'ai', 'oss', 'off_domain']);
-const DEFAULT_GROK_MODEL = 'grok-4.20-beta-0309-non-reasoning';
 const DEFAULT_GROK_BASE_URL = 'https://api.x.ai/v1';
 
 export interface ClassificationEntry {
