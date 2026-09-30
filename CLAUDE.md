@@ -328,6 +328,7 @@ Pre-approval validation (`src/services/approval-guard.ts`) prevents bad data fro
 - Runs every 15 minutes with a high-water mark stored in `app_state` (1-hour overlap; falls back to a 7-day lookback on first run or after errors)
 - Idempotent: skips entries where `source_url` already exists in `scan_entries`
 - Full dedup citizen: runs `checkDuplicate()` (normalized URL + exact name) before inserting, and calls `registerSeen()` after, so intake dedup can see telegram-synced entries
+- **`seen_urls` ownership contract (2026-09-30):** a `seen_urls` row with `first_seen_entry_id IS NULL` is treated by `registerSeenInTransaction` as seed-only history and is a permanent conflict: a fresh entry that hits one is parked as `status='deduped'` / `duplicate_reason='URL already exists in seed history'`, which no queue, digest, or recovery job surfaces. Only this repo may write `seen_urls`, and every write carries the owning entry id. tele-sum wrote ownerless rows for every summarized URL from 2026-04-27 until its fix on 2026-09-30, which parked 55 of 57 bridged entries in Aug–Sep and 37 bot-door entries (98 total, recovered 2026-09-30). If bridged entries start vanishing again, check for ownerless rows first: `SELECT count(*) FROM seen_urls WHERE first_seen_entry_id IS NULL AND created_at > now() - interval '7 days'`.
 - Infers wire from content keywords (AI/OSS detection, defaults to crypto)
 - Historical backfill available via `POST /api/admin/summary-sync-backfill`
 
