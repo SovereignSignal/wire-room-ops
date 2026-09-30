@@ -78,7 +78,8 @@ test('merge preserves contacts, complementary duplicate fields, programs, surfac
   const orgs = (await pool.query('SELECT * FROM org_profiles')).rows;
   assert.equal(orgs.length, 1);
   assert.equal(orgs[0].parent_org_id, null, 'merge must not make the target its own parent');
-  assert.equal(orgs[0].entry_count, 1);
+  // entry_count is trigger-owned since #168 (queued/approved only); the merge's
+  // effect on it is pinned by tests/org-metrics-db.test.js, not this fixture.
   assert.deepEqual(orgs[0].wires, ['oss', 'ai']);
   assert.deepEqual(orgs[0].aliases, ['Source', 'Previous']);
 });

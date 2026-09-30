@@ -95,9 +95,7 @@ export async function mergeOrgs(
     );
     entriesRelinked = relinked.rowCount ?? 0;
     await client.query(
-      `UPDATE org_profiles SET wires = $1, aliases = $2,
-         entry_count = (SELECT COUNT(*) FROM scan_entries WHERE org_id = $3)::int,
-         updated_at = NOW() WHERE id = $3`,
+      `UPDATE org_profiles SET wires = $1, aliases = $2, updated_at = NOW() WHERE id = $3`,
       [[...new Set([...(target.wires || []), ...(source.wires || [])])],
        [...new Set([...(target.aliases || []), source.name, ...(source.aliases || [])])], targetId],
     );
