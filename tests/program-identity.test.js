@@ -359,6 +359,17 @@ test('recordSighting drops rolling and malformed deadline text before the date c
   assert.equal(normalizeProgramDeadline('2026-07-21'), '2026-07-21');
 });
 
+// pg returns a DATE column (scan_entries.deadline_parsed) as a JS Date at local
+// midnight. daily-intake passes it straight through; it must not throw and must
+// keep the calendar day regardless of the process timezone.
+test('normalizeProgramDeadline accepts the Date pg returns for deadline_parsed', async () => {
+  assert.equal(normalizeProgramDeadline(new Date(2026, 9, 16)), '2026-10-16');
+  assert.equal(normalizeProgramDeadline(new Date(Number.NaN)), null);
+  const pool = programPool([{ id: 5 }]);
+  await recordSighting(pool, 5, { name: 'X', deadline: new Date(2026, 9, 16) });
+  assert.equal(pool.calls[0].params[4], '2026-10-16');
+});
+
 test('refreshProgramCounters derives mutable history from linked entries', async () => {
   const pool = programPool([{ id: 5 }]);
   assert.equal(await refreshProgramCounters(pool, [5, 5, Number.NaN]), 1);
