@@ -84,7 +84,8 @@ test('gather -> build -> assert produces a valid snapshot from realistic rows', 
   assert.equal(pub.item.url, 'https://t.me/thegrantwire/4821');
 
   const byId = Object.fromEntries(snap.stations.map(s => [s.id, s.state]));
-  assert.equal(byId.stringer, 'running');   // 3 min ago
+  assert.equal(byId.intake, 'running');
+  assert.equal(byId.stringer, 'running');   // alias of intake, 3 min ago
   assert.equal(byId.classifier, 'idle');    // 101 min ago
   assert.equal(byId.dedup, 'idle');         // never
 });

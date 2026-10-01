@@ -29,6 +29,11 @@ test('snapshot queries never name a forbidden column', () => {
   }
 });
 
+test('the intake station is published as intake, with no stringer id in SQL', () => {
+  assert.match(JOB, /'intake'::text AS id/);
+  assert.doesNotMatch(JOB, /'stringer'::text AS id/);
+});
+
 test('queries only touch the three tables the projection is allowed to read', () => {
   // Anchor to line starts: a bare /FROM\s+(\w+)/ also matches the argument
   // separator inside EXTRACT(minute FROM created_at).

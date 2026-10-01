@@ -9,6 +9,7 @@
     "build": "npm run build:client && npm run build:server",
     "start": "node dist/index.js",
     "db:migrate": "ts-node src/scripts/migrate-database.ts",
+    "curator-key:mint": "ts-node --transpile-only src/scripts/mint-curator-key.ts",
     "dev": "ts-node src/index.ts",
     "dev:client": "cd client && npm run dev",
     "typecheck": "tsc --noEmit",

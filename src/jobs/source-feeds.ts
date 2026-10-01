@@ -51,6 +51,7 @@ function toRaw(it: FeedItem): RawScanResult {
     amount: it.amount,
     deadline: it.deadline,
     sourcePublishedAt: it.publishedAt,
+    metadata: it.metadata,
   };
 }
 
@@ -157,14 +158,23 @@ export async function runSourceFeeds(
       }
 
       if (fresh.length) {
-        submissions.push({
-          wire: source.wire,
-          promptVariant: 'N',
-          scanDate: today,
-          source: 'feed',
-          submittedBy: `feed:${source.key}`,
-          results: fresh.map(toRaw),
-        });
+        const groups = new Map<string, FeedItem[]>();
+        for (const it of fresh) {
+          const itemWire = it.wire || source.wire;
+          const list = groups.get(itemWire) || [];
+          list.push(it);
+          groups.set(itemWire, list);
+        }
+        for (const [itemWire, items] of groups) {
+          submissions.push({
+            wire: itemWire,
+            promptVariant: 'N',
+            scanDate: today,
+            source: 'feed',
+            submittedBy: `feed:${source.key}`,
+            results: items.map(toRaw),
+          });
+        }
       }
 
       // Mark ALL fetched URLs seen (so old/recency-skipped items aren't reconsidered),

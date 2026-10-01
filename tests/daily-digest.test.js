@@ -547,9 +547,13 @@ const { formatSilentProducerAnomalies, getProducerActivity, isSilentProducer } =
 test('a daily producer with nothing in 24h is an issue, named for what it is', () => {
   // 2026-09-05: Grok Build fed the queue 6 of 7 days, then its grok.com
   // automations did not fire. Nothing noticed until a human looked.
-  const out = formatSilentProducerAnomalies([{ producer: 'telegram / agent:stringer', activeDays7d: 6, rows24h: 0, rows7d: 255 }]);
-  assert.equal(out.length, 1);
+  const out = formatSilentProducerAnomalies([
+    { producer: 'telegram / agent:stringer', activeDays7d: 6, rows24h: 0, rows7d: 255 },
+    { producer: 'stringer / agent:hedwig', activeDays7d: 6, rows24h: 0, rows7d: 40 },
+  ]);
+  assert.equal(out.length, 2);
   assert.match(out[0], /^Producer telegram \/ agent:stringer: 0 rows in 24h after 6 active days this week \(255 rows\)/);
+  assert.match(out[1], /^Producer stringer \/ agent:hedwig: 0 rows in 24h after 6 active days this week \(40 rows\)/);
 });
 
 test('a producer that ran today is not an issue, however thin', () => {

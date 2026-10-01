@@ -60,3 +60,42 @@ export function buildCuratorStamp(
 
   return { route: route as CuratorRoute, confidence: confidence as CuratorConfidence, rationale, by, at: now };
 }
+
+export interface CuratePlan {
+  stamp: CuratorStamp;
+  /** Curator-key principals turn route=decline into a real decline. Other callers stay stamp-only. */
+  decline: boolean;
+}
+
+export function planCuratorWrite(
+  input: { isCurator: boolean; route: string; confidence: string; rationale?: string; by?: string },
+  now?: string,
+): CuratePlan {
+  const stamp = buildCuratorStamp(input, now);
+  return { stamp, decline: input.isCurator && stamp.route === 'decline' };
+}
+
+export async function applyCuratorWrite(deps: {
+  entryId: number;
+  plan: CuratePlan;
+  actor?: string;
+  reason?: string;
+  declineEntry: (id: number, opts: { quiet: boolean; force: boolean; actor?: string; reason?: string }) => Promise<{ newStatus: string }>;
+  writeStamp: (id: number, stamp: CuratorStamp) => Promise<boolean>;
+}): Promise<{ id: number; curator: CuratorStamp; status?: string }> {
+  let status: string | undefined;
+  if (deps.plan.decline) {
+    const result = await deps.declineEntry(deps.entryId, {
+      quiet: true,
+      force: false,
+      actor: deps.actor,
+      reason: deps.reason,
+    });
+    status = result.newStatus;
+  }
+  const wrote = await deps.writeStamp(deps.entryId, deps.plan.stamp);
+  if (!wrote) {
+    throw new Error('Entry not found');
+  }
+  return { id: deps.entryId, curator: deps.plan.stamp, ...(status ? { status } : {}) };
+}

@@ -243,8 +243,11 @@ export function formatYieldAnomalies(rows: LaneYieldRow[], days: number = 3): st
 
 export interface ProducerActivityRow {
   /** scan_source, suffixed with the agent identity for internal-key submissions
-   *  so Grok Build (`telegram / agent:stringer`) is a producer distinct from a
-   *  human pasting into the bot (`telegram`). */
+   *  so Grok Build (`telegram / agent:stringer`) and Hedwig
+   *  (`stringer / agent:hedwig`, or whatever source the curator submitted)
+   *  are producers distinct from a human pasting into the bot (`telegram`).
+   *  Any `submitted_by` matching `agent:%` is included — `agent:hedwig` does
+   *  not need its own branch. */
   producer: string;
   activeDays7d: number;
   rows24h: number;

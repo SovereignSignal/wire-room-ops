@@ -7,7 +7,7 @@ const { grantsFeedItemToRaw, fetchGrantsFeedResults } = require('../src/services
 
 // --- grantsFeedItemToRaw mapping ---
 
-test('grantsFeedItemToRaw prefers the extracted program name over the thread title', () => {
+test('grantsFeedItemToRaw keeps the thread headline as the name and the program in metadata', () => {
   const raw = grantsFeedItemToRaw({
     title: '[RFC] Grants Council Season 9 Budget',
     program: 'Optimism Grants Council Season 9',
@@ -22,7 +22,9 @@ test('grantsFeedItemToRaw prefers the extracted program name over the thread tit
     deadline: '2026-08-15T00:00:00.000Z',
     topicCreatedAt: new Date().toISOString(),
   });
-  assert.equal(raw.name, 'Optimism Grants Council Season 9');
+  assert.equal(raw.name, '[RFC] Grants Council Season 9 Budget');
+  assert.equal(raw.metadata.program, 'Optimism Grants Council Season 9');
+  assert.match(raw.description, /Program: Optimism Grants Council Season 9/);
   assert.equal(raw.sourceUrl, 'https://gov.optimism.io/t/rfc-s9/9001');
   assert.equal(raw.amount, '4,000,000 OP');
   assert.equal(raw.deadline, '2026-08-15');
@@ -58,6 +60,7 @@ test('grantsFeedItemToRaw keeps application titles distinct inside one program',
   });
 
   assert.equal(raw.name, 'Grant Application: Tensor Core Accelerated Proving for Orchard');
+  assert.equal(raw.metadata.program, 'Zcash Community Grants');
   assert.match(raw.description, /Program: Zcash Community Grants/);
 });
 

@@ -67,6 +67,7 @@ test('a bucket produces a run event plus one event per mapped status', () => {
   const kinds = snap.events.map(e => e.kind).sort();
   assert.deepEqual(kinds, ['dedup', 'queue', 'run']);
   assert.equal(snap.events.find(e => e.kind === 'run').n, 12);  // 6+4+2
+  assert.equal(snap.events.find(e => e.kind === 'run').station, 'intake');
 });
 
 test('station is running only when its last run is recent', () => {
@@ -78,6 +79,7 @@ test('station is running only when its last run is recent', () => {
     ],
   }), NOW);
   const byId = Object.fromEntries(snap.stations.map(s => [s.id, s.state]));
+  assert.equal(byId.intake, 'running');
   assert.equal(byId.stringer, 'running');
   assert.equal(byId.classifier, 'idle');
   assert.equal(byId.dedup, 'idle');
