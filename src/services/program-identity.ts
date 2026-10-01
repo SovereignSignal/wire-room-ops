@@ -17,6 +17,7 @@ import { getCachedProvider } from './api-provider';
 import { extractOrgFromName } from './org-extractor';
 import { normalizeUrl } from '../utils/url';
 import { fillMissingProgramOrgLinks } from './program-org-links';
+import { entryHeldSql } from './entry-hold';
 import { scrapeUrl } from './scraper';
 import type { Pool, PoolClient } from 'pg';
 import { DEFAULT_GROK_MODEL, chatCompletionExtras } from './grok';
@@ -449,10 +450,7 @@ export function normalizeProgramDeadline(value: string | Date | null | undefined
 
 // These aliases are internal SQL identifiers, never request input.
 export function programEntryUnheldSql(alias: string): string {
-  return `NOT COALESCE(
-    concat_ws(' ', ${alias}.operator_notes, ${alias}.action_reason) ~* '\\mhold\\M|human review required'
-    OR ${alias}.metadata #>> '{decided_recheck,canonical_parent_blocked}' = 'true'
-    OR ${alias}.metadata #>> '{decided_recheck,cross_wire_blocked}' = 'true', false)`;
+  return `NOT COALESCE(${entryHeldSql(alias)}, false)`;
 }
 
 /** Recompute all entry-derived program state, including empty programs, idempotently. */

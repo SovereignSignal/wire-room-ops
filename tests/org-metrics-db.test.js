@@ -140,6 +140,22 @@ test('profile creation and direct automatic linking refuse program identities wi
   assert.deepEqual(await metrics(), expected(0, null, 'Tier 3 - Monitor'));
 });
 
+// 2026-10-01: the Stringer's curator stamp replaced operator_notes on eight held
+// rows. They stayed held only because his text contained the word "hold". A
+// queued chain-error hold must survive a notes rewrite that drops that word.
+test('a queued duplicate-chain hold survives a notes rewrite; a decided or null one does not hold', async () => {
+  const chain = JSON.stringify({ duplicate_chain_error: { error: 'cycle-to-target', matched_id: 9 } });
+  await pool.query(`INSERT INTO org_profiles(name) VALUES ('Example Foundation');
+    INSERT INTO scan_entries(status,operator_notes,metadata) VALUES
+      ('queued','Official page confirms the round closed; source verified.','${chain}'),
+      ('queued',NULL,'{"duplicate_chain_error": null}'),
+      ('approved','Source verified.','${chain}')`);
+  assert.equal(await linkEntryToOrg(1, 1), false, 'queued chain error is held regardless of note text');
+  assert.equal((await pool.query('SELECT org_id FROM scan_entries WHERE id=1')).rows[0].org_id, null);
+  assert.equal(await linkEntryToOrg(2, 1), true, 'a JSON null chain error is not a hold');
+  assert.equal(await linkEntryToOrg(3, 1), true, 'an operator decision resolves the chain question');
+});
+
 test('automatic linking preserves existing curator links and both hold fields', async () => {
   await pool.query("INSERT INTO org_profiles(name) VALUES ('First Foundation'),('Second Foundation'); INSERT INTO scan_entries(org_id,status,operator_notes,action_reason) VALUES(1,'approved',NULL,NULL),(NULL,'approved','HOLD: verify funder',NULL),(NULL,'approved',NULL,'hold pending review')");
   const before=(await pool.query('SELECT * FROM scan_entries ORDER BY id')).rows;
