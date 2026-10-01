@@ -252,37 +252,55 @@ export interface ProducerActivityRow {
   activeDays7d: number;
   rows24h: number;
   rows7d: number;
+  /** Rows in the same 24h window one week earlier (8 to 7 days ago). A
+   *  weekday-only producer has none here on a weekend, so its weekend
+   *  silence is its schedule, not a fault. */
+  rowsSameWindowLastWeek: number;
 }
 
 /** Fewer active days than this in the trailing week is not a daily cadence. */
 const DAILY_PRODUCER_MIN_ACTIVE_DAYS = 5;
 
 export async function getProducerActivity(pool: Pool): Promise<ProducerActivityRow[]> {
-  const { rows } = await pool.query<{ producer: string; active_days_7d: number; rows_24h: number; rows_7d: number }>(`
+  const { rows } = await pool.query<{ producer: string; active_days_7d: number; rows_24h: number; rows_7d: number; rows_same_window_last_week: number }>(`
     SELECT
       COALESCE(scan_source, 'unknown')
         || CASE WHEN submitted_by LIKE 'agent:%' THEN ' / ' || submitted_by ELSE '' END AS producer,
-      COUNT(DISTINCT created_at::date)::int AS active_days_7d,
+      COUNT(DISTINCT created_at::date) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days')::int AS active_days_7d,
       COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hours')::int AS rows_24h,
-      COUNT(*)::int AS rows_7d
+      COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days')::int AS rows_7d,
+      COUNT(*) FILTER (WHERE created_at < NOW() - INTERVAL '7 days')::int AS rows_same_window_last_week
     FROM scan_entries
-    WHERE created_at >= NOW() - INTERVAL '7 days'
+    WHERE created_at >= NOW() - INTERVAL '8 days'
     GROUP BY 1
     ORDER BY rows_7d DESC
   `);
-  return rows.map(r => ({ producer: r.producer, activeDays7d: r.active_days_7d, rows24h: r.rows_24h, rows7d: r.rows_7d }));
+  return rows.map(r => ({
+    producer: r.producer,
+    activeDays7d: r.active_days_7d,
+    rows24h: r.rows_24h,
+    rows7d: r.rows_7d,
+    rowsSameWindowLastWeek: r.rows_same_window_last_week,
+  }));
 }
 
-/** Daily cadence this week, nothing in the last 24h. The one rule this anomaly rests on. */
+/**
+ * Daily cadence this week, nothing in the last 24h, and it did post in this
+ * same window a week ago. The last clause derives the expectation from the
+ * producer's own weekly shape: the largest lane dispatches on weekdays only,
+ * which is five active days, and without it the rule fired every Sunday.
+ */
 export function isSilentProducer(row: ProducerActivityRow): boolean {
-  return row.activeDays7d >= DAILY_PRODUCER_MIN_ACTIVE_DAYS && row.rows24h === 0;
+  return row.activeDays7d >= DAILY_PRODUCER_MIN_ACTIVE_DAYS
+    && row.rows24h === 0
+    && row.rowsSameWindowLastWeek > 0;
 }
 
 export function formatSilentProducerAnomalies(rows: ProducerActivityRow[]): string[] {
   return rows
     .filter(r => !NON_AUTOMATED_SOURCES.has(r.producer))
     .filter(isSilentProducer)
-    .map(r => `Producer ${r.producer}: 0 rows in 24h after ${r.activeDays7d} active days this week (${r.rows7d} rows) — did its schedule fire?`);
+    .map(r => `Producer ${r.producer}: 0 rows in 24h after ${r.activeDays7d} active days this week (${r.rows7d} rows), ${r.rowsSameWindowLastWeek} in this window last week — did its schedule fire?`);
 }
 
 // ── Stale source anomalies ─────────────────────────────────────────────────

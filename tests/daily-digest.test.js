@@ -548,8 +548,8 @@ test('a daily producer with nothing in 24h is an issue, named for what it is', (
   // 2026-09-05: Grok Build fed the queue 6 of 7 days, then its grok.com
   // automations did not fire. Nothing noticed until a human looked.
   const out = formatSilentProducerAnomalies([
-    { producer: 'telegram / agent:stringer', activeDays7d: 6, rows24h: 0, rows7d: 255 },
-    { producer: 'stringer / agent:hedwig', activeDays7d: 6, rows24h: 0, rows7d: 40 },
+    { producer: 'telegram / agent:stringer', activeDays7d: 6, rows24h: 0, rows7d: 255, rowsSameWindowLastWeek: 40 },
+    { producer: 'stringer / agent:hedwig', activeDays7d: 6, rows24h: 0, rows7d: 40, rowsSameWindowLastWeek: 6 },
   ]);
   assert.equal(out.length, 2);
   assert.match(out[0], /^Producer telegram \/ agent:stringer: 0 rows in 24h after 6 active days this week \(255 rows\)/);
@@ -557,25 +557,56 @@ test('a daily producer with nothing in 24h is an issue, named for what it is', (
 });
 
 test('a producer that ran today is not an issue, however thin', () => {
-  assert.deepEqual(formatSilentProducerAnomalies([{ producer: 'feed', activeDays7d: 6, rows24h: 2, rows7d: 21 }]), []);
+  assert.deepEqual(formatSilentProducerAnomalies([{ producer: 'feed', activeDays7d: 6, rows24h: 2, rows7d: 21, rowsSameWindowLastWeek: 3 }]), []);
 });
 
 test('a lane on a three-day-a-week cadence never trips the daily rule', () => {
-  assert.equal(isSilentProducer({ producer: 'grok-scout', activeDays7d: 3, rows24h: 0, rows7d: 29 }), false);
-  assert.deepEqual(formatSilentProducerAnomalies([{ producer: 'claude-code', activeDays7d: 3, rows24h: 0, rows7d: 9 }]), []);
+  assert.equal(isSilentProducer({ producer: 'grok-scout', activeDays7d: 3, rows24h: 0, rows7d: 29, rowsSameWindowLastWeek: 9 }), false);
+  assert.deepEqual(formatSilentProducerAnomalies([{ producer: 'claude-code', activeDays7d: 3, rows24h: 0, rows7d: 9, rowsSameWindowLastWeek: 3 }]), []);
 });
 
 test('the active-days floor is inclusive — 5 of 7 is a daily cadence', () => {
-  assert.equal(isSilentProducer({ producer: 'claude-cohort-notion', activeDays7d: 5, rows24h: 0, rows7d: 42 }), true);
-  assert.equal(isSilentProducer({ producer: 'claude-cohort-notion', activeDays7d: 4, rows24h: 0, rows7d: 42 }), false);
+  assert.equal(isSilentProducer({ producer: 'claude-cohort-notion', activeDays7d: 5, rows24h: 0, rows7d: 42, rowsSameWindowLastWeek: 8 }), true);
+  assert.equal(isSilentProducer({ producer: 'claude-cohort-notion', activeDays7d: 4, rows24h: 0, rows7d: 42, rowsSameWindowLastWeek: 8 }), false);
 });
 
 test('a human pasting into the bot is not a schedule', () => {
   const rows = [
-    { producer: 'telegram', activeDays7d: 7, rows24h: 0, rows7d: 30 },
-    { producer: 'manual-intake', activeDays7d: 6, rows24h: 0, rows7d: 12 },
+    { producer: 'telegram', activeDays7d: 7, rows24h: 0, rows7d: 30, rowsSameWindowLastWeek: 4 },
+    { producer: 'manual-intake', activeDays7d: 6, rows24h: 0, rows7d: 12, rowsSameWindowLastWeek: 2 },
   ];
   assert.deepEqual(formatSilentProducerAnomalies(rows), []);
+});
+
+// The largest lane (grok-scout-submit.yml, `telegram / agent:stringer`) runs on
+// weekdays only: about ten dispatches Mon-Fri, none Sat or Sun. That is five
+// active days, which meets the daily floor, so the bare rule cried wolf every
+// Sunday morning. Expectation has to come from the producer's own weekly shape:
+// silence only counts if it posted in this same 24h window a week ago.
+test('a weekday-only producer is not silent on the weekend', () => {
+  const sunday = { producer: 'telegram / agent:stringer', activeDays7d: 5, rows24h: 0, rows7d: 290, rowsSameWindowLastWeek: 0 };
+  assert.equal(isSilentProducer(sunday), false);
+  assert.deepEqual(formatSilentProducerAnomalies([sunday]), []);
+});
+
+test('the same weekday-only producer missing a weekday is still caught', () => {
+  const tuesday = { producer: 'telegram / agent:stringer', activeDays7d: 5, rows24h: 0, rows7d: 240, rowsSameWindowLastWeek: 52 };
+  assert.equal(isSilentProducer(tuesday), true);
+  const [line] = formatSilentProducerAnomalies([tuesday]);
+  assert.match(line, /^Producer telegram \/ agent:stringer: 0 rows in 24h after 5 active days this week \(240 rows\)/);
+  assert.match(line, /52 in this window last week/);
+});
+
+test('getProducerActivity reads eight days so it can compare against last week', async () => {
+  let captured = null;
+  const pool = { query: async (sql) => { captured = sql; return { rows: [
+    { producer: 'telegram / agent:stringer', active_days_7d: 5, rows_24h: 0, rows_7d: 240, rows_same_window_last_week: 52 },
+  ] }; } };
+  const rows = await getProducerActivity(pool);
+  assert.match(captured, /created_at >= NOW\(\) - INTERVAL '8 days'/);
+  assert.match(captured, /created_at < NOW\(\) - INTERVAL '7 days'/);
+  assert.equal(rows[0].rowsSameWindowLastWeek, 52);
+  assert.equal(rows[0].activeDays7d, 5);
 });
 
 test('getProducerActivity keys agent submissions apart from the human door', async () => {
@@ -588,7 +619,7 @@ test('getProducerActivity keys agent submissions apart from the human door', asy
 });
 
 test('assembleAndSendDailyDigest folds silent producers into anomalies', async () => {
-  const producers = async () => ([{ producer: 'telegram / agent:stringer', activeDays7d: 6, rows24h: 0, rows7d: 255 }]);
+  const producers = async () => ([{ producer: 'telegram / agent:stringer', activeDays7d: 6, rows24h: 0, rows7d: 255, rowsSameWindowLastWeek: 40 }]);
   const { deps, sent } = assemblyDeps({ producers });
   await assembleAndSendDailyDigest({}, {}, deps);
   const opts = sent[0][3];
