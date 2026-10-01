@@ -10,7 +10,7 @@ import { config } from '../config';
 import { getPool } from '../db';
 import { getCachedProvider } from './api-provider';
 import { fillMissingProgramOrgLinks } from './program-org-links';
-import { DEFAULT_GROK_MODEL } from './grok';
+import { DEFAULT_GROK_MODEL, chatCompletionExtras } from './grok';
 
 // ============================================================
 // Known org aliases → canonical name mapping
@@ -508,6 +508,7 @@ Return ONLY valid JSON array, no explanation.`;
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 4000,
       temperature: 0.1,
+      ...chatCompletionExtras(baseUrl),
     }),
   });
 

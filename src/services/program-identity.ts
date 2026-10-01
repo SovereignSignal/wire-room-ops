@@ -19,7 +19,7 @@ import { normalizeUrl } from '../utils/url';
 import { fillMissingProgramOrgLinks } from './program-org-links';
 import { scrapeUrl } from './scraper';
 import type { Pool, PoolClient } from 'pg';
-import { DEFAULT_GROK_MODEL } from './grok';
+import { DEFAULT_GROK_MODEL, chatCompletionExtras } from './grok';
 
 // ── Key normalization ───────────────────────────────────────────────────
 // The primary identity key: lowercase alnum with round/cohort/date noise
@@ -602,7 +602,7 @@ ${entriesText}
       method: 'POST',
       signal: AbortSignal.timeout(120_000),
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], temperature: 0 }),
+      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], temperature: 0, ...chatCompletionExtras(baseUrl) }),
     });
     if (!response.ok) throw new Error(`grok ${((response as Response).status)}`);
     const data = await (response as Response).json() as { choices?: Array<{ message?: { content?: string } }> };
