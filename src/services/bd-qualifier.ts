@@ -9,7 +9,7 @@
 import { config } from '../config';
 import { logApiUsage } from './api-usage';
 import { getCachedProvider } from './api-provider';
-import { DEFAULT_GROK_MODEL } from './grok';
+import { DEFAULT_GROK_MODEL, chatCompletionExtras } from './grok';
 
 export type FitLine = 'grant_program_ops' | 'ops_sales_bd' | 'governance_ops' | 'none';
 
@@ -112,7 +112,7 @@ export async function qualifyOpportunities(
         method: 'POST',
         signal: AbortSignal.timeout(120_000),
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-        body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], max_tokens: 6000, temperature: 0.1 }),
+        body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], max_tokens: 6000, temperature: 0.1, ...chatCompletionExtras(baseUrl) }),
       });
       if (!response.ok) {
         const errorText = await response.text().catch(() => '');

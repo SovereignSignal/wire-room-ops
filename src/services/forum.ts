@@ -16,7 +16,7 @@ import type { RawScanResult } from '../types/intake';
 import { sleep } from '../utils/async';
 import { getCachedProvider } from './api-provider';
 import { logApiUsage } from './api-usage';
-import { DEFAULT_GROK_MODEL } from './grok';
+import { DEFAULT_GROK_MODEL, chatCompletionExtras } from './grok';
 
 // --- Wire-to-category mapping (discuss.watch categories match wire keys) ---
 // Wire keys map 1:1 to discuss.watch categories today; keeping the map
@@ -621,6 +621,7 @@ export async function judgeForumCandidates(
           messages: [{ role: 'user', content: buildForumJudgePrompt(batch, wire) }],
           max_tokens: 6000,
           temperature: 0.1,
+          ...chatCompletionExtras(baseUrl),
         }),
       });
 

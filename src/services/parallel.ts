@@ -16,7 +16,7 @@ import { logApiUsage } from './api-usage';
 import { getCachedProvider, isProviderExplicitlyDisabled } from './api-provider';
 import { blockedDomains } from './source-filter';
 import type { ScanUsagePurpose } from '../types/intake';
-import { DEFAULT_GROK_MODEL } from './grok';
+import { DEFAULT_GROK_MODEL, chatCompletionExtras } from './grok';
 
 const PARALLEL_BASE_URL = 'https://api.parallel.ai';
 
@@ -49,7 +49,7 @@ async function grokChat(prompt: string, maxTokens: number, purpose: string, wire
       method: 'POST',
       signal: AbortSignal.timeout(120_000),
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], max_tokens: maxTokens, temperature: 0.1 }),
+      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], max_tokens: maxTokens, temperature: 0.1, ...chatCompletionExtras(baseUrl) }),
     });
     if (!response.ok) {
       const errorText = await response.text().catch(() => '');
