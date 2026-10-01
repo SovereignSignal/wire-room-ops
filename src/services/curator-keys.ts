@@ -5,12 +5,14 @@
  * SHA-256 of the bearer (sha256), scopes, UTC expires_at, and revoked.
  * The raw token is never stored. Checked on every request.
  *
- * Scopes: read_queue, decide, propose. A key only receives the scopes listed.
+ * Scopes: read_queue, decide, propose, intake. A key only receives the scopes listed.
+ * intake is the producer scope: it opens POST /telegram-batch and nothing else,
+ * so a batch producer gets its own agent:<name> identity without the internal key.
  */
 
 import crypto from 'crypto';
 
-export const CURATOR_SCOPES = ['read_queue', 'decide', 'propose'] as const;
+export const CURATOR_SCOPES = ['read_queue', 'decide', 'propose', 'intake'] as const;
 export type CuratorScope = typeof CURATOR_SCOPES[number];
 
 export interface CuratorKey {
@@ -103,8 +105,11 @@ export function requiredCuratorScope(method: string, rawPath: string): CuratorSc
   if (path.startsWith('/api/accounts')) return 'forbidden';
   if (path.startsWith('/api/grants-intel')) return 'forbidden';
   if (path.startsWith('/api/job/')) return 'forbidden';
-  if (path === '/api/scan/telegram-batch' || path === '/api/scan/manual-intake' || path === '/api/scan/submit-batch') return 'forbidden';
+  if (path === '/api/scan/manual-intake' || path === '/api/scan/submit-batch') return 'forbidden';
   if (/\/redistribute$/.test(path)) return 'forbidden';
+
+  // Rows from a scoped key start raw like any agent batch (handleTextIntake keys off isAgent).
+  if (m === 'POST' && path === '/api/scan/telegram-batch') return 'intake';
 
   if (m === 'GET' && (
     path === '/api/scan/queue' ||

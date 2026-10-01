@@ -13,7 +13,7 @@ Set `WIRE_ROOM_CURATOR_KEYS` to a JSON array. Each object:
 | `id` | Stable key id, used in the idempotency storage key |
 | `name` | Display name. The principal is `agent:<slug>` (`Hedwig` → `agent:hedwig`) |
 | `sha256` | Lowercase hex SHA-256 of the bearer token. The token itself is not stored |
-| `scopes` | Any of `read_queue`, `decide`, `propose` |
+| `scopes` | Any of `read_queue`, `decide`, `propose`, `intake` |
 | `expires_at` | UTC ISO timestamp. Expired keys do not match |
 | `revoked` | `true` disables the key. A past `revoked_at` does the same |
 
@@ -25,7 +25,7 @@ npm run curator-key:mint -- --name hedwig --scopes read_queue,decide,propose
 
 Paste the JSON object into the array. Do not put the bearer in the variable. A present but invalid list fails closed: bearers that are not an internal key get `503 { "error": "curator_unavailable" }`. Unset is not an error.
 
-Send `Authorization: Bearer <token>`. A matched key without the scope for that route gets `403 { "error": "forbidden" }`. Anything not listed below is forbidden, including prompt CRUD, scan/forum/feeds/cohort run, monitored-accounts CRUD, redistribute, telegram-batch, manual-intake, and submit-batch.
+Send `Authorization: Bearer <token>`. A matched key without the scope for that route gets `403 { "error": "forbidden" }`. Anything not listed below is forbidden, including prompt CRUD, scan/forum/feeds/cohort run, monitored-accounts CRUD, redistribute, manual-intake, and submit-batch.
 
 The audit identity is the key. Do not send `actor`. `?force=true` is ignored for every agent, including curator keys.
 
@@ -57,6 +57,16 @@ The audit identity is the key. Do not send `actor`. `?force=true` is ignored for
 - `POST /api/scan/submit`
 
 Curator submits set `submitted_by` to `agent:<name>` so the digest's silent-producer check can see Hedwig. Internal-key submits do not set that field.
+
+### `intake`
+
+- `POST /api/scan/telegram-batch`
+
+The producer scope, for a batch poster such as the `Grok Telegram Batch` workflow (`.github/workflows/grok-scout-submit.yml`). Rows start `raw` and are classified by the process-raw cycle, the same as an internal-key batch, and `submitted_by` is `agent:<name>`. No evidence or `Idempotency-Key` is required. Grant it on its own: a key with only `intake` cannot read the queue, decide, or propose.
+
+```bash
+npm run curator-key:mint -- --name grok-batch --scopes intake
+```
 
 ## Evidence
 

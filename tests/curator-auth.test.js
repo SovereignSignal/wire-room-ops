@@ -8,7 +8,13 @@ function sha(token) {
 
 const FULL = 'test-curator-token-not-a-secret';
 const READ = 'test-curator-readonly-not-a-secret';
+const INTAKE = 'test-curator-intake-not-a-secret';
 process.env.WIRE_ROOM_CURATOR_KEYS = JSON.stringify([
+  {
+    id: 'grok-batch', name: 'Grok Batch', sha256: sha(INTAKE),
+    scopes: ['intake'],
+    expires_at: '2099-01-01T00:00:00.000Z', revoked: false,
+  },
   {
     id: 'hedwig', name: 'Hedwig', sha256: sha(FULL),
     scopes: ['read_queue', 'decide', 'propose'],
@@ -81,6 +87,26 @@ test('a full curator key is forbidden on operator doors', async () => {
     ['POST', '/api/scan/entries/1/redistribute'],
   ]) {
     const res = await call(method, path, { key: FULL, body: {} });
+    assert.equal(res.status, 403, `${method} ${path} returned ${res.status}`);
+  }
+});
+
+// The Grok Telegram Batch workflow posts here. Its key must open this door and no other.
+test('an intake key reaches POST /telegram-batch and nothing else', async () => {
+  const batch = await call('POST', '/api/scan/telegram-batch', { key: INTAKE, body: {} });
+  assert.equal(batch.status, 400, 'auth should pass and the empty text should be rejected');
+  assert.match((await batch.json()).error, /text is required/);
+
+  for (const [method, path] of [
+    ['GET', '/api/scan/queue'],
+    ['GET', '/api/scan/telegram-batch'],
+    ['POST', '/api/scan/submit'],
+    ['POST', '/api/scan/manual-intake'],
+    ['POST', '/api/scan/submit-batch'],
+    ['POST', '/api/scan/entries/1/action'],
+    ['POST', '/api/scan/entries/1/curate'],
+  ]) {
+    const res = await call(method, path, { key: INTAKE, body: {} });
     assert.equal(res.status, 403, `${method} ${path} returned ${res.status}`);
   }
 });

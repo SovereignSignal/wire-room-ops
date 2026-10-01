@@ -68,6 +68,7 @@ test('curator scopes allow the editorial routes and forbid the operator doors', 
   assert.equal(requiredCuratorScope('POST', '/api/scan/entries/15/link-duplicate'), 'decide');
   assert.equal(requiredCuratorScope('POST', '/api/scan/entries/15/curate'), 'propose');
   assert.equal(requiredCuratorScope('POST', '/api/scan/submit'), 'propose');
+  assert.equal(requiredCuratorScope('POST', '/api/scan/telegram-batch'), 'intake');
 
   for (const [method, path] of [
     ['POST', '/api/scan/prompts'],
@@ -76,7 +77,7 @@ test('curator scopes allow the editorial routes and forbid the operator doors', 
     ['POST', '/api/feeds/run'],
     ['POST', '/api/cohort/run'],
     ['POST', '/api/accounts'],
-    ['POST', '/api/scan/telegram-batch'],
+    ['GET', '/api/scan/telegram-batch'],
     ['POST', '/api/scan/manual-intake'],
     ['POST', '/api/scan/entries/15/redistribute'],
     ['GET', '/api/scan/stats'],
