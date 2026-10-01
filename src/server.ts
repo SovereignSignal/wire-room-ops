@@ -15,6 +15,7 @@ import { processRawEntries } from './jobs/process-raw';
 import { runDecidedRecheck } from './jobs/decided-recheck';
 import { publishPublicSnapshot } from './jobs/public-snapshot';
 import { refreshProviderCache, getCachedProvider } from './services/api-provider';
+import { refreshPricingCache } from './services/api-usage';
 import { getStartupMigrationHealth, verifyDatabaseSchema } from './db/startup-migrations';
 import { csrfGuard } from './middleware/csrf';
 
@@ -201,6 +202,17 @@ export async function startServer(): Promise<void> {
     console.log('[Startup] API provider cache ready');
   } catch (error) {
     console.error('API provider cache init failed (non-fatal):', error);
+  }
+
+  // Load model pricing so logApiUsage can stamp estimated_cost_usd. Until
+  // 2026-09-25 this happened as a side effect of ensureApiUsageTables(), which
+  // boot no longer runs (migrations are a release step), so every call since
+  // was logged with a NULL cost. Read-only, safe for the runtime role.
+  try {
+    await refreshPricingCache();
+    console.log('[Startup] Pricing cache ready');
+  } catch (error) {
+    console.error('Pricing cache init failed (non-fatal):', error);
   }
 
   // Initialize the scheduler (loads config from database)
