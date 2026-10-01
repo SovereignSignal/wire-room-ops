@@ -20,6 +20,7 @@ import { scrapeUrl } from './scraper';
 import { getCachedProvider } from './api-provider';
 import { logApiUsage } from './api-usage';
 import { chatCompletionExtras, DEFAULT_GROK_MODEL } from './grok';
+import { detectWireFromText } from './intake-core';
 
 // --- Types ---
 
@@ -73,6 +74,29 @@ export interface FeedItem {
   amount: string | null;
   deadline: string | null;
   publishedAt: string | null;  // ISO if known
+  /** Per-item wire. Absent means the source default. Set before seen_urls registration. */
+  wire?: string;
+  metadata?: Record<string, unknown>;
+}
+
+const PROGRAMISH = /\b(fund|grant|grants|fellowship|rfp|program|programme|award|scholarship|call)\b/i;
+
+/**
+ * Prefer a program-shaped head ("Long-Term Future Fund: applications open…")
+ * over the raw post title. The original title stays in metadata.forum_title.
+ */
+export function deriveForumPostName(title: string, description: string): string {
+  const clean = title.trim().replace(/\s+/g, ' ');
+  const parts = clean.split(/\s*[—–|:]\s+/);
+  if (parts.length >= 2) {
+    const head = parts[0].trim();
+    if (head.length >= 6 && head.length <= 80 && head.length < clean.length && PROGRAMISH.test(head)) {
+      return head.slice(0, 120);
+    }
+  }
+  const lead = (description || '').trim().match(/^([A-Z][\w&'’.,\- ]{2,70}?)\s+(?:is|are|has|have|offers|announced|announces|opened|opens|will)\b/);
+  if (lead && PROGRAMISH.test(lead[1])) return lead[1].trim().slice(0, 120);
+  return clean.slice(0, 120);
 }
 
 // =====================================================================
@@ -554,14 +578,18 @@ function forumMagnumSource(key: string, name: string, host: string, tagId: strin
     itemsPath: 'data.posts.results',
     enabled: true,
     extract: (it) => {
-      const name = pick(it, 'title');
+      const title = pick(it, 'title');
       const url = pick(it, 'pageUrl');
-      if (!name || !url) return null;
+      if (!title || !url) return null;
+      const description = clip(pick(it, 'contents.plaintextDescription') || title);
+      const wire = detectWireFromText(`${title}\n${description}`) || 'ai';
       return {
-        name: name.slice(0, 200),
-        description: clip(pick(it, 'contents.plaintextDescription') || name),
+        name: deriveForumPostName(title, description).slice(0, 200),
+        description,
         url, amount: null, deadline: null,
         publishedAt: toIso(pick(it, 'postedAt')),
+        wire,
+        metadata: { forum_title: title.slice(0, 300), provisional_wire: wire },
       };
     },
   };

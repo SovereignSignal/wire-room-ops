@@ -1,5 +1,7 @@
 # The Stringer — System Briefing
 
+> **Deprecated pending retirement (2026-10-01).** Hedwig is the editorial successor. New curator access uses scoped keys documented in `docs/curator-api.md`. This briefing stays so the overlap week does not drop Stringer's operating rules. Do not record production hosts, project ids, or database endpoints here.
+
 > **Ownership note:** This file is owned and maintained by The Stringer agent. Other agents working on the codebase should not modify it except to correct operational falsehoods. STRINGER.md reflects The Stringer's current operational context — keep it current after significant changes.
 
 ## Current operations (2026-08-29)
@@ -212,10 +214,7 @@ Dashboard Approve to Wires publishes to Telegram. Agent approvals are force-quie
 - `distribution_channels`, `distribution_logs`
 
 ### Deployment
-- **Railway project**: `17165452-9a41-4abf-b350-a3c0cf492623`
-- **Production URL**: `https://wire-room-ops-production.up.railway.app`
-- **Queue dashboard**: `https://wire-room-ops-production.up.railway.app/queue`
-- **Database**: `gondola.proxy.rlwy.net:40765`
+- Production host, project id, and database endpoint are not recorded in this file.
 - Pushes to `main` → Railway auto-deploys (requires approval)
 
 ---

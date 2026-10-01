@@ -27,11 +27,13 @@ import { isQueueClassification, isQueueDateStatus, isQueueRoute } from '../db/en
 import { rateLimit } from '../middleware/rate-limit';
 import { isValidUuid, isValidFeedKey } from '../utils/validation';
 import { buildSubmission, buildBatchSubmission } from '../services/intake';
-import { runDailyIntake, getDailyQueue, getIntakeStats } from '../jobs/daily-intake';
+import { runDailyIntake, getDailyQueue, getIntakeStats, resolveQueueMinScore } from '../jobs/daily-intake';
 import { getPromptEffectivenessStats } from '../services/scan-stats';
 import { singleEntryAction, bulkEntryAction, ApprovalBlockedError, BulkApprovalBlockedError, EntryActionConflictError } from '../services/entry-actions';
 import { rewriteEntrySource, rewriteEntryWires, linkEntryDuplicate, EntryMaintenanceError } from '../services/entry-maintenance';
-import { buildCuratorStamp } from '../services/curator';
+import { applyCuratorWrite, planCuratorWrite } from '../services/curator';
+import { attachCuratorEvidence, parseCuratorEvidence, type CuratorEvidence } from '../services/curator-evidence';
+import { openCuratorIdempotency } from '../services/curator-idempotency';
 import { retryDistribution } from '../services/distribution';
 import { PROMPT_VARIANTS, SCAN_SOURCES } from '../types/intake';
 import { isBatchMessage, processBatchMessage, processIntakeMessage, type IntakeOptions } from '../services/intake-core';
@@ -49,14 +51,46 @@ export function resolveApprovalForce(req: Request): boolean {
   return !Boolean((req as any).agentSession) && req.query?.force === 'true';
 }
 
-function sendMaintenanceError(res: Response, error: unknown, label: string): void {
-  if (error instanceof EntryMaintenanceError) {
-    res.status(error.statusCode).json({ error: error.message });
-    return;
+function isCuratorSession(req: Request): boolean {
+  return Boolean((req as any).agentSession?.curator);
+}
+
+function presentForCurator<T>(req: Request, value: T): T {
+  if (!isCuratorSession(req) || !value || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(item => presentForCurator(req, item)) as T;
+  const copy = { ...(value as Record<string, unknown>) };
+  delete copy.raw_output;
+  delete copy.rawOutput;
+  return copy as T;
+}
+
+type CuratorGate =
+  | { ok: false }
+  | {
+      ok: true;
+      evidence: CuratorEvidence | null;
+      finish: (statusCode: number, payload: unknown) => Promise<void>;
+      abort: () => Promise<void>;
+    };
+
+/** Evidence, then idempotency. Internal keys skip both. */
+async function beginCuratorWrite(req: Request, res: Response, opts: { requireQuote: boolean }): Promise<CuratorGate> {
+  if (!isCuratorSession(req)) {
+    return { ok: true, evidence: null, finish: async () => {}, abort: async () => {} };
   }
-  const message = error instanceof Error ? error.message : 'Unknown error';
-  console.error(`[${label}] Failed:`, error);
-  res.status(500).json({ error: message });
+  const parsed = parseCuratorEvidence(req.body, opts);
+  if (!parsed.ok) {
+    res.status(400).json({ error: parsed.error });
+    return { ok: false };
+  }
+  const idem = await openCuratorIdempotency(req, res);
+  if (idem.sent) return { ok: false };
+  return { ok: true, evidence: parsed.evidence, finish: idem.finish, abort: idem.abort };
+}
+
+async function remember(gate: Extract<CuratorGate, { ok: true }>, statusCode: number, payload: unknown, res: Response): Promise<void> {
+  await gate.finish(statusCode, payload);
+  res.status(statusCode).json(payload);
 }
 
 // POST /submit — single entry submission
@@ -101,6 +135,8 @@ router.post('/submit', async (req: Request, res: Response) => {
       scanDate,
       source || 'x-scan'
     );
+    const agentSession = (req as any).agentSession;
+    if (agentSession?.curator) submission.submittedBy = agentSession.userId;
 
     const pool = getPool();
     // Agent (internal-key) submissions return fast: entries are inserted raw
@@ -296,11 +332,16 @@ router.post('/manual-intake', async (req: Request, res: Response) => {
   });
 });
 
-// GET /queue — list queued entries
+// GET /queue — list queued entries.
+// Omitted minScore includes unscored rows. Pass minScore to keep the old floor.
 router.get('/queue', async (req: Request, res: Response) => {
   const wire = (req.query.wire as string) || null;
-  const rawScore = parseInt(req.query.minScore as string);
-  const minScore = isNaN(rawScore) ? 40 : Math.max(0, Math.min(100, rawScore));
+  const resolved = resolveQueueMinScore(req.query.minScore);
+  if (!resolved.ok) {
+    res.status(400).json({ error: resolved.error });
+    return;
+  }
+  const minScore = resolved.minScore;
   const date = (req.query.date as string) || null;
 
   // Validate date format if provided
@@ -311,7 +352,7 @@ router.get('/queue', async (req: Request, res: Response) => {
 
   try {
     const pool = getPool();
-    const entries = await getDailyQueue(pool, wire, minScore, date);
+    const entries = presentForCurator(req, await getDailyQueue(pool, wire, minScore, date));
     res.json({ entries, count: entries.length });
   } catch (error) {
     console.error('Failed to get scan queue:', error);
@@ -493,7 +534,7 @@ router.get('/entries', async (req: Request, res: Response) => {
       }));
     }
 
-    res.json({ entries, total, count: entries.length });
+    res.json({ entries: presentForCurator(req, entries), total, count: entries.length });
   } catch (error) {
     console.error('Failed to fetch scan entries:', error);
     res.status(500).json({ error: 'Failed to fetch scan entries' });
@@ -514,7 +555,7 @@ router.get('/entries/:id', async (req: Request, res: Response) => {
       res.status(404).json({ error: 'Entry not found' });
       return;
     }
-    res.json({ entry: rows[0] });
+    res.json({ entry: presentForCurator(req, rows[0]) });
   } catch (error) {
     console.error('Failed to fetch scan entry:', error);
     res.status(500).json({ error: 'Failed to fetch scan entry' });
@@ -525,51 +566,58 @@ router.get('/entries/:id', async (req: Request, res: Response) => {
 router.post('/entries/bulk-action', async (req: Request, res: Response) => {
   const { ids, action, quiet, reason, dryRun } = req.body;
   const agentSession = (req as any).agentSession;
+  const gate = await beginCuratorWrite(req, res, { requireQuote: action === 'approve' });
+  if (!gate.ok) return;
 
   if (!Array.isArray(ids) || ids.length === 0) {
-    res.status(400).json({ error: 'ids must be a non-empty array' });
+    await remember(gate, 400, { error: 'ids must be a non-empty array' }, res);
     return;
   }
   if (ids.length > 200) {
-    res.status(400).json({ error: 'Maximum 200 entries per bulk action' });
+    await remember(gate, 400, { error: 'Maximum 200 entries per bulk action' }, res);
     return;
   }
 
   const entryIds = ids.map((id: any) => parseInt(id, 10)).filter((id: number) => !isNaN(id));
   if (entryIds.length === 0) {
-    res.status(400).json({ error: 'No valid entry IDs provided' });
+    await remember(gate, 400, { error: 'No valid entry IDs provided' }, res);
     return;
   }
 
   try {
-    // Agent calls (internal API key) always use quiet=true — no auto-distribution
+    // Agent calls (internal API key and curator keys) always use quiet=true — no auto-distribution
     const isAgent = !!(agentSession?.isAgent);
+    const auditReason = gate.evidence?.reason || reason || undefined;
     const result = await bulkEntryAction(entryIds, action, {
       quiet: isAgent ? true : !!quiet,
       force: resolveApprovalForce(req),
       actor: resolveMaintenanceActor(req) || undefined,
-      reason: reason || undefined,
+      reason: auditReason,
       dryRun: !!dryRun,
     });
-    res.json(result);
+    if (gate.evidence && !dryRun) {
+      await attachCuratorEvidence(getPool(), entryIds, gate.evidence, resolveMaintenanceActor(req));
+    }
+    await remember(gate, 200, result, res);
   } catch (error) {
     if (error instanceof EntryActionConflictError) {
-      res.status(409).json({ error: error.message });
+      await remember(gate, 409, { error: error.message }, res);
       return;
     }
     if (error instanceof BulkApprovalBlockedError) {
-      res.status(422).json({
+      await remember(gate, 422, {
         error: 'Some entries blocked',
         blocked: error.blocked,
         passCount: error.passCount,
         blockCount: error.blockCount,
-      });
+      }, res);
       return;
     }
     if (error instanceof Error && error.message.startsWith('Invalid action')) {
-      res.status(400).json({ error: error.message });
+      await remember(gate, 400, { error: error.message }, res);
       return;
     }
+    await gate.abort();
     console.error('Failed to bulk update entry status:', error);
     res.status(500).json({ error: 'Failed to bulk update entries' });
   }
@@ -585,47 +633,54 @@ router.post('/entries/:id/action', async (req: Request, res: Response) => {
 
   const { action, quiet, reason, dryRun } = req.body;
   const agentSession = (req as any).agentSession;
+  const gate = await beginCuratorWrite(req, res, { requireQuote: action === 'approve' });
+  if (!gate.ok) return;
 
   try {
-    // Agent calls (internal API key) always use quiet=true — no auto-distribution
+    // Agent calls (internal API key and curator keys) always use quiet=true — no auto-distribution
     const isAgent = !!(agentSession?.isAgent);
+    const auditReason = gate.evidence?.reason || reason || undefined;
     const result = await singleEntryAction(entryId, action, {
       quiet: isAgent ? true : !!quiet,
       force: resolveApprovalForce(req),
       actor: resolveMaintenanceActor(req) || undefined,
-      reason: reason || undefined,
+      reason: auditReason,
       dryRun: !!dryRun,
     });
-    res.json(result);
+    if (gate.evidence && !dryRun) {
+      await attachCuratorEvidence(getPool(), [entryId], gate.evidence, resolveMaintenanceActor(req));
+    }
+    await remember(gate, 200, result, res);
   } catch (error) {
     if (error instanceof EntryActionConflictError) {
-      res.status(409).json({ error: error.message });
+      await remember(gate, 409, { error: error.message }, res);
       return;
     }
     if (error instanceof ApprovalBlockedError) {
-      res.status(422).json({
+      await remember(gate, 422, {
         error: 'Approval blocked',
         issues: error.errors,
         warnings: error.warnings,
-      });
+      }, res);
       return;
     }
     if (error instanceof Error && error.message === 'Entry not found') {
-      res.status(404).json({ error: 'Entry not found' });
+      await remember(gate, 404, { error: 'Entry not found' }, res);
       return;
     }
     if (error instanceof Error && error.message.startsWith('Invalid action')) {
-      res.status(400).json({ error: error.message });
+      await remember(gate, 400, { error: error.message }, res);
       return;
     }
+    await gate.abort();
     console.error('Failed to update entry status:', error);
     res.status(500).json({ error: 'Failed to update entry' });
   }
 });
 
 // POST /entries/:id/curate — write the curator's route + confidence recommendation.
-// Non-destructive: merges into metadata.curator, never changes status. This is
-// the queue's judgment signal that replaced the old inline quality_score.
+// Stamp-only for operators and INTERNAL_API_KEY. A curator key with route
+// decline also declines the entry through entry-actions (quiet, no distribution).
 router.post('/entries/:id/curate', async (req: Request, res: Response) => {
   const entryId = parseInt(req.params.id, 10);
   if (isNaN(entryId)) {
@@ -634,34 +689,56 @@ router.post('/entries/:id/curate', async (req: Request, res: Response) => {
   }
 
   const agentSession = (req as any).agentSession;
-  let stamp;
+  const gate = await beginCuratorWrite(req, res, { requireQuote: false });
+  if (!gate.ok) return;
+
+  let plan;
   try {
-    stamp = buildCuratorStamp({
+    plan = planCuratorWrite({
+      isCurator: Boolean(agentSession?.curator),
       route: req.body?.route,
       confidence: req.body?.confidence,
-      rationale: req.body?.rationale,
+      rationale: gate.evidence?.reason || req.body?.rationale,
       by: resolveMaintenanceActor(req) || undefined,
     });
   } catch (err) {
-    res.status(400).json({ error: err instanceof Error ? err.message : 'Invalid curator input' });
+    await remember(gate, 400, { error: err instanceof Error ? err.message : 'Invalid curator input' }, res);
     return;
   }
 
   try {
-    const result = await getPool().query(
-      `UPDATE scan_entries
-       SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb,
-           updated_at = now()
-       WHERE id = $2
-       RETURNING id`,
-      [JSON.stringify({ curator: stamp }), entryId]
-    );
-    if (result.rowCount === 0) {
-      res.status(404).json({ error: 'Entry not found' });
+    const payload = await applyCuratorWrite({
+      entryId,
+      plan,
+      actor: resolveMaintenanceActor(req) || undefined,
+      reason: gate.evidence?.reason,
+      declineEntry: (id, opts) => singleEntryAction(id, 'decline', opts),
+      writeStamp: async (id, stamp) => {
+        const result = await getPool().query(
+          `UPDATE scan_entries
+           SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb,
+               updated_at = now()
+           WHERE id = $2
+           RETURNING id`,
+          [JSON.stringify({ curator: stamp }), id]
+        );
+        return (result.rowCount || 0) > 0;
+      },
+    });
+    if (gate.evidence) {
+      await attachCuratorEvidence(getPool(), [entryId], gate.evidence, resolveMaintenanceActor(req));
+    }
+    await remember(gate, 200, payload, res);
+  } catch (error) {
+    if (error instanceof Error && error.message === 'Entry not found') {
+      await remember(gate, 404, { error: 'Entry not found' }, res);
       return;
     }
-    res.json({ id: entryId, curator: stamp });
-  } catch (error) {
+    if (error instanceof EntryActionConflictError) {
+      await remember(gate, 409, { error: error.message }, res);
+      return;
+    }
+    await gate.abort();
     console.error('Failed to write curator stamp:', error);
     res.status(500).json({ error: 'Failed to curate entry' });
   }
@@ -679,8 +756,11 @@ router.patch('/entries/:id/wire', async (req: Request, res: Response) => {
   const { wire, wires } = req.body;
   const wireArray: string[] = Array.isArray(wires) ? wires.filter((w: unknown) => typeof w === 'string') : (wire ? [wire] : []);
 
+  const gate = await beginCuratorWrite(req, res, { requireQuote: false });
+  if (!gate.ok) return;
+
   if (wireArray.length === 0) {
-    res.status(400).json({ error: 'At least one wire is required' });
+    await remember(gate, 400, { error: 'At least one wire is required' }, res);
     return;
   }
 
@@ -690,19 +770,29 @@ router.patch('/entries/:id/wire', async (req: Request, res: Response) => {
     const validWireKeys = activeWires.map((w: any) => w.key || w.wire);
     const invalid = wireArray.filter(w => !validWireKeys.includes(w));
     if (invalid.length > 0) {
-      res.status(400).json({ error: `Invalid wire(s): ${invalid.join(', ')}. Must be one of: ${validWireKeys.join(', ')}` });
+      await remember(gate, 400, { error: `Invalid wire(s): ${invalid.join(', ')}. Must be one of: ${validWireKeys.join(', ')}` }, res);
       return;
     }
 
     const result = await rewriteEntryWires(getPool(), entryId, {
       wires: wireArray,
       actor: resolveMaintenanceActor(req) || undefined,
-      reason: typeof req.body?.reason === 'string' ? req.body.reason : undefined,
+      reason: gate.evidence?.reason || (typeof req.body?.reason === 'string' ? req.body.reason : undefined),
     });
 
-    res.json({ success: true, wire: result.wire, wires: result.wires });
+    if (gate.evidence) {
+      await attachCuratorEvidence(getPool(), [entryId], gate.evidence, resolveMaintenanceActor(req));
+    }
+    await remember(gate, 200, { success: true, wire: result.wire, wires: result.wires }, res);
   } catch (error) {
-    sendMaintenanceError(res, error, 'WireRewrite');
+    if (error instanceof EntryMaintenanceError) {
+      await remember(gate, error.statusCode, { error: error.message }, res);
+      return;
+    }
+    await gate.abort();
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[WireRewrite] Failed:', error);
+    res.status(500).json({ error: message });
   }
 });
 
@@ -713,18 +803,31 @@ router.patch('/entries/:id/source', async (req: Request, res: Response) => {
     res.status(400).json({ error: 'Invalid entry ID' });
     return;
   }
+  const gate = await beginCuratorWrite(req, res, { requireQuote: false });
+  if (!gate.ok) return;
   try {
+    const dryRun = req.body.dryRun === true;
     const result = await rewriteEntrySource(getPool(), entryId, {
       expectedStatus: req.body.expectedStatus,
       expectedSourceUrl: req.body.expectedSourceUrl,
       newSourceUrl: req.body.newSourceUrl,
       actor: resolveMaintenanceActor(req),
-      reason: req.body.reason,
-      dryRun: req.body.dryRun === true,
+      reason: gate.evidence?.reason || req.body.reason,
+      dryRun,
     });
-    res.json({ success: true, ...result });
+    if (gate.evidence && !dryRun) {
+      await attachCuratorEvidence(getPool(), [entryId], gate.evidence, resolveMaintenanceActor(req));
+    }
+    await remember(gate, 200, { success: true, ...result }, res);
   } catch (error) {
-    sendMaintenanceError(res, error, 'SourceRewrite');
+    if (error instanceof EntryMaintenanceError) {
+      await remember(gate, error.statusCode, { error: error.message }, res);
+      return;
+    }
+    await gate.abort();
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[SourceRewrite] Failed:', error);
+    res.status(500).json({ error: message });
   }
 });
 
@@ -735,18 +838,31 @@ router.post('/entries/:id/link-duplicate', async (req: Request, res: Response) =
     res.status(400).json({ error: 'Invalid entry ID' });
     return;
   }
+  const gate = await beginCuratorWrite(req, res, { requireQuote: false });
+  if (!gate.ok) return;
   try {
+    const dryRun = req.body.dryRun === true;
     const result = await linkEntryDuplicate(getPool(), entryId, {
       expectedStatus: req.body.expectedStatus,
       expectedSourceUrl: req.body.expectedSourceUrl,
       duplicateOfId: Number(req.body.duplicateOfId),
       actor: resolveMaintenanceActor(req),
-      reason: req.body.reason,
-      dryRun: req.body.dryRun === true,
+      reason: gate.evidence?.reason || req.body.reason,
+      dryRun,
     });
-    res.json({ success: true, ...result });
+    if (gate.evidence && !dryRun) {
+      await attachCuratorEvidence(getPool(), [entryId], gate.evidence, resolveMaintenanceActor(req));
+    }
+    await remember(gate, 200, { success: true, ...result }, res);
   } catch (error) {
-    sendMaintenanceError(res, error, 'DuplicateLink');
+    if (error instanceof EntryMaintenanceError) {
+      await remember(gate, error.statusCode, { error: error.message }, res);
+      return;
+    }
+    await gate.abort();
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[DuplicateLink] Failed:', error);
+    res.status(500).json({ error: message });
   }
 });
 

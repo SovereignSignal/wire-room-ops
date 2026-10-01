@@ -304,6 +304,11 @@ function detectWire(text: string, wires: string[]): string | null {
   return null; // ambiguous
 }
 
+/** Keyword wire scorer used before intake registers seen_urls. Null when tied or unmatched. */
+export function detectWireFromText(text: string, wires: string[] = ['crypto', 'ai', 'oss']): string | null {
+  return detectWire(text, wires);
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Active wires loader
 // ────────────────────────────────────────────────────────────────────────────

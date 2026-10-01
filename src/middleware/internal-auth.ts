@@ -1,24 +1,29 @@
 /**
  * Internal API key auth middleware
  *
- * Accepts either:
- * 1. A valid named internal API key bearer token (agent access) — each key
- *    maps to its own agent identity so the audit trail distinguishes agents:
+ * Accepts, in order:
+ * 1. A scoped curator key from WIRE_ROOM_CURATOR_KEYS (hashed bearer).
+ *    Principal is `agent:<name>` (Hedwig → agent:hedwig). Missing scope is 403.
+ *    Checked before the internal keys so a curator token never falls through
+ *    to the wider door.
+ * 2. A named internal API key (full agent access, unchanged):
  *      INTERNAL_API_KEY            → agent:stringer   (The Stringer)
  *      INTERNAL_API_KEY_DAILY_SCAN → agent:daily-scan (claude.ai daily-grant-scan routine)
- *    Backward compatible: until the routine gets its own key, both agents
- *    authenticate with INTERNAL_API_KEY and appear as agent:stringer.
- * 2. A valid Privy session (existing requireAuth fallback)
+ * 3. A valid Privy session (existing requireAuth fallback)
  *
- * NOTE: agent identities can approve/decline/submit/curate but can never
- * publish — approvals are force-quieted server-side and /redistribute
- * rejects agent sessions.
+ * A present-but-invalid WIRE_ROOM_CURATOR_KEYS value is 503 curator_unavailable
+ * for any bearer that is not an internal key, so a bad Railway setting is not
+ * a silent 401. Unset is not an error.
+ *
+ * Agent identities can approve/decline/submit/curate but can never publish —
+ * approvals are force-quieted server-side and /redistribute rejects agent sessions.
  */
 
 import crypto from 'crypto';
 import { Request, Response, NextFunction } from 'express';
 import { requireAuth } from './auth';
 import { rateLimit } from './rate-limit';
+import { loadCuratorKeys, matchCuratorKey, requiredCuratorScope } from '../services/curator-keys';
 
 const AGENT_WRITE_WINDOW_MS = 5 * 60 * 1000;
 const AGENT_WRITE_MAX = 40;
@@ -37,6 +42,25 @@ export function requireAuthOrInternalKey(req: Request, res: Response, next: Next
 
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.slice(7);
+    const loaded = loadCuratorKeys();
+    if (!loaded.malformed) {
+      const key = matchCuratorKey(token, loaded.keys);
+      if (key) {
+        const scope = requiredCuratorScope(req.method, req.originalUrl || req.path || '');
+        if (scope === 'forbidden' || !key.scopes.includes(scope)) {
+          res.status(403).json({ error: 'forbidden' });
+          return;
+        }
+        (req as any).agentSession = {
+          userId: key.userId,
+          isAgent: true,
+          curator: true,
+          scopes: key.scopes,
+          keyId: key.id,
+        };
+        return enforceAgentRateLimit(req, res, next);
+      }
+    }
     if (timingSafeMatch(token, process.env.INTERNAL_API_KEY)) {
       (req as any).agentSession = { userId: 'agent:stringer', isAgent: true };
       return enforceAgentRateLimit(req, res, next);
@@ -44,6 +68,10 @@ export function requireAuthOrInternalKey(req: Request, res: Response, next: Next
     if (timingSafeMatch(token, process.env.INTERNAL_API_KEY_DAILY_SCAN)) {
       (req as any).agentSession = { userId: 'agent:daily-scan', isAgent: true };
       return enforceAgentRateLimit(req, res, next);
+    }
+    if (loaded.malformed) {
+      res.status(503).json({ error: 'curator_unavailable' });
+      return;
     }
   }
 

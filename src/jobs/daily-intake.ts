@@ -728,26 +728,46 @@ export async function runDailyIntake(
 // ============================================================
 
 /**
- * Get the daily queue of new, quality entries ready for review.
- * This powers the "daily briefing" view on the dashboard.
+ * GET /queue score filter.
+ * Omitted minScore includes unscored rows (quality_score IS NULL). A passed
+ * minScore keeps `quality_score >= n`, which still hides nulls.
+ */
+export function resolveQueueMinScore(raw: unknown): { ok: true; minScore: number | null } | { ok: false; error: string } {
+  if (raw == null || raw === '') return { ok: true, minScore: null };
+  const n = parseInt(String(raw), 10);
+  if (Number.isNaN(n)) return { ok: false, error: 'minScore must be an integer from 0 to 100' };
+  return { ok: true, minScore: Math.max(0, Math.min(100, n)) };
+}
+
+/**
+ * Get the daily queue of entries ready for review.
+ * minScore null means no score predicate, so unscored rows are included.
  */
 export async function getDailyQueue(
   pool: Pool,
   wire: string | null = null,
-  minScore: number = 40,
+  minScore: number | null = null,
   date: string | null = null
 ): Promise<ScanEntry[]> {
   const targetDate = date || new Date().toISOString().split('T')[0];
 
-  const wireClause = wire ? 'AND wire = $3' : '';
-  const params: any[] = [targetDate, minScore];
-  if (wire) params.push(wire);
+  const params: any[] = [targetDate];
+  let scoreClause = '';
+  if (minScore != null) {
+    params.push(minScore);
+    scoreClause = `AND quality_score >= $${params.length}`;
+  }
+  let wireClause = '';
+  if (wire) {
+    params.push(wire);
+    wireClause = `AND wire = $${params.length}`;
+  }
 
   const result = await pool.query(
     `SELECT * FROM scan_entries
      WHERE scan_date = $1
        AND status IN ('queued')
-       AND quality_score >= $2
+       ${scoreClause}
        ${wireClause}
      ORDER BY quality_score DESC NULLS LAST, amount_numeric DESC NULLS LAST`,
     params

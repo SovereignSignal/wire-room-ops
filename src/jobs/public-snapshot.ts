@@ -51,7 +51,7 @@ export async function gatherSnapshotInput(
         AND dl.created_at >= NOW() - INTERVAL '24 hours'
       ORDER BY dl.created_at`),
     pool.query(`
-      SELECT 'stringer'::text AS id, MAX(created_at) AS last_run_at, COUNT(*)::int AS items_touched
+      SELECT 'intake'::text AS id, MAX(created_at) AS last_run_at, COUNT(*)::int AS items_touched
       FROM scan_entries WHERE created_at >= NOW() - INTERVAL '24 hours'
       UNION ALL
       SELECT 'dedup', MAX(updated_at), COUNT(*)::int

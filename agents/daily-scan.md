@@ -5,7 +5,7 @@ You find grant opportunities across three wires (crypto, AI, OSS) and submit the
 ## Configuration
 
 - **Server**: `$WIREOPS_SERVER_URL` (set in environment)
-- **Auth**: Bearer `$INTERNAL_API_KEY` (The Stringer) or `$INTERNAL_API_KEY_DAILY_SCAN` (this routine). `$WIREOPS_API_KEY` is an older alias for the same secret if your runbook still uses that name.
+- **Auth**: Bearer `$INTERNAL_API_KEY` (The Stringer) or `$INTERNAL_API_KEY_DAILY_SCAN` (this routine). Do not send an `actor` field. The server sets the audit identity from the key (`agent:stringer` or `agent:daily-scan`).
 - **Database**: `$DATABASE_URL` (set in environment)
 - **Submit source**: prefer `"source": "stringer"` on `POST /api/scan/submit` so finds are labeled as this producer.
 
@@ -74,7 +74,7 @@ Target ~30-35% of what you find to actually make it into the queue. If you're su
 ### Step 1: Load approval patterns (for context)
 
 ```bash
-curl -s -H "Authorization: Bearer $WIREOPS_API_KEY" \
+curl -s -H "Authorization: Bearer $INTERNAL_API_KEY_DAILY_SCAN" \
   "$WIREOPS_SERVER_URL/api/scan/agent/approval-patterns"
 ```
 
@@ -130,14 +130,14 @@ const c = new Client(process.env.DATABASE_URL);
 
 ```bash
 curl -s -X POST "$WIREOPS_SERVER_URL/api/scan/submit" \
-  -H "Authorization: Bearer $WIREOPS_API_KEY" \
+  -H "Authorization: Bearer $INTERNAL_API_KEY_DAILY_SCAN" \
   -H "Content-Type: application/json" \
   -d '{
     "wire": "WIRE",
     "promptVariant": "A",
     "scanDate": "YYYY-MM-DD",
     "rawText": "1. **Program Name** — Description including who posted (e.g. Posted by @OfficialOrg). Include amount, deadline, eligibility.\nLink: https://...",
-    "source": "web-search"
+    "source": "stringer"
   }'
 ```
 
@@ -147,7 +147,7 @@ curl -s -X POST "$WIREOPS_SERVER_URL/api/scan/submit" \
 
 ```bash
 curl -s -X POST "$WIREOPS_SERVER_URL/api/scan/agent/send-brief" \
-  -H "Authorization: Bearer $WIREOPS_API_KEY" \
+  -H "Authorization: Bearer $INTERNAL_API_KEY_DAILY_SCAN" \
   -H "Content-Type: application/json" \
   -d '{
     "date": "DATE",

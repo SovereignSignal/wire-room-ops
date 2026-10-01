@@ -90,7 +90,7 @@ export function buildPublicSnapshot(input: SnapshotInput, generatedAt: Date): Pu
     runTotals.set(b.bucket.getTime(), (runTotals.get(b.bucket.getTime()) ?? 0) + (Number(b.n) || 0));
   }
   for (const [ms, n] of runTotals) {
-    events.push({ at: new Date(ms).toISOString(), kind: 'run', station: 'stringer', n });
+    events.push({ at: new Date(ms).toISOString(), kind: 'run', station: 'intake', n });
   }
   for (const b of input.buckets as BucketRow[]) {
     const kind = bucketKind(b.status);
@@ -102,13 +102,22 @@ export function buildPublicSnapshot(input: SnapshotInput, generatedAt: Date): Pu
   }
   events.sort((a, b) => a.at.localeCompare(b.at));
 
-  const stations = input.stations.map(s => ({
-    id: String(s.id),
-    state: (s.last_run_at && generatedAt.getTime() - s.last_run_at.getTime() < RUNNING_WITHIN_MS
-      ? 'running' : 'idle') as 'idle' | 'running',
-    lastRunAt: s.last_run_at ? s.last_run_at.toISOString() : null,
-    itemsTouched: Number(s.items_touched) || 0,
-  }));
+  const stations = input.stations.map(s => {
+    const rawId = String(s.id);
+    return {
+      // The intake station used to be published as `stringer`. Canonical id is
+      // `intake`. A `stringer` alias is added below for the Live prototype.
+      id: rawId === 'stringer' ? 'intake' : rawId,
+      state: (s.last_run_at && generatedAt.getTime() - s.last_run_at.getTime() < RUNNING_WITHIN_MS
+        ? 'running' : 'idle') as 'idle' | 'running',
+      lastRunAt: s.last_run_at ? s.last_run_at.toISOString() : null,
+      itemsTouched: Number(s.items_touched) || 0,
+    };
+  });
+  const intake = stations.find(s => s.id === 'intake');
+  if (intake && !stations.some(s => s.id === 'stringer')) {
+    stations.push({ ...intake, id: 'stringer' });
+  }
 
   return {
     v: SNAPSHOT_VERSION,
