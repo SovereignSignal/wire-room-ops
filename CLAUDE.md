@@ -58,6 +58,19 @@ A partial index `idx_scan_entries_approved` on `(wire, created_at DESC) WHERE st
 - **Small job state** (summary-sync watermark, agent daily-scan briefs) lives in the `app_state` KV table (`getAppState`/`setAppState` in `src/db/index.ts`)
 - Single-instance deployment only
 
+### Railway run settings
+The run settings live on the Railway service itself, not in the repo (since 2026-10-01; `railway.json` is gone because Railway retires Config as Code on 2026-12-01):
+
+| Setting | Value | Why |
+|---|---|---|
+| Start command | `node dist/index.js` | `npm run start` swallows SIGTERM and the shutdown handler never runs |
+| Healthcheck path / timeout | `/ready` / 300s | `/ready` checks the DB and the recorded schema version; `/health` always passes |
+| Restart policy | `ALWAYS` | restart after any exit |
+| Draining seconds | 15 | must outlast the 10s forced exit in `server.ts` |
+| Builder | `NIXPACKS` | unchanged from `railway.json` |
+
+Change them in the Railway dashboard or with `serviceInstanceUpdate`. **Do not adopt `.railway/railway.ts` from `railway config migrate` as generated**: its plan for this project deletes all 30 service variables and disconnects the GitHub source, because anything the file omits is treated as removed. Railway does not read `.railway/` on deploy; it only acts on `railway config apply`.
+
 ### Privy Authentication
 Dashboard login is handled via Privy (social/email auth). On successful Privy login, the server verifies the JWT, fetches the user's email from Privy, and checks it against an allowlist: `NOTIFICATION_EMAIL` (always allowed) plus an optional `ALLOWED_EMAILS` env var (comma-separated). Sessions last 7 days via HttpOnly cookies (DB-backed, survive deploys).
 
