@@ -387,6 +387,21 @@ test('program linking preserves human-review and structured holds on any member'
 });
 
 
+test('program linking honours a queued duplicate-chain hold whose note text was rewritten', async () => {
+  await orgLinkFixture();
+  const chain = { duplicate_chain_error: { error: 'terminates-at-archived', matched_id: 9 } };
+  const { rows } = await pool.query(
+    "INSERT INTO scan_entries(name,program_id,status,operator_notes,metadata) VALUES('Chain stalled',1,'queued','Sponsor page confirms the batch; source verified.',$1) RETURNING id", [chain]);
+  assert.equal((await planProgramOrgLinks(pool)).links.length, 0);
+  assert.equal(await fillMissingProgramOrgLinks(pool, [1]), 0);
+  assert.equal((await pool.query('SELECT org_id FROM programs WHERE id=1')).rows[0].org_id, null);
+  // A JSON null under the key is "no error", and a decided entry is no longer held by it.
+  await pool.query('UPDATE scan_entries SET metadata=$1 WHERE id=$2', [{ duplicate_chain_error: null }, rows[0].id]);
+  assert.equal((await planProgramOrgLinks(pool)).links.length, 1);
+  await pool.query("UPDATE scan_entries SET metadata=$1, status='declined' WHERE id=$2", [chain, rows[0].id]);
+  assert.equal(await fillMissingProgramOrgLinks(pool, [1]), 1);
+});
+
 test('held entries remain counted but cannot become or remain program exemplars', async () => {
   const holds = [
     { operator_notes: 'HOLD pending review' },

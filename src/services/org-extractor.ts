@@ -10,6 +10,7 @@ import { config } from '../config';
 import { getPool } from '../db';
 import { getCachedProvider } from './api-provider';
 import { fillMissingProgramOrgLinks } from './program-org-links';
+import { entryHeldSql } from './entry-hold';
 import { DEFAULT_GROK_MODEL, chatCompletionExtras } from './grok';
 
 // ============================================================
@@ -649,9 +650,7 @@ export async function linkEntryToOrg(entryId: number, orgId: number): Promise<bo
     // the entry or places it on hold. Automatic linking never overrides either.
     const { rows: entries } = await client.query(
       `SELECT name, org_id,
-         (concat_ws(' ', operator_notes, action_reason) ~* '\\mhold\\M|human review required'
-          OR metadata #>> '{decided_recheck,canonical_parent_blocked}' = 'true'
-          OR metadata #>> '{decided_recheck,cross_wire_blocked}' = 'true') AS held
+         ${entryHeldSql()} AS held
        FROM scan_entries WHERE id = $1 FOR UPDATE`, [entryId],
     );
     if (!entries.length || entries[0].org_id != null || entries[0].held) {
