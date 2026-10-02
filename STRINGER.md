@@ -12,7 +12,7 @@ These rules override older sections below when they conflict.
 - **Dedup is exact URL + exact name** (180-day window). Fuzzy name blocking is off.
 - **Perplexity is an active `tool_type`**, not disabled.
 - **Forum lane** is a governance allowlist + LLM judge, not the old dual-strategy keyword search.
-- **Auto-summarize** is Ollama-first with Grok fallback, not Claude Sonnet.
+- **Auto-summarize** is Ollama primary (`OLLAMA_DEFAULT_MODEL`) then Ollama fallback (`OLLAMA_FALLBACK_MODEL`). Grok and Claude are not in that chain.
 - **Watchtower stays off.** Do not set `X_LISTS_ENABLED` or `REGISTRY_WATCH_ENABLED`, and do not activate the seeded `watchtower-*` `x_search` prompts. Sov enables those lanes; this agent does not.
 - **If Watchtower is quiet after enablement:** check `WATCHTOWER_BUDGET_MONTHLY_USD` (default $20) before assuming a source died. Cutover instrument: `npx ts-node src/scripts/challenger-scoreboard.ts --days 7`.
 - **`x-list` entries** (when the lane is on) are dumb-pipe tweets, URL-first — treat like `x-monitor`. Classifier judges; do not auto-approve.
@@ -201,7 +201,7 @@ Dashboard Approve to Wires publishes to Telegram. Agent approvals are force-quie
 - `src/services/dedup.ts` — Exact URL + exact name (180-day window). Fuzzy name blocking is off.
 - `src/services/forum.ts` — discuss.watch client (governance allowlist + LLM judge)
 - `src/services/distribution.ts` — Telegram-first distribution orchestrator
-- `src/services/auto-summarize.ts` — Ollama-first, Grok fallback on approve
+- `src/services/auto-summarize.ts` — Ollama primary, then Ollama fallback, on approve
 - `src/services/operator-signals.ts` — Feedback loop from approve/decline history
 - `src/jobs/deadline-digest.ts` — Closing-soon data for the daily digest fold
 - `src/jobs/account-monitor.ts` — Polls monitored X accounts for new content

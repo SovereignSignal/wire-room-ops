@@ -68,6 +68,7 @@ export async function gatherSnapshotInput(
              COUNT(*) FILTER (WHERE last_checked_at IS NULL
                                  OR last_checked_at < NOW() - INTERVAL '30 days')::int AS dark
       FROM watch_surfaces WHERE status = 'active'`),
+    // Last number written by the retired weekly issue. Nothing advances it.
     deps.getAppState<number>('weekly:week-number'),
   ]);
 

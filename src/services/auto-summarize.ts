@@ -1,26 +1,19 @@
 /**
- * Auto-summarize service — generates newsletter summaries for approved entries
+ * Auto-summarize service — generates newsletter summaries for approved entries.
  *
- * Provider priority (controlled by SUMMARIZE_PROVIDER env var):
- *   'ollama' — Ollama Cloud only (fail if unavailable)
- *   'grok'   — Grok only (fail if unavailable)
- *   'auto'   — Try Ollama first, fall back to Grok (default)
+ * Chain: Ollama primary model (OLLAMA_DEFAULT_MODEL), then Ollama fallback
+ * model (OLLAMA_FALLBACK_MODEL). Grok is not in this chain. Every accepted
+ * string has passed summary-guard.
  *
- * Thread-aware: For X.com URLs, fetches full thread context to enrich summaries
- * (only applies when Grok is the provider, since it has native X.com access).
- *
- * Called as a fire-and-forget side effect on entry approval.
+ * Called as a fire-and-forget side effect on entry approval. The leak backfill
+ * uses generateValidatedSummary, so it follows the same chain.
  */
 
 import { config } from '../config';
 import { getPool } from '../db';
 import { getCachedProvider } from './api-provider';
-import { fetchThreadContext, type ThreadContext } from './x-thread';
-import { isXcomUrl, DEFAULT_GROK_MODEL } from './grok';
 import { ollamaAutoSummarize } from './ollama';
 import { findSummaryLeak } from './summary-guard';
-
-const DEFAULT_GROK_BASE_URL = 'https://api.x.ai/v1';
 
 export function cleanText(s: string): string {
   return s
@@ -39,99 +32,25 @@ interface SummarizeOpts {
   wire?: string;
 }
 
-async function summarizeViaGrok(
-  opts: SummarizeOpts,
-  threadContext?: ThreadContext | null,
-  entryId?: number
-): Promise<string | null> {
-  const grok = getCachedProvider('grok');
-  if (!grok?.api_key) return null;
+export type SummarySlot = 'primary' | 'fallback';
 
-  const baseUrl = grok.base_url || DEFAULT_GROK_BASE_URL;
-  const model = grok.default_model || DEFAULT_GROK_MODEL;
-  const wireLabel = opts.wire === 'ai' ? 'AI funding' : opts.wire === 'oss' ? 'open-source funding' : 'crypto grants';
-
-  let prompt: string;
-  if (threadContext?.isThread) {
-    prompt = `You are writing an opportunity summary for a ${wireLabel} newsletter.
-
-This entry comes from an AGGREGATOR THREAD by @${threadContext.authorHandle} (${threadContext.authorName}) containing ${threadContext.tweetCount} tweets.
-
-Grant name: ${opts.name}
-${opts.amount ? `Amount: ${opts.amount}` : ''}
-${opts.deadline ? `Deadline: ${opts.deadline}` : ''}
-${opts.sourceUrl ? `Source: ${opts.sourceUrl}` : ''}
-
-FULL THREAD TEXT:
-${threadContext.fullThreadText}
-
-Original description: ${opts.description}
-
-IMPORTANT: This thread lists MULTIPLE programs/opportunities. Summarize ALL of them.
-Write a 4-8 sentence newsletter summary covering all programs. Lead with the aggregator context. Include all specific numbers. Plain prose, no bullet points, no fluff. Max 250 words.`;
-
-    // Store thread metadata on the entry
-    if (entryId) {
-      try {
-        const pool = getPool();
-        await pool.query(
-          `UPDATE scan_entries SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb WHERE id = $2`,
-          [JSON.stringify({ thread_context: { authorHandle: threadContext.authorHandle, tweetCount: threadContext.tweetCount } }), entryId]
-        );
-      } catch (metaErr) {
-        console.warn(`[AutoSummarize] Failed to store thread metadata for entry ${entryId}:`, metaErr);
-      }
-    }
-  } else {
-    prompt = `You are writing a concise opportunity summary for a ${wireLabel} newsletter.
-
-Grant name: ${opts.name}
-${opts.amount ? `Amount: ${opts.amount}` : ''}
-${opts.deadline ? `Deadline: ${opts.deadline}` : ''}
-${opts.sourceUrl && opts.sourceUrl.startsWith('http') ? `Source: ${opts.sourceUrl}` : ''}
-Description: ${opts.description}
-
-Write a 2-4 sentence newsletter summary. Lead with the organization/program name and a strong action verb. Include all specific numbers (amounts, dates, eligibility requirements). Plain prose, no bullet points, no fluff, no hype words. Max 120 words.`;
-  }
-
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    signal: AbortSignal.timeout(120_000),
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${grok.api_key}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages: [{ role: 'user', content: prompt }],
-      max_tokens: threadContext?.isThread ? 2000 : 1200,
-      temperature: 0.3,
-    }),
-  });
-
-  if (!response.ok) return null;
-
-  const data = await response.json() as {
-    choices?: Array<{ finish_reason?: string; message?: { content?: string } }>;
-  };
-  const choice = data.choices?.[0];
-  // A length stop means the answer was cut off (or never started after reasoning).
-  if (choice?.finish_reason === 'length') return null;
-  const summary = choice?.message?.content?.trim();
-  return summary && summary.length >= 20 ? summary : null;
+export interface SummaryStep {
+  slot: SummarySlot;
+  model: string;
 }
 
-export type SummaryProvider = 'ollama' | 'grok';
-
 export interface SummaryAttempt {
-  provider: SummaryProvider;
+  provider: 'ollama';
+  model: string;
+  slot: SummarySlot;
   outcome: 'ok' | 'empty' | 'rejected' | 'error';
   detail?: string;
 }
 
 export interface SummaryResult {
   summary: string | null;
-  provider: SummaryProvider | null;
+  provider: 'ollama' | null;
+  model: string | null;
   attempts: SummaryAttempt[];
 }
 
@@ -146,18 +65,22 @@ export interface SummaryInput {
 }
 
 /**
- * Provider order for one summary. Each provider gets a second try when it is
- * the only one available, so a single rejected output is retried once.
+ * Primary model, then fallback model. When only one model is configured, it
+ * is tried twice so a single rejected output is not final.
  */
-export function planSummaryAttempts(
-  preference: string,
-  available: Record<SummaryProvider, boolean>,
-): SummaryProvider[] {
-  const order: SummaryProvider[] = preference === 'ollama' ? ['ollama']
-    : preference === 'grok' ? ['grok']
-      : ['ollama', 'grok'];
-  const usable = order.filter(provider => available[provider]);
-  return usable.length === 1 ? [usable[0], usable[0]] : usable;
+export function planSummaryAttempts(models?: { primary?: string; fallback?: string }): SummaryStep[] {
+  const primary = (models?.primary ?? config.apis.ollama.defaultModel).trim();
+  const fallback = (models?.fallback ?? config.apis.ollama.fallbackModel).trim();
+  if (primary && fallback && fallback !== primary) {
+    return [
+      { slot: 'primary', model: primary },
+      { slot: 'fallback', model: fallback },
+    ];
+  }
+  const only = primary || fallback;
+  return only
+    ? [{ slot: 'primary', model: only }, { slot: 'primary', model: only }]
+    : [];
 }
 
 /**
@@ -167,10 +90,9 @@ export function planSummaryAttempts(
 export async function generateValidatedSummary(
   input: SummaryInput,
   deps: {
-    ollama?: typeof ollamaAutoSummarize;
-    grok?: typeof summarizeViaGrok;
-    available?: Record<SummaryProvider, boolean>;
-    preference?: string;
+    ollama?: (opts: SummarizeOpts, model: string) => Promise<string | null>;
+    available?: boolean;
+    models?: { primary?: string; fallback?: string };
   } = {},
 ): Promise<SummaryResult> {
   const opts: SummarizeOpts = {
@@ -181,54 +103,53 @@ export async function generateValidatedSummary(
     sourceUrl: input.sourceUrl,
     wire: input.wire,
   };
-  const available = deps.available ?? {
-    ollama: !!getCachedProvider('ollama')?.api_key,
-    grok: !!getCachedProvider('grok')?.api_key,
-  };
-  const plan = planSummaryAttempts(deps.preference ?? config.summarize.provider, available);
+  const available = deps.available ?? !!getCachedProvider('ollama')?.api_key;
+  if (!available) return { summary: null, provider: null, model: null, attempts: [] };
+
+  const plan = planSummaryAttempts(deps.models);
   const callOllama = deps.ollama ?? ollamaAutoSummarize;
-  const callGrok = deps.grok ?? summarizeViaGrok;
-
   const attempts: SummaryAttempt[] = [];
-  let threadContext: ThreadContext | null | undefined;
 
-  for (const provider of plan) {
+  for (const step of plan) {
     let text: string | null;
     try {
-      if (provider === 'ollama') {
-        text = await callOllama(opts);
-      } else {
-        if (threadContext === undefined) {
-          threadContext = input.sourceUrl && isXcomUrl(input.sourceUrl)
-            ? await fetchThreadContext(input.sourceUrl)
-            : null;
-        }
-        text = await callGrok(opts, threadContext, input.entryId);
-      }
+      text = await callOllama(opts, step.model);
     } catch (err) {
-      attempts.push({ provider, outcome: 'error', detail: err instanceof Error ? err.message : String(err) });
+      attempts.push({
+        provider: 'ollama',
+        model: step.model,
+        slot: step.slot,
+        outcome: 'error',
+        detail: err instanceof Error ? err.message : String(err),
+      });
       continue;
     }
 
     const trimmed = (text || '').trim();
     if (trimmed.length < 20) {
-      attempts.push({ provider, outcome: 'empty' });
+      attempts.push({ provider: 'ollama', model: step.model, slot: step.slot, outcome: 'empty' });
       continue;
     }
     const leak = findSummaryLeak(trimmed);
     if (leak) {
-      attempts.push({ provider, outcome: 'rejected', detail: `${leak.rule}: ${leak.excerpt}` });
+      attempts.push({
+        provider: 'ollama',
+        model: step.model,
+        slot: step.slot,
+        outcome: 'rejected',
+        detail: `${leak.rule}: ${leak.excerpt}`,
+      });
       continue;
     }
-    attempts.push({ provider, outcome: 'ok' });
-    return { summary: trimmed, provider, attempts };
+    attempts.push({ provider: 'ollama', model: step.model, slot: step.slot, outcome: 'ok' });
+    return { summary: trimmed, provider: 'ollama', model: step.model, attempts };
   }
 
-  return { summary: null, provider: null, attempts };
+  return { summary: null, provider: null, model: null, attempts };
 }
 
 function describeAttempts(attempts: SummaryAttempt[]): string {
-  return attempts.map(a => `${a.provider}=${a.outcome}${a.detail ? ` (${a.detail.slice(0, 120)})` : ''}`).join(', ');
+  return attempts.map(a => `${a.model}=${a.outcome}${a.detail ? ` (${a.detail.slice(0, 120)})` : ''}`).join(', ');
 }
 
 /** Returns true when a validated summary was stored. */
@@ -250,7 +171,7 @@ export async function autoSummarizeOnApprove(
 
     if (!result.summary) {
       if (result.attempts.length === 0) {
-        console.warn(`[AutoSummarize] No summarize provider configured for entry ${entryId}`);
+        console.warn(`[AutoSummarize] No Ollama key configured for entry ${entryId}`);
         return false;
       }
       console.warn(`[AutoSummarize] No usable summary for entry ${entryId}: ${describeAttempts(result.attempts)}`);
@@ -272,7 +193,7 @@ export async function autoSummarizeOnApprove(
       ).catch(err => console.warn(`[AutoSummarize] Failed to patch summaries row ${summaryId}:`, err.message));
     }
 
-    console.log(`[AutoSummarize] Generated summary for entry ${entryId} via ${result.provider} (${result.summary.length} chars)`);
+    console.log(`[AutoSummarize] Generated summary for entry ${entryId} via ${result.model} (${result.summary.length} chars)`);
     return true;
   } catch (err) {
     console.error(`[AutoSummarize] Failed for entry ${entryId}:`, err);

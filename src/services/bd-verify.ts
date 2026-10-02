@@ -1,8 +1,7 @@
 /**
  * BD Opportunity verification — grounds a candidate in CURRENT REALITY before
  * it can qualify, so the qualifier stops trusting entry titles. Uses the
- * Parallel.ai Task API (same mechanism as the weekly verifier in
- * parallel-task.ts) to research the claimed program/event and return whether it
+ * Parallel.ai Task API to research the claimed program/event and return whether it
  * is REAL and CURRENTLY ACTIVE, the most recent real activity date, a
  * one-sentence sourced status, a citation, and confidence.
  *

@@ -681,7 +681,7 @@ export async function buildRunLedger(
 
 export interface AssembleDigestOptions {
   recipients?: string[];
-  /** In-fold lane failures collected by the scheduler (forum/feeds/weekly/BD) */
+  /** In-fold lane failures collected by the scheduler (forum/feeds/BD) */
   laneAnomalies?: string[];
   feeds?: { ok: number; total: number } | null;
   forum?: 'ok' | 'fail' | null;

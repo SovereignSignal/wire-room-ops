@@ -3,7 +3,7 @@
  *
  * Finds queued scan_entries with missing or thin descriptions,
  * scrapes their source URL, and generates an enriched summary
- * using the existing processor pipeline (Grok for X URLs, Claude for others).
+ * using the existing processor pipeline (Grok for X URLs, Ollama for others).
  */
 
 import { getPool } from '../db';

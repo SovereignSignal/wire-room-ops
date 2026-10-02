@@ -47,7 +47,7 @@ router.get('/usage/outcomes', async (_req, res) => {
 });
 
 
-const KNOWN_PROVIDERS = new Set(['grok', 'anthropic', 'ollama', 'firecrawl', 'perplexity', 'parallel', 'resend', 'telegram', 'telegram-intake']);
+const KNOWN_PROVIDERS = new Set(['grok', 'ollama', 'firecrawl', 'perplexity', 'parallel', 'resend', 'telegram', 'telegram-intake']);
 
 // GET /providers — list all providers (masked keys)
 router.get('/providers', async (_req: Request, res: Response) => {

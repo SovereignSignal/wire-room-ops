@@ -19,7 +19,7 @@ export interface ProcessedEntry {
   source: string;
   wire?: string;
   enrichedSummary: string;
-  processingMethod: 'grok' | 'opus' | 'ollama';
+  processingMethod: 'grok' | 'ollama';
   processingError?: string;
 }
 

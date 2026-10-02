@@ -21,7 +21,7 @@ import { checkBudget } from '../services/budget-guard';
 import { executePerplexityScan } from '../services/perplexity';
 import { executeParallelScan } from '../services/parallel';
 import { parseStructuredOutput } from '../services/intake';
-import { reviewScanPrompt } from '../services/anthropic';
+import { reviewScanPrompt } from '../services/prompt-review';
 import { withRetry } from '../services/processor';
 import { buildSubmission } from '../services/intake';
 import { runDailyIntake } from '../jobs/daily-intake';
