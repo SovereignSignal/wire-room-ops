@@ -24,5 +24,5 @@ async function main(): Promise<void> {
 
 main().catch(error => {
   console.error('[Schema] Migration failed:', error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
+  process.exit(1);
 });
