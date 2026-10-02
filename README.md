@@ -97,21 +97,28 @@ Then run the application with its runtime database connection:
 npm run dev
 ```
 
-Production:
+Production on Railway runs the migration itself, before the new process starts.
+`railway.json` sets:
 
-```bash
-npm run build
+```text
 node dist/scripts/migrate-database.js --apply
-npm start
 ```
 
-Supply the owner connection only to the separate migration process. The running
-app needs a non-owner login with the grants in `scripts/database-runtime-grants.sql`;
-it checks `wro_schema_migrations` on startup and fails before starting jobs if the
-schema version is missing or incompatible. Do not store an owner connection as a
-second application variable. Apply migrations and grants before deploying a new
-schema version. Existing legacy distribution tables are preserved and require an
-explicit migration if their shape is incompatible.
+That command is the compiled script, so it runs in the built image without
+`ts-node`. Railway injects the service `DATABASE_URL` into the pre-deploy
+container. The command applies only schema steps newer than the recorded
+version, then exits 0. A database already at that version is a no-op. Any
+failure exits 1: Railway marks the deployment failed and keeps the previous
+deployment serving. The pre-deploy timeout is 300 seconds.
+
+The same command is what to run by hand against a non-Railway host, after
+`npm run build`, with the migration-owner connection in `DATABASE_URL`. The
+running app checks `wro_schema_migrations` on startup and does not apply DDL.
+`scripts/database-runtime-grants.sql` is still a separate owner step when a new
+table needs a grant; the pre-deploy command does not run it. The login in the
+service `DATABASE_URL` has to be allowed to apply schema. Existing legacy
+distribution tables are preserved and require an explicit migration if their
+shape is incompatible.
 
 ### 4. Verify
 
@@ -126,7 +133,8 @@ explicit migration if their shape is incompatible.
 - `npm run dev` - run with `ts-node`
 - `npm run build` - compile TypeScript
 - `npm start` - run compiled server
-- `npm run db:migrate` - preview schema steps; add `-- --apply` to apply with the owner connection
+- `npm run db:migrate` - preview schema steps with ts-node; add `-- --apply` to apply locally
+- Railway pre-deploy - `node dist/scripts/migrate-database.js --apply` (see `railway.json`)
 - `npm run typecheck` - TS typecheck
 - `npm run lint` - alias for typecheck
 - `npm run test` - parser/intake tests

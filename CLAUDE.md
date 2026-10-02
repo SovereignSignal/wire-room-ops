@@ -59,17 +59,18 @@ A partial index `idx_scan_entries_approved` on `(wire, created_at DESC) WHERE st
 - Single-instance deployment only
 
 ### Railway run settings
-The run settings live on the Railway service itself, not in the repo (since 2026-10-01; `railway.json` is gone because Railway retires Config as Code on 2026-12-01):
+`railway.json` is read on each deploy and overrides the same build and deploy keys from the dashboard. It is in the repo again so every release runs the schema migration before the new process starts. Keys the file does not set stay on the service. Railway stops reading Config as Code on 2026-12-01; before that date, copy `deploy.preDeployCommand` onto the service if the migration should keep running after the file is ignored.
 
 | Setting | Value | Why |
 |---|---|---|
+| Pre-deploy command | `node dist/scripts/migrate-database.js --apply` | Compiled entrypoint (no `ts-node` in the image). Uses the service `DATABASE_URL`. Idempotent. Exit 1 fails the deployment and leaves the previous one live. 300s timeout |
 | Start command | `node dist/index.js` | `npm run start` swallows SIGTERM and the shutdown handler never runs |
 | Healthcheck path / timeout | `/ready` / 300s | `/ready` checks the DB and the recorded schema version; `/health` always passes |
 | Restart policy | `ALWAYS` | restart after any exit |
 | Draining seconds | 15 | must outlast the 10s forced exit in `server.ts` |
-| Builder | `NIXPACKS` | unchanged from `railway.json` |
+| Builder | `NIXPACKS` | unchanged |
 
-Change them in the Railway dashboard or with `serviceInstanceUpdate`. **Do not adopt `.railway/railway.ts` from `railway config migrate` as generated**: its plan for this project deletes all 30 service variables and disconnects the GitHub source, because anything the file omits is treated as removed. Railway does not read `.railway/` on deploy; it only acts on `railway config apply`.
+**Do not adopt `.railway/railway.ts` from `railway config migrate` as generated**: its plan deletes all 30 service variables and disconnects the GitHub source, because anything the file omits is treated as removed. Railway does not read `.railway/` on deploy; it only acts on `railway config apply`.
 
 ### Privy Authentication
 Dashboard login is handled via Privy (social/email auth). On successful Privy login, the server verifies the JWT, fetches the user's email from Privy, and checks it against an allowlist: `NOTIFICATION_EMAIL` (always allowed) plus an optional `ALLOWED_EMAILS` env var (comma-separated). Sessions last 7 days via HttpOnly cookies (DB-backed, survive deploys).
