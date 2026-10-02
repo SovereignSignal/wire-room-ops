@@ -139,6 +139,12 @@ export interface DedupResult {
   programResolution?: ProgramResolutionStamp | null;
   /** Prior cycle on the same official URL. Set when URL-exact matches a known page but the incoming name/deadline is a new numbered or seasonal cutoff. The entry is NOT a duplicate. */
   priorCycle?: { entryId: number; name: string } | null;
+  /**
+   * Same round as a declined prior that no longer holds the URL (premature or
+   * unverified decline, or a later official source). The entry is NOT a
+   * duplicate. Distinct from priorCycle so Gate 2's new-cycle guard stays off.
+   */
+  resurfacedDecline?: { entryId: number; name: string } | null;
 }
 
 /**
