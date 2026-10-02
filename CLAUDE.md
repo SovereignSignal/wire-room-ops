@@ -524,6 +524,9 @@ Approve entries → configure channels in Settings > Distribution → click "Dis
 - **Config merge on partial update**: PUT to config endpoint merges new fields into existing JSONB, preventing accidental credential loss
 - **Retry sends only to failed channels**: Redistribution skips channels that already have a `success` or `pending` log entry
 
+### Withhold
+`action: "withhold"` on `POST /api/scan/entries/:id/action` and `/entries/bulk-action` keeps an approved entry off the Telegram wires without changing its status: the `publication_queue` row becomes `withheld` (inserted if the entry never reached the queue), the worker never claims it, `distributeEntry` and `getUndistributedEntries` skip it (so the manual wire run, the retry route and the newsletter builder do too), and the outgoing list stops counting it as missing. Agents may use it because it can only prevent a send. All or nothing, `409` with a `blocked` list; audit goes to `metadata.withheld`, never over the approval's `actioned_by`/`action_reason`. There is no resume yet: restore and re-approve. `withholdPublications` in `src/services/publication-queue.ts`; the "is anything still unsent" rule is `UNSENT_TELEGRAM_DESTINATION_SQL` in `src/services/distribution-pace.ts`, shared with the outgoing list's `missing` query.
+
 ### Key Endpoints
 - `POST /api/distribution/run/:wire` — trigger distribution for a wire
 - `GET /api/distribution/newsletter/:wire` — generate newsletter markdown
@@ -572,7 +575,7 @@ Internal-key mounts (see `src/server.ts`): `/api/scan/prompts`, `/api/scan` (ent
 | Scope | Opens |
 |---|---|
 | `read_queue` | GET queue, entries, seen-urls, approval-patterns, status-counts, deadline-digest |
-| `decide` | entry actions, bulk-action, link-duplicate, wire and source rewrites (evidence + `Idempotency-Key` required) |
+| `decide` | entry actions (including `withhold`), bulk-action, link-duplicate, wire and source rewrites (evidence + `Idempotency-Key` required) |
 | `propose` | `POST /entries/:id/curate` (evidence required) and `POST /api/scan/submit` |
 | `intake` | `POST /api/scan/telegram-batch` only |
 

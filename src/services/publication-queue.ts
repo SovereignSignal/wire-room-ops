@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import type { Pool } from 'pg';
 import { getPool } from '../db';
 import { distributeEntry } from './distribution';
-import { getDistributionPace } from './distribution-pace';
+import { getDistributionPace, UNSENT_TELEGRAM_DESTINATION_SQL } from './distribution-pace';
 
 let running = false;
 
@@ -202,6 +202,99 @@ export async function resolvePublication(id: number, delivered: boolean, externa
       ON CONFLICT (entry_id) DO UPDATE SET status = 'queued', attempts = 0, lease_token = NULL,
       available_at = NOW(), updated_at = NOW()`, [row.entry_id]);
     await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally { client.release(); }
+}
+
+export class WithholdConflictError extends Error {
+  constructor(public readonly blocked: { id: number; reason: string }[]) {
+    super(`Cannot withhold ${blocked.length} ${blocked.length === 1 ? 'entry' : 'entries'}; nothing was changed`);
+    this.name = 'WithholdConflictError';
+  }
+}
+
+export interface WithholdResult {
+  success: true;
+  action: 'withhold';
+  dryRun: boolean;
+  withheld: number[];
+  alreadyWithheld: number[];
+}
+
+function withholdBlock(row: { status: string; distributable: boolean | null; queue_status: string | null; unsent: boolean } | undefined): string | null {
+  if (!row) return 'not found';
+  if (row.status !== 'approved') return `${row.status}, not approved`;
+  if (row.distributable === false) return 'approved for programs only, so it is not on the wires';
+  if (row.queue_status === 'running') return 'sending now';
+  if (row.queue_status === 'review') return 'awaiting delivery review; resolve that first';
+  if (row.queue_status !== 'queued' && row.queue_status !== 'withheld' && !row.unsent) return 'nothing left to send';
+  return null;
+}
+
+/**
+ * Take approved entries off the Telegram stream. The approval and its audit trail stay as they are:
+ * the queue row carries the note and metadata.withheld carries who, why and the sources.
+ * Covers a scheduled row and an approved entry that never reached the queue. All or nothing.
+ */
+export async function withholdPublications(
+  entryIds: number[],
+  opts: { actor?: string; reason?: string; evidence?: { sources: string[]; quotes: unknown[] } | null; dryRun?: boolean } = {},
+): Promise<WithholdResult> {
+  const ids = [...new Set(entryIds)];
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    const rows = (await client.query(
+      `SELECT se.id, se.status, se.distributable, q.status AS queue_status,
+              ${UNSENT_TELEGRAM_DESTINATION_SQL} AS unsent
+       FROM scan_entries se
+       LEFT JOIN publication_queue q ON q.entry_id = se.id
+       WHERE se.id = ANY($1::int[])
+       FOR UPDATE OF se`,
+      [ids],
+    )).rows;
+    const byId = new Map(rows.map(row => [Number(row.id), row]));
+    const blocked = ids
+      .map(id => ({ id, reason: withholdBlock(byId.get(id)) }))
+      .filter((row): row is { id: number; reason: string } => row.reason !== null);
+    if (blocked.length) throw new WithholdConflictError(blocked);
+
+    const alreadyWithheld = ids.filter(id => byId.get(id).queue_status === 'withheld');
+    const withheld = ids.filter(id => byId.get(id).queue_status !== 'withheld');
+    const result: WithholdResult = { success: true, action: 'withhold', dryRun: !!opts.dryRun, withheld, alreadyWithheld };
+    if (opts.dryRun || !withheld.length) {
+      await client.query('ROLLBACK');
+      return result;
+    }
+
+    const actor = opts.actor || 'unknown';
+    const reason = opts.reason?.trim() || null;
+    const note = `Withheld by ${actor}${reason ? `: ${reason.slice(0, 300)}` : ''}`;
+    // The status guard catches a worker claim that landed after the read above.
+    const moved = await client.query(
+      `INSERT INTO publication_queue (entry_id, status, error_message)
+       SELECT id, 'withheld', $2 FROM unnest($1::int[]) AS t(id)
+       ON CONFLICT (entry_id) DO UPDATE
+         SET status = 'withheld', error_message = EXCLUDED.error_message,
+             lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
+         WHERE publication_queue.status IN ('queued', 'done')
+       RETURNING entry_id`,
+      [withheld, note],
+    );
+    if (moved.rowCount !== withheld.length) {
+      const done = new Set(moved.rows.map(row => Number(row.entry_id)));
+      throw new WithholdConflictError(withheld.filter(id => !done.has(id)).map(id => ({ id, reason: 'changed while withholding; try again' })));
+    }
+    await client.query(
+      `UPDATE scan_entries
+       SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('withheld', $1::jsonb)
+       WHERE id = ANY($2::int[])`,
+      [JSON.stringify({ reason, sources: opts.evidence?.sources ?? [], quotes: opts.evidence?.quotes ?? [], by: actor, at: new Date().toISOString() }), withheld],
+    );
+    await client.query('COMMIT');
+    return result;
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
