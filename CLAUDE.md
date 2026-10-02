@@ -59,11 +59,11 @@ A partial index `idx_scan_entries_approved` on `(wire, created_at DESC) WHERE st
 - Single-instance deployment only
 
 ### Railway run settings
-`railway.json` is read on each deploy and overrides the same build and deploy keys from the dashboard. It is in the repo again so every release runs the schema migration before the new process starts. Keys the file does not set stay on the service. Railway stops reading Config as Code on 2026-12-01; before that date, copy `deploy.preDeployCommand` onto the service if the migration should keep running after the file is ignored.
+`railway.json` is read on each deploy and overrides the same build and deploy keys from the dashboard. It is in the repo again so every release runs the schema migration before the new process starts. Keys the file does not set stay on the service. Railway stops reading Config as Code on 2026-12-01; before that date, copy `deploy.preDeployCommand` and the other values below onto the service (Settings → Deploy) so the migration keeps running after the file is ignored. Steps in `docs/railway-deploy.md`.
 
 | Setting | Value | Why |
 |---|---|---|
-| Pre-deploy command | `node dist/scripts/migrate-database.js --apply` | Compiled entrypoint (no `ts-node` in the image). Uses the service `DATABASE_URL`. Idempotent. Exit 1 fails the deployment and leaves the previous one live. 300s timeout |
+| Pre-deploy command | `node dist/scripts/migrate-database.js --apply` | Compiled entrypoint (no `ts-node` in the image). Connects as the schema owner from `MIGRATION_DATABASE_URL` (falls back to `DATABASE_URL`), applies pending steps, then re-applies and verifies the runtime role's grants. Idempotent. Exit 1 fails the deployment and leaves the previous one live. 300s timeout. Runbook: `docs/railway-deploy.md` |
 | Start command | `node dist/index.js` | `npm run start` swallows SIGTERM and the shutdown handler never runs |
 | Healthcheck path / timeout | `/ready` / 300s | `/ready` checks the DB and the recorded schema version; `/health` always passes |
 | Restart policy | `ALWAYS` | restart after any exit |
@@ -229,12 +229,16 @@ Server-rendered views (login/error only):
 ### Adding a Table or Column
 1. Write/extend the `ensure*` function (usually in `src/db/index.ts`)
 2. Add ONE entry to `STARTUP_MIGRATIONS` in `src/db/startup-migrations.ts` (order matters)
-3. Increment `SCHEMA_VERSION` and update `scripts/database-runtime-grants.sql` for any new runtime table
+3. Increment `SCHEMA_VERSION` and add any new runtime table to `src/db/runtime-grants.ts` and `scripts/database-runtime-grants.sql` (the lockstep test fails otherwise)
 4. The explicit `db:migrate -- --apply` command and CI run this list. Server boot only verifies the recorded version. Never call `ensure*` from runtime paths.
 
-Production runtime uses a non-owner login. Supply the owner connection only to
-the separate migration process, then apply the explicit runtime grants before
-deployment. `wro_schema_migrations` is writable only by the migration owner.
+Production runtime uses a non-owner login (`DATABASE_URL`). The owner connection
+is `MIGRATION_DATABASE_URL`, read only by `src/scripts/migrate-database.ts`
+(`tests/migration-connection.test.js` pins that). The migration command applies
+the runtime grants (`src/db/runtime-grants.ts`) to the `DATABASE_URL` login
+after every schema apply and verifies them; keep `scripts/database-runtime-grants.sql`
+in step (`tests/runtime-grants-lockstep.test.js`). `wro_schema_migrations` is
+writable only by the migration owner.
 Missing or incompatible versions stop startup before any background work begins.
 
 ### Adding Environment Variables
@@ -411,7 +415,7 @@ Generated files are persisted to Postgres. Sessions are DB-backed and survive re
 - `RESEND_API_KEY` - Resend email API key
 
 ### Optional
-See `.env.example` for full list. Key optional vars: `PORT`, `APP_URL`, `ALLOWED_EMAILS`, `STARTUP_LLM_RESCORE_ENABLED` (explicit opt-in to queue-only LLM score repair on boot; default false and may spend API credits), `TELEGRAM_BOT_TOKEN`, `PERPLEXITY_API_KEY`, `PARALLEL_API_KEY` (Parallel.ai scans), `FORUM_SCAN_ENABLED`, `SUMMARIZE_PROVIDER` + `OLLAMA_DEFAULT_MODEL` (auto-summarize provider), `SUMMARY_SYNC_WIRES` (tele-sum bridge wire filter), `SOURCE_BLOCKLIST_EXTRA` (extra Gate-1 blocked domains), `CRM_ENRICH_ENABLED` (org enrichment in the daily CRM cycle — default off), `CRM_CONTACT_DISCOVERY_ENABLED` (writes Needs Review contacts — default off, keep off until that queue is worked), `WEEKLY_PASTE_LOG_PAGE_ID` (Notion landing page), `BD_LEADS_DATABASE_ID` (Notion Paid Work Leads db for the BD loop), `BRAND_*` (deployment-agnostic config overrides), `INTERNAL_API_KEY` + `INTERNAL_API_KEY_DAILY_SCAN` (named agent API keys — see Internal API Key Auth), `X_BEARER_TOKEN` (X account monitor, X list watcher), `WATCHTOWER_BUDGET_MONTHLY_USD` (monthly discovery spend cap, default $20), `X_LISTS_ENABLED` (enable the X list watcher lane, default false), `X_LISTS_DRY_RUN` (log without submitting to intake, default true), `X_LIST_IDS` (comma-separated wire:listId pairs), `REGISTRY_WATCH_ENABLED` (enable the registry-watch lane over `watch_surfaces`, default off), `REGISTRY_WATCH_TIERS` (which `watch_surfaces` tiers the lane polls — `"1"`, `"1,2"`, or `"2"`, default `"1"`), `DEV_MODE` (skip auth in dev), `DATA_DIR` (local data storage).
+See `.env.example` for full list. Key optional vars: `MIGRATION_DATABASE_URL` (schema-owner connection for the pre-deploy migration only; the app never reads it) + `RUNTIME_DATABASE_ROLE` (override for the role that receives runtime grants, default: the `DATABASE_URL` login), `PORT`, `APP_URL`, `ALLOWED_EMAILS`, `STARTUP_LLM_RESCORE_ENABLED` (explicit opt-in to queue-only LLM score repair on boot; default false and may spend API credits), `TELEGRAM_BOT_TOKEN`, `PERPLEXITY_API_KEY`, `PARALLEL_API_KEY` (Parallel.ai scans), `FORUM_SCAN_ENABLED`, `SUMMARIZE_PROVIDER` + `OLLAMA_DEFAULT_MODEL` (auto-summarize provider), `SUMMARY_SYNC_WIRES` (tele-sum bridge wire filter), `SOURCE_BLOCKLIST_EXTRA` (extra Gate-1 blocked domains), `CRM_ENRICH_ENABLED` (org enrichment in the daily CRM cycle — default off), `CRM_CONTACT_DISCOVERY_ENABLED` (writes Needs Review contacts — default off, keep off until that queue is worked), `WEEKLY_PASTE_LOG_PAGE_ID` (Notion landing page), `BD_LEADS_DATABASE_ID` (Notion Paid Work Leads db for the BD loop), `BRAND_*` (deployment-agnostic config overrides), `INTERNAL_API_KEY` + `INTERNAL_API_KEY_DAILY_SCAN` (named agent API keys — see Internal API Key Auth), `X_BEARER_TOKEN` (X account monitor, X list watcher), `WATCHTOWER_BUDGET_MONTHLY_USD` (monthly discovery spend cap, default $20), `X_LISTS_ENABLED` (enable the X list watcher lane, default false), `X_LISTS_DRY_RUN` (log without submitting to intake, default true), `X_LIST_IDS` (comma-separated wire:listId pairs), `REGISTRY_WATCH_ENABLED` (enable the registry-watch lane over `watch_surfaces`, default off), `REGISTRY_WATCH_TIERS` (which `watch_surfaces` tiers the lane polls — `"1"`, `"1,2"`, or `"2"`, default `"1"`), `DEV_MODE` (skip auth in dev), `DATA_DIR` (local data storage).
 
 ## Feeds System
 

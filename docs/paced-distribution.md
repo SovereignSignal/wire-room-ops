@@ -480,7 +480,7 @@ CREATE INDEX IF NOT EXISTS idx_publication_queue_due
 
 No new table, so `scripts/database-runtime-grants.sql` does not need a new grant. `publication_queue` and `distribution_logs` are already granted to the runtime role. `app_state` already is too.
 
-Apply with the migration-owner connection, `npm run db:migrate -- --apply`, then the existing runtime grants script if a grant file change ever appears. Server boot only checks the recorded version. Do not run this against production as part of the design work.
+Apply with the migration-owner connection: on Railway the pre-deploy command reads it from `MIGRATION_DATABASE_URL` and re-applies the runtime grants itself (see `docs/railway-deploy.md`); by hand it is `npm run db:migrate -- --apply` with the same variables. Server boot only checks the recorded version. Do not run this against production as part of the design work.
 
 `distribute_after`: leave it. Do not drop it in this migration. Dropping an unused column on a shared database is a separate, explicit cleanup.
 

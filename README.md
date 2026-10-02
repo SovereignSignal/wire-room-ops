@@ -105,20 +105,24 @@ node dist/scripts/migrate-database.js --apply
 ```
 
 That command is the compiled script, so it runs in the built image without
-`ts-node`. Railway injects the service `DATABASE_URL` into the pre-deploy
-container. The command applies only schema steps newer than the recorded
-version, then exits 0. A database already at that version is a no-op. Any
-failure exits 1: Railway marks the deployment failed and keeps the previous
-deployment serving. The pre-deploy timeout is 300 seconds.
+`ts-node`. It connects as the schema owner from `MIGRATION_DATABASE_URL` when
+that variable is set and falls back to `DATABASE_URL` otherwise. The running
+app only ever uses the restricted `DATABASE_URL`. The command applies only
+schema steps newer than the recorded version, then re-applies and verifies the
+runtime role's grants (`src/db/runtime-grants.ts`, the executable copy of
+`scripts/database-runtime-grants.sql`) and exits 0. A database already at that
+version is a no-op. Any failure exits 1: Railway marks the deployment failed
+and keeps the previous deployment serving. The pre-deploy timeout is 300
+seconds. The log names the login and its source, never the connection string.
 
 The same command is what to run by hand against a non-Railway host, after
-`npm run build`, with the migration-owner connection in `DATABASE_URL`. The
-running app checks `wro_schema_migrations` on startup and does not apply DDL.
-`scripts/database-runtime-grants.sql` is still a separate owner step when a new
-table needs a grant; the pre-deploy command does not run it. The login in the
-service `DATABASE_URL` has to be allowed to apply schema. Existing legacy
-distribution tables are preserved and require an explicit migration if their
-shape is incompatible.
+`npm run build`, with the owner connection in `MIGRATION_DATABASE_URL` and the
+app's connection in `DATABASE_URL`. The runtime role defaults to the login in
+`DATABASE_URL`; set `RUNTIME_DATABASE_ROLE` to override it. The running app
+checks `wro_schema_migrations` on startup and does not apply DDL. Existing
+legacy distribution tables are preserved and require an explicit migration if
+their shape is incompatible. Railway setup, verification queries and the
+pre-2026-12-01 dashboard steps are in `docs/railway-deploy.md`.
 
 ### 4. Verify
 
@@ -134,7 +138,7 @@ shape is incompatible.
 - `npm run build` - compile TypeScript
 - `npm start` - run compiled server
 - `npm run db:migrate` - preview schema steps with ts-node; add `-- --apply` to apply locally
-- Railway pre-deploy - `node dist/scripts/migrate-database.js --apply` (see `railway.json`)
+- Railway pre-deploy - `node dist/scripts/migrate-database.js --apply` (see `railway.json` and `docs/railway-deploy.md`)
 - `npm run typecheck` - TS typecheck
 - `npm run lint` - alias for typecheck
 - `npm run test` - parser/intake tests

@@ -1,3 +1,6 @@
+-- Manual psql copy of src/db/runtime-grants.ts, for a host without the built image.
+-- The release migration command (node dist/scripts/migrate-database.js --apply)
+-- applies and verifies these same grants itself after every schema apply.
 -- Run as the schema owner after migration, with psql -v runtime_role=<existing-role>.
 -- The role must be a login with no elevated attributes, memberships or ownership.
 -- Keep this explicit list aligned with application queries when adding tables.
