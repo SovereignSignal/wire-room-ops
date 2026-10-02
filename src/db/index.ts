@@ -1631,6 +1631,9 @@ export async function ensureDistributionTables(): Promise<void> {
         EXECUTE FUNCTION update_distribution_config_updated_at()
     `);
 
+    const { applyPacedDistributionSchema } = await import('./paced-distribution');
+    await applyPacedDistributionSchema(client);
+
     await client.query('COMMIT');
     console.log('[DB] Distribution tables ready');
   } catch (error) {
@@ -1791,7 +1794,8 @@ export async function finalizeDistributionLog(
      SET status = $1,
          post_text = COALESCE($2, post_text),
          external_id = COALESCE($3, external_id),
-         error_message = $4
+         error_message = $4,
+         sent_at = CASE WHEN $1 = 'success' THEN COALESCE(sent_at, NOW()) ELSE sent_at END
      WHERE id = $5 AND status = 'pending' AND NOT needs_review`,
     [patch.status, patch.postText ?? null, patch.externalId ?? null, patch.errorMessage ?? null, id]
   );

@@ -35,11 +35,30 @@ import {
   getFeedByKey,
 } from '../db';
 import { distributeEntries, generateNewsletterMarkdown, confirmNewsletterDistribution, sendTestMessage } from '../services/distribution';
+import { listOutgoing } from '../services/distribution-pace';
 import { maskConfig, maskCredentials } from '../utils/masking';
 import { rateLimit } from '../middleware/rate-limit';
 import { isValidUuid, isValidFeedKey } from '../utils/validation';
 
 const router = Router();
+
+router.get('/distribution/outgoing', async (req, res) => {
+  const raw = req.query.sentSince;
+  let sentSince: Date | undefined;
+  if (typeof raw === 'string' && raw.length > 0) {
+    sentSince = new Date(raw);
+    if (Number.isNaN(sentSince.getTime())) {
+      res.status(400).json({ error: 'Invalid sentSince' });
+      return;
+    }
+  }
+  try {
+    res.json(await listOutgoing(sentSince));
+  } catch (error) {
+    console.error('[Distribution] Outgoing list failed:', error);
+    res.status(500).json({ error: 'Could not load outgoing distribution' });
+  }
+});
 
 router.get('/distribution/review', async (_req, res) => {
   try { res.json({ items: await listPublicationReview(), jobs: await listQueuedPublicationReview() }); }
