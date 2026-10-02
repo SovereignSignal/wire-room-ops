@@ -119,7 +119,7 @@ src/
 │   ├── forum-dryrun.ts / forum-run-once.ts / forum-activity-probe.ts   # Forum lane testing/audit
 │   ├── cohort-bridge-run-once.ts # Notion cohort bridge (heartbeat + backfill); --dry-run available
 │   ├── source-feeds-dryrun.ts / source-feeds-run-once.ts               # Feed lane testing
-│   ├── weekly-preview.ts / weekly-run-once.ts / weekly-seed-prior.ts / weekly-send-md.ts  # Weekly issue tooling
+│   ├── weekly-run-once.ts / weekly-seed-prior.ts  # Weekly issue tooling
 │   ├── program-backfill.ts # Program-identity backfill: one-off corpus canonicalization (--dry-run mode)
 │   └── cleanup-lane-noise.ts / lane-quality-report.ts / queue-dedup-review.ts  # June-2026 one-off audits
 ├── jobs/
@@ -139,7 +139,7 @@ src/
 │   ├── scan-execution.ts   # Prompt-driven scans (Grok x_search/web_search, Perplexity, Parallel)
 │   ├── source-feeds.ts     # Registry feed ingester (Karma GAP, Grants.gov, EA Forum, own-site scrapes...) with per-source app_state watermark
 │   ├── summary-sync.ts     # tele-sum summaries -> scan_entries review candidates (15-min timer, watermark)
-│   └── weekly-issue.ts     # Friday weekly Substack draft: gather -> verify (Parallel/Firecrawl) -> synthesize -> email + Notion Paste Log
+│   └── weekly-issue.ts     # Friday weekly Substack draft: gather -> verify (Parallel/Firecrawl) -> synthesize -> Notion Paste Log
 ├── migrations/           # One-time TS cleanup scripts (historical)
 ├── services/
 │   ├── anthropic.ts      # Claude API calls with scraping integration (uses getBrand())
@@ -158,7 +158,7 @@ src/
 │   ├── dedup.ts          # URL exact-match + exact-name dedup (fuzzy layer disabled) + alternate-source annotation
 │   ├── discord-channel.ts # Discord channel posting via REST API (built, unused in prod)
 │   ├── distribution.ts   # Distribution orchestrator: send entries to channels, retry, newsletter
-│   ├── email.ts          # Resend email templates (digest, weekly draft, CSV, alerts, login)
+│   ├── email.ts          # Resend email templates (digest, CSV, alerts, login)
 │   ├── entry-actions.ts  # Approve/decline/restore business logic + approve side-effects (audit: actor/reason/dryRun)
 │   ├── forum.ts          # discuss.watch client: pre-classified /grants feed pull + governance allowlist, age gate, LLM thread judge
 │   ├── grok.ts           # Grok Chat + Responses API for X.com content and scans (uses getBrand())
@@ -371,7 +371,7 @@ All providers support DB-backed credentials (`api_providers` table) with env var
 - **Claude** (`src/services/anthropic.ts`): Summarization (Opus) + post generation (Sonnet for cost efficiency). Uses `@anthropic-ai/sdk`.
 - **Perplexity** (`src/services/perplexity.ts`): `sonar-pro` model, natively searches web with citations. For `tool_type: 'perplexity'` prompts.
 - **Firecrawl** (`src/services/scraper.ts`): Web scraping for non-X.com URLs.
-- **Resend** (`src/services/email.ts`): all outbound email — daily digest, weekly draft, CSV export, scan digest, login/magic link, test alert, scheduled-job failure alert, download-link resend.
+- **Resend** (`src/services/email.ts`): all outbound email — daily digest, CSV export, scan digest, login/magic link, test alert, scheduled-job failure alert, download-link resend.
 
 ## Error Handling & Security
 
@@ -607,7 +607,7 @@ Cross-wire CSV export via `src/jobs/csv-export.ts`. `GET /api/export/csv?hoursBa
 
 ## Weekly Grant Wire Issue
 
-`src/jobs/weekly-issue.ts` — runs **Fridays only inside the daily-digest fold** (no separate cron). Gathers the week's distributed+approved entries (spine = `distribution_logs` success joined to approved `scan_entries`, window from the prior issue's date) plus currently-open queued/approved GRANT items ("Also open"); verifies each item is still open via Parallel Task API (primary, cited) or Firecrawl scrape + Sonnet judge (fallback), correcting amounts/deadlines and dropping closed items; synthesizes the locked Substack shape with `claude-opus-4-8`; emails the draft (`sendWeeklyDraftEmail`) and lands it in the Notion "Weekly Summaries Paste Log" (`src/services/weekly-notion.ts`). Continuity via `app_state` keys `weekly:last-issue` and `weekly:week-number`. Publishing to Substack stays human. Manual tooling: `src/scripts/weekly-run-once.ts` (`--no-email`), `weekly-preview.ts`, `weekly-seed-prior.ts`.
+`src/jobs/weekly-issue.ts` — runs **Fridays only inside the daily-digest fold** (no separate cron). Gathers the week's distributed+approved entries (spine = `distribution_logs` success joined to approved `scan_entries`, window from the prior issue's date) plus currently-open queued/approved GRANT items ("Also open"); verifies each item is still open via Parallel Task API (primary, cited) or Firecrawl scrape + Sonnet judge (fallback), correcting amounts/deadlines and dropping closed items; synthesizes the locked Substack shape with `claude-opus-4-8`; lands the draft in the Notion "Weekly Summaries Paste Log" (`src/services/weekly-notion.ts`), which is the only delivery: the draft email was retired 2026-10-02, and a failed landing fails the run (digest anomaly, no checkpoint) so the next run covers the missed window. Continuity via `app_state` keys `weekly:last-issue` and `weekly:week-number`. Publishing to Substack stays human. Manual tooling: `src/scripts/weekly-run-once.ts` (`--dry-run`), `weekly-seed-prior.ts`.
 
 ## Rate Limiting
 

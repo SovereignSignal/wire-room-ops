@@ -144,17 +144,25 @@ test('Parallel verification requires open, cited, usable, medium-or-better evide
 });
 
 test('weekly checkpoint requires delivery unless storage is explicitly skipped', () => {
-  assert.doesNotThrow(() => assertWeeklyCheckpointAllowed({ skipEmail: false, skipStore: false, emailed: true, notionLanded: false }));
-  assert.doesNotThrow(() => assertWeeklyCheckpointAllowed({ skipEmail: false, skipStore: false, emailed: false, notionLanded: true }));
-  assert.doesNotThrow(() => assertWeeklyCheckpointAllowed({ skipEmail: true, skipStore: true, emailed: false, notionLanded: false }));
+  assert.doesNotThrow(() => assertWeeklyCheckpointAllowed({ skipDelivery: false, skipStore: false, notionLanded: true }));
+  assert.doesNotThrow(() => assertWeeklyCheckpointAllowed({ skipDelivery: true, skipStore: true, notionLanded: false }));
   assert.throws(
-    () => assertWeeklyCheckpointAllowed({ skipEmail: false, skipStore: false, emailed: false, notionLanded: false }),
+    () => assertWeeklyCheckpointAllowed({ skipDelivery: false, skipStore: false, notionLanded: false }),
     /delivery failed/,
   );
   assert.throws(
-    () => assertWeeklyCheckpointAllowed({ skipEmail: true, skipStore: false, emailed: false, notionLanded: false }),
+    () => assertWeeklyCheckpointAllowed({ skipDelivery: true, skipStore: false, notionLanded: false }),
     /delivery is skipped/,
   );
+});
+
+// The draft email was retired 2026-10-02: the Notion Paste Log is the only delivery.
+test('weekly issue has no email path', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const job = fs.readFileSync(path.join(__dirname, '../src/jobs/weekly-issue.ts'), 'utf8');
+  assert.doesNotMatch(job, /services\/email/);
+  assert.equal(require('../src/services/email').sendWeeklyDraftEmail, undefined);
 });
 
 // The byline is the newsletter's only conversion path. 41 issues held a
