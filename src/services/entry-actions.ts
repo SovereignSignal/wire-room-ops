@@ -14,6 +14,7 @@ import { validateForApproval } from './approval-guard';
 import { drainPublicationQueue } from './publication-queue';
 import { bookPacedQueue, getDistributionPace } from './distribution-pace';
 import { autoSummarizeOnApprove } from './auto-summarize';
+import { isLeakedSummary } from './summary-guard';
 import { extractOrgFromName, upsertOrgProfile, linkEntryToOrg, findSimilarOrg } from './org-extractor';
 import { enrichSingleOrg } from './org-enricher';
 import { refreshProgramCounters } from './program-identity';
@@ -302,8 +303,8 @@ function scheduleApproveSideEffects(
     });
   }
 
-  // Auto-summarize if enriched_summary is missing/thin
-  if (!row.enriched_summary || row.enriched_summary.length < 60) {
+  // Auto-summarize if enriched_summary is missing/thin or holds leaked reasoning
+  if (!row.enriched_summary || row.enriched_summary.length < 60 || isLeakedSummary(row.enriched_summary)) {
     setImmediate(() => {
       autoSummarizeOnApprove(
         row.id, summaryId, row.name,

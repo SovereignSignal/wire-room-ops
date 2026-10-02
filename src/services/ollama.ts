@@ -9,6 +9,7 @@ import { getBrand } from '../config/brand';
 import { DatabaseEntry } from '../types';
 import { logApiUsage } from './api-usage';
 import { getCachedProvider } from './api-provider';
+import { findSummaryLeak } from './summary-guard';
 
 const DEFAULT_OLLAMA_MODEL = 'gpt-oss:120b';
 const DEFAULT_OLLAMA_BASE_URL = 'https://ollama.com/api';
@@ -21,9 +22,33 @@ interface OllamaChatResponse {
     thinking?: string;
   };
   done: boolean;
+  done_reason?: string;
   prompt_eval_count?: number;
   eval_count?: number;
   total_duration?: number;
+}
+
+// num_predict counts reasoning tokens too. At 200, gpt-oss used the whole
+// budget thinking and returned empty content.
+const SUMMARY_TOKEN_BUDGET = 1500;
+
+/**
+ * gpt-oss cannot turn thinking off, only down. Other models get no `think`
+ * field: Ollama rejects it for models without thinking support.
+ */
+export function thinkControl(model: string): { think?: 'low' } {
+  return /^gpt-oss\b/i.test(model) ? { think: 'low' } : {};
+}
+
+/**
+ * The model's final answer only. `message.thinking` is reasoning and must never
+ * be used as output, even when `content` is empty: that fallback stored
+ * "We need to produce a concise opportunity summary..." as published summaries.
+ * A length stop means the answer was cut off, so it is not a final answer either.
+ */
+export function finalAnswerText(data: Pick<OllamaChatResponse, 'message' | 'done_reason'>): string {
+  if (data.done_reason === 'length') return '';
+  return (data.message?.content || '').trim();
 }
 
 function buildSummarizePrompt(): string {
@@ -75,9 +100,10 @@ export async function summarizeWithOllama(entry: DatabaseEntry, model?: string):
       model: useModel,
       messages: [{ role: 'user', content: prompt }],
       stream: false,
+      ...thinkControl(useModel),
       options: {
         temperature: 0.3,
-        num_predict: 500,
+        num_predict: SUMMARY_TOKEN_BUDGET,
       },
     }),
   });
@@ -93,12 +119,13 @@ export async function summarizeWithOllama(entry: DatabaseEntry, model?: string):
 
   const data = await response.json() as OllamaChatResponse;
 
-  // Kimi K2.5 puts response in 'thinking' field, not 'content'
-  const rawText = data.message?.content || data.message?.thinking || '';
-  const summary = rawText.trim();
-
+  const summary = finalAnswerText(data);
   if (!summary) {
-    throw new Error('Ollama API returned empty response');
+    throw new Error(`Ollama API returned no final answer (done_reason=${data.done_reason ?? 'unknown'})`);
+  }
+  const leak = findSummaryLeak(summary);
+  if (leak) {
+    throw new Error(`Ollama API returned reasoning instead of a summary (${leak.rule})`);
   }
 
   logApiUsage({
@@ -156,9 +183,10 @@ Write ONLY the final newsletter summary below. No thinking, no explanation, no m
       model: useModel,
       messages: [{ role: 'user', content: prompt }],
       stream: false,
+      ...thinkControl(useModel),
       options: {
         temperature: 0.3,
-        num_predict: 200,
+        num_predict: SUMMARY_TOKEN_BUDGET,
       },
     }),
   });
@@ -173,34 +201,14 @@ Write ONLY the final newsletter summary below. No thinking, no explanation, no m
   }
 
   const data = await response.json() as OllamaChatResponse;
-
-  // GPT-OSS models output to 'content' but may have 'thinking' too. Use content preferentially.
-  const rawText = data.message?.content || data.message?.thinking || '';
-  
-  // Extract just the summary — look for actual output after thinking
-  let summary = rawText.trim();
-  
-  // If there's a clear separator like "Probably:" or "Make sure it's only", extract after the last such marker
-  const markers = ['Probably:', 'Probably', 'Make sure it', 'Provide exactly that'];
-  for (const marker of markers) {
-    const idx = summary.lastIndexOf(marker);
-    if (idx !== -1) {
-      const after = summary.slice(idx + marker.length).trim();
-      if (after.length > 50) {
-        summary = after;
-        break;
-      }
-    }
-  }
-  
-  // Clean up any quotes or extra whitespace
-  summary = summary.replace(/^["']|["']$/g, '').trim();
+  const summary = finalAnswerText(data).replace(/^["']|["']$/g, '').trim();
 
   logApiUsage({
     provider: 'ollama', model: useModel, purpose: 'auto-summarize',
     duration_ms: Date.now() - start,
     tokens_in: data.prompt_eval_count,
     tokens_out: data.eval_count,
+    ...(summary ? {} : { success: false, error_message: `no final answer (done_reason=${data.done_reason ?? 'unknown'})` }),
   });
 
   return summary && summary.length >= 20 ? summary : null;

@@ -18,6 +18,7 @@ import { getCachedProvider } from './api-provider';
 import { fetchThreadContext, type ThreadContext } from './x-thread';
 import { isXcomUrl, DEFAULT_GROK_MODEL } from './grok';
 import { ollamaAutoSummarize } from './ollama';
+import { findSummaryLeak } from './summary-guard';
 
 const DEFAULT_GROK_BASE_URL = 'https://api.x.ai/v1';
 
@@ -110,11 +111,127 @@ Write a 2-4 sentence newsletter summary. Lead with the organization/program name
 
   if (!response.ok) return null;
 
-  const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-  const summary = data.choices?.[0]?.message?.content?.trim();
+  const data = await response.json() as {
+    choices?: Array<{ finish_reason?: string; message?: { content?: string } }>;
+  };
+  const choice = data.choices?.[0];
+  // A length stop means the answer was cut off (or never started after reasoning).
+  if (choice?.finish_reason === 'length') return null;
+  const summary = choice?.message?.content?.trim();
   return summary && summary.length >= 20 ? summary : null;
 }
 
+export type SummaryProvider = 'ollama' | 'grok';
+
+export interface SummaryAttempt {
+  provider: SummaryProvider;
+  outcome: 'ok' | 'empty' | 'rejected' | 'error';
+  detail?: string;
+}
+
+export interface SummaryResult {
+  summary: string | null;
+  provider: SummaryProvider | null;
+  attempts: SummaryAttempt[];
+}
+
+export interface SummaryInput {
+  entryId?: number;
+  name: string;
+  description: string;
+  amount: string | null;
+  deadline: string | null;
+  sourceUrl: string | null;
+  wire?: string;
+}
+
+/**
+ * Provider order for one summary. Each provider gets a second try when it is
+ * the only one available, so a single rejected output is retried once.
+ */
+export function planSummaryAttempts(
+  preference: string,
+  available: Record<SummaryProvider, boolean>,
+): SummaryProvider[] {
+  const order: SummaryProvider[] = preference === 'ollama' ? ['ollama']
+    : preference === 'grok' ? ['grok']
+      : ['ollama', 'grok'];
+  const usable = order.filter(provider => available[provider]);
+  return usable.length === 1 ? [usable[0], usable[0]] : usable;
+}
+
+/**
+ * Generate a summary and accept it only if it reads as a finished summary.
+ * Never persists anything; callers decide where the result goes.
+ */
+export async function generateValidatedSummary(
+  input: SummaryInput,
+  deps: {
+    ollama?: typeof ollamaAutoSummarize;
+    grok?: typeof summarizeViaGrok;
+    available?: Record<SummaryProvider, boolean>;
+    preference?: string;
+  } = {},
+): Promise<SummaryResult> {
+  const opts: SummarizeOpts = {
+    name: cleanText(input.name),
+    description: cleanText(input.description),
+    amount: input.amount,
+    deadline: input.deadline,
+    sourceUrl: input.sourceUrl,
+    wire: input.wire,
+  };
+  const available = deps.available ?? {
+    ollama: !!getCachedProvider('ollama')?.api_key,
+    grok: !!getCachedProvider('grok')?.api_key,
+  };
+  const plan = planSummaryAttempts(deps.preference ?? config.summarize.provider, available);
+  const callOllama = deps.ollama ?? ollamaAutoSummarize;
+  const callGrok = deps.grok ?? summarizeViaGrok;
+
+  const attempts: SummaryAttempt[] = [];
+  let threadContext: ThreadContext | null | undefined;
+
+  for (const provider of plan) {
+    let text: string | null;
+    try {
+      if (provider === 'ollama') {
+        text = await callOllama(opts);
+      } else {
+        if (threadContext === undefined) {
+          threadContext = input.sourceUrl && isXcomUrl(input.sourceUrl)
+            ? await fetchThreadContext(input.sourceUrl)
+            : null;
+        }
+        text = await callGrok(opts, threadContext, input.entryId);
+      }
+    } catch (err) {
+      attempts.push({ provider, outcome: 'error', detail: err instanceof Error ? err.message : String(err) });
+      continue;
+    }
+
+    const trimmed = (text || '').trim();
+    if (trimmed.length < 20) {
+      attempts.push({ provider, outcome: 'empty' });
+      continue;
+    }
+    const leak = findSummaryLeak(trimmed);
+    if (leak) {
+      attempts.push({ provider, outcome: 'rejected', detail: `${leak.rule}: ${leak.excerpt}` });
+      continue;
+    }
+    attempts.push({ provider, outcome: 'ok' });
+    return { summary: trimmed, provider, attempts };
+  }
+
+  return { summary: null, provider: null, attempts };
+}
+
+function describeAttempts(attempts: SummaryAttempt[]): string {
+  return attempts.map(a => `${a.provider}=${a.outcome}${a.detail ? ` (${a.detail.slice(0, 120)})` : ''}`).join(', ');
+}
+
+/** Returns true when a validated summary was stored. */
 export async function autoSummarizeOnApprove(
   entryId: number,
   summaryId: number | null,
@@ -124,71 +241,41 @@ export async function autoSummarizeOnApprove(
   deadline: string | null,
   sourceUrl: string | null,
   wire?: string
-): Promise<void> {
+): Promise<boolean> {
   try {
-    const cleanDesc = cleanText(description);
-    const cleanName = cleanText(name);
-    const preference = config.summarize.provider; // 'auto' | 'ollama' | 'grok'
-
-    const opts: SummarizeOpts = { name: cleanName, description: cleanDesc, amount, deadline, sourceUrl, wire };
-    let summary: string | null = null;
-    let usedProvider = 'unknown';
-
-    // Fetch thread context for X.com URLs (used by Grok path)
-    let threadContext: ThreadContext | null = null;
-    if (sourceUrl && isXcomUrl(sourceUrl)) {
-      threadContext = await fetchThreadContext(sourceUrl);
-    }
-
-    if (preference === 'ollama') {
-      summary = await ollamaAutoSummarize(opts);
-      usedProvider = 'ollama';
-      if (!summary) {
-        console.warn(`[AutoSummarize] Ollama failed for entry ${entryId}, no fallback (SUMMARIZE_PROVIDER=ollama)`);
-        return;
-      }
-    } else if (preference === 'grok') {
-      summary = await summarizeViaGrok(opts, threadContext, entryId);
-      usedProvider = 'grok';
-      if (!summary) {
-        console.warn(`[AutoSummarize] Grok failed for entry ${entryId}, no fallback (SUMMARIZE_PROVIDER=grok)`);
-        return;
-      }
-    } else {
-      // auto: try Ollama first, fall back to Grok
-      summary = await ollamaAutoSummarize(opts);
-      usedProvider = 'ollama';
-      if (!summary) {
-        console.log(`[AutoSummarize] Ollama unavailable for entry ${entryId}, falling back to Grok`);
-        summary = await summarizeViaGrok(opts, threadContext, entryId);
-        usedProvider = 'grok';
-      }
-      if (!summary) {
-        console.warn(`[AutoSummarize] No provider available for entry ${entryId}`);
-        return;
-      }
-    }
-
+    const result = await generateValidatedSummary({
+      entryId, name, description, amount, deadline, sourceUrl, wire,
+    });
     const pool = getPool();
 
-    // Update scan_entries
+    if (!result.summary) {
+      if (result.attempts.length === 0) {
+        console.warn(`[AutoSummarize] No summarize provider configured for entry ${entryId}`);
+        return false;
+      }
+      console.warn(`[AutoSummarize] No usable summary for entry ${entryId}: ${describeAttempts(result.attempts)}`);
+      await pool.query(`UPDATE scan_entries SET auto_summarize_failed = true WHERE id = $1`, [entryId]);
+      return false;
+    }
+
     await pool.query(
-      `UPDATE scan_entries SET enriched_summary = $1, updated_at = NOW() WHERE id = $2`,
-      [summary, entryId]
+      `UPDATE scan_entries
+       SET enriched_summary = $1, auto_summarize_failed = false, updated_at = NOW()
+       WHERE id = $2`,
+      [result.summary, entryId]
     );
 
-    // Patch the summaries row if we have its ID
     if (summaryId) {
       await pool.query(
         `UPDATE summaries SET summary = $1 WHERE id = $2`,
-        [summary, summaryId]
+        [result.summary, summaryId]
       ).catch(err => console.warn(`[AutoSummarize] Failed to patch summaries row ${summaryId}:`, err.message));
     }
 
-    console.log(`[AutoSummarize] Generated summary for entry ${entryId} via ${usedProvider} (${summary.length} chars)`);
+    console.log(`[AutoSummarize] Generated summary for entry ${entryId} via ${result.provider} (${result.summary.length} chars)`);
+    return true;
   } catch (err) {
     console.error(`[AutoSummarize] Failed for entry ${entryId}:`, err);
-    // Mark entry so it can be retried
     try {
       const pool = getPool();
       await pool.query(
@@ -198,5 +285,6 @@ export async function autoSummarizeOnApprove(
     } catch (markErr) {
       console.error(`[AutoSummarize] Failed to mark entry ${entryId} as failed:`, markErr);
     }
+    return false;
   }
 }
