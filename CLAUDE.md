@@ -121,6 +121,7 @@ src/
 │   ├── source-feeds-dryrun.ts / source-feeds-run-once.ts               # Feed lane testing
 │   ├── weekly-run-once.ts / weekly-seed-prior.ts  # Weekly issue tooling
 │   ├── program-backfill.ts # Program-identity backfill: one-off corpus canonicalization (--dry-run mode)
+│   ├── backfill-summary-leaks.ts # Regenerate enriched_summary rows holding leaked reasoning (dry run by default, --apply to write)
 │   └── cleanup-lane-noise.ts / lane-quality-report.ts / queue-dedup-review.ts  # June-2026 one-off audits
 ├── jobs/
 │   ├── account-monitor.ts  # Poll monitored X accounts (orgs + people) for new URLs -> intake
@@ -147,7 +148,7 @@ src/
 │   ├── api-usage.ts      # Fire-and-forget API usage logging + cost estimation (api_usage_log table)
 │   ├── approval-guard.ts # Pre-approval validation (blocks bad source/description data)
 │   ├── auth.ts           # Sessions, magic-link/download tokens, cleanup sweep
-│   ├── auto-summarize.ts # Auto-generate summary on approve (Ollama-first, Grok fallback)
+│   ├── auto-summarize.ts # Auto-generate summary on approve (Ollama-first, Grok fallback); every output passes summary-guard.ts or the entry is flagged auto_summarize_failed
 │   ├── bd-leads-notion.ts # Write verified BD leads to the Notion Paid Work Leads db (dedup by Source URL)
 │   ├── bd-qualifier.ts   # BD shape-screen: scores signals against SOV_SHAPE (3 service lines, ecosystem-blind)
 │   ├── bd-roles.ts       # BD roles lane: ATS/RSS registry + title taxonomy + net-new watermark (Phase B)
@@ -184,6 +185,7 @@ src/
 │   ├── source-feeds.ts   # SOURCE_REGISTRY + fetch handlers (rss/atom, rest_json, graphql, github_csv, scrape)
 │   ├── source-filter.ts  # Gate-1 aggregator-source blocklist (SOURCE_BLOCKLIST_EXTRA extendable)
 │   ├── storage.ts        # Postgres-backed file storage with in-memory cache
+│   ├── summary-guard.ts  # Rejects model reasoning/draft notes posing as a summary (never read message.thinking)
 │   ├── telegram-adapter.ts # Telegram intake bot adapter (webhook handler -> intake-core)
 │   ├── telegram-channel.ts # Telegram Bot API posting to channels (the LIVE distribution channel)
 │   ├── url-verify.ts     # Deterministic URL verification (drops 404s in enrichment)
@@ -328,7 +330,7 @@ INGESTION (raw data)                    THE REFINERY (processing)               
 
 ### Dedup Tables
 
-- **`seen_urls`**: Exact URL match. Composite unique on `(normalized_url, wire)`. Handles aggregate URLs (same URL, different entries) via name similarity check.
+- **`seen_urls`**: Exact URL match. Composite unique on `(normalized_url, wire)`. Handles aggregate URLs (same URL, different entries) via name similarity check. A prior entry that is declined/archived or past its deadline does not hold the URL against a submission naming a different round (different deadline, or its own round/year/FY marker); the new row is queued with an operator note `New cycle of #<prior> ... (prior declined)` (`reopenedRoundNote` in `src/services/dedup.ts`). Approved/queued rows that are still open keep URL dedup strict.
 - **`seen_names`**: Stores normalized names and tokens for review intelligence and alternate-source detection. Hard duplicate blocking currently relies on URL exact match; fuzzy name blocking is intentionally disabled after false positives.
 - **Program resolver (Layer 1.75)**: The `programs` table supplies advisory program and round context. It does not demote entries. A 53-link audit found that broad program identities could collapse distinct proposals, rounds, calls, and cross-wire events. Exact URL and exact name layers remain the automatic duplicate gates. A same-round repeat gets an operator note with the program history (`Program repeat (seen N× …)`), and the digest renders the history via the programs join (see `src/services/program-identity.ts`).
 - **Recheck holds**: decided-recheck blocks automatic demotion when the semantic match is cross-wire (immediate candidate OR resolved terminal parent), when the chain resolves to a canonical parent with a different source, or when the duplicate chain is broken. Held entries STAY QUEUED with a "Human review required" note and a `decided_recheck` hold stamp (`cross_wire_blocked` / `canonical_parent_blocked` / `duplicate_chain_error`). Visibility contract: holds stay visible in the digest's fresh finds (the same_listing exclusion excepts hold stamps), count as `held` in `RecheckStats` (surfaced in the run log, the Telegram intake receipt, and the digest's `held` ledger lane). Do not add a new hold outcome without carrying it through those three surfaces (see `src/jobs/decided-recheck.ts`, `src/jobs/daily-digest.ts`, `src/services/telegram-adapter.ts`).
