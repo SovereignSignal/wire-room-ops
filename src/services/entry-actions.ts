@@ -12,6 +12,7 @@ import { getPool } from '../db';
 import { insertApprovedSummary } from '../db';
 import { validateForApproval } from './approval-guard';
 import { drainPublicationQueue } from './publication-queue';
+import { bookPacedQueue, getDistributionPace } from './distribution-pace';
 import { autoSummarizeOnApprove } from './auto-summarize';
 import { extractOrgFromName, upsertOrgProfile, linkEntryToOrg, findSimilarOrg } from './org-extractor';
 import { enrichSingleOrg } from './org-enricher';
@@ -113,6 +114,12 @@ export function eligibleStatusesForAction(action: string): readonly string[] | n
   return ACTION_ELIGIBLE_STATUSES[action] ?? null;
 }
 
+const STATUS_CHANGE_SQL = `UPDATE scan_entries
+     SET status = $1, distributable = $2, actioned_by = COALESCE($3, actioned_by), action_reason = COALESCE($4, action_reason), updated_at = NOW()
+     WHERE id = ANY($5)
+       AND ($6::text[] IS NULL OR status = ANY($6))
+     RETURNING id, status, wire, wires, name, description, enriched_summary, quality_score, amount, deadline, source_url, org_id, program_id, scan_date, tags`;
+
 async function applyStatusChange(
   pool: Pool,
   entryIds: number[],
@@ -122,20 +129,46 @@ async function applyStatusChange(
   opts: ActionOptions,
 ): Promise<{ rows: any[] }> {
   const eligible = eligibleStatusesForAction(action);
-  const result = await pool.query(
-    `WITH changed AS (UPDATE scan_entries
-     SET status = $1, distributable = $2, actioned_by = COALESCE($3, actioned_by), action_reason = COALESCE($4, action_reason), updated_at = NOW()
-     WHERE id = ANY($5)
-       AND ($6::text[] IS NULL OR status = ANY($6))
-     RETURNING id, status, wire, name, description, enriched_summary, quality_score, amount, deadline, source_url, org_id, program_id, scan_date, tags),
-     queued AS (INSERT INTO publication_queue (entry_id)
-       SELECT id FROM changed WHERE $1 = 'approved' AND $2
-       ON CONFLICT (entry_id) DO UPDATE SET status = 'queued', attempts = 0,
-         available_at = NOW(), lease_token = NULL, updated_at = NOW())
-     SELECT * FROM changed`,
-    [newStatus, distributable, opts.actor || null, opts.reason || null, entryIds, eligible ? [...eligible] : null]
-  );
-  return result;
+  const params = [newStatus, distributable, opts.actor || null, opts.reason || null, entryIds, eligible ? [...eligible] : null];
+  const pace = action === 'approve' && distributable ? await getDistributionPace() : null;
+  if (!pace?.enabled) {
+    return pool.query(
+      `WITH changed AS (${STATUS_CHANGE_SQL}),
+       queued AS (INSERT INTO publication_queue (entry_id)
+         SELECT id FROM changed WHERE $1 = 'approved' AND $2
+         ON CONFLICT (entry_id) DO UPDATE SET status = 'queued', attempts = 0,
+           available_at = NOW(), lease_token = NULL, updated_at = NOW())
+       SELECT * FROM changed`,
+      params,
+    );
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(STATUS_CHANGE_SQL, params);
+    const byId = new Map(result.rows.map(row => [Number(row.id), row]));
+    const seen = new Set<number>();
+    const ordered: typeof result.rows = [];
+    for (const id of entryIds) {
+      const row = byId.get(id);
+      if (!row || seen.has(id)) continue;
+      seen.add(id);
+      ordered.push(row);
+    }
+    await bookPacedQueue(client, ordered.map(row => ({
+      id: Number(row.id),
+      wire: row.wire,
+      wires: Array.isArray(row.wires) ? row.wires : [],
+    })), pace.intervalMinutes);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 /** Throws if any id is missing or in a status that cannot take this action. Already-at-target is allowed. */

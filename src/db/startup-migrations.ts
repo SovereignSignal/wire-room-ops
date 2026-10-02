@@ -40,9 +40,10 @@ import { ensureDiscoveredContactsTable } from '../services/contact-discovery';
 import { ensureOrgMetrics } from './org-metrics';
 import { ensureProgramMetrics } from './program-metrics';
 import { ensureProgramDecisions } from './program-decisions';
+import { ensurePacedDistribution } from './paced-distribution';
 
 // Increment whenever the schema contract changes, including enum constants.
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 export const STARTUP_MIGRATIONS: ReadonlyArray<{ name: string; version?: number; run: () => Promise<void> }> = [
   { name: 'sessions', run: ensureSessionsTable },
@@ -71,6 +72,7 @@ export const STARTUP_MIGRATIONS: ReadonlyArray<{ name: string; version?: number;
   { name: 'org-metrics', version: 2, run: ensureOrgMetrics },
   { name: 'program-metrics', version: 3, run: ensureProgramMetrics },
   { name: 'program-decisions', version: 4, run: ensureProgramDecisions },
+  { name: 'paced-distribution', version: 5, run: ensurePacedDistribution },
 ];
 
 export interface StartupMigrationHealth {

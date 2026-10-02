@@ -1,6 +1,8 @@
 # Paced Telegram distribution
 
-Investigation and design only. This document does not change runtime behavior, Railway config, or the production database.
+Phase 1 is implemented behind `distribution:pace.enabled = false`. A deploy does not change when posts go out. Quiet hours, pause/reorder/send-now controls, and reconciliation enqueue are still design-only.
+
+The rest of this document is the investigation and the full design. It does not by itself change Railway config or the production database.
 
 The operator problem: **Approve to Wires** publishes immediately. Approving 20–30 entries in one sitting dumps that many posts into the Telegram channel. Earlier attempts to stream them slowly never became the path the approve button uses, so items were either still blasted out, or they sat on a column nothing wrote. The replacement has to make every approved item visible in Postgres from the moment of approval until Telegram has accepted it.
 
@@ -455,7 +457,7 @@ Turn the flag on only after looking at the outgoing list during a real approval 
 
 ### Migrations
 
-Current `SCHEMA_VERSION` is 4. Add one versioned step and set `SCHEMA_VERSION = 5`.
+Phase 1 sets `SCHEMA_VERSION` to 5 and adds one versioned step, `paced-distribution`. Upgrades from version 4 run only that step.
 
 ```text
 publication_queue
