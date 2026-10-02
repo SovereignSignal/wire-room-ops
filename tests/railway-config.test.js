@@ -26,9 +26,14 @@ test('Railway migrates the schema before starting a release', () => {
 });
 
 // ts-node is a devDependency, so the release command has to be the compiled
-// script. It uses the process DATABASE_URL and exits 1 on failure.
+// script. It uses MIGRATION_DATABASE_URL (owner) or DATABASE_URL and exits 1 on failure.
 test('the release migration is the compiled script and fails closed', () => {
-  assert.match(migrate, /DATABASE_URL must be supplied for migration/);
+  assert.match(migrate, /MIGRATION_DATABASE_URL or DATABASE_URL must be supplied for migration/);
+  assert.match(migrate, /resolveMigrationConnection\(\)/);
+  assert.match(migrate, /applyRuntimeGrants/);
+  assert.match(migrate, /verifyRuntimeGrants/);
+  // The log must identify the login, never the connection string.
+  assert.doesNotMatch(migrate, /console\.log\([^)]*connection\.url/);
   assert.match(migrate, /process\.exit\(1\)/);
   assert.doesNotMatch(migrate, /startServer/);
   assert.doesNotMatch(railway.deploy.preDeployCommand, /ts-node|npm run db:migrate/);
