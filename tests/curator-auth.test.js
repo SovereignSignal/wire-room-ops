@@ -136,6 +136,20 @@ test('curator approve without a quote is 400', async () => {
   assert.match(body.error, /quote/);
 });
 
+// Withhold rides the decide doors, so it needs the same evidence and never reaches an intake key.
+test('curator withhold needs a reason on the single and bulk action doors', async () => {
+  for (const [path, body] of [
+    ['/api/scan/entries/1/action', { action: 'withhold' }],
+    ['/api/scan/entries/bulk-action', { action: 'withhold', ids: [1, 2] }],
+  ]) {
+    const res = await call('POST', path, { key: FULL, body });
+    assert.equal(res.status, 400, `${path} returned ${res.status}`);
+    assert.match((await res.json()).error, /reason/);
+    const intake = await call('POST', path, { key: INTAKE, body });
+    assert.equal(intake.status, 403);
+  }
+});
+
 test('internal key still reaches POST /api/feeds/run', async () => {
   const res = await call('POST', '/api/feeds/run', { key: INTERNAL, body: { wire: 'zz-phase3-test' } });
   assert.ok(res.status !== 401 && res.status !== 403, `expected auth to pass, got ${res.status}`);

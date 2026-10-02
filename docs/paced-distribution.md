@@ -2,6 +2,8 @@
 
 Phase 1 is implemented behind `distribution:pace.enabled = false`. A deploy does not change when posts go out. Quiet hours, pause/reorder/send-now controls, and reconciliation enqueue are still design-only.
 
+Added 2026-10-02, ahead of the rest of phase 2: withhold, as `action: "withhold"` on the entry action doors (`docs/curator-api.md`), not the `/api/distribution/queue/:entryId/withhold` route sketched below. It also accepts a `missing` entry, which that sketch did not, because the first use was 187 stale July approvals that never reached the queue. Resume is still design-only. The `missing` rule also counts a successful Telegram log with no `channel_id` as sent for its wire: those are March 2026 sends from before managed channels recorded which one they used. The send path does not share that rule yet (`getUndistributedEntries` and `distributeEntry` still match on `channel_id`), so the manual `POST /api/distribution/run/:wire` would repost them.
+
 The rest of this document is the investigation and the full design. It does not by itself change Railway config or the production database.
 
 The operator problem: **Approve to Wires** publishes immediately. Approving 20–30 entries in one sitting dumps that many posts into the Telegram channel. Earlier attempts to stream them slowly never became the path the approve button uses, so items were either still blasted out, or they sat on a column nothing wrote. The replacement has to make every approved item visible in Postgres from the moment of approval until Telegram has accepted it.
@@ -262,7 +264,7 @@ Do not add a parallel status vocabulary that can disagree with the queue. Derive
 | `retry wait` | `queued` after an **explicit** Telegram refusal, `error_message` set, `available_at` in the future | Refused, not lost. Will try again at `available_at`. |
 | `withheld` | `withheld` | Operator pulled it. Stays approved. Will not send until resumed. |
 | `not on wires` | `approved` and `distributable = false` and no queue row | Approve to Programs, or an agent approval. Correctly absent. |
-| `missing` | `approved`, `distributable` true, no queue row in `queued`/`running`/`review`/`withheld`, and at least one enabled destination has neither `success` nor `pending` | Reconciliation finding. Not sent, not scheduled. |
+| `missing` | `approved`, `distributable` true, no queue row in `queued`/`running`/`review`/`withheld`, and at least one enabled destination has neither `success` nor `pending`. A `success` log with no `channel_id` settles every destination on its wire. | Reconciliation finding. Not sent, not scheduled. |
 
 Timestamps:
 

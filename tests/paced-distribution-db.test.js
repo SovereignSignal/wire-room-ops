@@ -164,6 +164,163 @@ test('paused pacing sends nothing and a missing approval stays visible', async (
   assert.equal((await pool.query(`SELECT status FROM publication_queue WHERE entry_id = $1`, [row.id])).rows[0].status, 'queued');
 });
 
+async function approvedOffQueue(name, wire = 'crypto', wires = [wire]) {
+  const row = await entry(name, wire);
+  await pool.query(`UPDATE scan_entries SET status = 'approved', distributable = true, wires = $2,
+    actioned_by = 'user:approver', action_reason = 'approved in July' WHERE id = $1`, [row.id, wires]);
+  return row;
+}
+
+async function legacyReceipt(entryId, wire, status = 'success') {
+  await pool.query(`INSERT INTO distribution_logs (entry_id, channel, channel_id, wire, status, external_id)
+    VALUES ($1, 'telegram', NULL, $2, $3, $4)`, [entryId, wire, status, status === 'success' ? `legacy-${entryId}` : null]);
+}
+
+test('a Telegram receipt with no channel id counts as sent for its wire only', async () => {
+  await channel('crypto', 'crypto-chat');
+  await channel('ai', 'ai-chat');
+  const sent = await approvedOffQueue('Legacy sent');
+  await legacyReceipt(sent.id, 'crypto');
+  const failed = await approvedOffQueue('Legacy failed');
+  await legacyReceipt(failed.id, 'crypto', 'failed');
+  const oneWire = await approvedOffQueue('Legacy one wire', 'crypto', ['crypto', 'ai']);
+  await legacyReceipt(oneWire.id, 'crypto');
+  const otherWire = await approvedOffQueue('Legacy other wire');
+  await legacyReceipt(otherWire.id, 'ai');
+
+  const outgoing = await listOutgoing();
+  const missing = outgoing.items.filter(item => item.state === 'missing').map(item => item.entryId).sort((a, b) => a - b);
+  assert.deepEqual(missing, [failed.id, oneWire.id, otherWire.id]);
+  assert.equal(outgoing.counts.missing, 3);
+});
+
+test('withhold takes a missing approval and a scheduled row off the stream without touching the approval', async () => {
+  await channel('crypto', 'crypto-chat');
+  const missing = await approvedOffQueue('Stale');
+  const scheduled = await approvedOffQueue('Scheduled');
+  await pool.query(`INSERT INTO publication_queue (entry_id, available_at) VALUES ($1, NOW() - INTERVAL '1 minute')`, [scheduled.id]);
+  const finished = await approvedOffQueue('Finished without a send');
+  await pool.query(`INSERT INTO publication_queue (entry_id, status) VALUES ($1, 'done')`, [finished.id]);
+  const ids = [missing.id, scheduled.id, finished.id];
+  const evidence = { reason: 'Deadline passed in May.', sources: ['https://example.org/closed'], quotes: [] };
+
+  const preview = await queue.withholdPublications(ids, { actor: 'agent:hedwig', reason: evidence.reason, evidence, dryRun: true });
+  assert.deepEqual(preview, { success: true, action: 'withhold', dryRun: true, withheld: ids, alreadyWithheld: [] });
+  assert.equal((await pool.query(`SELECT 1 FROM publication_queue WHERE status = 'withheld'`)).rowCount, 0);
+
+  const result = await queue.withholdPublications(ids, { actor: 'agent:hedwig', reason: evidence.reason, evidence });
+  assert.deepEqual(result, { success: true, action: 'withhold', dryRun: false, withheld: ids, alreadyWithheld: [] });
+
+  await queue.drainPublicationQueue();
+  assert.equal(sends, 0);
+  // The manual wire run and the per-entry retry do not go through the queue worker.
+  const distribution = require('../src/services/distribution');
+  assert.equal((await distribution.distributeEntries('crypto')).totalEntries, 0);
+  assert.equal((await distribution.distributeEntry(missing.id, 'crypto')).totalEntries, 0);
+  assert.equal(sends, 0);
+  const outgoing = await listOutgoing();
+  assert.equal(outgoing.counts.missing, 0);
+  assert.equal(outgoing.counts.withheld, 3);
+  const item = outgoing.items.find(row => row.entryId === missing.id);
+  assert.equal(item.state, 'withheld');
+  assert.equal(item.availableAt, null);
+  assert.match(item.errorMessage, /^Withheld by agent:hedwig: Deadline passed in May\.$/);
+
+  const stored = (await pool.query('SELECT status, distributable, actioned_by, action_reason, metadata FROM scan_entries WHERE id = $1', [missing.id])).rows[0];
+  assert.equal(stored.status, 'approved');
+  assert.equal(stored.distributable, true);
+  assert.equal(stored.actioned_by, 'user:approver');
+  assert.equal(stored.action_reason, 'approved in July');
+  assert.equal(stored.metadata.withheld.by, 'agent:hedwig');
+  assert.deepEqual(stored.metadata.withheld.sources, evidence.sources);
+
+  const again = await queue.withholdPublications(ids, { actor: 'agent:hedwig', reason: 'second call' });
+  assert.deepEqual(again.withheld, []);
+  assert.deepEqual(again.alreadyWithheld, ids);
+  assert.match((await listOutgoing()).items.find(row => row.entryId === missing.id).errorMessage, /Deadline passed/);
+});
+
+test('withhold refuses the whole call when one entry is sent, sending, in review, or not on the wires', async () => {
+  await channel('crypto', 'crypto-chat');
+  const ok = await approvedOffQueue('Eligible');
+  const sent = await approvedOffQueue('Sent');
+  await legacyReceipt(sent.id, 'crypto');
+  const sending = await approvedOffQueue('Sending');
+  await pool.query(`INSERT INTO publication_queue (entry_id, status, lease_expires_at) VALUES ($1, 'running', NOW() + INTERVAL '10 minutes')`, [sending.id]);
+  const review = await approvedOffQueue('Review');
+  await pool.query(`INSERT INTO publication_queue (entry_id, status) VALUES ($1, 'review')`, [review.id]);
+  const quiet = await approvedOffQueue('Quiet');
+  await pool.query('UPDATE scan_entries SET distributable = false WHERE id = $1', [quiet.id]);
+  const queued = await entry('Still in the review queue');
+
+  await assert.rejects(
+    queue.withholdPublications([ok.id, sent.id, sending.id, review.id, quiet.id, queued.id, 999999], { actor: 'agent:hedwig' }),
+    (error) => {
+      assert.ok(error instanceof queue.WithholdConflictError);
+      assert.deepEqual(error.blocked.map(row => row.id), [sent.id, sending.id, review.id, quiet.id, queued.id, 999999]);
+      assert.match(error.blocked[0].reason, /nothing left to send/);
+      assert.match(error.blocked[1].reason, /sending/);
+      assert.match(error.blocked[2].reason, /review/);
+      assert.match(error.blocked[3].reason, /not on the wires/);
+      assert.match(error.blocked[4].reason, /queued, not approved/);
+      assert.match(error.blocked[5].reason, /not found/);
+      return true;
+    },
+  );
+  assert.equal((await pool.query(`SELECT 1 FROM publication_queue WHERE status = 'withheld'`)).rowCount, 0);
+  assert.equal((await pool.query('SELECT metadata FROM scan_entries WHERE id = $1', [ok.id])).rows[0].metadata?.withheld, undefined);
+});
+
+// The door Hedwig uses: a decide-scoped key on bulk-action, with evidence and an Idempotency-Key.
+test('a curator key withholds through bulk-action, replays, and gets a 409 that names the blocked entry', async () => {
+  const crypto = require('crypto');
+  const token = 'test-curator-withhold-not-a-secret';
+  const previous = process.env.WIRE_ROOM_CURATOR_KEYS;
+  process.env.WIRE_ROOM_CURATOR_KEYS = JSON.stringify([{
+    id: 'hedwig', name: 'Hedwig', sha256: crypto.createHash('sha256').update(token).digest('hex'),
+    scopes: ['decide'], expires_at: '2099-01-01T00:00:00.000Z', revoked: false,
+  }]);
+  const { app } = require('../src/server');
+  const server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
+  const post = (body, key) => fetch(`http://127.0.0.1:${server.address().port}/api/scan/entries/bulk-action`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, 'Idempotency-Key': key },
+    body: JSON.stringify(body),
+  });
+  try {
+    await channel('crypto', 'crypto-chat');
+    const stale = await approvedOffQueue('Stale via API');
+    const sent = await approvedOffQueue('Sent via API');
+    await legacyReceipt(sent.id, 'crypto');
+    const evidence = { reason: 'Applications closed in April.', sources: ['https://example.org/closed'] };
+
+    const refused = await post({ action: 'withhold', ids: [stale.id, sent.id], ...evidence }, 'withhold-refused-1');
+    assert.equal(refused.status, 409);
+    assert.deepEqual((await refused.json()).blocked, [{ id: sent.id, reason: 'nothing left to send' }]);
+
+    const body = { action: 'withhold', ids: [stale.id], ...evidence };
+    const done = await post(body, 'withhold-stale-1');
+    assert.equal(done.status, 200);
+    assert.deepEqual(await done.json(), { success: true, action: 'withhold', dryRun: false, withheld: [stale.id], alreadyWithheld: [] });
+    const replay = await post(body, 'withhold-stale-1');
+    assert.equal(replay.status, 200);
+    assert.equal(replay.headers.get('idempotent-replayed'), 'true');
+
+    const row = (await pool.query(`SELECT q.status, q.error_message, se.status AS entry_status, se.metadata
+      FROM publication_queue q JOIN scan_entries se ON se.id = q.entry_id WHERE q.entry_id = $1`, [stale.id])).rows[0];
+    assert.equal(row.status, 'withheld');
+    assert.equal(row.error_message, 'Withheld by agent:hedwig: Applications closed in April.');
+    assert.equal(row.entry_status, 'approved');
+    assert.equal(row.metadata.withheld.by, 'agent:hedwig');
+    assert.equal(row.metadata.curator_evidence, undefined);
+    assert.equal(sends, 0);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    if (previous === undefined) delete process.env.WIRE_ROOM_CURATOR_KEYS;
+    else process.env.WIRE_ROOM_CURATOR_KEYS = previous;
+  }
+});
+
 test('a paced approval rolls back when the queue insert fails', async () => {
   await channel('crypto', 'crypto-chat');
   await enablePace();

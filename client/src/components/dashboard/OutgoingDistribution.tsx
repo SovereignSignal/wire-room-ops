@@ -50,7 +50,7 @@ function Row({ item }: { item: OutgoingItem }) {
         <span className="text-muted-foreground"> · #{item.entryId} · {item.wire} · {item.state}</span>
       </p>
       <p className="text-xs text-muted-foreground">
-        {item.availableAt ? `Scheduled ${when(item.availableAt)}` : 'No send time'}
+        {item.availableAt ? `Scheduled ${when(item.availableAt)}` : item.state === 'withheld' ? 'Will not send' : 'No send time'}
         {item.attempts ? ` · attempt ${item.attempts}` : ''}
       </p>
       {item.errorMessage && <p className="text-xs text-muted-foreground">{item.errorMessage}</p>}
@@ -78,7 +78,8 @@ export function OutgoingDistribution() {
   }, [load]);
 
   const stream = (data?.items ?? []).filter(item => item.state === 'scheduled' || item.state === 'due' || item.state === 'sending' || item.state === 'retry wait');
-  const attention = (data?.items ?? []).filter(item => item.state === 'needs review' || item.state === 'missing' || item.state === 'withheld');
+  const attention = (data?.items ?? []).filter(item => item.state === 'needs review' || item.state === 'missing');
+  const withheld = (data?.items ?? []).filter(item => item.state === 'withheld');
 
   return (
     <section aria-label="Outgoing distribution" className="border border-border rounded-lg p-4 space-y-4">
@@ -90,7 +91,7 @@ export function OutgoingDistribution() {
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
       {data && (
         <p className="text-xs text-muted-foreground">
-          {data.counts.waiting} waiting · {data.counts.sending} sending · {data.counts.needsReview} need review · {data.counts.missing} missing · {data.sent.length} sent in view
+          {data.counts.waiting} waiting · {data.counts.sending} sending · {data.counts.needsReview} need review · {data.counts.missing} missing · {data.counts.withheld} withheld · {data.sent.length} sent in view
         </p>
       )}
       <div>
@@ -105,6 +106,13 @@ export function OutgoingDistribution() {
           <ul>{attention.map(item => <Row key={`${item.state}-${item.entryId}`} item={item} />)}</ul>
         )}
       </div>
+      {withheld.length > 0 && (
+        <details>
+          <summary className="text-xs font-display tracking-wider text-muted-foreground cursor-pointer">WITHHELD · {withheld.length}</summary>
+          <p className="text-xs text-muted-foreground mt-1">Approved, kept off the Telegram wires. These will not send.</p>
+          <ul>{withheld.map(item => <Row key={`${item.state}-${item.entryId}`} item={item} />)}</ul>
+        </details>
+      )}
       <div>
         <h4 className="text-xs font-display tracking-wider text-muted-foreground">SENT</h4>
         {(data?.sent.length ?? 0) === 0 ? <p className="text-sm text-muted-foreground">Nothing sent in the last day.</p> : (

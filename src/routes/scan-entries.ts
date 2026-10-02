@@ -35,6 +35,7 @@ import { applyCuratorWrite, planCuratorWrite } from '../services/curator';
 import { attachCuratorEvidence, parseCuratorEvidence, type CuratorEvidence } from '../services/curator-evidence';
 import { openCuratorIdempotency } from '../services/curator-idempotency';
 import { retryDistribution } from '../services/distribution';
+import { withholdPublications, WithholdConflictError } from '../services/publication-queue';
 import { PROMPT_VARIANTS, SCAN_SOURCES } from '../types/intake';
 import { isBatchMessage, processBatchMessage, processIntakeMessage, type IntakeOptions } from '../services/intake-core';
 import { runDecidedRecheckForIds } from '../jobs/decided-recheck';
@@ -91,6 +92,27 @@ async function beginCuratorWrite(req: Request, res: Response, opts: { requireQuo
 async function remember(gate: Extract<CuratorGate, { ok: true }>, statusCode: number, payload: unknown, res: Response): Promise<void> {
   await gate.finish(statusCode, payload);
   res.status(statusCode).json(payload);
+}
+
+/** Withhold is a publication-queue write, not a status change, so it does not go through entry-actions. */
+async function respondWithhold(req: Request, res: Response, gate: Extract<CuratorGate, { ok: true }>, entryIds: number[]): Promise<void> {
+  try {
+    const result = await withholdPublications(entryIds, {
+      actor: resolveMaintenanceActor(req) || undefined,
+      reason: gate.evidence?.reason || (typeof req.body?.reason === 'string' ? req.body.reason : undefined),
+      evidence: gate.evidence,
+      dryRun: !!req.body?.dryRun,
+    });
+    await remember(gate, 200, result, res);
+  } catch (error) {
+    if (error instanceof WithholdConflictError) {
+      await remember(gate, 409, { error: error.message, blocked: error.blocked }, res);
+      return;
+    }
+    await gate.abort();
+    console.error('Failed to withhold entries:', error);
+    res.status(500).json({ error: 'Failed to withhold entries' });
+  }
 }
 
 // POST /submit — single entry submission
@@ -562,7 +584,7 @@ router.get('/entries/:id', async (req: Request, res: Response) => {
   }
 });
 
-// POST /entries/bulk-action — bulk approve/decline/reviewlater/restore
+// POST /entries/bulk-action — bulk approve/decline/reviewlater/restore, or withhold from the Telegram stream
 router.post('/entries/bulk-action', async (req: Request, res: Response) => {
   const { ids, action, quiet, reason, dryRun } = req.body;
   const agentSession = (req as any).agentSession;
@@ -581,6 +603,10 @@ router.post('/entries/bulk-action', async (req: Request, res: Response) => {
   const entryIds = ids.map((id: any) => parseInt(id, 10)).filter((id: number) => !isNaN(id));
   if (entryIds.length === 0) {
     await remember(gate, 400, { error: 'No valid entry IDs provided' }, res);
+    return;
+  }
+  if (action === 'withhold') {
+    await respondWithhold(req, res, gate, entryIds);
     return;
   }
 
@@ -623,7 +649,7 @@ router.post('/entries/bulk-action', async (req: Request, res: Response) => {
   }
 });
 
-// POST /entries/:id/action — single entry action
+// POST /entries/:id/action — single entry action (approve/decline/reviewlater/restore/withhold)
 router.post('/entries/:id/action', async (req: Request, res: Response) => {
   const entryId = parseInt(req.params.id, 10);
   if (isNaN(entryId)) {
@@ -635,6 +661,10 @@ router.post('/entries/:id/action', async (req: Request, res: Response) => {
   const agentSession = (req as any).agentSession;
   const gate = await beginCuratorWrite(req, res, { requireQuote: action === 'approve' });
   if (!gate.ok) return;
+  if (action === 'withhold') {
+    await respondWithhold(req, res, gate, [entryId]);
+    return;
+  }
 
   try {
     // Agent calls (internal API key and curator keys) always use quiet=true — no auto-distribution

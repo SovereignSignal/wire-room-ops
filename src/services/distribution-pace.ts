@@ -249,6 +249,27 @@ export async function bookPacedQueue(
   );
 }
 
+/**
+ * True when an enabled Telegram destination on the entry's wires has no claim or receipt.
+ * Expects scan_entries as `se`. A success row with no channel_id is a send from before
+ * managed channels recorded which one they used, so it settles its wire.
+ */
+export const UNSENT_TELEGRAM_DESTINATION_SQL = `EXISTS (
+  SELECT 1 FROM distribution_channels dc
+  WHERE dc.enabled AND dc.channel = 'telegram' AND dc.target_id <> ''
+    AND (dc.wire = se.wire OR dc.wire = ANY(COALESCE(se.wires, ARRAY[]::text[])))
+    AND NOT EXISTS (
+      SELECT 1 FROM distribution_logs dl
+      WHERE dl.entry_id = se.id
+        AND dl.wire = dc.wire
+        AND dl.channel = 'telegram'
+        AND (
+          (dl.channel_id = dc.id AND dl.status IN ('pending', 'success'))
+          OR (dl.channel_id IS NULL AND dl.status = 'success')
+        )
+    )
+)`;
+
 export interface OutgoingItem {
   entryId: number;
   name: string;
@@ -338,19 +359,7 @@ export async function listOutgoing(sentSince?: Date): Promise<OutgoingSnapshot> 
            WHERE q.entry_id = se.id
              AND q.status IN ('queued', 'running', 'review', 'withheld')
          )
-         AND EXISTS (
-           SELECT 1 FROM distribution_channels dc
-           WHERE dc.enabled AND dc.channel = 'telegram' AND dc.target_id <> ''
-             AND (dc.wire = se.wire OR dc.wire = ANY(COALESCE(se.wires, ARRAY[]::text[])))
-             AND NOT EXISTS (
-               SELECT 1 FROM distribution_logs dl
-               WHERE dl.entry_id = se.id
-                 AND dl.wire = dc.wire
-                 AND dl.channel = 'telegram'
-                 AND dl.channel_id IS NOT DISTINCT FROM dc.id
-                 AND dl.status IN ('pending', 'success')
-             )
-         )
+         AND ${UNSENT_TELEGRAM_DESTINATION_SQL}
        ORDER BY se.updated_at DESC
        LIMIT 50`,
     ),
@@ -380,7 +389,7 @@ export async function listOutgoing(sentSince?: Date): Promise<OutgoingSnapshot> 
     name: row.name,
     wire: row.wire,
     state: queueState(row, now),
-    availableAt: iso(row.available_at),
+    availableAt: row.status === 'withheld' ? null : iso(row.available_at),
     createdAt: iso(row.created_at),
     errorMessage: row.error_message,
     externalId: null,

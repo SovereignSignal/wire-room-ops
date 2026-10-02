@@ -45,8 +45,8 @@ The audit identity is the key. Do not send `actor`. `?force=true` is ignored for
 
 ### `decide`
 
-- `POST /api/scan/entries/:id/action` — `approve`, `decline`, `reviewlater`, `restore`
-- `POST /api/scan/entries/bulk-action`
+- `POST /api/scan/entries/:id/action` — `approve`, `decline`, `reviewlater`, `restore`, `withhold`
+- `POST /api/scan/entries/bulk-action` — the same actions, up to 200 ids
 - `POST /api/scan/entries/:id/link-duplicate`
 - `PATCH /api/scan/entries/:id/wire`
 - `PATCH /api/scan/entries/:id/source`
@@ -79,6 +79,31 @@ Required on curator decide and curate writes. Not required on `/submit`, and not
 The packet is merged into `scan_entries.metadata.curator_evidence` (`reason`, `sources`, `quotes`, `by`, `at`) and copied to `action_reason`. No new table.
 
 `POST /curate` with `route: "decline"` from a curator key declines the entry through the same quiet entry-action path as `action: "decline"`, then writes the stamp. Operators and internal keys still get a stamp only; decline does not change status for them.
+
+## Withhold
+
+`action: "withhold"` keeps an approved entry off the Telegram wires. It is the one decide action that does not change `scan_entries.status`: the entry stays approved, and its `publication_queue` row becomes `withheld`, so the worker never claims it and the outgoing list stops counting it as missing. The manual wire run, the per-entry retry and the newsletter builder skip it too.
+
+It applies to an approved, wire-bound entry that is scheduled, or that was never sent and is not on the queue (the outgoing list's `missing` state). The call is all or nothing. If any id is not approved, was approved for programs only, is sending, is awaiting delivery review, or has nothing left to send, the response is `409` with a `blocked` array of `{ id, reason }` and nothing is written. An entry that is already withheld is not an error; it comes back under `alreadyWithheld`.
+
+`reason` and `sources` are required as on any decide write; no quote is needed. The packet goes to `metadata.withheld` (`reason`, `sources`, `quotes`, `by`, `at`). It does not overwrite `curator_evidence`, `actioned_by` or `action_reason`, which still describe the approval. `dryRun: true` returns what would change and writes nothing.
+
+There is no agent path back onto the stream. An operator restores the entry and approves it again.
+
+```bash
+curl -s -X POST "$WIREOPS_SERVER_URL/api/scan/entries/bulk-action" \
+  -H "Authorization: Bearer $HEDWIG_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: hedwig-withhold-stale-2026-10-02" \
+  -d '{
+    "action": "withhold",
+    "ids": [3, 9, 12],
+    "reason": "Stale: deadlines passed or programs closed. Missing Telegram Posts QC, 2026-10-02.",
+    "sources": ["https://example.org/qc-page"]
+  }'
+```
+
+Response: `{ "success": true, "action": "withhold", "dryRun": false, "withheld": [3, 9, 12], "alreadyWithheld": [] }`.
 
 ## Queue score default
 
