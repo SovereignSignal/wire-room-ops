@@ -137,6 +137,8 @@ function parseDeadlineMs(value: string | Date | null | undefined): number | null
     const ms = value.getTime();
     return Number.isNaN(ms) ? null : ms;
   }
+  // Date.parse('Oct 17') is 2001-10-17 in V8: a yearless deadline is unknown, not past.
+  if (!/\b(?:19|20)\d\d\b/.test(String(value))) return null;
   const ms = Date.parse(String(value));
   return Number.isNaN(ms) ? null : ms;
 }
@@ -191,15 +193,87 @@ export function isSameProgramCycle(
     && !isNewProgramCycle(existingName, incomingName, existingDeadline, incomingDeadline);
 }
 
-function priorCycleReason(entryId: number, name: string): string {
-  return `New cycle of #${entryId}: "${name}"`;
+function priorCycleReason(entryId: number, name: string, closedPrior?: string | null): string {
+  return `New cycle of #${entryId}: "${name}"${closedPrior ? ` (prior ${closedPrior})` : ''}`;
+}
+
+// ============================================================
+// Reopened rounds behind a closed prior entry
+// ============================================================
+// Programs reuse one URL for every round (NumFOCUS SDG: #18508 "2026 Round 2"
+// was killed as a duplicate of declined #14294). A prior entry that was
+// declined or whose deadline has passed is not the round being announced, so
+// it must not hold the URL against a submission that carries its own round
+// signal. Approved/queued rows that are still open keep URL dedup strict.
+
+export interface RoundCandidate {
+  name: string;
+  deadline?: string | Date | null;
+  deadlineParsed?: string | Date | null;
+  status?: string | null;
+}
+
+const DAY_MS = 86_400_000;
+
+function candidateDeadlineMs(candidate: RoundCandidate): number | null {
+  return parseDeadlineMs(candidate.deadlineParsed) ?? parseDeadlineMs(candidate.deadline);
+}
+
+/** Why a prior entry no longer holds its round open, or null when it still does. */
+export function closedPriorRound(prior: RoundCandidate, now: number = Date.now()): string | null {
+  if (prior.status === 'declined' || prior.status === 'archived') return prior.status;
+  const ms = candidateDeadlineMs(prior);
+  if (ms !== null && ms < Math.floor(now / DAY_MS) * DAY_MS) {
+    return `deadline ${new Date(ms).toISOString().slice(0, 10)} passed`;
+  }
+  return null;
+}
+
+function markerKey(markers: CycleMarkers): string {
+  const numbered = markers.numbered.map(m => `${m.kind}:${m.value}`).sort().join(',');
+  return `${numbered}|${[...markers.years].sort().join(',')}|${markers.fiscal ?? ''}`;
+}
+
+/**
+ * The incoming entry names a different round than the prior one: a different
+ * deadline when both are known, otherwise its own round/year/FY marker that
+ * the prior name does not share. A generic name with no marker never qualifies.
+ */
+export function hasNewRoundSignal(incoming: RoundCandidate, prior: RoundCandidate): boolean {
+  const incomingMs = candidateDeadlineMs(incoming);
+  const priorMs = candidateDeadlineMs(prior);
+  if (incomingMs !== null && priorMs !== null) {
+    return Math.floor(incomingMs / DAY_MS) !== Math.floor(priorMs / DAY_MS);
+  }
+  const incomingMarkers = extractCycleMarkers(incoming.name);
+  const hasMarker = incomingMarkers.numbered.length > 0 || incomingMarkers.years.length > 0 || !!incomingMarkers.fiscal;
+  return hasMarker && markerKey(incomingMarkers) !== markerKey(extractCycleMarkers(prior.name));
+}
+
+/** Returns the closed-prior note when `incoming` is a new round behind a closed prior entry. */
+export function reopenedRoundNote(incoming: RoundCandidate, prior: RoundCandidate, now?: number): string | null {
+  const closed = closedPriorRound(prior, now);
+  return closed && hasNewRoundSignal(incoming, prior) ? closed : null;
 }
 
 interface UrlCycleSibling {
   id: number;
   name: string;
   deadline: string | Date | null;
+  deadline_parsed?: string | Date | null;
   status: string;
+}
+
+/** A sibling on the same URL blocks only when it is this round and still holds it. */
+function blocksAsSameRound(incoming: RoundCandidate, sibling: UrlCycleSibling): boolean {
+  const siblingDeadline = sibling.deadline_parsed ?? sibling.deadline;
+  if (!isSameProgramCycle(incoming.name, sibling.name, incoming.deadline, siblingDeadline)) return false;
+  return reopenedRoundNote(incoming, {
+    name: sibling.name,
+    deadline: sibling.deadline,
+    deadlineParsed: sibling.deadline_parsed,
+    status: sibling.status,
+  }) === null;
 }
 
 function isEstablishedUrlSibling(row: UrlCycleSibling, excludeEntryId?: number): boolean {
@@ -214,7 +288,7 @@ async function findUrlCycleSiblings(
   args: { sourceUrl: string; seenUrl?: string | null; wire: string; excludeEntryId?: number },
 ): Promise<UrlCycleSibling[]> {
   const result = await pool.query(
-    `SELECT id, name, deadline, status
+    `SELECT id, name, deadline, deadline_parsed, status
      FROM scan_entries
      WHERE wire = $1
        AND status IN ('raw', 'deduped', 'queued', 'approved', 'declined')
@@ -366,7 +440,7 @@ async function checkUrlMatch(
   // copy is still raw. Excluding raw lets exact URL duplicates slip through.
   // Only archived (auto-filtered junk) is excluded — those may deserve a second look.
   const result = await pool.query(
-    `SELECT su.first_seen_entry_id, se.name, su.url, se.deadline
+    `SELECT su.first_seen_entry_id, se.name, su.url, se.deadline, se.deadline_parsed, se.status
      FROM seen_urls su
      JOIN scan_entries se ON se.id = su.first_seen_entry_id
      WHERE su.normalized_url = $1 AND su.wire = $2
@@ -418,7 +492,16 @@ async function checkUrlMatch(
 
     // Official pages keep one URL across numbered/seasonal cutoffs. A new
     // cycle of the same program must reach review; the same cycle must not.
-    if (entryName && matchedName && isNewProgramCycle(entryName, matchedName, deadline, row.deadline)) {
+    // A closed prior entry (declined / past deadline) yields to a new round too.
+    const incoming: RoundCandidate = { name: entryName || '', deadline };
+    const newCycle = !!entryName && !!matchedName
+      && isNewProgramCycle(entryName, matchedName, deadline, row.deadline_parsed ?? row.deadline);
+    const closedPrior = !newCycle && entryName && matchedName
+      ? reopenedRoundNote(incoming, {
+        name: matchedName, deadline: row.deadline, deadlineParsed: row.deadline_parsed, status: row.status,
+      })
+      : null;
+    if (newCycle || closedPrior) {
       const siblings = await findUrlCycleSiblings(pool, {
         sourceUrl,
         seenUrl: row.url,
@@ -427,7 +510,7 @@ async function checkUrlMatch(
       });
       const sameCycle = siblings.find(sibling =>
         isEstablishedUrlSibling(sibling, excludeEntryId)
-        && isSameProgramCycle(entryName, sibling.name, deadline, sibling.deadline)
+        && blocksAsSameRound(incoming, sibling)
       );
       if (sameCycle) {
         return {
@@ -446,7 +529,7 @@ async function checkUrlMatch(
         matchedEntryId: entryId,
         matchedEntryName: displayName,
         confidence: 0,
-        reason: priorCycleReason(entryId, displayName),
+        reason: priorCycleReason(entryId, displayName, closedPrior),
         priorCycle: { entryId, name: displayName },
       };
     }
@@ -804,7 +887,7 @@ export async function registerSeenInTransaction(
   let conflictEntryId: number | null = null;
   if (urlRes.rowCount === 0) {
     const existing = await db.query(
-      `SELECT su.first_seen_entry_id, se.name, se.status, se.deadline
+      `SELECT su.first_seen_entry_id, se.name, se.status, se.deadline, se.deadline_parsed
        FROM seen_urls su
        LEFT JOIN scan_entries se ON se.id = su.first_seen_entry_id
        WHERE su.normalized_url = $1 AND su.wire = $2
@@ -821,6 +904,7 @@ export async function registerSeenInTransaction(
       const ownerName = existing.rows[0].name as string | null;
       const ownerStatus = existing.rows[0].status as string | null;
       const ownerDeadline = existing.rows[0].deadline as string | Date | null;
+      const ownerDeadlineParsed = existing.rows[0].deadline_parsed as string | Date | null | undefined;
       if (ownerId !== null && ownerStatus === 'archived') {
         // URL precheck deliberately ignores archived owners so a later signal
         // can be reconsidered. Preserve that policy at the atomic claim stage:
@@ -862,9 +946,13 @@ export async function registerSeenInTransaction(
         }
 
         if (!allowSharedSocialSource) {
+          const incoming: RoundCandidate = { name: entry.name, deadline: entry.deadline };
           const allowSharedNewCycle = Boolean(
             ownerName
-            && isNewProgramCycle(entry.name, ownerName, entry.deadline, ownerDeadline)
+            && (isNewProgramCycle(entry.name, ownerName, entry.deadline, ownerDeadlineParsed ?? ownerDeadline)
+              || reopenedRoundNote(incoming, {
+                name: ownerName, deadline: ownerDeadline, deadlineParsed: ownerDeadlineParsed, status: ownerStatus,
+              }))
           );
           if (allowSharedNewCycle) {
             const siblings = await findUrlCycleSiblings(db, {
@@ -875,7 +963,7 @@ export async function registerSeenInTransaction(
             });
             const sameCycle = siblings.find(sibling =>
               isEstablishedUrlSibling(sibling, entry.id)
-              && isSameProgramCycle(entry.name, sibling.name, entry.deadline, sibling.deadline)
+              && blocksAsSameRound(incoming, sibling)
             );
             if (sameCycle) {
               urlConflict = true;
@@ -1085,7 +1173,7 @@ export async function finalizeExistingEntryDedup(
 
     const reason = claim.urlConflict ? 'URL already exists in seed history' : null;
     const priorNote = !claim.urlConflict && dedupResult.priorCycle
-      ? priorCycleReason(dedupResult.priorCycle.entryId, dedupResult.priorCycle.name)
+      ? (dedupResult.reason || priorCycleReason(dedupResult.priorCycle.entryId, dedupResult.priorCycle.name))
       : null;
     const finalized = await client.query(
       `UPDATE scan_entries

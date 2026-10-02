@@ -966,12 +966,13 @@ router.post('/entries/:id/retry-summarize', async (req: Request, res: Response) 
 
     const entry = result.rows[0];
     const { autoSummarizeOnApprove } = await import('../services/auto-summarize');
-    await autoSummarizeOnApprove(
+    const stored = await autoSummarizeOnApprove(
       entry.id, null, entry.name, entry.description || '', entry.amount, entry.deadline, entry.source_url, entry.wire
     );
-
-    // Clear the failed flag
-    await pool.query(`UPDATE scan_entries SET auto_summarize_failed = false WHERE id = $1`, [entryId]);
+    if (!stored) {
+      res.status(502).json({ success: false, entryId, error: 'No usable summary was generated; entry left flagged' });
+      return;
+    }
     res.json({ success: true, entryId });
   } catch (error) {
     const msg = error instanceof Error ? error.message : 'Unknown error';

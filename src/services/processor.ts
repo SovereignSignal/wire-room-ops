@@ -3,6 +3,7 @@ import { summarizeWithGrok, isXcomUrl } from './grok';
 import { summarizeWithOpus } from './anthropic';
 import { summarizeWithOllama } from './ollama';
 import { getCachedProvider } from './api-provider';
+import { findSummaryLeak } from './summary-guard';
 import { config } from '../config';
 import { sleep } from '../utils/async';
 
@@ -58,13 +59,14 @@ export async function processEntry(entry: DatabaseEntry, models?: ModelOptions):
 
   try {
     const summary = await withRetry(async () => {
-      if (isXcom) {
-        return await summarizeWithGrok(entry, models?.grokModel);
-      } else if (method === 'ollama') {
-        return await summarizeWithOllama(entry, models?.ollamaModel);
-      } else {
-        return await summarizeWithOpus(entry, models?.anthropicModel);
-      }
+      const text = isXcom
+        ? await summarizeWithGrok(entry, models?.grokModel)
+        : method === 'ollama'
+          ? await summarizeWithOllama(entry, models?.ollamaModel)
+          : await summarizeWithOpus(entry, models?.anthropicModel);
+      const leak = findSummaryLeak(text);
+      if (leak) throw new Error(`${method} returned reasoning instead of a summary (${leak.rule})`);
+      return text;
     });
 
     baseResult.enrichedSummary = summary;
