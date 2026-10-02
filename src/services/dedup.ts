@@ -18,6 +18,7 @@ import type { DedupResult, RelatedOpportunityResult, ScanEntry } from '../types/
 import { normalizeUrl, normalizeName, extractNameTokens } from './intake';
 import { demoteEntryToDuplicateInTransaction, lockDuplicateGraph } from './duplicate-chain';
 import { resolveProgram, assessRound, historyLine, ProgramResolutionStamp } from './program-identity';
+import { blockedSourceDomain, classifySourceLink } from './source-filter';
 
 /**
  * "Semi-generic" tokens: these pass the main stopword filter in intake.ts
@@ -211,6 +212,9 @@ export interface RoundCandidate {
   deadline?: string | Date | null;
   deadlineParsed?: string | Date | null;
   status?: string | null;
+  /** When the incoming row was created. Omitted on a pre-insert check means "now". */
+  createdAt?: string | Date | null;
+  sourceUrl?: string | null;
 }
 
 const DAY_MS = 86_400_000;
@@ -256,24 +260,234 @@ export function reopenedRoundNote(incoming: RoundCandidate, prior: RoundCandidat
   return closed && hasNewRoundSignal(incoming, prior) ? closed : null;
 }
 
+// ============================================================
+// Same round, premature decline
+// ============================================================
+// A declined copy of the SAME round is not proof the round should stay
+// buried. #14294 declined NumFOCUS SDG 2026 Round 2 on 2026-08-11 because no
+// official announcement was found; #18508 arrived 2026-10-02 with the real
+// CFP and was still marked a duplicate. Yield only when every gate below
+// holds. Anything else keeps the #199 block.
+//
+// 1. Prior status is declined. Approved, queued, raw, and archived rows do
+//    not yield through this path. Open approved and queued rows still block.
+// 2. The incoming name is the same cycle (same round markers / same deadline).
+//    A different round stays on reopenedRoundNote. A generic reprint with no
+//    round of its own stays a duplicate.
+// 3. The new row's created_at is strictly later than the decline instant.
+//    That instant is the later of metadata.curator.at and decision_at, using
+//    whichever of the two parses. No usable timestamp → keep blocking. Do not
+//    guess from updated_at. A later re-decline therefore still blocks a
+//    submission that landed between the two stamps.
+// 4. Neither the curator rationale nor action_reason reads as a substantive
+//    rejection: off-scope, scam/fraud/phishing/spam, not funding / not a
+//    grant, or a duplicate of an approved/published entry. Substantive wins
+//    when both kinds of phrase appear.
+// 5. And either the rationale reads as premature or unverified (not found,
+//    no official announcement, unverified, not yet announced, not open yet,
+//    and the close variants listed below), or the new source is official and
+//    non-social. Official means classifySourceLink === 'ok' (not a tweet,
+//    shortener, or placeholder), not a Gate-1 aggregator, and not a social
+//    host. An empty reason plus a tweet stays a duplicate. An empty reason
+//    plus a later official page re-surfaces, because there is no substantive
+//    rejection on record.
+//
+// The new row is queued with `Re-surfaced after premature decline of #<id>: "…"`.
+// Callers that have not inserted the row yet may omit createdAt; that means
+// the submission is happening now. finalizeExistingEntryDedup passes the
+// stored created_at so an older raw row cannot use wall-clock time.
+// This does not set priorCycle, so the known-program new-cycle guard stays off.
+
+const SOCIAL_SOURCE_HOSTS = [
+  'x.com', 'twitter.com', 't.me', 'telegram.me', 'telegram.org',
+  'facebook.com', 'fb.com', 'instagram.com', 'threads.net',
+  'linkedin.com', 'lnkd.in', 'reddit.com', 'bsky.app',
+  'discord.com', 'discord.gg', 'youtube.com', 'youtu.be',
+  'tiktok.com', 'truthsocial.com',
+];
+
+const PREMATURE_RATIONALE = [
+  /\bno official\b/i,
+  /\bnot found\b/i,
+  /\bnone found\b/i,
+  /\bno announcement\b/i,
+  /\bnot yet announced\b/i,
+  /\bnot announced\b/i,
+  /\bunverified\b/i,
+  /\bnot verified\b/i,
+  /\bunconfirmed\b/i,
+  /\bnot confirmed\b/i,
+  /\bnot yet open\b/i,
+  /\bnot open yet\b/i,
+  /\bpremature\b/i,
+  /\bno evidence\b/i,
+  /\bcould(?:\s+not|n't)\s+(?:find|verify|confirm)\b/i,
+  /\bcannot\s+(?:find|verify|confirm)\b/i,
+  /\bcan't\s+(?:find|verify|confirm)\b/i,
+  /\bunable to\s+(?:find|verify|confirm)\b/i,
+  /\bwas(?:\s+not|n't)\s+(?:found|announced|verified|confirmed)\b/i,
+];
+
+const SUBSTANTIVE_RATIONALE = [
+  /\boff[-\s]?scope\b/i,
+  /\bout of scope\b/i,
+  /\bscam\b/i,
+  /\bfraud(?:ulent)?\b/i,
+  /\bphishing\b/i,
+  /\bspam\b/i,
+  /\bnot funding\b/i,
+  /\bnot a funding\b/i,
+  /\bnot a grant\b/i,
+  /\bduplicate of\b/i,
+  /\bdupe of\b/i,
+  /\balready approved\b/i,
+  /\balready published\b/i,
+];
+
+const RATIONALE_QUOTE_LIMIT = 160;
+
+export interface PriorDeclineFacts {
+  id: number;
+  status?: string | null;
+  curatorAt?: string | Date | null;
+  decisionAt?: string | Date | null;
+  rationale?: string | null;
+  actionReason?: string | null;
+}
+
+function timeMs(value: string | Date | null | undefined): number | null {
+  if (value == null || value === '') return null;
+  if (value instanceof Date) {
+    const ms = value.getTime();
+    return Number.isNaN(ms) ? null : ms;
+  }
+  const ms = Date.parse(String(value));
+  return Number.isNaN(ms) ? null : ms;
+}
+
+function declineInstantMs(prior: Pick<PriorDeclineFacts, 'curatorAt' | 'decisionAt'>): number | null {
+  const times = [timeMs(prior.curatorAt), timeMs(prior.decisionAt)].filter((ms): ms is number => ms !== null);
+  return times.length > 0 ? Math.max(...times) : null;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value) return null;
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>;
+  return null;
+}
+
+function sourceHost(url: string): string | null {
+  try {
+    return new URL(url).hostname.toLowerCase().replace(/^www\./, '').replace(/\.+$/, '');
+  } catch {
+    return null;
+  }
+}
+
+function isSocialSourceHost(host: string): boolean {
+  return SOCIAL_SOURCE_HOSTS.some(social => host === social || host.endsWith(`.${social}`));
+}
+
+/** First-party page: not a tweet, shortener, placeholder, aggregator, or social host. */
+export function isOfficialNonSocialSource(url: string | null | undefined): boolean {
+  if (classifySourceLink(url) !== 'ok') return false;
+  if (blockedSourceDomain(url)) return false;
+  const host = sourceHost(url || '');
+  return !!host && !isSocialSourceHost(host);
+}
+
+export function priorDeclineFacts(row: {
+  id?: number | string | null;
+  first_seen_entry_id?: number | string | null;
+  status?: string | null;
+  decision_at?: string | Date | null;
+  action_reason?: string | null;
+  metadata?: unknown;
+}): PriorDeclineFacts {
+  const rawId = row.id ?? row.first_seen_entry_id;
+  const id = typeof rawId === 'number' ? rawId : Number(rawId);
+  const metadata = asRecord(row.metadata);
+  const curator = asRecord(metadata?.curator);
+  const curatorAt = typeof curator?.at === 'string' || curator?.at instanceof Date ? curator.at : null;
+  return {
+    id,
+    status: row.status ?? null,
+    curatorAt,
+    decisionAt: row.decision_at ?? null,
+    rationale: typeof curator?.rationale === 'string' ? curator.rationale : null,
+    actionReason: typeof row.action_reason === 'string' ? row.action_reason : null,
+  };
+}
+
+function matchesAny(text: string, patterns: RegExp[]): boolean {
+  return patterns.some(pattern => pattern.test(text));
+}
+
+function quoteDeclineReason(text: string): string {
+  const clean = text.replace(/\s+/g, ' ').replace(/"/g, "'").trim();
+  const clipped = clean.length > RATIONALE_QUOTE_LIMIT
+    ? `${clean.slice(0, RATIONALE_QUOTE_LIMIT - 1)}…`
+    : clean;
+  return `"${clipped}"`;
+}
+
+/**
+ * Operator note when a declined same-round prior should yield, or null when
+ * that prior still blocks. See the block comment above for the gates.
+ */
+export function prematureDeclineNote(
+  incoming: { createdAt?: string | Date | null; sourceUrl?: string | null },
+  prior: PriorDeclineFacts,
+): string | null {
+  if (prior.status !== 'declined' || !Number.isSafeInteger(prior.id)) return null;
+  const declineMs = declineInstantMs(prior);
+  const createdMs = timeMs(incoming.createdAt ?? null);
+  if (declineMs === null || createdMs === null || createdMs <= declineMs) return null;
+  const text = [prior.rationale, prior.actionReason].filter(part => typeof part === 'string' && part.trim()).join('\n');
+  if (matchesAny(text, SUBSTANTIVE_RATIONALE)) return null;
+  const premature = matchesAny(text, PREMATURE_RATIONALE);
+  const official = isOfficialNonSocialSource(incoming.sourceUrl);
+  if (!premature && !official) return null;
+  const quotedSource = (prior.rationale || prior.actionReason || '').trim();
+  const quoted = quotedSource ? quoteDeclineReason(quotedSource) : '"later official source"';
+  return `Re-surfaced after premature decline of #${prior.id}: ${quoted}`;
+}
+
 interface UrlCycleSibling {
   id: number;
   name: string;
   deadline: string | Date | null;
   deadline_parsed?: string | Date | null;
   status: string;
+  decision_at?: string | Date | null;
+  action_reason?: string | null;
+  metadata?: unknown;
 }
 
 /** A sibling on the same URL blocks only when it is this round and still holds it. */
 function blocksAsSameRound(incoming: RoundCandidate, sibling: UrlCycleSibling): boolean {
   const siblingDeadline = sibling.deadline_parsed ?? sibling.deadline;
   if (!isSameProgramCycle(incoming.name, sibling.name, incoming.deadline, siblingDeadline)) return false;
-  return reopenedRoundNote(incoming, {
+  if (reopenedRoundNote(incoming, {
     name: sibling.name,
     deadline: sibling.deadline,
     deadlineParsed: sibling.deadline_parsed,
     status: sibling.status,
-  }) === null;
+  }) !== null) return false;
+  // A premature decline of this same round does not hold the URL. A substantive
+  // decline, or any open approved/queued/raw sibling, still does.
+  return prematureDeclineNote(
+    { createdAt: incoming.createdAt, sourceUrl: incoming.sourceUrl },
+    priorDeclineFacts(sibling),
+  ) === null;
 }
 
 function isEstablishedUrlSibling(row: UrlCycleSibling, excludeEntryId?: number): boolean {
@@ -288,7 +502,7 @@ async function findUrlCycleSiblings(
   args: { sourceUrl: string; seenUrl?: string | null; wire: string; excludeEntryId?: number },
 ): Promise<UrlCycleSibling[]> {
   const result = await pool.query(
-    `SELECT id, name, deadline, deadline_parsed, status
+    `SELECT id, name, deadline, deadline_parsed, status, decision_at, action_reason, metadata
      FROM scan_entries
      WHERE wire = $1
        AND status IN ('raw', 'deduped', 'queued', 'approved', 'declined')
@@ -327,6 +541,11 @@ export async function checkDuplicate(
      *  and marks it a duplicate of itself. */
     excludeEntryId?: number;
     deadline?: string | Date | null;
+    /**
+     * When the row already exists (process-raw, daily intake). Omitted on a
+     * pre-insert check, which is treated as a submission happening now.
+     */
+    createdAt?: string | Date | null;
   },
   lookbackDays: number = 180,
   options?: { urlOnly?: boolean; programGate?: boolean }
@@ -340,6 +559,7 @@ export async function checkDuplicate(
     entry.name,
     entry.excludeEntryId,
     entry.deadline,
+    entry.createdAt ?? new Date(),
   );
   if (urlResult.isDuplicate) {
     return urlResult;
@@ -347,7 +567,9 @@ export async function checkDuplicate(
   // A new numbered/seasonal cutoff on a known official URL is not a
   // duplicate. Skip the exact-name layer: same-name reopenings (later
   // deadline, new FY) would otherwise be killed after the URL escape.
-  if (urlResult.priorCycle) {
+  // A same-round resubmission that escaped a premature decline must skip
+  // the name layer too, or the declined copy's exact name re-blocks it.
+  if (urlResult.priorCycle || urlResult.resurfacedDecline) {
     return urlResult;
   }
 
@@ -432,6 +654,7 @@ async function checkUrlMatch(
   entryName?: string,
   excludeEntryId?: number,
   deadline?: string | Date | null,
+  createdAt?: string | Date | null,
 ): Promise<DedupResult> {
   const normalized = normalizeUrl(sourceUrl);
 
@@ -440,7 +663,8 @@ async function checkUrlMatch(
   // copy is still raw. Excluding raw lets exact URL duplicates slip through.
   // Only archived (auto-filtered junk) is excluded — those may deserve a second look.
   const result = await pool.query(
-    `SELECT su.first_seen_entry_id, se.name, su.url, se.deadline, se.deadline_parsed, se.status
+    `SELECT su.first_seen_entry_id, se.name, su.url, se.deadline, se.deadline_parsed, se.status,
+            se.decision_at, se.action_reason, se.metadata
      FROM seen_urls su
      JOIN scan_entries se ON se.id = su.first_seen_entry_id
      WHERE su.normalized_url = $1 AND su.wire = $2
@@ -493,15 +717,31 @@ async function checkUrlMatch(
     // Official pages keep one URL across numbered/seasonal cutoffs. A new
     // cycle of the same program must reach review; the same cycle must not.
     // A closed prior entry (declined / past deadline) yields to a new round too.
-    const incoming: RoundCandidate = { name: entryName || '', deadline };
+    // A premature decline of this same round yields as well; the note is not
+    // a new-cycle stamp.
+    const incoming: RoundCandidate = {
+      name: entryName || '',
+      deadline,
+      createdAt,
+      sourceUrl,
+    };
+    const siblingDeadline = row.deadline_parsed ?? row.deadline;
     const newCycle = !!entryName && !!matchedName
-      && isNewProgramCycle(entryName, matchedName, deadline, row.deadline_parsed ?? row.deadline);
+      && isNewProgramCycle(entryName, matchedName, deadline, siblingDeadline);
     const closedPrior = !newCycle && entryName && matchedName
       ? reopenedRoundNote(incoming, {
         name: matchedName, deadline: row.deadline, deadlineParsed: row.deadline_parsed, status: row.status,
       })
       : null;
-    if (newCycle || closedPrior) {
+    const sameRound = !newCycle && !closedPrior && !!entryName && !!matchedName
+      && isSameProgramCycle(entryName, matchedName, deadline, siblingDeadline);
+    const premature = sameRound
+      ? prematureDeclineNote(
+        { createdAt, sourceUrl },
+        priorDeclineFacts(row),
+      )
+      : null;
+    if (newCycle || closedPrior || premature) {
       const siblings = await findUrlCycleSiblings(pool, {
         sourceUrl,
         seenUrl: row.url,
@@ -520,6 +760,18 @@ async function checkUrlMatch(
           matchedEntryName: sameCycle.name,
           confidence: 1.0,
           reason: `Exact URL match with entry #${sameCycle.id}: "${sameCycle.name}"`,
+        };
+      }
+
+      if (premature && !newCycle && !closedPrior) {
+        return {
+          isDuplicate: false,
+          matchType: null,
+          matchedEntryId: entryId,
+          matchedEntryName: displayName,
+          confidence: 0,
+          reason: premature,
+          resurfacedDecline: { entryId, name: displayName },
         };
       }
 
@@ -861,6 +1113,8 @@ interface SeenEntry {
   wire: string;
   scanDate: string;
   deadline?: string | Date | null;
+  /** Stored created_at when the row already exists. Omitted → read it if a decline timestamp is in play. */
+  createdAt?: string | Date | null;
 }
 
 type Queryable = Pick<Pool, 'query'>;
@@ -887,7 +1141,8 @@ export async function registerSeenInTransaction(
   let conflictEntryId: number | null = null;
   if (urlRes.rowCount === 0) {
     const existing = await db.query(
-      `SELECT su.first_seen_entry_id, se.name, se.status, se.deadline, se.deadline_parsed
+      `SELECT su.first_seen_entry_id, se.name, se.status, se.deadline, se.deadline_parsed,
+              se.decision_at, se.action_reason, se.metadata
        FROM seen_urls su
        LEFT JOIN scan_entries se ON se.id = su.first_seen_entry_id
        WHERE su.normalized_url = $1 AND su.wire = $2
@@ -946,7 +1201,12 @@ export async function registerSeenInTransaction(
         }
 
         if (!allowSharedSocialSource) {
-          const incoming: RoundCandidate = { name: entry.name, deadline: entry.deadline };
+          const incoming: RoundCandidate = {
+            name: entry.name,
+            deadline: entry.deadline,
+            sourceUrl: entry.sourceUrl,
+            createdAt: entry.createdAt,
+          };
           const allowSharedNewCycle = Boolean(
             ownerName
             && (isNewProgramCycle(entry.name, ownerName, entry.deadline, ownerDeadlineParsed ?? ownerDeadline)
@@ -954,7 +1214,34 @@ export async function registerSeenInTransaction(
                 name: ownerName, deadline: ownerDeadline, deadlineParsed: ownerDeadlineParsed, status: ownerStatus,
               }))
           );
-          if (allowSharedNewCycle) {
+          let allowPrematureDecline = false;
+          if (!allowSharedNewCycle && ownerId !== null && ownerStatus === 'declined') {
+            const ownerFacts = priorDeclineFacts({
+              id: ownerId,
+              status: ownerStatus,
+              decision_at: existing.rows[0].decision_at,
+              action_reason: existing.rows[0].action_reason,
+              metadata: existing.rows[0].metadata,
+            });
+            // Skip the created_at read unless a decline timestamp exists. Callers
+            // that pass createdAt (finalize) never take the extra query.
+            if (declineInstantMs(ownerFacts) !== null) {
+              let createdAt = entry.createdAt ?? null;
+              if (createdAt == null) {
+                const created = await db.query(
+                  `SELECT created_at FROM scan_entries WHERE id = $1`,
+                  [entry.id],
+                );
+                createdAt = created.rows[0]?.created_at ?? null;
+              }
+              incoming.createdAt = createdAt;
+              allowPrematureDecline = prematureDeclineNote(
+                { createdAt, sourceUrl: entry.sourceUrl },
+                ownerFacts,
+              ) !== null;
+            }
+          }
+          if (allowSharedNewCycle || allowPrematureDecline) {
             const siblings = await findUrlCycleSiblings(db, {
               sourceUrl: entry.sourceUrl,
               seenUrl: entry.sourceUrl,
@@ -1067,7 +1354,7 @@ export async function finalizeExistingEntryDedup(
     // Duplicate graph before URL registry is the global mutation lock order.
     await lockDuplicateGraph(client);
     const currentResult = await client.query(
-      `SELECT id, status, source_url, name, wire
+      `SELECT id, status, source_url, name, wire, created_at
        FROM scan_entries
        WHERE id = $1
        FOR UPDATE`,
@@ -1093,6 +1380,7 @@ export async function finalizeExistingEntryDedup(
         wire: entry.wire,
         excludeEntryId: entry.id,
         deadline: entry.deadline,
+        createdAt: current.created_at,
       },
       lookbackDays,
       { programGate: options?.programGate },
@@ -1141,6 +1429,7 @@ export async function finalizeExistingEntryDedup(
       wire: entry.wire,
       scanDate,
       deadline: entry.deadline,
+      createdAt: current.created_at,
     });
 
     if (claim.urlConflict && claim.conflictEntryId !== null) {
@@ -1172,9 +1461,13 @@ export async function finalizeExistingEntryDedup(
     }
 
     const reason = claim.urlConflict ? 'URL already exists in seed history' : null;
-    const priorNote = !claim.urlConflict && dedupResult.priorCycle
+    const cycleNote = dedupResult.priorCycle
       ? (dedupResult.reason || priorCycleReason(dedupResult.priorCycle.entryId, dedupResult.priorCycle.name))
       : null;
+    const resurfacedNote = !dedupResult.priorCycle && dedupResult.resurfacedDecline
+      ? dedupResult.reason
+      : null;
+    const priorNote = !claim.urlConflict ? (cycleNote || resurfacedNote) : null;
     const finalized = await client.query(
       `UPDATE scan_entries
        SET status = 'deduped',
