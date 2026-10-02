@@ -480,11 +480,11 @@ function createJobExecutor(schedule: ScheduleConfig) {
         }
 
         // Weekly Grant Wire draft — Fridays only, as part of the same daily run (no separate
-        // cron, no Claude routine slot). Emails Sov the draft for review + Substack.
+        // cron, no Claude routine slot). Lands the draft in the Notion Paste Log for review + Substack.
         if (new Date().getDay() === 5) {
           try {
             const wk = await runWeeklyIssue(pool, {});
-            console.log(`[Scheduler] Weekly issue: spine=${wk.spineCount}, alsoOpen=${wk.alsoOpenCount}, emailed=${wk.emailed}`);
+            console.log(`[Scheduler] Weekly issue: spine=${wk.spineCount}, alsoOpen=${wk.alsoOpenCount}, notionLanded=${wk.notionLanded}`);
           } catch (e) {
             console.error('[Scheduler] Weekly issue failed (non-fatal):', e instanceof Error ? e.message : e);
             anomalies.push(`Weekly issue failed: ${e instanceof Error ? e.message : String(e)}`);

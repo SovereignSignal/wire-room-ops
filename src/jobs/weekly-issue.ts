@@ -7,8 +7,9 @@
  * 5-6 FEATURED paragraphs + an "Also open" list (both drawn only from what actually
  * published — fidelity to the channels). The structure is assembled deterministically
  * (assembleIssue); Claude writes only the one-line item descriptions (hybrid). Repeats from
- * last week's issue are dropped. Emails the draft, lands it in the Notion Paste Log, stores
- * it as next week's prior, and bumps the week number. Publishing to Substack stays human.
+ * last week's issue are dropped. Lands the draft in the Notion Paste Log (the only delivery;
+ * the draft email was retired 2026-10-02), stores it as next week's prior, and bumps the
+ * week number. Publishing to Substack stays human.
  *
  * Shape is locked to Sov's edited final (see memory weekly-newsletter-template):
  * opening + channel block, `# **AI/Crypto/OSS**`, featured (bold+linked) + "Also open:"
@@ -18,7 +19,6 @@
 import type { Pool } from 'pg';
 import { createMessageWithFallback } from '../services/anthropic';
 import { scrapeUrl, isScrapableUrl } from '../services/scraper';
-import { sendWeeklyDraftEmail } from '../services/email';
 import { parallelAvailable, verifyOpportunities } from '../services/parallel-task';
 import type { VerifyResult } from '../services/parallel-task';
 import { landWeeklyInPasteLog } from '../services/weekly-notion';
@@ -64,7 +64,7 @@ export interface WeeklyIssueResult {
   alsoOpenCount: number;
   hadPriorIssue: boolean;
   markdown: string;
-  emailed: boolean;
+  notionLanded: boolean;
 }
 
 const PRIOR_ISSUE_KEY = 'weekly:last-issue';   // { date, markdown }
@@ -357,15 +357,14 @@ export function isPublishableVerification(result: VerifyResult | null, fallbackU
 }
 
 export function assertWeeklyCheckpointAllowed(input: {
-  skipEmail: boolean;
+  skipDelivery: boolean;
   skipStore: boolean;
-  emailed: boolean;
   notionLanded: boolean;
 }): void {
   if (input.skipStore) return;
-  if (input.skipEmail) throw new Error('Weekly issue cannot checkpoint when delivery is skipped');
-  if (!input.emailed && !input.notionLanded) {
-    throw new Error('Weekly issue delivery failed: email and Notion both unavailable');
+  if (input.skipDelivery) throw new Error('Weekly issue cannot checkpoint when delivery is skipped');
+  if (!input.notionLanded) {
+    throw new Error('Weekly issue delivery failed: Notion Paste Log landing unavailable');
   }
 }
 
@@ -453,7 +452,7 @@ async function verifyViaParallel(items: SpineItem[], label: string, cap: number)
 
 export async function runWeeklyIssue(
   pool: Pool,
-  options: { onProgress?: (msg: string, pct: number) => void; skipEmail?: boolean; skipStore?: boolean } = {},
+  options: { onProgress?: (msg: string, pct: number) => void; skipDelivery?: boolean; skipStore?: boolean } = {},
 ): Promise<WeeklyIssueResult> {
   const progress = options.onProgress || (() => {});
   const runDate = new Date().toISOString().split('T')[0];
@@ -517,33 +516,24 @@ export async function runWeeklyIssue(
   const spineCount = selections.reduce((n, s) => n + s.featured.length, 0);
   const alsoOpenCount = selections.reduce((n, s) => n + s.alsoOpen.length, 0);
 
-  progress('Emailing + landing in Notion Paste Log...', 85);
-  let emailed = false;
+  progress('Landing in Notion Paste Log...', 85);
   let notionLanded = false;
-  if (!options.skipEmail) {
-    try {
-      await sendWeeklyDraftEmail(markdown, { runDate, spineCount, alsoOpenCount });
-      emailed = true;
-    } catch (err) {
-      console.error('[Weekly] Failed to email draft:', err instanceof Error ? err.message : err);
-    }
-
+  if (!options.skipDelivery) {
     // Land the draft in the Notion Paste Log (rendered rich text → copy into Substack).
-    // Fails soft if the integration isn't shared on the Paste Log page yet.
+    // The only delivery: a failed landing fails the run below instead of checkpointing.
     const land = await landWeeklyInPasteLog(`${runDate} — Grant Wire Weekly — Week ${weekNumber} — Substack paste copy`, markdown);
     notionLanded = land.ok;
     if (land.ok) console.log(`[Weekly] Landed in Notion Paste Log: ${land.url}`);
-    else console.warn(`[Weekly] Notion Paste Log landing skipped: ${land.error} (share the Paste Log page with the Wire Room Ops integration)`);
+    else console.warn(`[Weekly] Notion Paste Log landing failed: ${land.error} (share the Paste Log page with the Wire Room Ops integration)`);
   }
 
   assertWeeklyCheckpointAllowed({
-    skipEmail: !!options.skipEmail,
+    skipDelivery: !!options.skipDelivery,
     skipStore: !!options.skipStore,
-    emailed,
     notionLanded,
   });
 
-  // Checkpoint only after at least one durable delivery. State write failures
+  // Checkpoint only after the draft has durably landed. State write failures
   // propagate so the scheduler reports an anomaly instead of silently skipping
   // the issue from next week's window.
   if (!options.skipStore) {
@@ -552,6 +542,6 @@ export async function runWeeklyIssue(
   }
 
   progress('Weekly issue complete', 100);
-  console.log(`[Weekly] ${runDate}: week=${weekNumber}, featured=${spineCount}, alsoOpen=${alsoOpenCount}, prior=${prior ? 'yes' : 'no'}, emailed=${emailed}`);
-  return { runDate, weekNumber, spineCount, alsoOpenCount, hadPriorIssue: !!prior, markdown, emailed };
+  console.log(`[Weekly] ${runDate}: week=${weekNumber}, featured=${spineCount}, alsoOpen=${alsoOpenCount}, prior=${prior ? 'yes' : 'no'}, notionLanded=${notionLanded}`);
+  return { runDate, weekNumber, spineCount, alsoOpenCount, hadPriorIssue: !!prior, markdown, notionLanded };
 }
