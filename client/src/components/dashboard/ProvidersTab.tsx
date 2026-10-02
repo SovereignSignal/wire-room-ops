@@ -8,7 +8,6 @@ type Provider = ProviderResponse;
 
 const PROVIDER_ICONS: Record<string, string> = {
   grok: '\u{1F916}',
-  anthropic: '\u{1F9E0}',
   firecrawl: '\u{1F525}',
   perplexity: '\u{1F52E}',
   resend: '\u{1F4E7}',
@@ -17,7 +16,7 @@ const PROVIDER_ICONS: Record<string, string> = {
 };
 
 const PROVIDERS_WITH_BASE_URL = new Set(['grok', 'firecrawl', 'perplexity']);
-const PROVIDERS_WITH_MODELS = new Set(['grok', 'anthropic', 'perplexity']);
+const PROVIDERS_WITH_MODELS = new Set(['grok', 'perplexity']);
 
 export function ProvidersTab() {
   const [providers, setProviders] = useState<Provider[]>([]);

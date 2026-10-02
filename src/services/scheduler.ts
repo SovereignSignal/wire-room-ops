@@ -6,7 +6,6 @@ import { runSourceFeeds } from '../jobs/source-feeds';
 import { runCohortBridge } from '../jobs/cohort-bridge';
 import { runXLists } from '../jobs/x-lists';
 import { runRegistryWatch } from '../jobs/registry-watch';
-import { runWeeklyIssue } from '../jobs/weekly-issue';
 import { runBdLeads } from '../jobs/bd-leads';
 import { config } from '../config';
 import { sendTestAlertEmail, sendScheduledJobFailureEmail } from './email';
@@ -476,18 +475,6 @@ function createJobExecutor(schedule: ScheduleConfig) {
             if (rw.ran) console.log(`[Scheduler] Registry watch: rss ${rw.rss.surfaces}/${rw.rss.fresh} fresh, diff ${rw.diff.surfaces}/${rw.diff.changed ?? 0} changed, ${rw.diff.extracted ?? 0} extracted`);
           } catch (err) {
             console.error('[Scheduler] Registry watch failed:', err instanceof Error ? err.message : err);
-          }
-        }
-
-        // Weekly Grant Wire draft — Fridays only, as part of the same daily run (no separate
-        // cron, no Claude routine slot). Lands the draft in the Notion Paste Log for review + Substack.
-        if (new Date().getDay() === 5) {
-          try {
-            const wk = await runWeeklyIssue(pool, {});
-            console.log(`[Scheduler] Weekly issue: spine=${wk.spineCount}, alsoOpen=${wk.alsoOpenCount}, notionLanded=${wk.notionLanded}`);
-          } catch (e) {
-            console.error('[Scheduler] Weekly issue failed (non-fatal):', e instanceof Error ? e.message : e);
-            anomalies.push(`Weekly issue failed: ${e instanceof Error ? e.message : String(e)}`);
           }
         }
 

@@ -19,7 +19,7 @@ This backend shares its PostgreSQL database with one sibling service:
 | `wire-room-ops` (this repo) | Backend pipeline + admin dashboard | working tree: `~/Documents/Sovereign Signal/repos/wire-room-ops` · GitHub: `SovereignSignal/wire-room-ops` · deploy: Railway `wire-room-ops` |
 | `tele-sum` | Telegram channel ingestion — producer of the `summaries` table this repo bridges from | separate repo · Railway `tele-sum` |
 
-> **History:** the original public front-end `the-wire-room` (thewireroom.xyz) is fully retired — its Railway service was **deleted 2026-07-02** (code remains at `github.com/SovereignSignal/the-wire-room`). The system operates under the **Sovereign Signal** brand; the live output channels are Telegram (active) and the Friday weekly Substack draft. X/newsletter/email distribution is built but unused.
+> **History:** the original public front-end `the-wire-room` (thewireroom.xyz) is fully retired — its Railway service was **deleted 2026-07-02** (code remains at `github.com/SovereignSignal/the-wire-room`). The system operates under the **Sovereign Signal** brand; the live output channel is Telegram. X/newsletter/email distribution is built but unused. The Friday weekly Substack draft was removed.
 
 Both services share the **same PostgreSQL database** (Railway project `wire-room-db`). This repo is the primary writer.
 
@@ -33,23 +33,23 @@ A partial index `idx_scan_entries_approved` on `(wire, created_at DESC) WHERE st
 
 ### Deployment-Agnostic Brand Config
 - `src/config/brand.ts` exports `getBrand()` with audience, contentType, contentVerb, and UI settings
-- All AI prompts (Grok, Claude, Perplexity), quality scorer keywords, and email templates use `getBrand()` instead of hardcoded values
+- All AI prompts (Grok, Ollama, Perplexity), quality scorer keywords, and email templates use `getBrand()` instead of hardcoded values
 - Override per deployment via `BRAND_AUDIENCE`, `BRAND_CONTENT_TYPE`, `BRAND_CONTENT_VERB`, etc.
 
 ### Multi-Provider AI Processing
-- **Grok API** handles X.com/Twitter URLs (native access to tweet content), Gate-2 classification, and scan execution (x_search, web_search tools)
-- **Claude API** handles non-X URL summarization (with Firecrawl scraping), prompt review, distribution post generation (`claude-sonnet-4-6`), and the Friday weekly issue synthesis (pinned to `claude-opus-4-8` in `src/jobs/weekly-issue.ts`)
+- **Grok API** handles X.com/Twitter URL enrichment (native access to tweet content), Gate-2 classification, and scan execution (x_search, web_search tools)
+- **Ollama Cloud** (`src/services/ollama.ts`, `https://ollama.com/api`) handles summaries, non-X enrichment, prompt review, and distribution post generation. Primary model is `OLLAMA_DEFAULT_MODEL` (default `deepseek-v4.1-flash`); fallback is `OLLAMA_FALLBACK_MODEL` (default `glm-5.3-flash`). Those env vars win over a stale `api_providers.default_model`. Every summary passes `summary-guard.ts`
 - **Perplexity API** handles deep web research scans (sonar-pro model, natively searches web with citations)
-- **Ollama** (`src/services/ollama.ts`) is the preferred auto-summarize provider (`SUMMARIZE_PROVIDER=auto|ollama|grok`, see `src/services/auto-summarize.ts`) — falls back to Grok
-- **Parallel.ai** (`src/services/parallel.ts` + `parallel-task.ts`) powers `tool_type: 'parallel'` scan prompts (Grok plans → Parallel retrieves → Grok extracts) and the weekly issue's cited verification pass
-- URL routing for summarization happens in `src/services/processor.ts` which imports `isXcomUrl()` from `src/services/grok.ts`
+- **Parallel.ai** (`src/services/parallel.ts`) powers `tool_type: 'parallel'` scan prompts (Grok plans → Parallel retrieves → Grok extracts). BD verification uses its own Task API client in `src/services/bd-verify.ts`
+- This process does not call Anthropic. A stored `api_providers` row for `anthropic` is ignored and cannot be turned back on
+- URL routing for enrichment happens in `src/services/processor.ts`: X.com uses Grok; every other URL uses the Ollama chain
 
 ### API Provider System
 - All API keys can be stored in the `api_providers` DB table with env var fallback (`src/services/api-provider.ts`)
-- Resolution order: explicit param > DB provider default_model > hardcoded default
-- Providers are cached in-memory and refreshed on upsert
+- Resolution order for non-summary providers: explicit param > DB provider default_model > hardcoded default. Summary models are the Ollama env pair, not the DB `default_model`
+- Providers are cached in-memory and refreshed on upsert. Retired providers (`anthropic`) are dropped from that cache
 - Dashboard Settings > API Providers tab manages keys, base URLs, default models, and connection testing
-- Known providers: grok, anthropic, firecrawl, perplexity, resend, telegram, telegram-intake, ollama, parallel
+- Known providers: grok, ollama, firecrawl, perplexity, resend, telegram, telegram-intake, parallel
 
 ### Storage Strategy
 - **Generated files** and **schedule configs** are persisted to Postgres (survive restarts)
@@ -119,7 +119,6 @@ src/
 │   ├── forum-dryrun.ts / forum-run-once.ts / forum-activity-probe.ts   # Forum lane testing/audit
 │   ├── cohort-bridge-run-once.ts # Notion cohort bridge (heartbeat + backfill); --dry-run available
 │   ├── source-feeds-dryrun.ts / source-feeds-run-once.ts               # Feed lane testing
-│   ├── weekly-run-once.ts / weekly-seed-prior.ts  # Weekly issue tooling
 │   ├── program-backfill.ts # Program-identity backfill: one-off corpus canonicalization (--dry-run mode)
 │   ├── backfill-summary-leaks.ts # Regenerate enriched_summary rows holding leaked reasoning (dry run by default, --apply to write)
 │   └── cleanup-lane-noise.ts / lane-quality-report.ts / queue-dedup-review.ts  # June-2026 one-off audits
@@ -140,15 +139,13 @@ src/
 │   ├── scan-execution.ts   # Prompt-driven scans (Grok x_search/web_search, Perplexity, Parallel)
 │   ├── source-feeds.ts     # Registry feed ingester (Karma GAP, Grants.gov, EA Forum, own-site scrapes...) with per-source app_state watermark
 │   ├── summary-sync.ts     # tele-sum summaries -> scan_entries review candidates (15-min timer, watermark)
-│   └── weekly-issue.ts     # Friday weekly Substack draft: gather -> verify (Parallel/Firecrawl) -> synthesize -> Notion Paste Log
 ├── migrations/           # One-time TS cleanup scripts (historical)
 ├── services/
-│   ├── anthropic.ts      # Claude API calls with scraping integration (uses getBrand())
 │   ├── api-provider.ts   # DB-backed API key management with env var fallback (api_providers table)
 │   ├── api-usage.ts      # Fire-and-forget API usage logging + cost estimation (api_usage_log table)
 │   ├── approval-guard.ts # Pre-approval validation (blocks bad source/description data)
 │   ├── auth.ts           # Sessions, magic-link/download tokens, cleanup sweep
-│   ├── auto-summarize.ts # Auto-generate summary on approve (Ollama-first, Grok fallback); every output passes summary-guard.ts or the entry is flagged auto_summarize_failed
+│   ├── auto-summarize.ts # Auto-generate summary on approve (Ollama primary, then Ollama fallback); every output passes summary-guard.ts or the entry is flagged auto_summarize_failed
 │   ├── bd-leads-notion.ts # Write verified BD leads to the Notion Paid Work Leads db (dedup by Source URL)
 │   ├── bd-qualifier.ts   # BD shape-screen: scores signals against SOV_SHAPE (3 service lines, ecosystem-blind)
 │   ├── bd-roles.ts       # BD roles lane: ATS/RSS registry + title taxonomy + net-new watermark (Phase B)
@@ -168,16 +165,17 @@ src/
 │   ├── job-queue.ts      # SSE-based job progress tracking
 │   ├── models.ts         # Dynamic model fetching from provider APIs
 │   ├── notion-sync.ts    # Notion CRM sync (org_profiles -> Notion database, DB-backed config)
-│   ├── ollama.ts         # Ollama client (auto-summarize provider)
+│   ├── ollama.ts         # Ollama Cloud client (summaries, posts, prompt review)
+│   ├── ollama-think.ts   # Per-model think control for the native /api/chat call
 │   ├── operator-signals.ts # Feedback loop: mines approve/decline decisions to calibrate classifier
 │   ├── org-enricher.ts   # LLM + web org profile enrichment (6h timer) with url-verify guard
 │   ├── org-extractor.ts  # Canonical org name extraction + fuzzy org dedup + entry linking on approve
 │   ├── org-merge.ts      # Org profile merge (source -> target), relink entries
 │   ├── parallel.ts       # Parallel.ai Search API client (scan retrieval)
-│   ├── parallel-task.ts  # Parallel.ai Task API client (weekly issue cited verification)
 │   ├── perplexity.ts     # Perplexity sonar-pro scans
-│   ├── post-generator.ts # claude-sonnet-4-6 generates tweet + Telegram HTML per entry (template fallback)
+│   ├── post-generator.ts # Ollama generates tweet + Telegram HTML per entry (template fallback)
 │   ├── processor.ts      # Entry processing with retry logic
+│   ├── prompt-review.ts  # Scan-prompt review via the Ollama summary chain
 │   ├── program-identity.ts # Program canonicalization: resolve entries to canonical programs + the Layer 1.75 advisory resolver
 │   ├── scan-stats.ts     # Prompt effectiveness and overlap metrics
 │   ├── scheduler.ts      # node-cron scheduling, DB-driven; daily-digest branch runs the daily fold
@@ -189,7 +187,6 @@ src/
 │   ├── telegram-adapter.ts # Telegram intake bot adapter (webhook handler -> intake-core)
 │   ├── telegram-channel.ts # Telegram Bot API posting to channels (the LIVE distribution channel)
 │   ├── url-verify.ts     # Deterministic URL verification (drops 404s in enrichment)
-│   ├── weekly-notion.ts  # Markdown -> Notion blocks + Paste Log landing for the weekly
 │   ├── x-client.ts       # Twitter/X posting via twitter-api-v2 (built, unused in prod)
 │   └── x-thread.ts       # X thread context fetching (aggregate-thread summaries)
 ├── views/                # Server-rendered pages (login + error only; dashboard is React SPA)
@@ -219,7 +216,7 @@ Server-rendered views (login/error only):
 
 ### Changing AI Prompts
 - Grok newsletter prompt: `src/services/grok.ts` - `buildGrokPrompt()` function
-- Claude prompts: `src/services/anthropic.ts` - `buildScrapedContentPrompt()` and `buildFallbackPrompt()` functions
+- Ollama newsletter prompts: `src/services/ollama.ts`
 - Classifier prompt: `src/services/classifier.ts` - `buildClassificationPrompt()` function
 - Scan prompts: Stored in `scan_prompts` table, managed via `/api/scan/prompts` CRUD API. Each prompt has `prompt_text` and optional `response_format`.
 
@@ -367,10 +364,10 @@ Distribution uses `distribution_channels` (managed channels with UUID PK, per-ch
 
 ## API Integration Details
 
-All providers support DB-backed credentials (`api_providers` table) with env var fallback. Model resolution: explicit param > provider.default_model > hardcoded default.
+All providers support DB-backed credentials (`api_providers` table) with env var fallback. Model resolution for non-summary providers: explicit param > provider.default_model > hardcoded default. Summary, post, and prompt-review calls use `OLLAMA_DEFAULT_MODEL` then `OLLAMA_FALLBACK_MODEL` and ignore the Ollama row's `default_model`.
 
-- **Grok** (`src/services/grok.ts`): Chat Completions for classification/summaries + Responses API for scan execution (`x_search`/`web_search` tools). Has native X.com access.
-- **Claude** (`src/services/anthropic.ts`): Summarization (Opus) + post generation (Sonnet for cost efficiency). Uses `@anthropic-ai/sdk`.
+- **Grok** (`src/services/grok.ts`): Chat Completions for classification and X.com enrichment + Responses API for scan execution (`x_search`/`web_search` tools). Has native X.com access.
+- **Ollama** (`src/services/ollama.ts`): native `/api/chat` on `https://ollama.com/api`. Summaries, non-X enrichment, prompt review, and post generation.
 - **Perplexity** (`src/services/perplexity.ts`): `sonar-pro` model, natively searches web with citations. For `tool_type: 'perplexity'` prompts.
 - **Firecrawl** (`src/services/scraper.ts`): Web scraping for non-X.com URLs.
 - **Resend** (`src/services/email.ts`): all outbound email — daily digest, CSV export, scan digest, login/magic link, test alert, scheduled-job failure alert, download-link resend.
@@ -379,7 +376,7 @@ All providers support DB-backed credentials (`api_providers` table) with env var
 
 - **Retry**: `withRetry()` in `processor.ts` (3 attempts newsletter, 2 for scans). Batch concurrency: 3 at a time.
 - **Concurrent job guard**: Duplicate manual jobs return 409. Scheduler skips overlapping cron runs.
-- **Scrape fallback**: If Firecrawl fails, Claude uses cached summary.
+- **Scrape fallback**: If Firecrawl fails, Ollama summarizes from the cached summary.
 - **Security**: CSRF origin checking, HttpOnly session cookies, `escapeHtml()` XSS prevention, open redirect protection, SSE keepalive (30s).
 - **Memory**: Cleanup timers (15-min) for the job queue, one-time tokens, and the rate-limit store. Sessions are DB-backed with an in-memory read-through cache. Timers use `.unref()` and graceful shutdown hooks.
 
@@ -394,7 +391,7 @@ All providers support DB-backed credentials (`api_providers` table) with env var
 ## Common Issues
 
 ### "Missing required environment variables"
-Check that all 4 required env vars are set: DATABASE_URL, NOTIFICATION_EMAIL, PRIVY_APP_ID, PRIVY_APP_SECRET. API keys (ANTHROPIC_API_KEY, GROK_API_KEY, FIRECRAWL_API_KEY, RESEND_API_KEY) are optional at startup and produce warnings -- they can also be configured via Settings > API Providers in the dashboard.
+Check that all 4 required env vars are set: DATABASE_URL, NOTIFICATION_EMAIL, PRIVY_APP_ID, PRIVY_APP_SECRET. API keys (GROK_API_KEY, FIRECRAWL_API_KEY, OLLAMA_API_KEY, RESEND_API_KEY) are optional at startup and produce warnings -- they can also be configured via Settings > API Providers in the dashboard.
 
 ### Scheduler not running after config change
 Scheduler restarts automatically when you save schedule config via the dashboard API.
@@ -411,13 +408,13 @@ Generated files are persisted to Postgres. Sessions are DB-backed and survive re
 - `PRIVY_APP_SECRET` - Privy authentication app secret
 
 ### Optional API Keys (warn on startup if missing; can also be set via Settings > API Providers in dashboard)
-- `ANTHROPIC_API_KEY` - Claude API key
 - `GROK_API_KEY` - X.ai Grok API key
+- `OLLAMA_API_KEY` - Ollama Cloud API key (summaries, posts, prompt review)
 - `FIRECRAWL_API_KEY` - Firecrawl scraping API key
 - `RESEND_API_KEY` - Resend email API key
 
 ### Optional
-See `.env.example` for full list. Key optional vars: `MIGRATION_DATABASE_URL` (schema-owner connection for the pre-deploy migration only; the app never reads it) + `RUNTIME_DATABASE_ROLE` (override for the role that receives runtime grants, default: the `DATABASE_URL` login), `PORT`, `APP_URL`, `ALLOWED_EMAILS`, `STARTUP_LLM_RESCORE_ENABLED` (explicit opt-in to queue-only LLM score repair on boot; default false and may spend API credits), `TELEGRAM_BOT_TOKEN`, `PERPLEXITY_API_KEY`, `PARALLEL_API_KEY` (Parallel.ai scans), `FORUM_SCAN_ENABLED`, `SUMMARIZE_PROVIDER` + `OLLAMA_DEFAULT_MODEL` (auto-summarize provider), `SUMMARY_SYNC_WIRES` (tele-sum bridge wire filter), `SOURCE_BLOCKLIST_EXTRA` (extra Gate-1 blocked domains), `CRM_ENRICH_ENABLED` (org enrichment in the daily CRM cycle — default off), `CRM_CONTACT_DISCOVERY_ENABLED` (writes Needs Review contacts — default off, keep off until that queue is worked), `WEEKLY_PASTE_LOG_PAGE_ID` (Notion landing page), `BD_LEADS_DATABASE_ID` (Notion Paid Work Leads db for the BD loop), `BRAND_*` (deployment-agnostic config overrides), `INTERNAL_API_KEY` + `INTERNAL_API_KEY_DAILY_SCAN` (named agent API keys — see Internal API Key Auth), `WIRE_ROOM_CURATOR_KEYS` (scoped agent keys, hash-only JSON array — see Scoped Agent Keys), `X_BEARER_TOKEN` (X account monitor, X list watcher), `WATCHTOWER_BUDGET_MONTHLY_USD` (monthly discovery spend cap, default $20), `X_LISTS_ENABLED` (enable the X list watcher lane, default false), `X_LISTS_DRY_RUN` (log without submitting to intake, default true), `X_LIST_IDS` (comma-separated wire:listId pairs), `REGISTRY_WATCH_ENABLED` (enable the registry-watch lane over `watch_surfaces`, default off), `REGISTRY_WATCH_TIERS` (which `watch_surfaces` tiers the lane polls — `"1"`, `"1,2"`, or `"2"`, default `"1"`), `DEV_MODE` (skip auth in dev), `DATA_DIR` (local data storage).
+See `.env.example` for full list. Key optional vars: `MIGRATION_DATABASE_URL` (schema-owner connection for the pre-deploy migration only; the app never reads it) + `RUNTIME_DATABASE_ROLE` (override for the role that receives runtime grants, default: the `DATABASE_URL` login), `PORT`, `APP_URL`, `ALLOWED_EMAILS`, `STARTUP_LLM_RESCORE_ENABLED` (explicit opt-in to queue-only LLM score repair on boot; default false and may spend API credits), `TELEGRAM_BOT_TOKEN`, `PERPLEXITY_API_KEY`, `PARALLEL_API_KEY` (Parallel.ai scans), `FORUM_SCAN_ENABLED`, `OLLAMA_DEFAULT_MODEL` + `OLLAMA_FALLBACK_MODEL` (summary primary and fallback), `SUMMARY_SYNC_WIRES` (tele-sum bridge wire filter), `SOURCE_BLOCKLIST_EXTRA` (extra Gate-1 blocked domains), `CRM_ENRICH_ENABLED` (org enrichment in the daily CRM cycle — default off), `CRM_CONTACT_DISCOVERY_ENABLED` (writes Needs Review contacts — default off, keep off until that queue is worked), `BD_LEADS_DATABASE_ID` (Notion Paid Work Leads db for the BD loop), `BRAND_*` (deployment-agnostic config overrides), `INTERNAL_API_KEY` + `INTERNAL_API_KEY_DAILY_SCAN` (named agent API keys — see Internal API Key Auth), `WIRE_ROOM_CURATOR_KEYS` (scoped agent keys, hash-only JSON array — see Scoped Agent Keys), `X_BEARER_TOKEN` (X account monitor, X list watcher), `WATCHTOWER_BUDGET_MONTHLY_USD` (monthly discovery spend cap, default $20), `X_LISTS_ENABLED` (enable the X list watcher lane, default false), `X_LISTS_DRY_RUN` (log without submitting to intake, default true), `X_LIST_IDS` (comma-separated wire:listId pairs), `REGISTRY_WATCH_ENABLED` (enable the registry-watch lane over `watch_surfaces`, default off), `REGISTRY_WATCH_TIERS` (which `watch_surfaces` tiers the lane polls — `"1"`, `"1,2"`, or `"2"`, default `"1"`), `DEV_MODE` (skip auth in dev), `DATA_DIR` (local data storage).
 
 ## Feeds System
 
@@ -465,7 +462,7 @@ Automated discovery of grant opportunities via X.com scanning, web search, and f
 9. **Approve Guard**: Pre-approval validation blocks entries with empty descriptions or empty URLs from being published; warns on EXPIRED classification
 
 ### Schedule Types (5)
-- **`daily-digest`** — **the anchor cron: one daily cycle runs the whole discovery fold** (`scheduler.ts` daily-digest branch): (1) forum scan (if `FORUM_SCAN_ENABLED`), (2) source feeds, (3) cohort Notion bridge (Cowork+Codex table → `source_runs` heartbeat + queue), (4) **Fridays only** the weekly Grant Wire issue, (5) **Wednesdays only** the BD leads run, then (6) the digest email — assembled by `assembleAndSendDailyDigest()` (fresh watermarked finds + run ledger + closing soon fold + Wednesday BD leads + anomalies; the cost recap and per-source breakdown feed anomaly derivation only, they don't get their own email sections) — then (7) CSV export of 24h approvals (files persisted for the dashboard; links no longer in the email), then (8) the daily CRM cycle — org enrichment (40, `CRM_ENRICH_ENABLED`), contact discovery (20, 90-day revisit, `CRM_CONTACT_DISCOVERY_ENABLED`), Notion CRM sync — after the email so it can never delay it. Each lane is isolated in try/catch so a lane failure never blocks the digest. Saving this schedule auto-derives per-wire AM/PM scan-execution schedules. **Do not add new standalone crons for periodic work — fold it into this cycle** (owner rule). **The digest email is decisions-first (2026-07-09 "Run Ledger" redesign):** status band (RUN CLEAN/⚠ N issues + lane ledger) → production issues → "New for review" (watermarked, never repeats, curator-stamped, queue deep links) → closing soon fold (data from `runDeadlineDigest`, renders only when non-empty — replaces the retired standalone deadline-digest email) → Wednesday BD leads. Ops telemetry tables (per-source matrix, cost table, wire table) live in the dashboard only — `renderDailyDigest()` in email.ts is the pure renderer, pinned by tests/digest-email.test.js
+- **`daily-digest`** — **the anchor cron: one daily cycle runs the whole discovery fold** (`scheduler.ts` daily-digest branch): (1) forum scan (if `FORUM_SCAN_ENABLED`), (2) source feeds, (3) cohort Notion bridge (Cowork+Codex table → `source_runs` heartbeat + queue), (4) **Wednesdays only** the BD leads run, then (5) the digest email — assembled by `assembleAndSendDailyDigest()` (fresh watermarked finds + run ledger + closing soon fold + Wednesday BD leads + anomalies; the cost recap and per-source breakdown feed anomaly derivation only, they don't get their own email sections) — then (6) CSV export of 24h approvals (files persisted for the dashboard; links no longer in the email), then (7) the daily CRM cycle — org enrichment (40, `CRM_ENRICH_ENABLED`), contact discovery (20, 90-day revisit, `CRM_CONTACT_DISCOVERY_ENABLED`), Notion CRM sync — after the email so it can never delay it. Each lane is isolated in try/catch so a lane failure never blocks the digest. Saving this schedule auto-derives per-wire AM/PM scan-execution schedules. **Do not add new standalone crons for periodic work — fold it into this cycle** (owner rule). **The digest email is decisions-first (2026-07-09 "Run Ledger" redesign):** status band (RUN CLEAN/⚠ N issues + lane ledger) → production issues → "New for review" (watermarked, never repeats, curator-stamped, queue deep links) → closing soon fold (data from `runDeadlineDigest`, renders only when non-empty — replaces the retired standalone deadline-digest email) → Wednesday BD leads. Ops telemetry tables (per-source matrix, cost table, wire table) live in the dashboard only — `renderDailyDigest()` in email.ts is the pure renderer, pinned by tests/digest-email.test.js
 - **`scan-execution`**: Runs `runScanExecution()` — executes all active prompts for a wire
 - **`forum-scan`**: Runs `runForumScan()` — standalone/extra forum runs (the daily fold already covers one/day)
 - **`source-feeds`**: Runs `runSourceFeeds()` — standalone/extra feed runs (the daily fold already covers one/day)
@@ -483,7 +480,7 @@ Besides node-cron schedules, `src/server.ts` starts plain interval timers at boo
 - Test endpoint: `/api/scan/prompts/:id/test` -- executes a prompt and returns parsed results without intake processing
 - Run endpoint: `/api/scan/prompts/:id/run` -- executes a prompt and runs results through the full intake pipeline
 - Draft test: `/api/scan/prompts/test` -- tests unsaved prompt text without DB lookup
-- Prompt review: `/api/scan/prompts/review` -- Claude-based prompt review with suggestions and revised text
+- Prompt review: `/api/scan/prompts/review` -- Ollama prompt review with suggestions and revised text
 - Effectiveness stats: `/api/scan/prompt-stats` -- per-prompt metrics and cross-prompt overlap rate
 
 ### Gate 2: LLM Classification + Scoring
@@ -503,7 +500,7 @@ Per-feed multi-channel distribution of approved scan entries. **Approve = publis
 
 ### Architecture
 - **Orchestrator**: `src/services/distribution.ts` -- coordinates sending approved-but-undistributed entries to all enabled channels for a wire, with retry support and newsletter markdown generation
-- **Post generator**: `src/services/post-generator.ts` -- uses Claude Sonnet 4.6 (`claude-sonnet-4-6`) to generate a tweet (280 chars) and Telegram HTML post per entry. Falls back to a template if AI generation fails
+- **Post generator**: `src/services/post-generator.ts` -- uses the Ollama summary chain to generate a tweet (280 chars) and Telegram HTML post per entry. Falls back to a template if AI generation fails
 - **Telegram client**: `src/services/telegram-channel.ts` -- sends HTML-formatted posts to Telegram channels via Bot API. Bot token from `TELEGRAM_BOT_TOKEN` env var or `api_providers` DB table
 - **Discord client**: `src/services/discord-channel.ts` -- sends messages to Discord channels via REST API (webhook URL or bot token in `distribution_channels` credentials)
 - **X/Twitter client**: `src/services/x-client.ts` -- posts tweets via `twitter-api-v2`. OAuth credentials stored in `distribution_channels` JSONB per wire
@@ -519,7 +516,7 @@ Approve entries → configure channels in Settings > Distribution → click "Dis
 
 ### Key Design Decisions
 - **Approve distribution**: Normal dashboard approvals trigger per-entry distribution. Quiet approvals and internal agent approvals skip distribution. Manual batch distribution remains available for approved-but-undistributed entries.
-- **Claude Sonnet for post generation**: Uses a smaller model (not Opus) for cost efficiency when generating tweets and Telegram posts
+- **Ollama for post generation**: Uses the summary primary model, then the fallback model, when generating tweets and Telegram posts
 - **Template fallback**: If AI post generation fails, a structured template is used instead
 - **3-second inter-entry delay**: Respects X/Twitter rate limits during batch distribution
 - **Concurrent execution guard**: Prevents double-posting if distribution is triggered while already running (returns 409 with existing job ID)
@@ -537,7 +534,7 @@ Approve entries → configure channels in Settings > Distribution → click "Dis
 
 ## BD Leads Loop (find + qualify, never contact)
 
-Pillar-2 revenue loop (strategy: Notion "BD Loop — Strategy & Direction"). **Wednesdays only, inside the daily-digest fold** (`scheduler.ts`, same pattern as the Friday weekly): `src/jobs/bd-leads.ts` pulls the last 7 days of `metadata.operator_route = 'relationship_signal'` entries → `bd-qualifier.ts` shape-screens them against `SOV_SHAPE` (three service lines; crypto/AI/OSS treated equally, organic no-bias, default-no) → `bd-verify.ts` grounds survivors in current reality via the Parallel Task API (strict: unverified = disqualified) → dedup by org → `bd-leads-notion.ts` writes them to the Notion **Paid Work Leads** db as Status=Lead (dedup by Source URL across weeks; db id from integration_config `leads_database_id` or `BD_LEADS_DATABASE_ID` env). **Structural guarantees:** finds + qualifies ONLY — imports no send/contact path; never creates Opps (Sov converts manually in Notion); no email in Phase A (review-first). **Roles lane (Phase B):** `src/services/bd-roles.ts` — a verified ATS/RSS registry (`ROLES_REGISTRY`: Greenhouse + Ashby JSON APIs + LF/fossjobs RSS, each source lane-tagged crypto/ai/oss) fetched in the same Wednesday run. Postings pass a title taxonomy (senior BD/partnerships/ecosystem/grants/governance/ops/CoS/revenue; engineering and junior titles excluded), a per-source net-new watermark (`bd:roles:seen:<key>` in app_state, first-run capped, advanced ONLY after a clean Notion write), then the same SOV_SHAPE qualifier — but SKIP Parallel verification (ATS data is fresh by construction). Weekly role cap: 10, ranked by qualifier confidence. Adding a role source is config, not architecture. Manual tooling: `src/scripts/bd-pipeline-run.ts`, `bd-qualify-demo.ts`, `smoke-bd-signals.ts`.
+Pillar-2 revenue loop (strategy: Notion "BD Loop — Strategy & Direction"). **Wednesdays only, inside the daily-digest fold** (`scheduler.ts`): `src/jobs/bd-leads.ts` pulls the last 7 days of `metadata.operator_route = 'relationship_signal'` entries → `bd-qualifier.ts` shape-screens them against `SOV_SHAPE` (three service lines; crypto/AI/OSS treated equally, organic no-bias, default-no) → `bd-verify.ts` grounds survivors in current reality via the Parallel Task API (strict: unverified = disqualified) → dedup by org → `bd-leads-notion.ts` writes them to the Notion **Paid Work Leads** db as Status=Lead (dedup by Source URL across weeks; db id from integration_config `leads_database_id` or `BD_LEADS_DATABASE_ID` env). **Structural guarantees:** finds + qualifies ONLY — imports no send/contact path; never creates Opps (Sov converts manually in Notion); no email in Phase A (review-first). **Roles lane (Phase B):** `src/services/bd-roles.ts` — a verified ATS/RSS registry (`ROLES_REGISTRY`: Greenhouse + Ashby JSON APIs + LF/fossjobs RSS, each source lane-tagged crypto/ai/oss) fetched in the same Wednesday run. Postings pass a title taxonomy (senior BD/partnerships/ecosystem/grants/governance/ops/CoS/revenue; engineering and junior titles excluded), a per-source net-new watermark (`bd:roles:seen:<key>` in app_state, first-run capped, advanced ONLY after a clean Notion write), then the same SOV_SHAPE qualifier — but SKIP Parallel verification (ATS data is fresh by construction). Weekly role cap: 10, ranked by qualifier confidence. Adding a role source is config, not architecture. Manual tooling: `src/scripts/bd-pipeline-run.ts`, `bd-qualify-demo.ts`, `smoke-bd-signals.ts`.
 
 ## Operator Signals (Feedback Loop)
 
@@ -612,7 +609,7 @@ Cross-wire CSV export via `src/jobs/csv-export.ts`. `GET /api/export/csv?hoursBa
 
 ## Weekly Grant Wire Issue
 
-`src/jobs/weekly-issue.ts` — runs **Fridays only inside the daily-digest fold** (no separate cron). Gathers the week's distributed+approved entries (spine = `distribution_logs` success joined to approved `scan_entries`, window from the prior issue's date) plus currently-open queued/approved GRANT items ("Also open"); verifies each item is still open via Parallel Task API (primary, cited) or Firecrawl scrape + Sonnet judge (fallback), correcting amounts/deadlines and dropping closed items; synthesizes the locked Substack shape with `claude-opus-4-8`; lands the draft in the Notion "Weekly Summaries Paste Log" (`src/services/weekly-notion.ts`), which is the only delivery: the draft email was retired 2026-10-02, and a failed landing fails the run (digest anomaly, no checkpoint) so the next run covers the missed window. Continuity via `app_state` keys `weekly:last-issue` and `weekly:week-number`. Publishing to Substack stays human. Manual tooling: `src/scripts/weekly-run-once.ts` (`--dry-run`), `weekly-seed-prior.ts`.
+Removed. The daily fold does not generate a Substack draft. The public snapshot still reads `app_state` key `weekly:week-number`; nothing advances it.
 
 ## Rate Limiting
 

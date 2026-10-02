@@ -1,26 +1,35 @@
 /**
- * Ollama Cloud API — summarization via /api/chat endpoint.
+ * Ollama Cloud API — summarization via the native /api/chat endpoint
+ * (https://ollama.com/api/chat). Not the OpenAI-compatible /v1 route:
+ * glm-5.3-flash's reasoning_effort mapping there does not match the native
+ * `think` field (ollama/ollama#18121).
  *
- * Uses Ollama Cloud's native chat API (not OpenAI-compatible).
- * Default model: kimi-k2.5:cloud (cost-effective alternative to Grok for summaries).
+ * Summary model order is the env pair, never api_providers.default_model:
+ *   OLLAMA_DEFAULT_MODEL, then OLLAMA_FALLBACK_MODEL.
+ * A stale dashboard model cannot put summaries back on an old model.
  */
 
+import { config } from '../config';
 import { getBrand } from '../config/brand';
 import { DatabaseEntry } from '../types';
 import { logApiUsage } from './api-usage';
 import { getCachedProvider } from './api-provider';
 import { findSummaryLeak } from './summary-guard';
+import { isScrapableUrl, scrapeUrl, truncateContent } from './scraper';
+import {
+  finalAnswerText,
+  SUMMARY_TOKEN_BUDGET,
+  thinkControl,
+  type OllamaChatMessage,
+} from './ollama-think';
 
-const DEFAULT_OLLAMA_MODEL = 'gpt-oss:120b';
+export { finalAnswerText, SUMMARY_TOKEN_BUDGET, thinkControl } from './ollama-think';
+
 const DEFAULT_OLLAMA_BASE_URL = 'https://ollama.com/api';
 
 interface OllamaChatResponse {
   model: string;
-  message: {
-    role: string;
-    content: string;
-    thinking?: string;
-  };
+  message: OllamaChatMessage;
   done: boolean;
   done_reason?: string;
   prompt_eval_count?: number;
@@ -28,30 +37,127 @@ interface OllamaChatResponse {
   total_duration?: number;
 }
 
-// num_predict counts reasoning tokens too. At 200, gpt-oss used the whole
-// budget thinking and returned empty content.
-const SUMMARY_TOKEN_BUDGET = 1500;
-
-/**
- * gpt-oss cannot turn thinking off, only down. Other models get no `think`
- * field: Ollama rejects it for models without thinking support.
- */
-export function thinkControl(model: string): { think?: 'low' } {
-  return /^gpt-oss\b/i.test(model) ? { think: 'low' } : {};
+/** Explicit model, otherwise the env primary. Never the provider row's default_model. */
+export function modelForSummary(explicit?: string | null): string {
+  const pinned = explicit?.trim();
+  if (pinned) return pinned;
+  return config.apis.ollama.defaultModel.trim();
 }
 
 /**
- * The model's final answer only. `message.thinking` is reasoning and must never
- * be used as output, even when `content` is empty: that fallback stored
- * "We need to produce a concise opportunity summary..." as published summaries.
- * A length stop means the answer was cut off, so it is not a final answer either.
+ * Models to try, in order. An explicit model replaces the chain.
+ * Primary then fallback when they differ; otherwise the one configured model.
  */
-export function finalAnswerText(data: Pick<OllamaChatResponse, 'message' | 'done_reason'>): string {
-  if (data.done_reason === 'length') return '';
-  return (data.message?.content || '').trim();
+export function summaryModelChain(explicit?: string | null): string[] {
+  const pinned = explicit?.trim();
+  if (pinned) return [pinned];
+  const primary = config.apis.ollama.defaultModel.trim();
+  const fallback = config.apis.ollama.fallbackModel.trim();
+  if (primary && fallback && fallback !== primary) return [primary, fallback];
+  const only = primary || fallback;
+  return only ? [only] : [];
 }
 
-function buildSummarizePrompt(): string {
+export function buildOllamaChatBody(
+  model: string,
+  prompt: string,
+  numPredict = SUMMARY_TOKEN_BUDGET,
+  temperature = 0.3,
+) {
+  return {
+    model,
+    messages: [{ role: 'user' as const, content: prompt }],
+    stream: false as const,
+    ...thinkControl(model),
+    options: {
+      temperature,
+      num_predict: numPredict,
+    },
+  };
+}
+
+function ollamaEndpoint(): { apiKey: string; baseUrl: string } {
+  const provider = getCachedProvider('ollama');
+  const apiKey = provider?.api_key || '';
+  const baseUrl = provider?.base_url || DEFAULT_OLLAMA_BASE_URL;
+  return { apiKey, baseUrl };
+}
+
+async function chat(
+  model: string,
+  prompt: string,
+  purpose: string,
+  wire?: string,
+  numPredict = SUMMARY_TOKEN_BUDGET,
+): Promise<string> {
+  const { apiKey, baseUrl } = ollamaEndpoint();
+  if (!apiKey) throw new Error('Ollama API key not configured');
+
+  const start = Date.now();
+  const response = await fetch(`${baseUrl}/chat`, {
+    method: 'POST',
+    signal: AbortSignal.timeout(180_000),
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(buildOllamaChatBody(model, prompt, numPredict)),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '');
+    logApiUsage({
+      provider: 'ollama', model, purpose, wire,
+      duration_ms: Date.now() - start, success: false,
+      error_message: `${response.status} ${errorText.slice(0, 200)}`.trim(),
+    });
+    throw new Error(`Ollama API error: ${response.status} - ${errorText}`);
+  }
+
+  const data = await response.json() as OllamaChatResponse;
+  const text = finalAnswerText(data);
+  logApiUsage({
+    provider: 'ollama', model, purpose, wire,
+    duration_ms: Date.now() - start,
+    tokens_in: data.prompt_eval_count,
+    tokens_out: data.eval_count,
+    ...(text ? {} : { success: false, error_message: `no final answer (done_reason=${data.done_reason ?? 'unknown'})` }),
+  });
+  if (!text) {
+    throw new Error(`Ollama API returned no final answer (done_reason=${data.done_reason ?? 'unknown'})`);
+  }
+  return text;
+}
+
+function buildScrapedContentPrompt(): string {
+  const brand = getBrand();
+  return `Summarize this web page for the ${brand.name} newsletter.
+
+URL: {url}
+
+Page Content:
+{scraped_content}
+
+Reference summary (may be outdated): {existing_summary}
+
+Write a newsletter entry that is INFORMATIVE yet CONCISE. Format:
+
+**[Organization/Project Name]** [action verb] [what happened with key details]. [Additional context, numbers, or requirements]. [Deadline/application info if available].
+
+REQUIREMENTS:
+- 3-5 sentences, roughly 75-150 words
+- Lead with a strong action verb (announced, launched, opened, unveiled, allocated, distributed, published, released)
+- Include ALL specific numbers from the content: funding amounts, token quantities, number of recipients/applicants, ROI metrics, percentages, dates
+- Include deadlines, eligibility requirements, and how to apply when mentioned
+- Provide enough context that a reader understands the significance for ${brand.audience}
+- No bullet points - write in flowing paragraphs
+- Exclude: committee member names, lengthy historical background, detailed mechanism explanations
+- Do not use: crucial, significantly, innovative, exciting, revolutionary, game-changing, foster, comprehensive
+
+Write ONLY the finished newsletter entry. No thinking, no explanation of the instructions.`;
+}
+
+function buildFallbackPrompt(): string {
   const brand = getBrand();
   return `You are writing a newsletter entry for ${brand.name}, covering ${brand.audience}.
 
@@ -71,76 +177,67 @@ REQUIREMENTS:
 - Provide enough context that a reader understands WHY this matters for ${brand.audience}
 - No bullet points - write in flowing paragraphs
 - No flowery language, but DO include substantive details
-- Do not use: crucial, significantly, innovative, exciting, revolutionary, game-changing, foster, comprehensive`;
+- Do not use: crucial, significantly, innovative, exciting, revolutionary, game-changing, foster, comprehensive
+- Work with the information provided - do not say "unable to access"
+
+Write ONLY the finished newsletter entry. No thinking, no explanation of the instructions.`;
 }
 
-export async function summarizeWithOllama(entry: DatabaseEntry, model?: string): Promise<string> {
-  const prompt = buildSummarizePrompt()
-    .replace('{existing_summary}', entry.quick_summary)
-    .replace('{url}', entry.url);
-
-  const provider = getCachedProvider('ollama');
-  const apiKey = provider?.api_key;
-  const baseUrl = provider?.base_url || DEFAULT_OLLAMA_BASE_URL;
-  const useModel = model || provider?.default_model || DEFAULT_OLLAMA_MODEL;
-  const start = Date.now();
-
-  if (!apiKey) {
-    throw new Error('Ollama API key not configured');
+async function buildNewsletterPrompt(entry: DatabaseEntry): Promise<{ prompt: string; scraped: boolean }> {
+  if (isScrapableUrl(entry.url)) {
+    console.log(`    Scraping ${entry.url}...`);
+    const scrapeResult = await scrapeUrl(entry.url);
+    if (scrapeResult.success) {
+      console.log(`    Scraped ${scrapeResult.content.length} chars`);
+      return {
+        scraped: true,
+        prompt: buildScrapedContentPrompt()
+          .replace('{url}', entry.url)
+          .replace('{scraped_content}', truncateContent(scrapeResult.content))
+          .replace('{existing_summary}', entry.quick_summary),
+      };
+    }
+    console.log(`    Scrape failed: ${scrapeResult.error}`);
+  } else {
+    console.log(`    Skipping scrape for non-scrapable URL: ${entry.url}`);
   }
-
-  const response = await fetch(`${baseUrl}/chat`, {
-    method: 'POST',
-    signal: AbortSignal.timeout(180_000),
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: useModel,
-      messages: [{ role: 'user', content: prompt }],
-      stream: false,
-      ...thinkControl(useModel),
-      options: {
-        temperature: 0.3,
-        num_predict: SUMMARY_TOKEN_BUDGET,
-      },
-    }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    logApiUsage({
-      provider: 'ollama', model: useModel, purpose: 'summarize',
-      duration_ms: Date.now() - start, success: false, error_message: `${response.status} ${errorText.slice(0, 200)}`.trim(),
-    });
-    throw new Error(`Ollama API error: ${response.status} - ${errorText}`);
-  }
-
-  const data = await response.json() as OllamaChatResponse;
-
-  const summary = finalAnswerText(data);
-  if (!summary) {
-    throw new Error(`Ollama API returned no final answer (done_reason=${data.done_reason ?? 'unknown'})`);
-  }
-  const leak = findSummaryLeak(summary);
-  if (leak) {
-    throw new Error(`Ollama API returned reasoning instead of a summary (${leak.rule})`);
-  }
-
-  logApiUsage({
-    provider: 'ollama', model: useModel, purpose: 'summarize',
-    duration_ms: Date.now() - start,
-    tokens_in: data.prompt_eval_count,
-    tokens_out: data.eval_count,
-  });
-
-  return summary;
+  return {
+    scraped: false,
+    prompt: buildFallbackPrompt()
+      .replace('{url}', entry.url)
+      .replace('{existing_summary}', entry.quick_summary),
+  };
 }
 
 /**
- * Lightweight summarization for auto-summarize-on-approve.
- * Uses the same Ollama chat API but with a shorter prompt focused on newsletter blurbs.
+ * Newsletter summary for one entry. Tries the env primary model, then the
+ * fallback model. An explicit `model` replaces that chain.
+ */
+export async function summarizeWithOllama(entry: DatabaseEntry, model?: string): Promise<string> {
+  const { prompt, scraped } = await buildNewsletterPrompt(entry);
+  const models = summaryModelChain(model);
+  if (models.length === 0) throw new Error('Ollama summary model is not configured');
+
+  let lastError: Error | null = null;
+  for (const useModel of models) {
+    try {
+      const text = await chat(useModel, prompt, 'summarize', entry.wire);
+      const leak = findSummaryLeak(text);
+      if (leak) throw new Error(`Ollama API returned reasoning instead of a summary (${leak.rule})`);
+      if (scraped) return text;
+      return `${text}\n\n*[Summary based on cached data - original source could not be accessed]*`;
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      console.warn(`[Ollama] summarize ${useModel} failed:`, lastError.message);
+    }
+  }
+  throw lastError ?? new Error('Ollama summary failed');
+}
+
+/**
+ * One auto-summarize attempt on a specific model. Returns null when the call
+ * fails or the answer is too short. The caller runs the summary guard and
+ * decides whether to try the fallback model.
  */
 export async function ollamaAutoSummarize(opts: {
   name: string;
@@ -149,14 +246,8 @@ export async function ollamaAutoSummarize(opts: {
   deadline: string | null;
   sourceUrl: string | null;
   wire?: string;
-}): Promise<string | null> {
-  const provider = getCachedProvider('ollama');
-  const apiKey = provider?.api_key;
-  const baseUrl = provider?.base_url || DEFAULT_OLLAMA_BASE_URL;
-  const useModel = provider?.default_model || DEFAULT_OLLAMA_MODEL;
-
-  if (!apiKey) return null;
-
+}, model?: string): Promise<string | null> {
+  const useModel = modelForSummary(model);
   const brand = getBrand();
   const wireLabel = opts.wire === 'ai' ? 'AI funding' : opts.wire === 'oss' ? 'open-source funding' : 'crypto grants';
 
@@ -170,46 +261,36 @@ Description: ${opts.description}
 
 Write ONLY the final newsletter summary below. No thinking, no explanation, no markdown formatting. 2-4 sentences. Lead with the organization/program name and a strong action verb. Include all specific numbers (amounts, dates, eligibility requirements). Plain prose, no bullet points, no fluff, no hype words. Max 120 words.`;
 
-  const start = Date.now();
-
-  const response = await fetch(`${baseUrl}/chat`, {
-    method: 'POST',
-    signal: AbortSignal.timeout(180_000),
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: useModel,
-      messages: [{ role: 'user', content: prompt }],
-      stream: false,
-      ...thinkControl(useModel),
-      options: {
-        temperature: 0.3,
-        num_predict: SUMMARY_TOKEN_BUDGET,
-      },
-    }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text().catch(() => '');
-    logApiUsage({
-      provider: 'ollama', model: useModel, purpose: 'auto-summarize',
-      duration_ms: Date.now() - start, success: false, error_message: `${response.status} ${errorText.slice(0, 200)}`.trim(),
-    });
+  try {
+    const summary = (await chat(useModel, prompt, 'auto-summarize', opts.wire))
+      .replace(/^["']|["']$/g, '')
+      .trim();
+    return summary.length >= 20 ? summary : null;
+  } catch (err) {
+    console.warn(`[Ollama] auto-summarize ${useModel} failed:`, err instanceof Error ? err.message : err);
     return null;
   }
+}
 
-  const data = await response.json() as OllamaChatResponse;
-  const summary = finalAnswerText(data).replace(/^["']|["']$/g, '').trim();
-
-  logApiUsage({
-    provider: 'ollama', model: useModel, purpose: 'auto-summarize',
-    duration_ms: Date.now() - start,
-    tokens_in: data.prompt_eval_count,
-    tokens_out: data.eval_count,
-    ...(summary ? {} : { success: false, error_message: `no final answer (done_reason=${data.done_reason ?? 'unknown'})` }),
-  });
-
-  return summary && summary.length >= 20 ? summary : null;
+/** One non-summary completion. An explicit model is used alone; otherwise primary then fallback. */
+export async function ollamaComplete(params: {
+  prompt: string;
+  purpose: string;
+  model?: string;
+  wire?: string;
+  numPredict?: number;
+}): Promise<{ model: string; text: string }> {
+  const models = summaryModelChain(params.model);
+  if (models.length === 0) throw new Error('Ollama summary model is not configured');
+  let lastError: Error | null = null;
+  for (const model of models) {
+    try {
+      const text = await chat(model, params.prompt, params.purpose, params.wire, params.numPredict);
+      return { model, text };
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      console.warn(`[Ollama] ${params.purpose} ${model} failed:`, lastError.message);
+    }
+  }
+  throw lastError ?? new Error('Ollama request failed');
 }

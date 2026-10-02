@@ -15,7 +15,6 @@ function walk(dir) {
 // decision, not a formality: say why.
 const EXEMPT = new Set([
   'services/grok.ts',           // defines the helper; its own call writes prose summaries
-  'services/auto-summarize.ts', // prose summary, benefits from the model's default behaviour
   'services/api-provider.ts',   // connection test against whichever provider is being configured
   'services/perplexity.ts',     // Perplexity API, not the grok provider slot
   'migrations/dedup-org-profiles.ts', // historical one-off, never run by the server

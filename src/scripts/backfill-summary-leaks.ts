@@ -6,7 +6,9 @@
  * Dry run (default, read-only session, no LLM calls):
  *   railway run npx ts-node --transpile-only src/scripts/backfill-summary-leaks.ts --dry-run
  *
- * Apply (approved rows first, then other statuses):
+ * Apply (approved rows first, then other statuses). Same flags as before.
+ * Regeneration uses the approve-time chain: Ollama OLLAMA_DEFAULT_MODEL, then
+ * OLLAMA_FALLBACK_MODEL. An Ollama key is required; a Grok key is not.
  *   railway run npx ts-node --transpile-only src/scripts/backfill-summary-leaks.ts --apply --limit 50
  *
  * Flags:
@@ -33,6 +35,7 @@
  */
 
 import type { PoolClient } from 'pg';
+import { config } from '../config';
 import { getPool } from '../db';
 import { refreshProviderCache, getCachedProvider } from '../services/api-provider';
 import { generateValidatedSummary } from '../services/auto-summarize';
@@ -194,7 +197,8 @@ async function applyRow(row: AffectedRow): Promise<'regenerated' | 'cleared' | '
     previous: row.enriched_summary,
     outcome: result.summary ? 'regenerated' : 'cleared',
     provider: result.provider,
-    attempts: result.attempts.map(a => `${a.provider}=${a.outcome}`),
+    model: result.model,
+    attempts: result.attempts.map(a => `${a.model}=${a.outcome}`),
   };
 
   const client = await pool.connect();
@@ -267,8 +271,11 @@ async function main(): Promise<void> {
     }
 
     await refreshProviderCache();
-    if (!getCachedProvider('ollama')?.api_key && !getCachedProvider('grok')?.api_key) {
-      throw new Error('No ollama or grok provider key configured; refusing to clear summaries without a regenerator');
+    const primary = config.apis.ollama.defaultModel;
+    const fallback = config.apis.ollama.fallbackModel;
+    console.log(`Regenerating with Ollama ${primary}, then ${fallback}.`);
+    if (!getCachedProvider('ollama')?.api_key) {
+      throw new Error('No Ollama API key configured; refusing to clear summaries without a regenerator');
     }
 
     const todo = args.limit === null ? affected : affected.slice(0, args.limit);

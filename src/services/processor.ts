@@ -1,15 +1,11 @@
 import { DatabaseEntry, ProcessedEntry, ProcessingStats } from '../types';
 import { summarizeWithGrok, isXcomUrl } from './grok';
-import { summarizeWithOpus } from './anthropic';
 import { summarizeWithOllama } from './ollama';
-import { getCachedProvider } from './api-provider';
 import { findSummaryLeak } from './summary-guard';
-import { config } from '../config';
 import { sleep } from '../utils/async';
 
 export interface ModelOptions {
   grokModel?: string;
-  anthropicModel?: string;
   ollamaModel?: string;
 }
 
@@ -39,11 +35,10 @@ export async function withRetry<T>(
 
 export async function processEntry(entry: DatabaseEntry, models?: ModelOptions): Promise<ProcessedEntry> {
   const isXcom = isXcomUrl(entry.url);
-  const pref = config.summarize.provider;
-  const ollamaAvailable = pref !== 'grok' && !!getCachedProvider('ollama')?.api_key;
 
-  // X.com URLs always use Grok (native X access). Non-X.com: Ollama if available, else Opus.
-  const method = isXcom ? 'grok' : (ollamaAvailable ? 'ollama' : 'opus');
+  // X.com URLs use Grok (native tweet access). Every other URL uses the Ollama
+  // primary model, then the Ollama fallback model.
+  const method = isXcom ? 'grok' : 'ollama';
 
   const baseResult: ProcessedEntry = {
     id: entry.id,
@@ -61,9 +56,7 @@ export async function processEntry(entry: DatabaseEntry, models?: ModelOptions):
     const summary = await withRetry(async () => {
       const text = isXcom
         ? await summarizeWithGrok(entry, models?.grokModel)
-        : method === 'ollama'
-          ? await summarizeWithOllama(entry, models?.ollamaModel)
-          : await summarizeWithOpus(entry, models?.anthropicModel);
+        : await summarizeWithOllama(entry, models?.ollamaModel);
       const leak = findSummaryLeak(text);
       if (leak) throw new Error(`${method} returned reasoning instead of a summary (${leak.rule})`);
       return text;

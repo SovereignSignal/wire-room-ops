@@ -17,9 +17,6 @@ export const config = {
   },
   
   apis: {
-    anthropic: {
-      apiKey: process.env.ANTHROPIC_API_KEY || '',
-    },
     grok: {
       apiKey: process.env.GROK_API_KEY || '',
       baseUrl: 'https://api.x.ai/v1',
@@ -31,7 +28,9 @@ export const config = {
     ollama: {
       apiKey: process.env.OLLAMA_API_KEY || '',
       baseUrl: 'https://ollama.com/api',
-      defaultModel: process.env.OLLAMA_DEFAULT_MODEL || 'gpt-oss:120b',
+      // Env wins over api_providers.default_model for every summary call.
+      defaultModel: process.env.OLLAMA_DEFAULT_MODEL || 'deepseek-v4.1-flash',
+      fallbackModel: process.env.OLLAMA_FALLBACK_MODEL || 'glm-5.3-flash',
     },
   },
 
@@ -46,10 +45,6 @@ export const config = {
     registryRssCap: Number(process.env.REGISTRY_WATCH_RSS_CAP || '60'),
     registryDiffCap: Number(process.env.REGISTRY_WATCH_DIFF_CAP || '80'),
     registryExtractCap: Number(process.env.REGISTRY_WATCH_EXTRACT_CAP || '10'),
-  },
-
-  summarize: {
-    provider: (process.env.SUMMARIZE_PROVIDER || 'auto') as 'auto' | 'ollama' | 'grok',
   },
 
   startup: {
@@ -146,7 +141,6 @@ export function validateConfig(): void {
   ];
 
   const optional = [
-    ['ANTHROPIC_API_KEY', config.apis.anthropic.apiKey],
     ['GROK_API_KEY', config.apis.grok.apiKey],
     ['FIRECRAWL_API_KEY', config.apis.firecrawl.apiKey],
     ['OLLAMA_API_KEY', config.apis.ollama.apiKey],

@@ -1,3 +1,4 @@
+import { config } from '../config';
 import { getCachedProvider } from './api-provider';
 
 export interface ModelInfo {
@@ -16,18 +17,8 @@ interface GrokModelResponse {
   }>;
 }
 
-interface AnthropicModelResponse {
-  data: Array<{
-    type: string;
-    id: string;
-    display_name: string;
-    created_at: string;
-  }>;
-}
-
 // Cache models for 1 hour
 let grokModelsCache: { models: ModelInfo[]; fetchedAt: number } | null = null;
-let anthropicModelsCache: { models: ModelInfo[]; fetchedAt: number } | null = null;
 const CACHE_TTL = 60 * 60 * 1000; // 1 hour
 
 export async function getGrokModels(): Promise<ModelInfo[]> {
@@ -74,51 +65,6 @@ export async function getGrokModels(): Promise<ModelInfo[]> {
   } catch (error) {
     console.error('Error fetching Grok models:', error);
     return grokModelsCache?.models || getDefaultGrokModels();
-  }
-}
-
-export async function getAnthropicModels(): Promise<ModelInfo[]> {
-  // Return cached if fresh
-  if (anthropicModelsCache && Date.now() - anthropicModelsCache.fetchedAt < CACHE_TTL) {
-    return anthropicModelsCache.models;
-  }
-
-  try {
-    const provider = getCachedProvider('anthropic');
-    const apiKey = provider?.api_key;
-    if (!apiKey) return getDefaultAnthropicModels();
-
-    const response = await fetch('https://api.anthropic.com/v1/models', {
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-    });
-
-    if (!response.ok) {
-      console.error('Failed to fetch Anthropic models:', response.status);
-      return anthropicModelsCache?.models || getDefaultAnthropicModels();
-    }
-
-    const data = await response.json() as AnthropicModelResponse;
-
-    const models = data.data
-      .map(m => ({
-        id: m.id,
-        displayName: m.display_name,
-        created: new Date(m.created_at),
-        provider: 'anthropic' as const,
-      }))
-      .sort((a, b) => b.created.getTime() - a.created.getTime());
-
-    // Return top 5 most recent
-    const topModels = models.slice(0, 5);
-
-    anthropicModelsCache = { models: topModels, fetchedAt: Date.now() };
-    return topModels;
-  } catch (error) {
-    console.error('Error fetching Anthropic models:', error);
-    return anthropicModelsCache?.models || getDefaultAnthropicModels();
   }
 }
 
@@ -175,15 +121,6 @@ function getDefaultGrokModels(): ModelInfo[] {
   ];
 }
 
-function getDefaultAnthropicModels(): ModelInfo[] {
-  return [
-    { id: 'claude-opus-4-1-20250805', displayName: 'Claude Opus 4.1', created: new Date(), provider: 'anthropic' },
-    { id: 'claude-opus-4-20250514', displayName: 'Claude Opus 4', created: new Date(), provider: 'anthropic' },
-    { id: 'claude-sonnet-4-20250514', displayName: 'Claude Sonnet 4', created: new Date(), provider: 'anthropic' },
-    { id: 'claude-haiku-3-5-20241022', displayName: 'Claude Haiku 3.5', created: new Date(), provider: 'anthropic' },
-  ];
-}
-
 function getPerplexityModels(): ModelInfo[] {
   return [
     { id: 'sonar-deep-research', displayName: 'Sonar Deep Research', created: new Date('2025-02-01'), provider: 'perplexity' },
@@ -197,18 +134,20 @@ function getOllamaModels(): ModelInfo[] {
   const provider = getCachedProvider('ollama');
   if (!provider?.api_key) return [];
 
-  return [
-    { id: 'kimi-k2.5:cloud', displayName: 'Kimi K2.5 (Cloud)', created: new Date('2025-07-01'), provider: 'ollama' },
-    { id: 'qwen3:32b', displayName: 'Qwen3 32B (Cloud)', created: new Date('2025-05-01'), provider: 'ollama' },
-    { id: 'llama4:scout', displayName: 'Llama 4 Scout (Cloud)', created: new Date('2025-04-01'), provider: 'ollama' },
-  ];
+  const ids = [...new Set(
+    [config.apis.ollama.defaultModel, config.apis.ollama.fallbackModel]
+      .map(id => id.trim())
+      .filter(Boolean),
+  )];
+  return ids.map(id => ({
+    id,
+    displayName: id,
+    created: new Date('2026-09-01'),
+    provider: 'ollama',
+  }));
 }
 
 export async function getAllModels(): Promise<Record<string, ModelInfo[]>> {
-  const [grok, anthropic] = await Promise.all([
-    getGrokModels(),
-    getAnthropicModels(),
-  ]);
-
-  return { grok, anthropic, perplexity: getPerplexityModels(), ollama: getOllamaModels() };
+  const grok = await getGrokModels();
+  return { grok, perplexity: getPerplexityModels(), ollama: getOllamaModels() };
 }

@@ -7,8 +7,11 @@ const { config } = require('../src/config');
 const {
   getCachedProvider,
   getProviderState,
+  getAllProviders,
   isProviderExplicitlyDisabled,
   refreshProviderCache,
+  testProviderConnection,
+  upsertProvider,
 } = require('../src/services/api-provider');
 
 test('disabled DB provider masks an environment key and survives refresh failure', async (t) => {
@@ -54,4 +57,54 @@ test('disabled DB provider masks an environment key and survives refresh failure
   await refreshProviderCache();
   assert.equal(getCachedProvider('grok'), null);
   assert.equal(isProviderExplicitlyDisabled('grok'), true);
+});
+
+test('a stored anthropic row cannot resolve or be re-enabled', async (t) => {
+  const originalFetch = global.fetch;
+  const calls = [];
+  global.fetch = async (url) => {
+    calls.push(String(url));
+    throw new Error(`unexpected request ${url}`);
+  };
+  t.after(async () => {
+    global.fetch = originalFetch;
+    t.mock.restoreAll();
+    t.mock.method(db, 'getPool', () => ({
+      query: async () => ({ rows: [] }),
+    }));
+    await refreshProviderCache();
+    t.mock.restoreAll();
+  });
+
+  const row = {
+    id: '00000000-0000-0000-0000-0000000000aa',
+    provider: 'anthropic',
+    display_name: 'Claude (Anthropic)',
+    api_key: 'sk-ant-stored',
+    base_url: null,
+    default_model: 'claude-opus-4-8',
+    enabled: true,
+    created_at: '2026-10-01T00:00:00.000Z',
+    updated_at: '2026-10-01T00:00:00.000Z',
+  };
+  t.mock.method(db, 'getPool', () => ({
+    query: async () => ({ rows: [row] }),
+  }));
+  await refreshProviderCache();
+
+  assert.equal(getCachedProvider('anthropic'), null);
+  assert.equal(getProviderState('anthropic'), null);
+  assert.equal(isProviderExplicitlyDisabled('anthropic'), false);
+  const listed = await getAllProviders();
+  assert.equal(listed.some(provider => provider.provider === 'anthropic'), false);
+
+  const ping = await testProviderConnection('anthropic');
+  assert.equal(ping.success, false);
+  assert.equal(ping.error, 'Provider is disabled');
+  assert.deepEqual(calls, []);
+
+  await assert.rejects(
+    () => upsertProvider('anthropic', { api_key: 'sk-ant-stored', enabled: true }),
+    /retired/,
+  );
 });

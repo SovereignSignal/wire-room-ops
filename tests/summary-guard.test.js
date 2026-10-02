@@ -4,8 +4,11 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { findSummaryLeak, isLeakedSummary } = require('../src/services/summary-guard');
+const { config } = require('../src/config');
 const { generateValidatedSummary, planSummaryAttempts } = require('../src/services/auto-summarize');
-const { finalAnswerText, thinkControl } = require('../src/services/ollama');
+const {
+  finalAnswerText, thinkControl, summaryModelChain, modelForSummary, buildOllamaChatBody, SUMMARY_TOKEN_BUDGET,
+} = require('../src/services/ollama');
 const { parseArgs } = require('../src/scripts/backfill-summary-leaks');
 
 // Shapes seen in approved scan_entries.enriched_summary (1,130 of 1,927 rows).
@@ -55,18 +58,63 @@ test('finalAnswerText never returns the thinking field', () => {
     '',
     'a length stop is a truncated answer',
   );
+  assert.equal(
+    finalAnswerText({ message: { role: 'assistant', content: 'reasoning about the grant</think>Datapoint AI doubled its grant.' } }),
+    'Datapoint AI doubled its grant.',
+  );
 });
 
-test('thinkControl lowers gpt-oss reasoning and leaves other models alone', () => {
+test('thinkControl disables deepseek and glm reasoning and only lowers gpt-oss', () => {
   assert.deepEqual(thinkControl('gpt-oss:120b'), { think: 'low' });
+  assert.deepEqual(thinkControl('deepseek-v4.1-flash'), { think: false });
+  assert.deepEqual(thinkControl('glm-5.3-flash'), { think: false });
+  assert.deepEqual(thinkControl('glm-5.3-flash:cloud'), { think: false });
   assert.deepEqual(thinkControl('kimi-k2.5:cloud'), {});
 });
 
-test('planSummaryAttempts falls back across providers and retries a lone provider once', () => {
-  assert.deepEqual(planSummaryAttempts('auto', { ollama: true, grok: true }), ['ollama', 'grok']);
-  assert.deepEqual(planSummaryAttempts('auto', { ollama: false, grok: true }), ['grok', 'grok']);
-  assert.deepEqual(planSummaryAttempts('ollama', { ollama: true, grok: true }), ['ollama', 'ollama']);
-  assert.deepEqual(planSummaryAttempts('grok', { ollama: true, grok: false }), []);
+test('summary model chain is the env pair and ignores a caller-supplied blank', () => {
+  const previous = {
+    defaultModel: config.apis.ollama.defaultModel,
+    fallbackModel: config.apis.ollama.fallbackModel,
+  };
+  config.apis.ollama.defaultModel = 'deepseek-v4.1-flash';
+  config.apis.ollama.fallbackModel = 'glm-5.3-flash';
+  try {
+    assert.deepEqual(summaryModelChain(), ['deepseek-v4.1-flash', 'glm-5.3-flash']);
+    assert.deepEqual(summaryModelChain('  '), ['deepseek-v4.1-flash', 'glm-5.3-flash']);
+    assert.deepEqual(summaryModelChain('pinned-model'), ['pinned-model']);
+    assert.equal(modelForSummary(undefined), 'deepseek-v4.1-flash');
+    const body = buildOllamaChatBody('deepseek-v4.1-flash', 'Summarize this.');
+    assert.equal(body.model, 'deepseek-v4.1-flash');
+    assert.equal(body.think, false);
+    assert.equal(body.options.num_predict, SUMMARY_TOKEN_BUDGET);
+    assert.ok(SUMMARY_TOKEN_BUDGET >= 4096);
+    const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '../src/services/ollama.ts'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/.*$/gm, '$1');
+    assert.doesNotMatch(src, /default_model/);
+  } finally {
+    config.apis.ollama.defaultModel = previous.defaultModel;
+    config.apis.ollama.fallbackModel = previous.fallbackModel;
+  }
+});
+
+test('planSummaryAttempts tries the primary model then the fallback, and retries a single model', () => {
+  assert.deepEqual(
+    planSummaryAttempts({ primary: 'deepseek-v4.1-flash', fallback: 'glm-5.3-flash' }),
+    [
+      { slot: 'primary', model: 'deepseek-v4.1-flash' },
+      { slot: 'fallback', model: 'glm-5.3-flash' },
+    ],
+  );
+  assert.deepEqual(
+    planSummaryAttempts({ primary: 'deepseek-v4.1-flash', fallback: 'deepseek-v4.1-flash' }),
+    [
+      { slot: 'primary', model: 'deepseek-v4.1-flash' },
+      { slot: 'primary', model: 'deepseek-v4.1-flash' },
+    ],
+  );
+  assert.deepEqual(planSummaryAttempts({ primary: '', fallback: '' }), []);
 });
 
 const INPUT = {
@@ -79,32 +127,39 @@ const INPUT = {
   wire: 'ai',
 };
 
-test('generateValidatedSummary rejects leaked output and falls back to the next provider', async () => {
+test('generateValidatedSummary rejects leaked output and falls back to the next model', async () => {
+  const calls = [];
   const result = await generateValidatedSummary(INPUT, {
-    preference: 'auto',
-    available: { ollama: true, grok: true },
-    ollama: async () => LEAKED[0],
-    grok: async () => CLEAN[0],
+    available: true,
+    models: { primary: 'deepseek-v4.1-flash', fallback: 'glm-5.3-flash' },
+    ollama: async (_opts, model) => {
+      calls.push(model);
+      return model === 'glm-5.3-flash' ? CLEAN[0] : LEAKED[0];
+    },
   });
+  assert.deepEqual(calls, ['deepseek-v4.1-flash', 'glm-5.3-flash']);
   assert.equal(result.summary, CLEAN[0]);
-  assert.equal(result.provider, 'grok');
+  assert.equal(result.provider, 'ollama');
+  assert.equal(result.model, 'glm-5.3-flash');
   assert.equal(result.attempts[0].outcome, 'rejected');
   assert.match(result.attempts[0].detail, /starts-we-need|we-need-to-write/);
 });
 
 test('generateValidatedSummary returns no summary when every attempt is reasoning, empty, or errors', async () => {
   const result = await generateValidatedSummary(INPUT, {
-    preference: 'auto',
-    available: { ollama: true, grok: true },
-    ollama: async () => null,
-    grok: async () => { throw new Error('timeout'); },
+    available: true,
+    models: { primary: 'deepseek-v4.1-flash', fallback: 'glm-5.3-flash' },
+    ollama: async (_opts, model) => {
+      if (model === 'deepseek-v4.1-flash') return null;
+      throw new Error('timeout');
+    },
   });
   assert.equal(result.summary, null);
   assert.deepEqual(result.attempts.map(a => a.outcome), ['empty', 'error']);
 
   const rejected = await generateValidatedSummary(INPUT, {
-    preference: 'ollama',
-    available: { ollama: true, grok: false },
+    available: true,
+    models: { primary: 'deepseek-v4.1-flash', fallback: '' },
     ollama: async () => LEAKED[2],
   });
   assert.equal(rejected.summary, null);

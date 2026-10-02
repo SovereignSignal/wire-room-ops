@@ -9,6 +9,7 @@
 
 import { getPool } from '../db';
 import { config } from '../config';
+import { thinkControl } from './ollama-think';
 
 // ---- Types ----
 
@@ -36,18 +37,19 @@ export interface ProviderConfig {
 
 // ---- Known providers + env-var fallback mapping ----
 
+/**
+ * Providers this process must never call, even when api_providers still holds
+ * an enabled row and a key. The row is dropped from the cache and cannot be
+ * upserted back into service.
+ */
+export const RETIRED_PROVIDERS = new Set(['anthropic']);
+
 const PROVIDER_DEFAULTS: Record<string, { displayName: string; envKey: () => string; baseUrl: () => string | null; defaultModel: string | null }> = {
   grok: {
     displayName: 'Grok (xAI)',
     envKey: () => config.apis.grok.apiKey,
     baseUrl: () => config.apis.grok.baseUrl,
     defaultModel: 'grok-4.20-beta-0309-non-reasoning',
-  },
-  anthropic: {
-    displayName: 'Claude (Anthropic)',
-    envKey: () => config.apis.anthropic.apiKey,
-    baseUrl: () => null,
-    defaultModel: 'claude-opus-4-1-20250805',
   },
   ollama: {
     displayName: 'Ollama Cloud',
@@ -99,6 +101,7 @@ function buildEnvProviderCache(): Map<string, ProviderConfig> {
   const cache = new Map<string, ProviderConfig>();
 
   for (const [key, def] of Object.entries(PROVIDER_DEFAULTS)) {
+    if (RETIRED_PROVIDERS.has(key)) continue;
     cache.set(key, {
       provider: key,
       display_name: def.displayName,
@@ -119,6 +122,7 @@ let providerCache: Map<string, ProviderConfig> = buildEnvProviderCache();
 
 /** Return the raw cached state, including disabled providers, for settings UI. */
 export function getProviderState(provider: string): ProviderConfig | null {
+  if (RETIRED_PROVIDERS.has(provider)) return null;
   return providerCache.get(provider) || null;
 }
 
@@ -144,6 +148,7 @@ export async function refreshProviderCache(): Promise<void> {
     );
 
     for (const row of rows) {
+      if (RETIRED_PROVIDERS.has(row.provider)) continue;
       next.set(row.provider, {
         provider: row.provider,
         display_name: row.display_name,
@@ -218,6 +223,9 @@ export async function upsertProvider(
   provider: string,
   data: { api_key?: string; base_url?: string | null; default_model?: string | null; enabled?: boolean; display_name?: string }
 ): Promise<ProviderConfig> {
+  if (RETIRED_PROVIDERS.has(provider)) {
+    throw new Error(`Provider ${provider} is retired and cannot be enabled`);
+  }
   const pool = getPool();
   const defaults = PROVIDER_DEFAULTS[provider];
   const displayName = data.display_name || defaults?.displayName || provider;
@@ -250,6 +258,9 @@ export async function upsertProvider(
 // ---- Connection test ----
 
 export async function testProviderConnection(provider: string): Promise<{ success: boolean; latencyMs: number; error?: string }> {
+  if (RETIRED_PROVIDERS.has(provider)) {
+    return { success: false, latencyMs: 0, error: 'Provider is disabled' };
+  }
   const cached = getCachedProvider(provider);
   if (!cached || !cached.api_key) {
     return {
@@ -267,18 +278,6 @@ export async function testProviderConnection(provider: string): Promise<{ succes
         const baseUrl = (cached.base_url || 'https://api.x.ai/v1').replace(/\/v1$/, '');
         const res = await fetch(`${baseUrl}/v1/api-key`, {
           headers: { 'Authorization': `Bearer ${cached.api_key}` },
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return { success: true, latencyMs: Date.now() - start };
-      }
-
-      case 'anthropic': {
-        // Lightweight models list call
-        const res = await fetch('https://api.anthropic.com/v1/models?limit=1', {
-          headers: {
-            'x-api-key': cached.api_key,
-            'anthropic-version': '2023-06-01',
-          },
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return { success: true, latencyMs: Date.now() - start };
@@ -334,10 +333,11 @@ export async function testProviderConnection(provider: string): Promise<{ succes
             'Authorization': `Bearer ${cached.api_key}`,
           },
           body: JSON.stringify({
-            model: cached.default_model || 'kimi-k2.5:cloud',
-            messages: [{ role: 'user', content: 'ping' }],
+            model: config.apis.ollama.defaultModel,
+            messages: [{ role: 'user', content: 'Reply with the word pong.' }],
             stream: false,
-            options: { num_predict: 1 },
+            ...thinkControl(config.apis.ollama.defaultModel),
+            options: { num_predict: 64 },
           }),
         });
         if (res.status === 401 || res.status === 403) throw new Error('Invalid API key');

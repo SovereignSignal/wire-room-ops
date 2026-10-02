@@ -1,14 +1,12 @@
 /**
  * AI-powered post generation for distribution channels.
- * Single Claude call generates both a tweet and Telegram message.
+ * One Ollama call generates both a tweet and Telegram message.
+ * Primary model, then the fallback model, then the local template.
  */
 
-import { getClient } from './anthropic';
 import type { GeneratedPosts } from '../types/intake';
 import { escapeHtml } from '../utils/html';
-import { logApiUsage } from './api-usage';
-
-const MODEL = 'claude-sonnet-4-6';
+import { ollamaComplete, summaryModelChain } from './ollama';
 
 const WIRE_CONTEXT: Record<string, string> = {
   crypto: 'crypto/blockchain grants and funding',
@@ -268,48 +266,31 @@ export async function generatePosts(
 ): Promise<GeneratedPosts> {
   // Clean all entry fields before generation
   const cleaned = cleanEntry(entry);
+  const prompt = buildPrompt(cleaned, wire);
+  const models = summaryModelChain();
+  let lastError: Error | null = null;
 
-  const start = Date.now();
-  try {
-    const anthropic = getClient();
-    const prompt = buildPrompt(cleaned, wire);
-
-    const message = await anthropic.messages.create({
-      model: MODEL,
-      max_tokens: 400,
-      messages: [{ role: 'user', content: prompt }],
-    });
-
-    const textBlock = message.content.find(b => b.type === 'text');
-    if (!textBlock || textBlock.type !== 'text') {
-      throw new Error('No text content in response');
+  for (const model of models) {
+    try {
+      const { text } = await ollamaComplete({
+        prompt,
+        purpose: 'post-gen',
+        model,
+        wire,
+        numPredict: 4096,
+      });
+      const raw = text.trim().replace(/^```json?\n?/, '').replace(/\n?```$/, '');
+      const parsed = JSON.parse(raw) as { tweet?: string; telegram?: string };
+      if (!parsed.tweet || !parsed.telegram) {
+        throw new Error('Missing tweet or telegram in AI response');
+      }
+      const tweet = parsed.tweet.length > 280 ? parsed.tweet.substring(0, 277) + '...' : parsed.tweet;
+      return { tweet, telegram: parsed.telegram };
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
     }
-
-    logApiUsage({
-      provider: 'anthropic', model: MODEL, purpose: 'post-gen', wire,
-      duration_ms: Date.now() - start,
-      tokens_in: message.usage?.input_tokens, tokens_out: message.usage?.output_tokens,
-    });
-
-    // Parse JSON from response (strip markdown fences if present)
-    const raw = textBlock.text.trim().replace(/^```json?\n?/, '').replace(/\n?```$/, '');
-    const parsed = JSON.parse(raw) as { tweet?: string; telegram?: string };
-
-    if (!parsed.tweet || !parsed.telegram) {
-      throw new Error('Missing tweet or telegram in AI response');
-    }
-
-    // Ensure tweet doesn't exceed limit
-    const tweet = parsed.tweet.length > 280 ? parsed.tweet.substring(0, 277) + '...' : parsed.tweet;
-
-    return { tweet, telegram: parsed.telegram };
-  } catch (error) {
-    logApiUsage({
-      provider: 'anthropic', model: MODEL, purpose: 'post-gen', wire,
-      duration_ms: Date.now() - start, success: false,
-      error_message: error instanceof Error ? error.message : String(error),
-    });
-    console.error('[PostGenerator] AI generation failed, using fallback:', error);
-    return buildFallbackPosts(cleaned);
   }
+
+  console.error('[PostGenerator] AI generation failed, using fallback:', lastError);
+  return buildFallbackPosts(cleaned);
 }
