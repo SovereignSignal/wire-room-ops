@@ -2,7 +2,7 @@ require('ts-node/register/transpile-only');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const path = require('node:path');
+const path = require('path');
 const { nextSlot, assignSlots, normalizePace, parsePaceUpdate, planQueue, PaceValidationError } = require('../src/services/distribution-pace');
 
 const quiet = { start: '22:00', end: '08:00', timezone: 'America/Los_Angeles' };
