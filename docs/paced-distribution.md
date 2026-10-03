@@ -1,8 +1,18 @@
 # Paced Telegram distribution
 
-Phase 1 is implemented behind `distribution:pace.enabled = false`. A deploy does not change when posts go out. Quiet hours, pause/reorder/send-now controls, and reconciliation enqueue are still design-only.
+Pacing is implemented and still ships **off**. `distribution:pace.enabled` defaults to `false`, and no migration writes that key. A deploy does not change when posts go out.
 
-Added 2026-10-02, ahead of the rest of phase 2: withhold, as `action: "withhold"` on the entry action doors (`docs/curator-api.md`), not the `/api/distribution/queue/:entryId/withhold` route sketched below. It also accepts a `missing` entry, which that sketch did not, because the first use was 187 stale July approvals that never reached the queue. Resume is still design-only. The `missing` rule also counts a successful Telegram log with no `channel_id` as sent for its wire: those are March 2026 sends from before managed channels recorded which one they used. The send path does not share that rule yet (`getUndistributedEntries` and `distributeEntry` still match on `channel_id`), so the manual `POST /api/distribution/run/:wire` would repost them.
+What Sov can do from Settings → Distribution, on a phone, with no SQL:
+
+- Turn pacing on or off.
+- Set the minutes between posts (1–180; 20 is the recommendation).
+- Set quiet hours, or turn them off. The default window is 22:00–08:00 `America/Los_Angeles`. While pacing is on, slot assignment and the drain do not send inside that window. Rows that would have gone out then move to the end of the window and stay spaced by the interval. Windows that cross midnight are supported, including across the Pacific Time daylight-saving change.
+- Set a daily cap per chat, or leave it empty. Once a chat has sent its cap, the rest wait for the next day's first open slot (after quiet hours) and stay spaced.
+- Pause or resume. Pause sends nothing and leaves the booked slots alone. Approvals still join the queue. Resume sends one post per chat, then pushes the other overdue rows forward by the interval.
+
+`GET` and `PUT /api/distribution/pace` read and store the `distribution:pace` app_state value. PUT is the operator session (the same auth as the rest of Distribution). It rejects a bad time zone, a clock time that is not HH:MM, a cap that is not a positive whole number or empty, and a switch that is not true or false. The interval is clamped to 1–180. Every real change is appended to `distribution:pace:log` (who, when, old value, new value) and written to the process log as `[Distribution] Pace settings changed by …`. The Distribution screen shows the latest line, the current banner, and the next slot per Telegram chat from `GET /api/distribution/outgoing`.
+
+Still design-only: send-now, reorder, resume-at-tail, pull-back, treating a Telegram 429 as retry-wait, and reconciliation enqueue. Withhold shipped separately, as `action: "withhold"` on the entry action doors (`docs/curator-api.md`), not the `/api/distribution/queue/:entryId/withhold` route sketched below. It also accepts a `missing` entry, which that sketch did not, because the first use was 187 stale July approvals that never reached the queue. Resume of a withheld row is still design-only. The `missing` rule also counts a successful Telegram log with no `channel_id` as sent for its wire: those are March 2026 sends from before managed channels recorded which one they used. The send path does not share that rule yet (`getUndistributedEntries` and `distributeEntry` still match on `channel_id`), so the manual `POST /api/distribution/run/:wire` would repost them.
 
 The rest of this document is the investigation and the full design. It does not by itself change Railway config or the production database.
 
@@ -334,7 +344,8 @@ Operator session only, same rule as redistribute (agent key gets 403). All of th
 | Method | Path | Behavior |
 |---|---|---|
 | `GET` | `/api/distribution/outgoing` | Pace settings, paused flag, next slot per chat, counts, and items in `scheduled` / `due` / `sending` / `retry wait` / `withheld` / `needs review` / `missing`. Optional `?sentSince=` for what went out, joined to `external_id` and `sent_at`. |
-| `PUT` | `/api/distribution/pace` | Validate and store the JSON. Does not send. |
+| `GET` | `/api/distribution/pace` | Current settings and the change log. Does not send. |
+| `PUT` | `/api/distribution/pace` | Validate and store the JSON. Does not send. Logs who changed it. |
 | `POST` | `/api/distribution/queue/:entryId/send-now` | Set `available_at = now`, clear `paused` for that row only by claiming it through the worker once. Still one destination claim. Refuses while the row is `sending` or `needs review`. |
 | `POST` | `/api/distribution/queue/:entryId/withhold` | Only from `queued`. Status `withheld`. |
 | `POST` | `/api/distribution/queue/:entryId/resume` | `withheld` → `queued`, `available_at` at the **tail** of that chat, not `now`. |
@@ -444,7 +455,11 @@ Turn the flag on only after looking at the outgoing list during a real approval 
 
 ### Phase 2 — controls and honest retries
 
-- PUT pace, pause, send-now, withhold, resume-at-tail, reorder, pull-back.
+Shipped from this phase: `PUT /api/distribution/pace`, pause/resume, and the Distribution-tab controls (enable, interval, quiet hours, daily cap, pause). Quiet hours and the daily cap shipped with those controls; they are not waiting on a later deploy. The flag still defaults to off.
+
+Not shipped yet:
+
+- Send-now, resume-at-tail, reorder, and pull-back. Withhold is already a separate entry action.
 - `sendChannelMessage` returns `sent | refused | uncertain`. Map 429 to `retry wait`. Map timeouts to needs-review.
 - `resolvePublication` currently re-queues with `available_at = NOW()` for both answers. Keep that when the human confirms the message **was** delivered (the success log blocks another send). When they confirm it was **not** delivered, book the tail of that chat instead of `NOW()`, so clearing a review item does not jump the stream.
 - 409 the manual `POST /api/distribution/run/:wire` while pacing is on.
@@ -452,7 +467,10 @@ Turn the flag on only after looking at the outgoing list during a real approval 
 
 ### Phase 3 — quiet hours, cap, reconciliation
 
-- Honor `quietHours` and `dailyCap` in `nextSlot` and in the worker (the worker re-checks, so a row booked into a window that was later declared quiet gets pushed, visibly).
+Quiet hours and the daily cap are in `nextSlot`, in approval booking, and in the worker. The worker re-checks, so a row booked into a window that was later declared quiet, or a chat that has already hit its cap, is pushed and the outgoing list shows the new time. A reason of `quiet hours` or `daily cap` is stored on the queue row. `Paused` is shown on due rows while the stream is paused and is not stored, because pause does not rewrite slots.
+
+Still open:
+
 - `GET` and `POST /api/distribution/reconcile`. POST books the tail only.
 - One digest status-band line when the missing count is non-zero. Dashboard link. No new mail, no auto-send.
 - Update `STRINGER.md` and `CLAUDE.md` in that change so the approve path is described as "onto the stream" when pacing is on, and the contract test does not grow a reference to the deleted drip file.
