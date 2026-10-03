@@ -38,7 +38,8 @@ import {
   getFeedByKey,
 } from '../db';
 import { distributeEntries, generateNewsletterMarkdown, confirmNewsletterDistribution, sendTestMessage } from '../services/distribution';
-import { getDistributionPace, listPaceChanges, PaceValidationError, parsePaceUpdate, saveDistributionPace, listOutgoing } from '../services/distribution-pace';
+import { DEFAULT_PACE, getDistributionPace, listPaceChanges, PaceValidationError, parsePaceUpdate, saveDistributionPace, listOutgoing } from '../services/distribution-pace';
+import { curatorApiActor, noteCuratorChange } from '../services/curator-audit';
 import { maskConfig, maskCredentials } from '../utils/masking';
 import { rateLimit } from '../middleware/rate-limit';
 import { isValidUuid, isValidFeedKey } from '../utils/validation';
@@ -46,7 +47,16 @@ import { isValidUuid, isValidFeedKey } from '../utils/validation';
 const router = Router();
 
 function paceActor(req: Request): string {
-  return (req as Request & { authSession?: { userId?: string } }).authSession?.userId || 'unknown';
+  return curatorApiActor(req)
+    || (req as Request & { authSession?: { userId?: string } }).authSession?.userId
+    || (req as Request & { agentSession?: { userId?: string } }).agentSession?.userId
+    || 'unknown';
+}
+
+function requestActor(req: Request): string | undefined {
+  return curatorApiActor(req)
+    || (req as Request & { authSession?: { userId?: string } }).authSession?.userId
+    || undefined;
 }
 
 router.get('/distribution/pace', async (_req, res) => {
@@ -65,9 +75,19 @@ router.put('/distribution/pace', async (req, res) => {
     return;
   }
   try {
+    parsePaceUpdate(req.body, DEFAULT_PACE);
+  } catch (error) {
+    if (error instanceof PaceValidationError) {
+      res.status(400).json({ error: error.message });
+      return;
+    }
+    throw error;
+  }
+  try {
     const current = await getDistributionPace();
     const next = parsePaceUpdate(req.body, current);
     const saved = await saveDistributionPace(next, actor);
+    noteCuratorChange(res, { subject: 'PUT /api/distribution/pace', old: current, next: saved.pace });
     res.json({ pace: saved.pace, changed: saved.changed, changes: await listPaceChanges() });
   } catch (error) {
     if (error instanceof PaceValidationError) {
@@ -104,7 +124,11 @@ router.get('/distribution/review', async (_req, res) => {
 router.post('/distribution/queue/:id/retry', async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isSafeInteger(id) || id < 1) { res.status(400).json({ error: 'Invalid entry ID' }); return; }
-  try { await retryQueuedPublication(id); res.json({ ok: true }); }
+  try {
+    await retryQueuedPublication(id);
+    noteCuratorChange(res, { subject: `POST /api/distribution/queue/${id}/retry`, old: null, next: { id, retried: true } });
+    res.json({ ok: true });
+  }
   catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'Retry failed' }); }
 });
 router.post('/distribution/review/:id/resolve', async (req, res) => {
@@ -115,7 +139,14 @@ router.post('/distribution/review/:id/resolve', async (req, res) => {
     res.status(400).json({ error: 'Provide a valid delivery ID and confirmation' }); return;
   }
   try {
-    await resolvePublication(id, delivered, externalId?.trim(), (req as any).authSession.userId);
+    const actor = requestActor(req);
+    if (!actor) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    await resolvePublication(id, delivered, externalId?.trim(), actor);
+    noteCuratorChange(res, {
+      subject: `POST /api/distribution/review/${id}/resolve`,
+      old: null,
+      next: { id, delivered, externalId: externalId?.trim() || null },
+    });
     res.json({ ok: true });
   } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'Resolution failed' }); }
 });
@@ -189,12 +220,18 @@ router.put('/distribution/config/:wire/:channel', async (req: Request, res: Resp
       enabled,
       mergedConfig
     );
-    res.json({
+    const saved = {
       wire: result.wire,
       channel: result.channel,
       enabled: result.enabled,
       config: maskConfig(result.channel, result.config),
+    };
+    noteCuratorChange(res, {
+      subject: `PUT /api/distribution/config/${wire}/${channel}`,
+      old: current ? { wire, channel, enabled: current.enabled, config: maskConfig(channel, current.config) } : null,
+      next: saved,
     });
+    res.json(saved);
   } catch (error) {
     console.error('Failed to update distribution config:', error);
     res.status(500).json({ error: 'Failed to update distribution config' });
@@ -224,6 +261,7 @@ router.post('/distribution/run/:wire', async (req: Request, res: Response) => {
   distributionRunning.add(wire);
   try {
     const result = await distributeEntries(wire);
+    noteCuratorChange(res, { subject: `POST /api/distribution/run/${wire}`, old: null, next: { ...result, wire } });
     res.json({ success: true, ...result });
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';
@@ -275,6 +313,11 @@ router.post('/distribution/newsletter/:wire/confirm', async (req: Request, res: 
 
   try {
     await confirmNewsletterDistribution(entryIds, wire);
+    noteCuratorChange(res, {
+      subject: `POST /api/distribution/newsletter/${wire}/confirm`,
+      old: null,
+      next: { wire, confirmed: entryIds.length },
+    });
     res.json({ success: true, confirmed: entryIds.length });
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';
@@ -363,7 +406,7 @@ router.post('/distribution/channels', async (req: Request, res: Response) => {
       credentials,
     });
 
-    res.json({
+    const created = {
       id: result.id,
       wire: result.wire,
       channel: result.channel,
@@ -373,7 +416,9 @@ router.post('/distribution/channels', async (req: Request, res: Response) => {
       credentials: maskCredentials(result.credentials),
       created_at: result.createdAt,
       updated_at: result.updatedAt,
-    });
+    };
+    noteCuratorChange(res, { subject: 'POST /api/distribution/channels', old: null, next: created });
+    res.json(created);
   } catch (error) {
     console.error('Failed to create distribution channel:', error);
     res.status(500).json({ error: 'Failed to create distribution channel' });
@@ -390,38 +435,39 @@ router.put('/distribution/channels/:id', async (req: Request, res: Response) => 
 
   const { wire, channel, name, enabled, target_id, credentials } = req.body;
 
-  // If credentials provided, merge with existing (so partial updates don't wipe secrets)
-  let mergedCredentials = credentials;
-  if (credentials && typeof credentials === 'object') {
-    const existing = await getDistributionChannelById(id);
-    if (existing) {
-      // Only merge if the incoming creds have masked values (****) — skip those
-      const cleanCreds: Record<string, string> = {};
-      for (const [k, v] of Object.entries(credentials as Record<string, string>)) {
-        if (v && !v.startsWith('****')) {
-          cleanCreds[k] = v;
-        }
-      }
-      mergedCredentials = { ...existing.credentials, ...cleanCreds };
-    }
-  }
-
-  const updates: any = {};
-  if (wire !== undefined) updates.wire = wire;
-  if (channel !== undefined) updates.channel = channel;
-  if (name !== undefined) updates.name = name;
-  if (enabled !== undefined) updates.enabled = enabled;
-  if (target_id !== undefined) updates.targetId = target_id;
-  if (mergedCredentials !== undefined) updates.credentials = mergedCredentials;
-
   try {
+    const existing = await getDistributionChannelById(id);
+
+    // If credentials provided, merge with existing (so partial updates don't wipe secrets)
+    let mergedCredentials = credentials;
+    if (credentials && typeof credentials === 'object') {
+      if (existing) {
+        // Only merge if the incoming creds have masked values (****) — skip those
+        const cleanCreds: Record<string, string> = {};
+        for (const [k, v] of Object.entries(credentials as Record<string, string>)) {
+          if (v && !v.startsWith('****')) {
+            cleanCreds[k] = v;
+          }
+        }
+        mergedCredentials = { ...existing.credentials, ...cleanCreds };
+      }
+    }
+
+    const updates: any = {};
+    if (wire !== undefined) updates.wire = wire;
+    if (channel !== undefined) updates.channel = channel;
+    if (name !== undefined) updates.name = name;
+    if (enabled !== undefined) updates.enabled = enabled;
+    if (target_id !== undefined) updates.targetId = target_id;
+    if (mergedCredentials !== undefined) updates.credentials = mergedCredentials;
+
     const result = await updateDistributionChannel(id, updates);
     if (!result) {
       res.status(404).json({ error: 'Channel not found' });
       return;
     }
 
-    res.json({
+    const saved = {
       id: result.id,
       wire: result.wire,
       channel: result.channel,
@@ -431,7 +477,21 @@ router.put('/distribution/channels/:id', async (req: Request, res: Response) => 
       credentials: maskCredentials(result.credentials),
       created_at: result.createdAt,
       updated_at: result.updatedAt,
+    };
+    noteCuratorChange(res, {
+      subject: `PUT /api/distribution/channels/${id}`,
+      old: existing ? {
+        id: existing.id,
+        wire: existing.wire,
+        channel: existing.channel,
+        name: existing.name,
+        enabled: existing.enabled,
+        target_id: existing.targetId,
+        credentials: maskCredentials(existing.credentials),
+      } : null,
+      next: saved,
     });
+    res.json(saved);
   } catch (error) {
     console.error('Failed to update distribution channel:', error);
     res.status(500).json({ error: 'Failed to update distribution channel' });
@@ -447,11 +507,17 @@ router.delete('/distribution/channels/:id', async (req: Request, res: Response) 
   }
 
   try {
+    const existing = await getDistributionChannelById(id);
     const deleted = await deleteDistributionChannel(id);
     if (!deleted) {
       res.status(404).json({ error: 'Channel not found' });
       return;
     }
+    noteCuratorChange(res, {
+      subject: `DELETE /api/distribution/channels/${id}`,
+      old: existing ? { id: existing.id, wire: existing.wire, channel: existing.channel, name: existing.name, enabled: existing.enabled } : { id },
+      next: { deleted: true },
+    });
     res.json({ success: true });
   } catch (error) {
     console.error('Failed to delete distribution channel:', error);
@@ -481,6 +547,11 @@ router.post('/distribution/channels/:id/test', async (req: Request, res: Respons
 
     const result = await sendTestMessage(channel);
     if (result.success) {
+      noteCuratorChange(res, {
+        subject: `POST /api/distribution/channels/${id}/test`,
+        old: null,
+        next: { id, sent: true },
+      });
       res.json({ success: true, message: 'Test message sent successfully' });
     } else {
       res.status(400).json({ success: false, error: result.error });
