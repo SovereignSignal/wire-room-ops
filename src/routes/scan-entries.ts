@@ -39,6 +39,7 @@ import { withholdPublications, WithholdConflictError } from '../services/publica
 import { PROMPT_VARIANTS, SCAN_SOURCES } from '../types/intake';
 import { isBatchMessage, processBatchMessage, processIntakeMessage, type IntakeOptions } from '../services/intake-core';
 import { runDecidedRecheckForIds } from '../jobs/decided-recheck';
+import { noteCuratorChange } from '../services/curator-audit';
 
 const router = Router();
 
@@ -54,6 +55,19 @@ export function resolveApprovalForce(req: Request): boolean {
 
 function isCuratorSession(req: Request): boolean {
   return Boolean((req as any).agentSession?.curator);
+}
+
+async function markCuratorPrior(req: Request, res: Response, ids: number[]): Promise<void> {
+  if (!isCuratorSession(req) || ids.length === 0) return;
+  try {
+    const rows = await getPool().query(
+      'SELECT id, status, wire, source_url, name FROM scan_entries WHERE id = ANY($1::int[])',
+      [ids],
+    );
+    res.locals.curatorPrior = rows.rows;
+  } catch {
+    res.locals.curatorPrior = null;
+  }
 }
 
 function presentForCurator<T>(req: Request, value: T): T {
@@ -97,6 +111,7 @@ async function remember(gate: Extract<CuratorGate, { ok: true }>, statusCode: nu
 /** Withhold is a publication-queue write, not a status change, so it does not go through entry-actions. */
 async function respondWithhold(req: Request, res: Response, gate: Extract<CuratorGate, { ok: true }>, entryIds: number[]): Promise<void> {
   try {
+    await markCuratorPrior(req, res, entryIds);
     const result = await withholdPublications(entryIds, {
       actor: resolveMaintenanceActor(req) || undefined,
       reason: gate.evidence?.reason || (typeof req.body?.reason === 'string' ? req.body.reason : undefined),
@@ -167,6 +182,7 @@ router.post('/submit', async (req: Request, res: Response) => {
     // which read as a hang to API clients and caused retry storms.
     const isAgent = Boolean((req as any).agentSession);
     const summary = await runDailyIntake(pool, [submission], isAgent ? { insertOnly: true } : {});
+    noteCuratorChange(res, { subject: 'POST /api/scan/submit', old: null, next: { wire, source: source || 'x-scan', processing: isAgent ? 'background' : 'complete' } });
 
     res.json({
       success: true,
@@ -296,6 +312,11 @@ async function handleTextIntake(
         }
       }
 
+      noteCuratorChange(res, {
+        subject: `${req.method} ${req.path}`,
+        old: null,
+        next: { inserted: batch.inserted, duplicates: batch.duplicates, errors: batch.errors },
+      });
       res.json({
         success: true,
         inserted: batch.inserted,
@@ -314,6 +335,11 @@ async function handleTextIntake(
       res.status(503).json({ error: result.errorMessage || `${opts.logLabel} intake failed`, result });
       return;
     }
+    noteCuratorChange(res, {
+      subject: `${req.method} ${req.path}`,
+      old: null,
+      next: { status: result.status, entryId: result.entryId || null },
+    });
     res.json({ success: result.status === 'inserted', result, ...(result.status === 'inserted' ? backgroundNote : {}) });
   } catch (error) {
     console.error(`${opts.logLabel} intake failed:`, error);
@@ -614,6 +640,7 @@ router.post('/entries/bulk-action', async (req: Request, res: Response) => {
     // Agent calls (internal API key and curator keys) always use quiet=true — no auto-distribution
     const isAgent = !!(agentSession?.isAgent);
     const auditReason = gate.evidence?.reason || reason || undefined;
+    await markCuratorPrior(req, res, entryIds);
     const result = await bulkEntryAction(entryIds, action, {
       quiet: isAgent ? true : !!quiet,
       force: resolveApprovalForce(req),
@@ -670,6 +697,7 @@ router.post('/entries/:id/action', async (req: Request, res: Response) => {
     // Agent calls (internal API key and curator keys) always use quiet=true — no auto-distribution
     const isAgent = !!(agentSession?.isAgent);
     const auditReason = gate.evidence?.reason || reason || undefined;
+    await markCuratorPrior(req, res, [entryId]);
     const result = await singleEntryAction(entryId, action, {
       quiet: isAgent ? true : !!quiet,
       force: resolveApprovalForce(req),
@@ -737,6 +765,7 @@ router.post('/entries/:id/curate', async (req: Request, res: Response) => {
   }
 
   try {
+    await markCuratorPrior(req, res, [entryId]);
     const payload = await applyCuratorWrite({
       entryId,
       plan,
@@ -804,6 +833,7 @@ router.patch('/entries/:id/wire', async (req: Request, res: Response) => {
       return;
     }
 
+    await markCuratorPrior(req, res, [entryId]);
     const result = await rewriteEntryWires(getPool(), entryId, {
       wires: wireArray,
       actor: resolveMaintenanceActor(req) || undefined,
@@ -837,6 +867,7 @@ router.patch('/entries/:id/source', async (req: Request, res: Response) => {
   if (!gate.ok) return;
   try {
     const dryRun = req.body.dryRun === true;
+    await markCuratorPrior(req, res, [entryId]);
     const result = await rewriteEntrySource(getPool(), entryId, {
       expectedStatus: req.body.expectedStatus,
       expectedSourceUrl: req.body.expectedSourceUrl,
@@ -872,6 +903,7 @@ router.post('/entries/:id/link-duplicate', async (req: Request, res: Response) =
   if (!gate.ok) return;
   try {
     const dryRun = req.body.dryRun === true;
+    await markCuratorPrior(req, res, [entryId]);
     const result = await linkEntryDuplicate(getPool(), entryId, {
       expectedStatus: req.body.expectedStatus,
       expectedSourceUrl: req.body.expectedSourceUrl,
@@ -915,9 +947,10 @@ router.get('/entries/:id/distribution', async (req: Request, res: Response) => {
 
 // POST /entries/:id/redistribute — retry failed distribution
 router.post('/entries/:id/redistribute', async (req: Request, res: Response) => {
-  // Publishing is operator-only: the internal API key must not be able to
-  // trigger a send (it would bypass the forced-quiet rule on agent approvals).
-  if ((req as any).agentSession) {
+  // The internal key still cannot publish. A curator token may retry a send
+  // only after confirm=true, which the auth guard enforces before this handler.
+  const agent = (req as any).agentSession;
+  if (agent?.isAgent && !agent.curator) {
     res.status(403).json({ error: 'Redistribute is operator-only — agent keys cannot publish' });
     return;
   }
@@ -942,7 +975,9 @@ router.post('/entries/:id/redistribute', async (req: Request, res: Response) => 
     }
     const wire = entryResult.rows[0].wire;
 
+    await markCuratorPrior(req, res, [entryId]);
     const result = await retryDistribution(entryId, wire);
+    noteCuratorChange(res, { subject: `POST /api/scan/entries/${entryId}/redistribute`, old: { id: entryId, wire }, next: { success: true } });
     res.json({ success: true, ...result });
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';
@@ -973,6 +1008,11 @@ router.post('/entries/:id/retry-summarize', async (req: Request, res: Response) 
       res.status(502).json({ success: false, entryId, error: 'No usable summary was generated; entry left flagged' });
       return;
     }
+    noteCuratorChange(res, {
+      subject: `POST /api/scan/entries/${entryId}/retry-summarize`,
+      old: { id: entry.id, name: entry.name },
+      next: { success: true, entryId },
+    });
     res.json({ success: true, entryId });
   } catch (error) {
     const msg = error instanceof Error ? error.message : 'Unknown error';
