@@ -57,7 +57,7 @@ test('a valid key list matches the bearer and rejects expired, revoked, and unkn
   }])).malformed, true);
 });
 
-test('curator scopes allow the editorial routes and forbid the operator doors', () => {
+test('curator scopes allow the editorial routes and the dashboard controls', () => {
   assert.equal(requiredCuratorScope('GET', '/api/scan/queue'), 'read_queue');
   assert.equal(requiredCuratorScope('GET', '/api/scan/entries/15'), 'read_queue');
   assert.equal(requiredCuratorScope('GET', '/api/scan/seen-urls?wire=ai'), 'read_queue');
@@ -70,18 +70,22 @@ test('curator scopes allow the editorial routes and forbid the operator doors', 
   assert.equal(requiredCuratorScope('POST', '/api/scan/submit'), 'propose');
   assert.equal(requiredCuratorScope('POST', '/api/scan/telegram-batch'), 'intake');
 
+  assert.equal(requiredCuratorScope('GET', '/api/distribution/pace'), 'read_queue');
+  assert.equal(requiredCuratorScope('GET', '/api/distribution/outgoing'), 'read_queue');
+  assert.equal(requiredCuratorScope('PUT', '/api/distribution/pace'), 'decide');
+  assert.equal(requiredCuratorScope('POST', '/api/scan/prompts'), 'decide');
+  assert.equal(requiredCuratorScope('POST', '/api/forum/run'), 'decide');
+  assert.equal(requiredCuratorScope('POST', '/api/scan/manual-intake'), 'decide');
+  assert.equal(requiredCuratorScope('POST', '/api/scan/entries/15/redistribute'), 'decide');
+  assert.equal(requiredCuratorScope('GET', '/api/scan/stats'), 'read_queue');
+
   for (const [method, path] of [
-    ['POST', '/api/scan/prompts'],
-    ['POST', '/api/scan/run'],
-    ['POST', '/api/forum/run'],
-    ['POST', '/api/feeds/run'],
-    ['POST', '/api/cohort/run'],
     ['POST', '/api/accounts'],
     ['GET', '/api/scan/telegram-batch'],
-    ['POST', '/api/scan/manual-intake'],
-    ['POST', '/api/scan/entries/15/redistribute'],
-    ['GET', '/api/scan/stats'],
     ['POST', '/api/scan/submit-batch'],
+    ['POST', '/api/scan/agent/send-brief'],
+    ['POST', '/api/admin/purge-source'],
+    ['POST', '/api/summary-sync'],
   ]) {
     assert.equal(requiredCuratorScope(method, path), 'forbidden', `${method} ${path}`);
   }
