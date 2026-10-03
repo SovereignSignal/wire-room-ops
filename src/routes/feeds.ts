@@ -10,6 +10,7 @@
 import { Router, Request, Response } from 'express';
 import { getAllFeeds, getFeedByKey, createFeed, updateFeed, archiveFeed, getEntryCountsByWire, isCoreWire } from '../db';
 import { isValidFeedKey, resolveFeedKey } from '../utils/validation';
+import { noteCuratorChange } from '../services/curator-audit';
 
 const router = Router();
 
@@ -76,6 +77,7 @@ router.post('/', async (req: Request, res: Response) => {
       titleTemplate: titleTemplate || undefined,
       sortOrder: typeof sortOrder === 'number' ? sortOrder : undefined,
     });
+    noteCuratorChange(res, { subject: 'POST /api/feeds', old: null, next: feed });
 
     res.json({
       key: feed.key,
@@ -111,12 +113,14 @@ router.put('/:key', async (req: Request, res: Response) => {
   if (typeof archived === 'boolean') updates.archived = archived;
 
   try {
+    const previous = await getFeedByKey(key);
     const updated = await updateFeed(key, updates);
     if (!updated) {
       res.status(404).json({ error: 'Feed not found' });
       return;
     }
 
+    noteCuratorChange(res, { subject: `PUT /api/feeds/${key}`, old: previous, next: updated });
     res.json({
       key: updated.key,
       displayName: updated.displayName,
@@ -139,11 +143,13 @@ router.delete('/:key', async (req: Request, res: Response) => {
   }
 
   try {
+    const previous = await getFeedByKey(key);
     const archived = await archiveFeed(key);
     if (!archived) {
       res.status(404).json({ error: 'Feed not found' });
       return;
     }
+    noteCuratorChange(res, { subject: `DELETE /api/feeds/${key}`, old: previous, next: { archived: true } });
     res.json({ success: true });
   } catch (error) {
     console.error('Failed to archive feed:', error);
