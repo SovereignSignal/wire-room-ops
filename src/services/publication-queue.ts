@@ -4,6 +4,7 @@ import { getPool } from '../db';
 import { distributeEntry } from './distribution';
 import { bookPacedQueue, getDistributionPace, mergeQueueNote, paceRules, planQueue, sentTodayByTarget, UNSENT_TELEGRAM_DESTINATION_SQL, type DistributionPace } from './distribution-pace';
 import { composeStoredPost, fillMissingPublicationPost } from './publication-post';
+import { enforceRepeatFunderHold, recordRepeatFunderOverride } from './repeat-funder';
 
 export const PACING_REQUIRED_ERROR = 'pacing must be on and not paused';
 
@@ -200,7 +201,13 @@ export async function listPublicationReview(): Promise<unknown[]> {
 }
 
 /** Human confirmation is recorded; only confirmed non-delivery can be retried. */
-export async function resolvePublication(id: number, delivered: boolean, externalId: string | undefined, actor: string): Promise<void> {
+export async function resolvePublication(
+  id: number,
+  delivered: boolean,
+  externalId: string | undefined,
+  actor: string,
+  opts: { overrideRepeatFunder?: boolean; reason?: string } = {},
+): Promise<void> {
   const client = await getPool().connect();
   try {
     await client.query('BEGIN');
@@ -216,9 +223,14 @@ export async function resolvePublication(id: number, delivered: boolean, externa
       WHERE id = $1`,
     [id, delivered ? 'success' : 'failed', externalId || null, actor,
       delivered ? null : 'Operator verified that this message was not delivered']);
+    const repeatOverrides = delivered ? [] : await enforceRepeatFunderHold(client, [Number(row.entry_id)], {
+      override: opts.overrideRepeatFunder,
+      reason: opts.reason,
+    });
     await client.query(`INSERT INTO publication_queue (entry_id) VALUES ($1)
       ON CONFLICT (entry_id) DO UPDATE SET status = 'queued', attempts = 0, lease_token = NULL,
       available_at = NOW(), updated_at = NOW()`, [row.entry_id]);
+    if (repeatOverrides.length) await recordRepeatFunderOverride(client, repeatOverrides, actor, opts.reason || '');
     await client.query('COMMIT');
     await fillMissingPublicationPost(Number(row.entry_id));
   } catch (error) {
@@ -339,7 +351,7 @@ export interface EnqueuedPublication {
  */
 export async function enqueuePacedPublication(
   entryId: number,
-  opts: { actor?: string; reason?: string; sources?: string[] } = {},
+  opts: { actor?: string; reason?: string; sources?: string[]; overrideRepeatFunder?: boolean } = {},
 ): Promise<EnqueuedPublication> {
   const client = await getPool().connect();
   try {
@@ -373,6 +385,10 @@ export async function enqueuePacedPublication(
     }
     if (row.telegram_sent) throw new EnqueueConflictError('Entry already has a successful Telegram send');
     if (!row.unsent) throw new EnqueueConflictError('No unsent Telegram destination is left');
+    const repeatOverrides = await enforceRepeatFunderHold(client, [entryId], {
+      override: opts.overrideRepeatFunder,
+      reason: opts.reason,
+    });
 
     const actor = opts.actor || 'unknown';
     const stamp = {
@@ -402,6 +418,7 @@ export async function enqueuePacedPublication(
       wire: row.wire,
       wires: Array.isArray(row.wires) ? row.wires : null,
     }], pace, new Map([[Number(row.id), post]]));
+    if (repeatOverrides.length) await recordRepeatFunderOverride(client, repeatOverrides, actor, opts.reason || '');
     const booked = (await client.query(
       `SELECT status, available_at, error_message FROM publication_queue WHERE entry_id = $1`,
       [entryId],
@@ -429,10 +446,30 @@ export async function listQueuedPublicationReview(): Promise<unknown[]> {
     AND NOT EXISTS (SELECT 1 FROM distribution_logs dl WHERE dl.entry_id = q.entry_id AND dl.status = 'pending')
     ORDER BY q.updated_at`)).rows;
 }
-export async function retryQueuedPublication(entryId: number): Promise<void> {
-  const result = await getPool().query(`UPDATE publication_queue SET status = 'queued', attempts = 0,
-    available_at = NOW(), updated_at = NOW() WHERE entry_id = $1 AND status = 'review'
-    AND NOT EXISTS (SELECT 1 FROM distribution_logs WHERE entry_id = $1 AND status = 'pending')`, [entryId]);
-  if (!result.rowCount) throw new Error('Resolve uncertain deliveries before retrying');
+export async function retryQueuedPublication(
+  entryId: number,
+  opts: { overrideRepeatFunder?: boolean; reason?: string; actor?: string } = {},
+): Promise<void> {
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    const repeatOverrides = await enforceRepeatFunderHold(client, [entryId], {
+      override: opts.overrideRepeatFunder,
+      reason: opts.reason,
+    });
+    const result = await client.query(`UPDATE publication_queue SET status = 'queued', attempts = 0,
+      available_at = NOW(), updated_at = NOW() WHERE entry_id = $1 AND status = 'review'
+      AND NOT EXISTS (SELECT 1 FROM distribution_logs WHERE entry_id = $1 AND status = 'pending')`, [entryId]);
+    if (!result.rowCount) throw new Error('Resolve uncertain deliveries before retrying');
+    if (repeatOverrides.length) {
+      await recordRepeatFunderOverride(client, repeatOverrides, opts.actor || 'unknown', opts.reason || '');
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
   await fillMissingPublicationPost(entryId);
 }

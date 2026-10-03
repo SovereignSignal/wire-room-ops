@@ -32,6 +32,7 @@ import { buildSubmission, buildBatchSubmission } from '../services/intake';
 import { runDailyIntake, getDailyQueue, getIntakeStats, resolveQueueMinScore } from '../jobs/daily-intake';
 import { getPromptEffectivenessStats } from '../services/scan-stats';
 import { singleEntryAction, bulkEntryAction, ApprovalBlockedError, BulkApprovalBlockedError, EntryActionConflictError } from '../services/entry-actions';
+import { RepeatFunderHoldError, repeatFunderPayload } from '../services/repeat-funder';
 import { rewriteEntrySource, rewriteEntryWires, linkEntryDuplicate, EntryMaintenanceError } from '../services/entry-maintenance';
 import { ContentEditError, parseContentPatch, releaseWithheldEntry, updateEntryContent } from '../services/entry-content';
 import { applyCuratorWrite, planCuratorWrite } from '../services/curator';
@@ -689,12 +690,17 @@ router.post('/entries/bulk-action', async (req: Request, res: Response) => {
       actor: resolveMaintenanceActor(req) || undefined,
       reason: auditReason,
       dryRun: !!dryRun,
+      overrideRepeatFunder: req.body?.override_repeat_funder === true,
     });
     if (gate.evidence && !dryRun) {
       await attachCuratorEvidence(getPool(), entryIds, gate.evidence, resolveMaintenanceActor(req));
     }
     await remember(gate, 200, result, res);
   } catch (error) {
+    if (error instanceof RepeatFunderHoldError) {
+      await remember(gate, error.statusCode, repeatFunderPayload(error), res);
+      return;
+    }
     if (error instanceof EntryActionConflictError) {
       await remember(gate, 409, { error: error.message }, res);
       return;
@@ -749,12 +755,17 @@ router.post('/entries/:id/action', async (req: Request, res: Response) => {
       actor: resolveMaintenanceActor(req) || undefined,
       reason: auditReason,
       dryRun: !!dryRun,
+      overrideRepeatFunder: req.body?.override_repeat_funder === true,
     });
     if (gate.evidence && !dryRun) {
       await attachCuratorEvidence(getPool(), [entryId], gate.evidence, resolveMaintenanceActor(req));
     }
     await remember(gate, 200, result, res);
   } catch (error) {
+    if (error instanceof RepeatFunderHoldError) {
+      await remember(gate, error.statusCode, repeatFunderPayload(error), res);
+      return;
+    }
     if (error instanceof EntryActionConflictError) {
       await remember(gate, 409, { error: error.message }, res);
       return;

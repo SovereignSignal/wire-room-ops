@@ -48,7 +48,7 @@ test.after(async () => {
 async function entry(name) {
   return (await pool.query(`INSERT INTO scan_entries
     (name, description, source_url, wire, wires, prompt_variant, scan_source, scan_date, status, classification, distributable, quality_score, org_id, enriched_summary, amount)
-    VALUES ($1, 'Fixture grant description long enough', $2, 'crypto', ARRAY['crypto'], 'A', 'manual-intake', CURRENT_DATE, 'queued', 'GRANT', true, 80, 1, $3, '$50K') RETURNING *`,
+    VALUES ($1, 'Fixture grant description long enough', $2, 'crypto', ARRAY['crypto'], 'A', 'manual-intake', CURRENT_DATE, 'queued', 'GRANT', true, 80, NULL, $3, '$50K') RETURNING *`,
     [name, `https://example.invalid/${encodeURIComponent(name)}`, 'summary '.repeat(20)])).rows[0];
 }
 

@@ -27,6 +27,7 @@
 import { Router, Request, Response } from 'express';
 import { enqueuePacedPublication, EnqueueConflictError, listPublicationReview, resolvePublication, listQueuedPublicationReview, retryQueuedPublication } from '../services/publication-queue';
 import { overrideQueuedPost, PublicationPostError, readPublicationPost, regenerateQueuedPost } from '../services/publication-post';
+import { RepeatFunderHoldError, repeatFunderPayload, repeatFunderStatus } from '../services/repeat-funder';
 import { openCuratorIdempotency } from '../services/curator-idempotency';
 import { parseCuratorEvidence } from '../services/curator-evidence';
 import { curatorConfirmed } from '../services/curator-confirm';
@@ -152,8 +153,9 @@ router.post('/distribution/queue/:id/enqueue', async (req, res) => {
   const actor = (req as Request & { agentSession?: { userId?: string }; authSession?: { userId?: string } }).agentSession?.userId
     || (req as Request & { authSession?: { userId?: string } }).authSession?.userId
     || 'unknown';
+  const overrideRepeatFunder = req.body?.override_repeat_funder === true;
   try {
-    const result = await enqueuePacedPublication(id, { actor, reason, sources });
+    const result = await enqueuePacedPublication(id, { actor, reason, sources, overrideRepeatFunder });
     noteCuratorChange(res, {
       subject: `POST /api/distribution/queue/${id}/enqueue`,
       old: { distributable: false },
@@ -161,6 +163,10 @@ router.post('/distribution/queue/:id/enqueue', async (req, res) => {
     });
     res.json(result);
   } catch (error) {
+    if (error instanceof RepeatFunderHoldError) {
+      res.status(error.statusCode).json(repeatFunderPayload(error));
+      return;
+    }
     if (error instanceof EnqueueConflictError) {
       res.status(409).json({ error: error.message });
       return;
@@ -180,6 +186,22 @@ function queueEntryId(req: Request, res: Response): number | null {
   }
   return id;
 }
+
+router.get('/distribution/entries/:id/repeat-funder', async (req, res) => {
+  const id = queueEntryId(req, res);
+  if (id === null) return;
+  try {
+    const status = await repeatFunderStatus(id);
+    if (!status) {
+      res.status(404).json({ error: 'Entry not found' });
+      return;
+    }
+    res.json(status);
+  } catch (error) {
+    console.error('[Distribution] Repeat-funder check failed:', error);
+    res.status(500).json({ error: 'Could not check repeat-funder status' });
+  }
+});
 
 router.get('/distribution/queue/:id', async (req, res) => {
   const id = queueEntryId(req, res);
@@ -293,11 +315,21 @@ router.post('/distribution/queue/:id/retry', async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isSafeInteger(id) || id < 1) { res.status(400).json({ error: 'Invalid entry ID' }); return; }
   try {
-    await retryQueuedPublication(id);
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason : undefined;
+    await retryQueuedPublication(id, {
+      overrideRepeatFunder: req.body?.override_repeat_funder === true,
+      reason,
+      actor: requestActor(req),
+    });
     noteCuratorChange(res, { subject: `POST /api/distribution/queue/${id}/retry`, old: null, next: { id, retried: true } });
     res.json({ ok: true });
+  } catch (error) {
+    if (error instanceof RepeatFunderHoldError) {
+      res.status(error.statusCode).json(repeatFunderPayload(error));
+      return;
+    }
+    res.status(409).json({ error: error instanceof Error ? error.message : 'Retry failed' });
   }
-  catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'Retry failed' }); }
 });
 router.post('/distribution/review/:id/resolve', async (req, res) => {
   const id = Number(req.params.id);
@@ -309,14 +341,23 @@ router.post('/distribution/review/:id/resolve', async (req, res) => {
   try {
     const actor = requestActor(req);
     if (!actor) { res.status(401).json({ error: 'Unauthorized' }); return; }
-    await resolvePublication(id, delivered, externalId?.trim(), actor);
+    await resolvePublication(id, delivered, externalId?.trim(), actor, {
+      overrideRepeatFunder: req.body?.override_repeat_funder === true,
+      reason: typeof req.body?.reason === 'string' ? req.body.reason : undefined,
+    });
     noteCuratorChange(res, {
       subject: `POST /api/distribution/review/${id}/resolve`,
       old: null,
       next: { id, delivered, externalId: externalId?.trim() || null },
     });
     res.json({ ok: true });
-  } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'Resolution failed' }); }
+  } catch (error) {
+    if (error instanceof RepeatFunderHoldError) {
+      res.status(error.statusCode).json(repeatFunderPayload(error));
+      return;
+    }
+    res.status(409).json({ error: error instanceof Error ? error.message : 'Resolution failed' });
+  }
 });
 
 
