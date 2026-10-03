@@ -14,6 +14,12 @@ What Sov can do from Settings → Distribution, on a phone, with no SQL:
 
 Still design-only: send-now, reorder, resume-at-tail, pull-back, treating a Telegram 429 as retry-wait, and reconciliation enqueue. Withhold shipped separately, as `action: "withhold"` on the entry action doors (`docs/curator-api.md`), not the `/api/distribution/queue/:entryId/withhold` route sketched below. It also accepts a `missing` entry, which that sketch did not, because the first use was 187 stale July approvals that never reached the queue. Resume of a withheld row is still design-only. The `missing` rule also counts a successful Telegram log with no `channel_id` as sent for its wire: those are March 2026 sends from before managed channels recorded which one they used. The send path does not share that rule yet (`getUndistributedEntries` and `distributeEntry` still match on `channel_id`), so the manual `POST /api/distribution/run/:wire` would repost them.
 
+Curator enqueue shipped as `POST /api/distribution/queue/:id/enqueue`. It is one approved entry, not the bulk reconcile sketched below. A curator token (not the plain internal key) passes `confirm: true`. The route books the next paced slot with `bookPacedQueue` and returns. It does not call `distributeEntry` or `drainPublicationQueue`. The 30-second tick sends the row when that slot is due. It answers 409 and writes nothing when pacing is off or paused, the entry is not approved, a queue row is already `queued`, `running`, `review`, or `withheld`, no Telegram destination is left unsent, or any wire already has a successful Telegram log for the entry. That last guard is the repost shape: an entry posted once, then given another wire, must not go out again from this route. Without `confirm` the curator token gets `400 confirm_required`. The internal key gets 403.
+
+A curator approve stays quiet, so `distributable` stays false and nothing is booked. `publish: true` on the single and bulk action doors is the exception: it applies only for a curator session, with `confirm: true`, while pacing is on and not paused. Then the approve passes `quiet: false` and books a slot. Pace off or paused refuses the call and does not approve. Missing `confirm` refuses the call. The plain internal key ignores `publish` and stays quiet. `scheduleApproveSideEffects` still wakes the drain after a non-quiet approve; the paced drain only claims a row whose slot is already due.
+
+`GET /api/distribution/outgoing` adds `counts.programsOnly` and `programsOnly`. That list is approved rows with `distributable = false`, not withheld, whose `decision_at` is in the last 7 days. Each item is `{ id, title, approved_at, actioned_by }`. It is read-only. Rows with no recorded `decision_at` stay off the list.
+
 The rest of this document is the investigation and the full design. It does not by itself change Railway config or the production database.
 
 The operator problem: **Approve to Wires** publishes immediately. Approving 20–30 entries in one sitting dumps that many posts into the Telegram channel. Earlier attempts to stream them slowly never became the path the approve button uses, so items were either still blasted out, or they sat on a column nothing wrote. The replacement has to make every approved item visible in Postgres from the moment of approval until Telegram has accepted it.
@@ -343,7 +349,7 @@ Operator session only, same rule as redistribute (agent key gets 403). All of th
 
 | Method | Path | Behavior |
 |---|---|---|
-| `GET` | `/api/distribution/outgoing` | Pace settings, paused flag, next slot per chat, counts, and items in `scheduled` / `due` / `sending` / `retry wait` / `withheld` / `needs review` / `missing`. Optional `?sentSince=` for what went out, joined to `external_id` and `sent_at`. |
+| `GET` | `/api/distribution/outgoing` | Pace settings, paused flag, next slot per chat, counts, and items in `scheduled` / `due` / `sending` / `retry wait` / `withheld` / `needs review` / `missing`. Optional `?sentSince=` for what went out, joined to `external_id` and `sent_at`. Also `counts.programsOnly` and `programsOnly` (approved, not for the wires, last 7 days). |
 | `GET` | `/api/distribution/pace` | Current settings and the change log. Does not send. |
 | `PUT` | `/api/distribution/pace` | Validate and store the JSON. Does not send. Logs who changed it. |
 | `POST` | `/api/distribution/queue/:entryId/send-now` | Set `available_at = now`, clear `paused` for that row only by claiming it through the worker once. Still one destination claim. Refuses while the row is `sending` or `needs review`. |
@@ -405,7 +411,7 @@ Also flag, as separate lines, not as auto-sends:
 
 The daily digest already has a status band for real production issues. One line belongs there when the count is non-zero: `3 approved items are not sent and not scheduled`. Link to the Distribution tab. Do not add a new email. Do not auto-enqueue inside the digest. Auto-enqueue would republish historical approvals the first morning a channel row exists, which is the March 9 bug again. Enqueue is the POST above, and it books the tail.
 
-Quiet approvals are excluded by `distributable IS NOT FALSE`. They are not findings.
+Quiet approvals are excluded by `distributable IS NOT FALSE`. They are not findings in `missing`. The last 7 days of them are listed separately as `programsOnly`.
 
 ### Digest mode
 
@@ -426,7 +432,7 @@ If a digest is ever wanted, it is a separate mode with its own receipt story, af
 - `distribute_after`, `scheduleForDistribution`, or a port of `src/jobs/drip-distribution.ts`.
 - In-memory delays, `setTimeout` chains, or pace state that dies on redeploy.
 - Auto-backfill of every historical approved row.
-- Agent send, agent send-now, or agent un-quiet. Agents stay force-quiet.
+- Agent send-now, or an immediate send from enqueue. The plain internal key stays quiet and gets 403 on send paths. A curator key can book a paced slot (`POST /api/distribution/queue/:id/enqueue`, or approve with `publish: true`) and cannot post from that call.
 - Deleting a Telegram message on pull-back. Pull-back is only before a claim. Unsending is a different operation and not part of this.
 
 ---

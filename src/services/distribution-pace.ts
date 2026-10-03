@@ -698,6 +698,13 @@ export interface OutgoingChat {
   sentToday: number;
 }
 
+export interface ProgramsOnlyItem {
+  id: number;
+  title: string;
+  approved_at: string;
+  actioned_by: string | null;
+}
+
 export interface OutgoingSnapshot {
   pace: DistributionPace;
   banner: string;
@@ -711,9 +718,11 @@ export interface OutgoingSnapshot {
     needsReview: number;
     missing: number;
     waiting: number;
+    programsOnly: number;
   };
   items: OutgoingItem[];
   sent: SentItem[];
+  programsOnly: ProgramsOnlyItem[];
   chats: OutgoingChat[];
 }
 
@@ -750,7 +759,7 @@ export async function listOutgoing(sentSince?: Date): Promise<OutgoingSnapshot> 
   const since = sentSince ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
   const now = new Date();
   const day = zonedDayBounds(now, pace.timezone);
-  const [queued, missing, blankReceipts, sent, chatRows, sentTodayRows] = await Promise.all([
+  const [queued, missing, blankReceipts, sent, chatRows, sentTodayRows, programsOnlyRows] = await Promise.all([
     pool.query(
       `SELECT q.entry_id, q.status, q.available_at, q.created_at, q.error_message, q.attempts,
               se.name, se.wire
@@ -811,6 +820,18 @@ export async function listOutgoing(sentSince?: Date): Promise<OutgoingSnapshot> 
        GROUP BY dc.target_id`,
       [day.start.toISOString(), day.end.toISOString()],
     ),
+    pool.query(
+      `SELECT se.id, se.name AS title, se.decision_at AS approved_at, se.actioned_by
+       FROM scan_entries se
+       WHERE se.status = 'approved'
+         AND se.distributable IS FALSE
+         AND se.decision_at >= NOW() - INTERVAL '7 days'
+         AND NOT EXISTS (
+           SELECT 1 FROM publication_queue q
+           WHERE q.entry_id = se.id AND q.status = 'withheld'
+         )
+       ORDER BY se.decision_at DESC, se.id DESC`,
+    ),
   ]);
 
   const items: OutgoingItem[] = queued.rows.map(row => {
@@ -870,8 +891,20 @@ export async function listOutgoing(sentSince?: Date): Promise<OutgoingSnapshot> 
     needsReview: items.filter(item => item.state === 'needs review').length,
     missing: Number(missing.rows[0]?.total ?? 0),
     waiting: 0,
+    programsOnly: 0,
   };
   counts.waiting = counts.scheduled + counts.due + counts.retryWait;
+  const programsOnly: ProgramsOnlyItem[] = programsOnlyRows.rows.flatMap(row => {
+    const approvedAt = iso(row.approved_at);
+    if (!approvedAt) return [];
+    return [{
+      id: Number(row.id),
+      title: row.title ?? '',
+      approved_at: approvedAt,
+      actioned_by: row.actioned_by ?? null,
+    }];
+  });
+  counts.programsOnly = programsOnly.length;
 
   const sentToday = new Map<string, number>(sentTodayRows.rows.map(row => [row.target_id, Number(row.sent)]));
   const chats: OutgoingChat[] = chatRows.rows.map(row => ({
@@ -909,6 +942,7 @@ export async function listOutgoing(sentSince?: Date): Promise<OutgoingSnapshot> 
       : 'The outgoing list is live. Pacing stays off until it is turned on, so this deploy does not change the channel.',
     counts,
     items,
+    programsOnly,
     sent: sent.rows.map(row => ({
       entryId: Number(row.entry_id),
       name: row.name,

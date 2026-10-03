@@ -10,6 +10,7 @@ import { isSecretKey } from './curator-audit';
 const SEND_PATHS = [
   /^\/api\/distribution\/run\/[^/]+$/,
   /^\/api\/distribution\/channels\/[^/]+\/test$/,
+  /^\/api\/distribution\/queue\/\d+\/enqueue$/,
   /^\/api\/distribution\/queue\/[^/]+\/retry$/,
   /^\/api\/distribution\/review\/[^/]+\/resolve$/,
   /^\/api\/distribution\/newsletter\/[^/]+\/confirm$/,

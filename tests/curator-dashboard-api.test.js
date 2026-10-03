@@ -53,6 +53,8 @@ test.before(async () => {
       wires text[],
       status text,
       distributable boolean,
+      actioned_by text,
+      decision_at timestamptz,
       updated_at timestamptz
     );
     CREATE TABLE publication_queue (
@@ -124,6 +126,8 @@ test('curator token reads and updates pace, and the audit actor is curator-api',
     assert.equal(outgoing.status, 200);
     const list = await outgoing.json();
     assert.equal(list.pace.enabled, false);
+    assert.equal(list.counts.programsOnly, 0);
+    assert.deepEqual(list.programsOnly, []);
 
     const saved = await call('PUT', '/api/distribution/pace', {
       key: TOKEN,

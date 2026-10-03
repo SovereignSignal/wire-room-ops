@@ -6,7 +6,8 @@
  *
  * GET    /distribution/pace                      — pace settings and the change log
  * PUT    /distribution/pace                      — validate and store pace settings
- * GET    /distribution/outgoing                  — scheduled, sent, and stuck rows
+ * GET    /distribution/outgoing                  — scheduled, sent, stuck, and programs-only rows
+ * POST   /distribution/queue/:id/enqueue      — book one approved entry onto the paced queue
  * GET    /distribution/config                     — list distribution configs (creds masked)
  * PUT    /distribution/config/:wire/:channel      — update channel config
  * POST   /distribution/run/:wire                  — trigger distribution
@@ -24,7 +25,7 @@
  */
 
 import { Router, Request, Response } from 'express';
-import { listPublicationReview, resolvePublication, listQueuedPublicationReview, retryQueuedPublication } from '../services/publication-queue';
+import { enqueuePacedPublication, EnqueueConflictError, listPublicationReview, resolvePublication, listQueuedPublicationReview, retryQueuedPublication } from '../services/publication-queue';
 import {
   getDistributionConfigs,
   upsertDistributionConfig,
@@ -121,6 +122,50 @@ router.get('/distribution/review', async (_req, res) => {
   try { res.json({ items: await listPublicationReview(), jobs: await listQueuedPublicationReview() }); }
   catch { res.status(500).json({ error: 'Could not load publication review' }); }
 });
+router.post('/distribution/queue/:id/enqueue', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isSafeInteger(id) || id < 1) {
+    res.status(400).json({ error: 'Invalid entry ID' });
+    return;
+  }
+  const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+  if (!reason) {
+    res.status(400).json({ error: 'reason is required' });
+    return;
+  }
+  if (reason.length > 2000) {
+    res.status(400).json({ error: 'reason must be at most 2000 characters' });
+    return;
+  }
+  let sources: string[] = [];
+  if (req.body?.sources !== undefined) {
+    if (!Array.isArray(req.body.sources) || req.body.sources.some((item: unknown) => typeof item !== 'string')) {
+      res.status(400).json({ error: 'sources must be an array of strings' });
+      return;
+    }
+    sources = req.body.sources.map((item: string) => item.trim()).filter(Boolean);
+  }
+  const actor = (req as Request & { agentSession?: { userId?: string }; authSession?: { userId?: string } }).agentSession?.userId
+    || (req as Request & { authSession?: { userId?: string } }).authSession?.userId
+    || 'unknown';
+  try {
+    const result = await enqueuePacedPublication(id, { actor, reason, sources });
+    noteCuratorChange(res, {
+      subject: `POST /api/distribution/queue/${id}/enqueue`,
+      old: { distributable: false },
+      next: { availableAt: result.availableAt },
+    });
+    res.json(result);
+  } catch (error) {
+    if (error instanceof EnqueueConflictError) {
+      res.status(409).json({ error: error.message });
+      return;
+    }
+    console.error('[Distribution] Enqueue failed:', error);
+    res.status(500).json({ error: 'Could not enqueue publication' });
+  }
+});
+
 router.post('/distribution/queue/:id/retry', async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isSafeInteger(id) || id < 1) { res.status(400).json({ error: 'Invalid entry ID' }); return; }

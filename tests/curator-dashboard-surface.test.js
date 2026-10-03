@@ -156,5 +156,6 @@ test('secret fields are redacted and risky writes require confirm', () => {
   assert.equal(curatorConfirmRequired('PUT', '/api/distribution/pace', { intervalMinutes: 20 }), false);
   assert.equal(curatorConfirmRequired('DELETE', '/api/feeds/crypto', {}), true);
   assert.equal(curatorConfirmRequired('POST', '/api/distribution/run/crypto', {}), true);
+  assert.equal(curatorConfirmRequired('POST', '/api/distribution/queue/18510/enqueue', {}), true);
   assert.equal(curatorConfirmRequired('PUT', '/api/providers/grok', { enabled: false }), false);
 });
