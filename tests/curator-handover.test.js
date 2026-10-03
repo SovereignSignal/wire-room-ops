@@ -65,6 +65,8 @@ test('curator scopes allow the editorial routes and the dashboard controls', () 
   assert.equal(requiredCuratorScope('POST', '/api/scan/entries/bulk-action'), 'decide');
   assert.equal(requiredCuratorScope('PATCH', '/api/scan/entries/15/wire'), 'decide');
   assert.equal(requiredCuratorScope('PATCH', '/api/scan/entries/15/source'), 'decide');
+  assert.equal(requiredCuratorScope('PATCH', '/api/scan/entries/15/content'), 'decide');
+  assert.equal(requiredCuratorScope('POST', '/api/scan/entries/15/unwithhold'), 'decide');
   assert.equal(requiredCuratorScope('POST', '/api/scan/entries/15/link-duplicate'), 'decide');
   assert.equal(requiredCuratorScope('POST', '/api/scan/entries/15/curate'), 'propose');
   assert.equal(requiredCuratorScope('POST', '/api/scan/submit'), 'propose');

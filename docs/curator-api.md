@@ -57,6 +57,8 @@ Monitored accounts, registry watch, and source feeds are dashboard controls. Rea
 - `POST /api/scan/entries/:id/link-duplicate`
 - `PATCH /api/scan/entries/:id/wire`
 - `PATCH /api/scan/entries/:id/source`
+- `PATCH /api/scan/entries/:id/content` — edit post fields; `confirm=true` required; never sends
+- `POST /api/scan/entries/:id/unwithhold` — release a withheld publication back to approved; `confirm=true` required; does not enqueue or send
 - Every dashboard write listed under [Dashboard](#dashboard)
 
 Editorial decide and curate writes still require evidence and `Idempotency-Key`. A curator approval is quiet unless `publish` is `true`, `confirm` is `true`, and pacing is enabled and not paused. Then the approve books a paced slot (`quiet: false`) and the drain sends only when that slot is due. Without `confirm`, or with pacing off or paused, the call is refused and the entry stays as it was. `publish` on a plain internal key is ignored and the approval stays quiet. Sending still needs its own call and `confirm=true`.
@@ -98,7 +100,7 @@ It applies to an approved, wire-bound entry that is scheduled, or that was never
 
 `reason` and `sources` are required as on any decide write; no quote is needed. The packet goes to `metadata.withheld` (`reason`, `sources`, `quotes`, `by`, `at`). It does not overwrite `curator_evidence`, `actioned_by` or `action_reason`, which still describe the approval. `dryRun: true` returns what would change and writes nothing.
 
-There is no agent path that clears `withheld`. An operator restores the entry and approves it again. Enqueue refuses a withheld row.
+`POST /api/scan/entries/:id/unwithhold` clears the hold. See [Release a withhold](#release-a-withhold). Enqueue still refuses a withheld row, and the release does not enqueue one.
 
 ```bash
 curl -s -X POST "$WIREOPS_SERVER_URL/api/scan/entries/bulk-action" \
@@ -114,6 +116,65 @@ curl -s -X POST "$WIREOPS_SERVER_URL/api/scan/entries/bulk-action" \
 ```
 
 Response: `{ "success": true, "action": "withhold", "dryRun": false, "withheld": [3, 9, 12], "alreadyWithheld": [] }`.
+
+## Post text
+
+`PATCH /api/scan/entries/:id/content` edits the fields a Telegram post is generated from at send time: `name`, `description`, `enriched_summary`, `amount`, `deadline`, `source_url`. Send any subset. `confirm: true`, `reason`, and `sources` are required for every caller, including a dashboard session. A curator key also sends `Idempotency-Key`. No quote is required.
+
+The write sets `actioned_by` to the caller (`agent:<name>` for a curator key) and `action_reason` to the reason. It appends one object to `metadata.content_edits` (`at`, `actor`, `reason`, `sources`, `previous_actioned_by`, `from`, `to`) and stores the evidence packet on `metadata.curator_evidence`. `amount` and `deadline` stay in step with `metadata.amount` and `metadata.deadline`. `enriched_summary` stays in step with `metadata.summary`, which is the summary the dashboard card shows. A new summary clears `auto_summarize_failed`. No new table.
+
+Validation matches the intake and approval checks: name 1–120 characters, description 10–8000, summary 10–8000 and not model reasoning, deadline at most 50 characters with no URL or stray punctuation (`none` / `n/a` clears it), amount is not a bare sum under $100 or a duration, source URL is `http` or `https` and not a shortener, placeholder, or blocked aggregator. A source URL change moves `seen_urls` ownership for that wire. A URL another entry already owns is `409` and nothing is written.
+
+The route refuses, and writes nothing, when the publication is already out or in flight:
+
+- any `distribution_logs` row for the entry with `channel = 'telegram'` and `status = 'success'`
+- a pending Telegram log, or `publication_queue.status` of `running`
+- `publication_queue.status` of `review`
+- `publication_queue.status` of `queued` (booked, not yet sending)
+
+`queued` here is the publication row, not `scan_entries.status`. An entry still in the review queue, or approved with no publication row, or withheld, or `done` without a Telegram success, can be edited. A booked row is not edited in place and this route does not drop the booking. Withhold it, edit, release the hold, then `POST /api/distribution/queue/:id/enqueue`. The response is `409` with `error`. Nothing on this route calls a sender, books a slot, or inserts a queue row.
+
+```bash
+curl -s -X PATCH "$WIREOPS_SERVER_URL/api/scan/entries/18106/content?confirm=true" \
+  -H "Authorization: Bearer $HEDWIG_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: hedwig-content-18106" \
+  -d '{
+    "confirm": true,
+    "reason": "Official page has the program name and amount.",
+    "sources": ["https://example.org/program"],
+    "name": "Example Grants Program",
+    "description": "Funds independent cryptography teams. Applications stay open through December.",
+    "amount": "$50K",
+    "deadline": "2026-12-01"
+  }'
+```
+
+Response includes `changed`, `actioned_by`, `enqueued: false`, and `sent: false`. `dryRun: true` validates and writes nothing.
+
+## Release a withhold
+
+`POST /api/scan/entries/:id/unwithhold` takes an approved withheld entry back off the hold. The entry stays `approved`. The `publication_queue` row is deleted, so the worker has nothing to claim. `distributable` is left as it was. The call does not insert a queued row and does not send.
+
+`confirm: true`, `reason`, and `sources` are required. A curator key also sends `Idempotency-Key`. The write sets `actioned_by` to the caller and appends `metadata.unwithhold` (`at`, `actor`, `reason`, `sources`, `previous_actioned_by`). `metadata.withheld` is left in place. The evidence packet goes to `metadata.curator_evidence`.
+
+`409` and no write when the entry is missing a withheld row, or is not approved. A withheld row that already has a Telegram success can still be released; enqueue will keep refusing it, and this route will not send it.
+
+Putting the entry on the paced queue is a separate call: `POST /api/distribution/queue/:id/enqueue` with its own `confirm: true`.
+
+```bash
+curl -s -X POST "$WIREOPS_SERVER_URL/api/scan/entries/18106/unwithhold" \
+  -H "Authorization: Bearer $HEDWIG_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: hedwig-unwithhold-18106" \
+  -d '{
+    "confirm": true,
+    "reason": "Text is corrected. Ready to book a slot.",
+    "sources": ["https://example.org/program"]
+  }'
+```
+
+Response: `{ "success": true, "action": "unwithhold", "entryId": 18106, "status": "approved", "dryRun": false, "actioned_by": "agent:hedwig", "enqueued": false, "sent": false }`.
 
 ## Queue score default
 
@@ -137,7 +198,9 @@ The same bearer the queue uses. Reads are `read_queue`. Writes are `decide`. Val
 
 Secret fields (`api_key`, tokens, `credentials`, `databaseUrl`, and the same names nested in a body) are write-only. A response replaces them with `****`. A masked value the server already stored (`****…`) can be sent back and is ignored, the same way the dashboard does.
 
-`confirm=true` (query or JSON body) is required for a curator token when the call deletes a row, sends or retries a delivery, books a paced slot, or includes a new secret. The session cookie does not send `confirm`. Without it the response is `400 { "error": "confirm_required" }`.
+`confirm=true` (query or JSON body) is required for a curator token when the call deletes a row, sends or retries a delivery, books a paced slot, or includes a new secret. The session cookie does not send `confirm` on those calls. Without it the response is `400 { "error": "confirm_required" }`.
+
+`PATCH /api/scan/entries/:id/content` and `POST /api/scan/entries/:id/unwithhold` require `confirm=true` from every caller, including a dashboard session and the internal key. They are not send paths. The internal key is not `403` on them.
 
 Approving does not distribute unless `publish` is `true` under the rule above. Enqueue is how an already-approved programs-only row joins the paced queue. It never sends on its own. Redistribute and the distribution run still send, and a curator token needs `confirm=true` for those. The plain internal key gets 403 on every send path, including enqueue.
 

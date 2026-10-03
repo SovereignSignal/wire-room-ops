@@ -14,6 +14,8 @@
  * GET    /prompt-stats           — prompt effectiveness
  * PATCH  /entries/:id/wire       — reassign wire
  * PATCH  /entries/:id/source     — guarded canonical source rewrite
+ * PATCH  /entries/:id/content    — edit post fields; never sends
+ * POST   /entries/:id/unwithhold — release a withheld publication; never enqueues or sends
  * POST   /entries/:id/link-duplicate — guarded explicit duplicate link
  * POST   /entries/bulk-action    — bulk approve/decline/reviewlater/restore
  * POST   /entries/:id/action     — single entry action
@@ -31,6 +33,7 @@ import { runDailyIntake, getDailyQueue, getIntakeStats, resolveQueueMinScore } f
 import { getPromptEffectivenessStats } from '../services/scan-stats';
 import { singleEntryAction, bulkEntryAction, ApprovalBlockedError, BulkApprovalBlockedError, EntryActionConflictError } from '../services/entry-actions';
 import { rewriteEntrySource, rewriteEntryWires, linkEntryDuplicate, EntryMaintenanceError } from '../services/entry-maintenance';
+import { ContentEditError, parseContentPatch, releaseWithheldEntry, updateEntryContent } from '../services/entry-content';
 import { applyCuratorWrite, planCuratorWrite } from '../services/curator';
 import { attachCuratorEvidence, parseCuratorEvidence, type CuratorEvidence } from '../services/curator-evidence';
 import { openCuratorIdempotency } from '../services/curator-idempotency';
@@ -931,6 +934,123 @@ router.patch('/entries/:id/source', async (req: Request, res: Response) => {
     const message = error instanceof Error ? error.message : 'Unknown error';
     console.error('[SourceRewrite] Failed:', error);
     res.status(500).json({ error: message });
+  }
+});
+
+function entryIdParam(req: Request, res: Response): number | null {
+  const entryId = parseInt(req.params.id, 10);
+  if (!Number.isSafeInteger(entryId) || entryId <= 0) {
+    res.status(400).json({ error: 'Invalid entry ID' });
+    return null;
+  }
+  return entryId;
+}
+
+const CONFIRM_MESSAGE = 'Editing post text or releasing a withhold needs confirm=true. This action does not send.';
+
+function requireExplicitConfirm(req: Request, res: Response): boolean {
+  if (curatorConfirmed(req)) return true;
+  res.status(400).json({ error: 'confirm_required', message: CONFIRM_MESSAGE });
+  return false;
+}
+
+/**
+ * Evidence for every caller, then the curator idempotency claim.
+ * Field checks happen before this so a bad patch does not consume the key.
+ */
+async function beginEvidenceWrite(req: Request, res: Response): Promise<CuratorGate> {
+  const parsed = parseCuratorEvidence(req.body, { requireQuote: false });
+  if (!parsed.ok) {
+    res.status(400).json({ error: parsed.error });
+    return { ok: false };
+  }
+  const gate = await beginCuratorWrite(req, res, { requireQuote: false });
+  if (!gate.ok) return gate;
+  return { ...gate, evidence: parsed.evidence };
+}
+
+// PATCH /entries/:id/content — edit the fields a Telegram post is generated from. Never sends.
+router.patch('/entries/:id/content', async (req: Request, res: Response) => {
+  const entryId = entryIdParam(req, res);
+  if (entryId === null) return;
+  if (!requireExplicitConfirm(req, res)) return;
+  const parsed = parseContentPatch(req.body);
+  if (!parsed.ok) {
+    res.status(400).json({ error: parsed.error });
+    return;
+  }
+  const gate = await beginEvidenceWrite(req, res);
+  if (!gate.ok || !gate.evidence) return;
+  try {
+    const actor = resolveMaintenanceActor(req);
+    if (!actor) {
+      await remember(gate, 401, { error: 'Unauthorized' }, res);
+      return;
+    }
+    await markCuratorPrior(req, res, [entryId]);
+    const result = await updateEntryContent(entryId, parsed.patch, {
+      actor,
+      reason: gate.evidence.reason,
+      sources: gate.evidence.sources,
+      quotes: gate.evidence.quotes,
+      dryRun: req.body?.dryRun === true,
+    });
+    if (!result.dryRun) {
+      noteCuratorChange(res, {
+        subject: `PATCH /api/scan/entries/${entryId}/content`,
+        old: { id: entryId },
+        next: { changed: result.changed, enqueued: false, sent: false },
+      });
+    }
+    await remember(gate, 200, result, res);
+  } catch (error) {
+    if (error instanceof ContentEditError) {
+      await remember(gate, error.statusCode, { error: error.message }, res);
+      return;
+    }
+    await gate.abort();
+    console.error('[ContentEdit] Failed:', error);
+    res.status(500).json({ error: 'Failed to edit entry content' });
+  }
+});
+
+// POST /entries/:id/unwithhold — return a withheld entry to approved without enqueueing or sending.
+router.post('/entries/:id/unwithhold', async (req: Request, res: Response) => {
+  const entryId = entryIdParam(req, res);
+  if (entryId === null) return;
+  if (!requireExplicitConfirm(req, res)) return;
+  const gate = await beginEvidenceWrite(req, res);
+  if (!gate.ok || !gate.evidence) return;
+  try {
+    const actor = resolveMaintenanceActor(req);
+    if (!actor) {
+      await remember(gate, 401, { error: 'Unauthorized' }, res);
+      return;
+    }
+    await markCuratorPrior(req, res, [entryId]);
+    const result = await releaseWithheldEntry(entryId, {
+      actor,
+      reason: gate.evidence.reason,
+      sources: gate.evidence.sources,
+      quotes: gate.evidence.quotes,
+      dryRun: req.body?.dryRun === true,
+    });
+    if (!result.dryRun) {
+      noteCuratorChange(res, {
+        subject: `POST /api/scan/entries/${entryId}/unwithhold`,
+        old: { id: entryId, queue: 'withheld' },
+        next: { status: 'approved', enqueued: false, sent: false },
+      });
+    }
+    await remember(gate, 200, result, res);
+  } catch (error) {
+    if (error instanceof ContentEditError) {
+      await remember(gate, error.statusCode, { error: error.message }, res);
+      return;
+    }
+    await gate.abort();
+    console.error('[Unwithhold] Failed:', error);
+    res.status(500).json({ error: 'Failed to release withheld entry' });
   }
 });
 

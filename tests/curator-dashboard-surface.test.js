@@ -7,7 +7,7 @@ const assert = require('node:assert/strict');
 require('ts-node/register/transpile-only');
 const { requiredCuratorScope } = require('../src/services/curator-keys');
 const { redactSecrets } = require('../src/services/curator-audit');
-const { bodyHasNewSecret, curatorConfirmRequired } = require('../src/services/curator-confirm');
+const { bodyHasNewSecret, curatorConfirmRequired, isEditorialConfirmPath, isSendPath } = require('../src/services/curator-confirm');
 
 const ROOT = path.join(__dirname, '..');
 const HEDWIG = new Set(['read_queue', 'decide', 'propose']);
@@ -157,5 +157,11 @@ test('secret fields are redacted and risky writes require confirm', () => {
   assert.equal(curatorConfirmRequired('DELETE', '/api/feeds/crypto', {}), true);
   assert.equal(curatorConfirmRequired('POST', '/api/distribution/run/crypto', {}), true);
   assert.equal(curatorConfirmRequired('POST', '/api/distribution/queue/18510/enqueue', {}), true);
+  assert.equal(curatorConfirmRequired('PATCH', '/api/scan/entries/18106/content', {}), true);
+  assert.equal(curatorConfirmRequired('POST', '/api/scan/entries/18106/unwithhold', {}), true);
+  assert.equal(isSendPath('PATCH', '/api/scan/entries/18106/content'), false);
+  assert.equal(isSendPath('POST', '/api/scan/entries/18106/unwithhold'), false);
+  assert.equal(isEditorialConfirmPath('PATCH', '/api/scan/entries/18106/content'), true);
+  assert.equal(isEditorialConfirmPath('POST', '/api/scan/entries/18106/unwithhold'), true);
   assert.equal(curatorConfirmRequired('PUT', '/api/providers/grok', { enabled: false }), false);
 });
