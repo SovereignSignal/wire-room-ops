@@ -152,7 +152,7 @@ app.use('/api/integrations', requireAuthOrCurator, integrationRouter);
 app.use('/api/admin', requireAuth, adminRouter);
 app.use('/api/accounts', requireAuthOrInternalKey, accountsRouter);
 
-// ── Static serving & SPA fallback ──────────────────────────────
+// ── Static serving & SPA fallback ───────────────────────────
 
 // Serve React dashboard (built client)
 const clientDist = path.join(__dirname, '../dist/client');
