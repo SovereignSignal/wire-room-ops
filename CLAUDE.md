@@ -309,13 +309,13 @@ Status distribution (typical): ~46% duplicate, ~22% archived, ~17% queued, ~12% 
 
 ```
 INGESTION (raw data)                    THE REFINERY (processing)               PUBLISHING
-┌────────────────┐                     ┌──────────────────┐                   ┌─────────────┐
+┌─────────────────┐                     ┌───────────────────┐                   ┌──────────────┐
 │ X/Grok Scans    │──┐                  │ Gate 1: Complete  │──incomplete──→ archived
 │ Web Search      │  ├──→ scan_entries ──│ Gate 2: Classify  │──NOISE/park*→ archived
 │ Forum Scan      │  │    (status=raw)   │ Deduplication     │──duplicate──→ duplicate
 │ Telegram Bridge │──┘                  │ Quality Score     │──path rules→ queued/archived
-│ Manual Paste    │                     └───────┬──────────┘
-└────────────────┘                             │ source-specific routing
+│ Manual Paste    │                     └───────┬───────────┘
+└─────────────────┘                             │ source-specific routing
                                                 ▼
                                          queued (editorial queue)
                                                 │ operator review
