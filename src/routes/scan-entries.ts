@@ -35,7 +35,9 @@ import { applyCuratorWrite, planCuratorWrite } from '../services/curator';
 import { attachCuratorEvidence, parseCuratorEvidence, type CuratorEvidence } from '../services/curator-evidence';
 import { openCuratorIdempotency } from '../services/curator-idempotency';
 import { retryDistribution } from '../services/distribution';
-import { withholdPublications, WithholdConflictError } from '../services/publication-queue';
+import { curatorConfirmed } from '../services/curator-confirm';
+import { getDistributionPace } from '../services/distribution-pace';
+import { PACING_REQUIRED_ERROR, withholdPublications, WithholdConflictError } from '../services/publication-queue';
 import { PROMPT_VARIANTS, SCAN_SOURCES } from '../types/intake';
 import { isBatchMessage, processBatchMessage, processIntakeMessage, type IntakeOptions } from '../services/intake-core';
 import { runDecidedRecheckForIds } from '../jobs/decided-recheck';
@@ -101,6 +103,40 @@ async function beginCuratorWrite(req: Request, res: Response, opts: { requireQuo
   const idem = await openCuratorIdempotency(req, res);
   if (idem.sent) return { ok: false };
   return { ok: true, evidence: parsed.evidence, finish: idem.finish, abort: idem.abort };
+}
+
+type QuietDecision =
+  | { ok: true; quiet: boolean }
+  | { ok: false; status: number; body: { error: string; message?: string } };
+
+/**
+ * Curator approvals stay quiet. publish:true books a paced slot only when
+ * this is a curator session, confirm is set, and pacing is on and not paused.
+ * A plain internal key stays quiet. A dashboard session keeps the quiet flag
+ * it sent.
+ */
+async function quietForAction(req: Request, action: string): Promise<QuietDecision> {
+  const agent = (req as Request & { agentSession?: { isAgent?: boolean; curator?: boolean } }).agentSession;
+  const isAgent = !!agent?.isAgent;
+  const dashboardQuiet = !!req.body?.quiet;
+  if (action !== 'approve') return { ok: true, quiet: isAgent ? true : dashboardQuiet };
+  if (!isAgent) return { ok: true, quiet: dashboardQuiet };
+  if (!agent?.curator || req.body?.publish !== true) return { ok: true, quiet: true };
+  if (!curatorConfirmed(req)) {
+    return {
+      ok: false,
+      status: 400,
+      body: {
+        error: 'confirm_required',
+        message: 'Publishing an approval onto the paced queue needs confirm=true.',
+      },
+    };
+  }
+  const pace = await getDistributionPace();
+  if (!pace.enabled || pace.paused) {
+    return { ok: false, status: 409, body: { error: PACING_REQUIRED_ERROR } };
+  }
+  return { ok: true, quiet: false };
 }
 
 async function remember(gate: Extract<CuratorGate, { ok: true }>, statusCode: number, payload: unknown, res: Response): Promise<void> {
@@ -612,8 +648,7 @@ router.get('/entries/:id', async (req: Request, res: Response) => {
 
 // POST /entries/bulk-action — bulk approve/decline/reviewlater/restore, or withhold from the Telegram stream
 router.post('/entries/bulk-action', async (req: Request, res: Response) => {
-  const { ids, action, quiet, reason, dryRun } = req.body;
-  const agentSession = (req as any).agentSession;
+  const { ids, action, reason, dryRun } = req.body;
   const gate = await beginCuratorWrite(req, res, { requireQuote: action === 'approve' });
   if (!gate.ok) return;
 
@@ -637,12 +672,16 @@ router.post('/entries/bulk-action', async (req: Request, res: Response) => {
   }
 
   try {
-    // Agent calls (internal API key and curator keys) always use quiet=true — no auto-distribution
-    const isAgent = !!(agentSession?.isAgent);
+    const decided = await quietForAction(req, action);
+    if (!decided.ok) {
+      await gate.abort();
+      res.status(decided.status).json(decided.body);
+      return;
+    }
     const auditReason = gate.evidence?.reason || reason || undefined;
     await markCuratorPrior(req, res, entryIds);
     const result = await bulkEntryAction(entryIds, action, {
-      quiet: isAgent ? true : !!quiet,
+      quiet: decided.quiet,
       force: resolveApprovalForce(req),
       actor: resolveMaintenanceActor(req) || undefined,
       reason: auditReason,
@@ -684,8 +723,7 @@ router.post('/entries/:id/action', async (req: Request, res: Response) => {
     return;
   }
 
-  const { action, quiet, reason, dryRun } = req.body;
-  const agentSession = (req as any).agentSession;
+  const { action, reason, dryRun } = req.body;
   const gate = await beginCuratorWrite(req, res, { requireQuote: action === 'approve' });
   if (!gate.ok) return;
   if (action === 'withhold') {
@@ -694,12 +732,16 @@ router.post('/entries/:id/action', async (req: Request, res: Response) => {
   }
 
   try {
-    // Agent calls (internal API key and curator keys) always use quiet=true — no auto-distribution
-    const isAgent = !!(agentSession?.isAgent);
+    const decided = await quietForAction(req, action);
+    if (!decided.ok) {
+      await gate.abort();
+      res.status(decided.status).json(decided.body);
+      return;
+    }
     const auditReason = gate.evidence?.reason || reason || undefined;
     await markCuratorPrior(req, res, [entryId]);
     const result = await singleEntryAction(entryId, action, {
-      quiet: isAgent ? true : !!quiet,
+      quiet: decided.quiet,
       force: resolveApprovalForce(req),
       actor: resolveMaintenanceActor(req) || undefined,
       reason: auditReason,

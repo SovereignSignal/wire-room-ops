@@ -18,8 +18,9 @@
  * for any bearer that is not an internal key, so a bad Railway setting is not
  * a silent 401. Unset is not an error.
  *
- * Agent approvals stay force-quiet. A curator token may send only with
- * confirm=true. Other agent keys still cannot publish.
+ * Agent approvals stay quiet unless a curator token passes publish=true
+ * with confirm=true while pacing is on. A curator token may book a paced
+ * slot or send only with confirm=true. Other agent keys still cannot publish.
  */
 
 import crypto from 'crypto';
@@ -140,8 +141,23 @@ export function requireAuthOrInternalKey(req: Request, res: Response, next: Next
 /**
  * Dashboard routers. A curator bearer with the route's scope, or a session.
  * The internal master key stays on requireAuth here, so it does not gain
- * settings writes that were session-only.
+ * settings writes that were session-only. On a send path it is refused
+ * before that fallback, the same way requireAuthOrInternalKey refuses it.
  */
+function rejectInternalAgentSend(req: Request, res: Response): boolean {
+  if (!isInternalBearer(req)) return false;
+  const token = bearerToken(req) || '';
+  const userId = timingSafeMatch(token, process.env.INTERNAL_API_KEY) ? 'agent:stringer' : 'agent:daily-scan';
+  const prior = (req as Request & { agentSession?: unknown }).agentSession;
+  (req as Request & { agentSession?: { userId: string; isAgent: boolean } }).agentSession = { userId, isAgent: true };
+  const guard = enforceCuratorGuards(req);
+  if (prior === undefined) delete (req as Request & { agentSession?: unknown }).agentSession;
+  else (req as Request & { agentSession?: unknown }).agentSession = prior;
+  if (!guard) return false;
+  res.status(guard.status).json(guard.body);
+  return true;
+}
+
 export function requireAuthOrCurator(req: Request, res: Response, next: NextFunction) {
   if ((req as any).agentSession?.curator) {
     const guard = enforceCuratorGuards(req);
@@ -167,6 +183,7 @@ export function requireAuthOrCurator(req: Request, res: Response, next: NextFunc
     res.status(503).json({ error: 'curator_unavailable' });
     return;
   }
+  if (rejectInternalAgentSend(req, res)) return;
   return requireAuth(req, res, next);
 }
 

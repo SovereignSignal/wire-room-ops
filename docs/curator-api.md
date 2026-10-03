@@ -2,7 +2,7 @@
 
 Scoped keys for an editorial agent (Hedwig). This is the wire-room-ops door. It is separate from grants.watch `GRANTS_WATCH_CURATOR_KEYS` and from `INTERNAL_API_KEY`.
 
-`INTERNAL_API_KEY` (Stringer) and `INTERNAL_API_KEY_DAILY_SCAN` keep today's behavior during the overlap week: no scope check, no evidence requirement, no idempotency requirement. Agent approvals stay quiet (no distribution) for both kinds of key.
+`INTERNAL_API_KEY` (Stringer) and `INTERNAL_API_KEY_DAILY_SCAN` keep today's behavior during the overlap week: no scope check, no evidence requirement, no idempotency requirement. Their approvals stay quiet. A curator approval stays quiet too, unless the body sets `publish: true` with `confirm: true` while pacing is on and not paused. That books a paced slot. It does not post immediately.
 
 ## Auth
 
@@ -59,7 +59,7 @@ Monitored accounts, registry watch, and source feeds are dashboard controls. Rea
 - `PATCH /api/scan/entries/:id/source`
 - Every dashboard write listed under [Dashboard](#dashboard)
 
-Editorial decide and curate writes still require evidence and `Idempotency-Key`. A curator approval is still quiet: it does not distribute. Sending is a separate call and needs `confirm=true`.
+Editorial decide and curate writes still require evidence and `Idempotency-Key`. A curator approval is quiet unless `publish` is `true`, `confirm` is `true`, and pacing is enabled and not paused. Then the approve books a paced slot (`quiet: false`) and the drain sends only when that slot is due. Without `confirm`, or with pacing off or paused, the call is refused and the entry stays as it was. `publish` on a plain internal key is ignored and the approval stays quiet. Sending still needs its own call and `confirm=true`.
 
 ### `propose`
 
@@ -98,7 +98,7 @@ It applies to an approved, wire-bound entry that is scheduled, or that was never
 
 `reason` and `sources` are required as on any decide write; no quote is needed. The packet goes to `metadata.withheld` (`reason`, `sources`, `quotes`, `by`, `at`). It does not overwrite `curator_evidence`, `actioned_by` or `action_reason`, which still describe the approval. `dryRun: true` returns what would change and writes nothing.
 
-There is no agent path back onto the stream. An operator restores the entry and approves it again.
+There is no agent path that clears `withheld`. An operator restores the entry and approves it again. Enqueue refuses a withheld row.
 
 ```bash
 curl -s -X POST "$WIREOPS_SERVER_URL/api/scan/entries/bulk-action" \
@@ -137,9 +137,9 @@ The same bearer the queue uses. Reads are `read_queue`. Writes are `decide`. Val
 
 Secret fields (`api_key`, tokens, `credentials`, `databaseUrl`, and the same names nested in a body) are write-only. A response replaces them with `****`. A masked value the server already stored (`****…`) can be sent back and is ignored, the same way the dashboard does.
 
-`confirm=true` (query or JSON body) is required for a curator token when the call deletes a row, sends or retries a delivery, or includes a new secret. The session cookie does not send `confirm`. Without it the response is `400 { "error": "confirm_required" }`.
+`confirm=true` (query or JSON body) is required for a curator token when the call deletes a row, sends or retries a delivery, books a paced slot, or includes a new secret. The session cookie does not send `confirm`. Without it the response is `400 { "error": "confirm_required" }`.
 
-Approving still does not distribute. A token that should publish calls redistribute or the distribution run with `confirm=true`. Those calls use the existing send path. Nothing in this change posts to Telegram on its own.
+Approving does not distribute unless `publish` is `true` under the rule above. Enqueue is how an already-approved programs-only row joins the paced queue. It never sends on its own. Redistribute and the distribution run still send, and a curator token needs `confirm=true` for those. The plain internal key gets 403 on every send path, including enqueue.
 
 ### Pace and outgoing
 
@@ -158,6 +158,20 @@ curl -s -X PUT "$WIREOPS_SERVER_URL/api/distribution/pace" \
 
 A bad pace body is `400`. The stored change log records `actor: "curator-api"` and the old and new pace objects. The process log is `[Distribution] Pace settings changed by curator-api … {old} -> {new}` plus `[curator-api] PUT /api/distribution/pace actor=curator-api {old} -> {new}`.
 
+`GET /api/distribution/outgoing` includes `counts.programsOnly` and `programsOnly`: approved rows with `distributable = false`, not withheld, decided in the last 7 days (`decision_at`). Each item is `{ id, title, approved_at, actioned_by }`. Read-only.
+
+`POST /api/distribution/queue/:id/enqueue` books one of those rows onto the paced queue. Body: `{ "confirm": true, "reason": "...", "sources": ["https://..."] }`. `sources` is optional. `reason` is required. The response is `{ entryId, availableAt, note }`. `availableAt` is the slot `bookPacedQueue` assigned (20-minute spacing, quiet hours, daily cap). `note` is `quiet hours` or `daily cap` when the slot was pushed, otherwise null. The call does not send.
+
+Guards, all `409`, and none of them write:
+
+- pacing is disabled or paused (`pacing must be on and not paused`)
+- the entry is not approved
+- the queue row is `withheld`, `queued`, `running`, or `review`
+- no enabled Telegram destination is left unsent
+- any `distribution_logs` row for the entry has `channel = 'telegram'` and `status = 'success'`, on any wire
+
+A withheld row stays withheld. A prior Telegram success stays unsent from this route so a second wire cannot repost it. The internal key is `403`. A curator token without `confirm` is `400 { "error": "confirm_required" }`. A `read_queue` key is `403`.
+
 ### Distribution
 
 | Method | Path | Confirm |
@@ -166,6 +180,7 @@ A bad pace body is `400`. The stored change log records `actor: "curator-api"` a
 | PUT | `/api/distribution/pace` | |
 | GET | `/api/distribution/outgoing` | |
 | GET | `/api/distribution/review` | |
+| POST | `/api/distribution/queue/:id/enqueue` | yes |
 | POST | `/api/distribution/queue/:id/retry` | yes |
 | POST | `/api/distribution/review/:id/resolve` | yes |
 | GET | `/api/distribution/config` | |
@@ -197,6 +212,27 @@ curl -s -X POST "$WIREOPS_SERVER_URL/api/distribution/run/crypto?confirm=true" \
 
 curl -s -X POST "$WIREOPS_SERVER_URL/api/distribution/channels/$CHANNEL_ID/test?confirm=true" \
   -H "Authorization: Bearer $HEDWIG_TOKEN"
+
+curl -s -X POST "$WIREOPS_SERVER_URL/api/distribution/queue/18510/enqueue" \
+  -H "Authorization: Bearer $HEDWIG_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "confirm": true,
+    "reason": "Approved for the wires. Still open on the funder page.",
+    "sources": ["https://example.org/program"]
+  }'
+
+curl -s -X POST "$WIREOPS_SERVER_URL/api/scan/entries/18510/action" \
+  -H "Authorization: Bearer $HEDWIG_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: hedwig-approve-publish-18510" \
+  -d '{
+    "action": "approve",
+    "publish": true,
+    "confirm": true,
+    "reason": "Open on the funder page.",
+    "sources": [{ "url": "https://example.org/program", "quote": "Applications are open." }]
+  }'
 
 curl -s -X POST "$WIREOPS_SERVER_URL/api/distribution/queue/123/retry?confirm=true" \
   -H "Authorization: Bearer $HEDWIG_TOKEN"

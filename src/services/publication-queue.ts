@@ -2,7 +2,9 @@ import { randomUUID } from 'crypto';
 import type { Pool } from 'pg';
 import { getPool } from '../db';
 import { distributeEntry } from './distribution';
-import { getDistributionPace, mergeQueueNote, paceRules, planQueue, sentTodayByTarget, UNSENT_TELEGRAM_DESTINATION_SQL, type DistributionPace } from './distribution-pace';
+import { bookPacedQueue, getDistributionPace, mergeQueueNote, paceRules, planQueue, sentTodayByTarget, UNSENT_TELEGRAM_DESTINATION_SQL, type DistributionPace } from './distribution-pace';
+
+export const PACING_REQUIRED_ERROR = 'pacing must be on and not paused';
 
 let running = false;
 
@@ -314,6 +316,101 @@ export async function withholdPublications(
     await client.query('ROLLBACK');
     throw error;
   } finally { client.release(); }
+}
+
+export class EnqueueConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'EnqueueConflictError';
+  }
+}
+
+export interface EnqueuedPublication {
+  entryId: number;
+  availableAt: string;
+  note: string | null;
+}
+
+/**
+ * Put one approved entry on the paced queue. Books the next slot and returns.
+ * Does not drain the queue and does not send. Pacing must already be on.
+ */
+export async function enqueuePacedPublication(
+  entryId: number,
+  opts: { actor?: string; reason?: string; sources?: string[] } = {},
+): Promise<EnqueuedPublication> {
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    const row = (await client.query(
+      `SELECT se.id, se.status, se.wire, se.wires, q.status AS queue_status,
+              ${UNSENT_TELEGRAM_DESTINATION_SQL} AS unsent,
+              EXISTS (
+                SELECT 1 FROM distribution_logs dl
+                WHERE dl.entry_id = se.id
+                  AND dl.channel = 'telegram'
+                  AND dl.status = 'success'
+              ) AS telegram_sent
+       FROM scan_entries se
+       LEFT JOIN publication_queue q ON q.entry_id = se.id
+       WHERE se.id = $1
+       FOR UPDATE OF se`,
+      [entryId],
+    )).rows[0];
+
+    if (!row || row.status !== 'approved') {
+      throw new EnqueueConflictError(row ? `Entry is ${row.status}, not approved` : 'Entry is not approved');
+    }
+    const pace = await getDistributionPace();
+    if (!pace.enabled || pace.paused) throw new EnqueueConflictError(PACING_REQUIRED_ERROR);
+    const queueStatus = typeof row.queue_status === 'string' ? row.queue_status : null;
+    if (queueStatus === 'withheld') throw new EnqueueConflictError('Entry is withheld');
+    if (queueStatus === 'queued' || queueStatus === 'running' || queueStatus === 'review') {
+      throw new EnqueueConflictError(`Entry already has a ${queueStatus} publication`);
+    }
+    if (row.telegram_sent) throw new EnqueueConflictError('Entry already has a successful Telegram send');
+    if (!row.unsent) throw new EnqueueConflictError('No unsent Telegram destination is left');
+
+    const actor = opts.actor || 'unknown';
+    const stamp = {
+      by: actor,
+      at: new Date().toISOString(),
+      reason: opts.reason ?? null,
+      sources: opts.sources ?? [],
+    };
+    await client.query(
+      `UPDATE scan_entries
+       SET distributable = true,
+           actioned_by = COALESCE(actioned_by, $2),
+           metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('enqueued', $3::jsonb),
+           updated_at = NOW()
+       WHERE id = $1`,
+      [entryId, actor, JSON.stringify(stamp)],
+    );
+    await bookPacedQueue(client, [{
+      id: Number(row.id),
+      wire: row.wire,
+      wires: Array.isArray(row.wires) ? row.wires : null,
+    }], pace);
+    const booked = (await client.query(
+      `SELECT status, available_at, error_message FROM publication_queue WHERE entry_id = $1`,
+      [entryId],
+    )).rows[0];
+    if (!booked || booked.status !== 'queued') {
+      throw new EnqueueConflictError('Enqueue did not book a paced slot');
+    }
+    await client.query('COMMIT');
+    return {
+      entryId: Number(row.id),
+      availableAt: new Date(booked.available_at).toISOString(),
+      note: booked.error_message || null,
+    };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function listQueuedPublicationReview(): Promise<unknown[]> {
