@@ -1,6 +1,8 @@
 /**
  * One-shot registry-watch dry run: real selection, real fetches, real hashes,
- * NO intake submission (dryRun forced). Prints per-lane stats.
+ * NO intake submission (dryRun forced). Writes the would-submit list to
+ * app_state (`registry-watch:pending`) and advances seen URLs and page hashes.
+ * Prints per-lane stats.
  * Usage: railway run -- npx ts-node src/scripts/registry-watch-dryrun.ts
  *
  * Note: the enabled gate in runRegistryWatch reads REGISTRY_WATCH_ENABLED at

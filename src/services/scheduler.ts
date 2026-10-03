@@ -10,7 +10,7 @@ import { runBdLeads } from '../jobs/bd-leads';
 import { config } from '../config';
 import { sendTestAlertEmail, sendScheduledJobFailureEmail } from './email';
 import { runCsvExport } from '../jobs/csv-export';
-import { assembleAndSendDailyDigest, formatStaleSourceAnomalies } from '../jobs/daily-digest';
+import { assembleAndSendDailyDigest, formatEmptyScrapeAnomalies, formatStaleSourceAnomalies } from '../jobs/daily-digest';
 import { runAccountMonitor } from '../jobs/account-monitor';
 import { ensureScheduleTable, getAllSchedules, getScheduleById, createSchedule, updateSchedule, deleteSchedule as dbDeleteSchedule, StoredScheduleConfig, ensureFeedsTable, ensureScanTables, ensureScanPromptsTable, ensureDistributionTables, getPool } from '../db';
 import { getAppState, setAppState } from '../db';
@@ -394,7 +394,7 @@ function createJobExecutor(schedule: ScheduleConfig) {
         if (config.watchtower.registryWatchEnabled) {
           try {
             const rw = await runRegistryWatch(pool);
-            if (rw.ran) console.log(`[Scheduler] Registry watch: rss ${rw.rss.surfaces}/${rw.rss.fresh} fresh, diff ${rw.diff.surfaces}/${rw.diff.changed ?? 0} changed, ${rw.diff.extracted ?? 0} extracted`);
+            if (rw.ran) console.log(`[Scheduler] Registry watch: rss ${rw.rss.surfaces}/${rw.rss.fresh} fresh, diff ${rw.diff.surfaces}/${rw.diff.changed ?? 0} changed, ${rw.diff.extracted ?? 0} extracted, pending ${rw.pending}`);
           } catch (err) {
             console.error('[Scheduler] Registry watch failed:', err instanceof Error ? err.message : err);
           }
@@ -440,6 +440,7 @@ function createJobExecutor(schedule: ScheduleConfig) {
           const failed = sf.perSource.filter(s => s.error).length;
           console.log(`[Scheduler] Daily source feeds: ${sf.totalFresh} fresh from ${sf.perSource.length} sources (${failed} errored), ${sf.intakeSummary.newUnique} unique`);
           anomalies.push(...formatStaleSourceAnomalies(sf.perSource));
+          anomalies.push(...formatEmptyScrapeAnomalies(sf.perSource));
           feedsLane = { ok: sf.perSource.length - failed, total: sf.perSource.length };
         } catch (e) {
           console.error('[Scheduler] Daily source feeds failed (non-fatal):', e instanceof Error ? e.message : e);
@@ -472,7 +473,7 @@ function createJobExecutor(schedule: ScheduleConfig) {
         if (config.watchtower.registryWatchEnabled) {
           try {
             const rw = await runRegistryWatch(pool);
-            if (rw.ran) console.log(`[Scheduler] Registry watch: rss ${rw.rss.surfaces}/${rw.rss.fresh} fresh, diff ${rw.diff.surfaces}/${rw.diff.changed ?? 0} changed, ${rw.diff.extracted ?? 0} extracted`);
+            if (rw.ran) console.log(`[Scheduler] Registry watch: rss ${rw.rss.surfaces}/${rw.rss.fresh} fresh, diff ${rw.diff.surfaces}/${rw.diff.changed ?? 0} changed, ${rw.diff.extracted ?? 0} extracted, pending ${rw.pending}`);
           } catch (err) {
             console.error('[Scheduler] Registry watch failed:', err instanceof Error ? err.message : err);
           }

@@ -78,9 +78,18 @@ test('curator scopes allow the editorial routes and the dashboard controls', () 
   assert.equal(requiredCuratorScope('POST', '/api/scan/manual-intake'), 'decide');
   assert.equal(requiredCuratorScope('POST', '/api/scan/entries/15/redistribute'), 'decide');
   assert.equal(requiredCuratorScope('GET', '/api/scan/stats'), 'read_queue');
+  assert.equal(requiredCuratorScope('GET', '/api/accounts/monitored'), 'read_queue');
+  assert.equal(requiredCuratorScope('POST', '/api/accounts/monitored'), 'decide');
+  assert.equal(requiredCuratorScope('PATCH', '/api/accounts/monitored/octantapp'), 'decide');
+  assert.equal(requiredCuratorScope('DELETE', '/api/accounts/monitored/octantapp'), 'decide');
+  assert.equal(requiredCuratorScope('GET', '/api/registry-watch/pending'), 'read_queue');
+  assert.equal(requiredCuratorScope('GET', '/api/registry-watch/surfaces'), 'read_queue');
+  assert.equal(requiredCuratorScope('PUT', '/api/registry-watch/surfaces/797'), 'decide');
+  assert.equal(requiredCuratorScope('GET', '/api/source-feeds'), 'read_queue');
+  assert.equal(requiredCuratorScope('PUT', '/api/source-feeds/longview'), 'decide');
+  assert.equal(requiredCuratorScope('DELETE', '/api/source-feeds/longview'), 'decide');
 
   for (const [method, path] of [
-    ['POST', '/api/accounts'],
     ['GET', '/api/scan/telegram-batch'],
     ['POST', '/api/scan/submit-batch'],
     ['POST', '/api/scan/agent/send-brief'],

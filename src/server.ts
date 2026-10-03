@@ -24,6 +24,8 @@ import { authRouter } from './routes/auth';
 import { scanExecutionRouter } from './routes/scan-execution';
 import { jobRouter } from './routes/jobs';
 import { accountsRouter } from './routes/accounts';
+import { registryWatchRouter } from './routes/registry-watch';
+import { sourceFeedConfigRouter } from './routes/source-feed-config';
 import { modelRouter } from './routes/models';
 import { dashboardRouter } from './routes/dashboard';
 import { databaseRouter } from './routes/database';
@@ -150,7 +152,9 @@ app.use('/api/integrations', requireAuthOrCurator, integrationRouter);
 
 // Admin operations (migrations, backfills, purges)
 app.use('/api/admin', requireAuth, adminRouter);
-app.use('/api/accounts', requireAuthOrInternalKey, accountsRouter);
+app.use('/api/accounts', requireAuthOrCurator, accountsRouter);
+app.use('/api/registry-watch', requireAuthOrCurator, registryWatchRouter);
+app.use('/api/source-feeds', requireAuthOrCurator, sourceFeedConfigRouter);
 
 // ── Static serving & SPA fallback ───────────────────────────
 

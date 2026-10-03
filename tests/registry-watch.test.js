@@ -54,14 +54,28 @@ test('diff lane: unchanged page extracts nothing; changed page extracts once and
   await runRegistryWatch({}, { dryRun: true }, deps);  // unchanged
   assert.equal(extracted, 0);
   page = '<p>Grants: OPEN — apply now</p>';
-  const r = await runRegistryWatch({}, { dryRun: true }, deps); // changed -> extract, but dryRun blocks intake
+  const r = await runRegistryWatch({}, { dryRun: true }, deps); // changed -> extract, store hash, no intake
   assert.equal(extracted, 1);
   assert.equal(r.diff.changed, 1);
   assert.equal(r.mode, 'dry-run');
   assert.equal(r.submitted, 0);
-  assert.equal(r.deferred_surfaces, 1);
-  assert.equal(st.map.get('ws:hash:2'), baselineHash, 'dry-run must leave changed content available for a live intake');
-  assert.equal(st.map.has('ws:seen:2'), false);
+  assert.equal(r.pending, 1);
+  assert.equal(r.deferred_surfaces, 0);
+  assert.equal(st.map.get('ws:hash:2'), require('../src/services/registry-watchers').contentHash(page));
+  assert.deepEqual(st.map.get('ws:seen:2').urls, ['https://g.org/apply']);
+  const pending = st.map.get('registry-watch:pending');
+  assert.equal(pending.itemCount, 1);
+  assert.equal(pending.items[0].title, 'Fresh grant');
+  assert.equal(pending.items[0].url, 'https://g.org/apply');
+  assert.equal(pending.items[0].org, 'Org2');
+  assert.equal(pending.items[0].wire, 'oss');
+  assert.equal(pending.items[0].reason, 'Page content changed');
+  const again = await runRegistryWatch({}, { dryRun: true }, deps);
+  assert.equal(extracted, 1, 'a stored hash must not pay for the same page again');
+  assert.equal(again.pending, 0);
+  assert.equal(st.map.get('registry-watch:pending').items.length, 1, 'a quiet run keeps the last review copy');
+  assert.equal(st.map.get('registry-watch:pending').lastRunItemCount, 0);
+  assert.notEqual(st.map.get('ws:hash:2'), baselineHash);
 });
 
 test('budget check failure fails closed and leaves the changed hash retryable', async () => {
@@ -255,4 +269,107 @@ test('diff lane: consecutive Firecrawl calls are paced to respect the free-tier 
   await runRegistryWatch({}, { dryRun: true }, deps);
   assert.equal(paced.length, 1, 'second Firecrawl call is paced; the first is not');
   assert.ok(paced[0] >= 5000, 'pace must be a real rate-limit gap, not a token delay');
+});
+
+test('first live run marks the backlog seen and submits only items published after go-live', async () => {
+  const st = state();
+  st.map.set('ws:seen:11', { urls: ['https://old.example/seed'], lastRun: '2020-01-01T00:00:00.000Z' });
+  const items = [
+    { name: 'Old call', description: 'd', url: 'https://old.example/old', amount: null, deadline: null, publishedAt: '2020-06-01T00:00:00.000Z' },
+    { name: 'New call', description: 'd', url: 'https://old.example/new', amount: null, deadline: null, publishedAt: '2099-01-01T00:00:00.000Z' },
+    { name: 'Undated', description: 'd', url: 'https://old.example/undated', amount: null, deadline: null, publishedAt: null },
+  ];
+  const submitted = [];
+  const deps = {
+    getDue: async (_p, types) => (types.includes('rss') ? [S(11, 'rss', 'https://old.example/feed')] : []),
+    fetchSourceImpl: async () => items,
+    intake: async (_p, subs) => { submitted.push(subs); return { newUnique: 1 }; },
+    mark: async () => {},
+    getState: st.get, setState: st.set,
+  };
+  const r = await runRegistryWatch({}, { dryRun: false }, deps);
+  assert.equal(r.submitted, 1);
+  assert.equal(submitted[0][0].results[0].sourceUrl, 'https://old.example/new');
+  const seen = st.map.get('ws:seen:11').urls;
+  assert.ok(seen.includes('https://old.example/old'));
+  assert.ok(seen.includes('https://old.example/undated'));
+  assert.ok(st.map.get('registry-watch:live-since'));
+
+  items.push({ name: 'Later', description: 'd', url: 'https://old.example/later', amount: null, deadline: null, publishedAt: null });
+  const r2 = await runRegistryWatch({}, { dryRun: false }, deps);
+  assert.equal(r2.submitted, 1);
+  assert.equal(submitted[1][0].results[0].sourceUrl, 'https://old.example/later');
+});
+
+test('REGISTRY_WATCH_SUBMIT_BACKLOG submits the pre-go-live items on the first live run', async () => {
+  process.env.REGISTRY_WATCH_SUBMIT_BACKLOG = 'true';
+  try {
+    const st = state();
+    st.map.set('ws:seen:12', { urls: ['https://back.example/seed'], lastRun: '2020-01-01T00:00:00.000Z' });
+    const items = [
+      { name: 'Old', description: 'd', url: 'https://back.example/old', amount: null, deadline: null, publishedAt: '2020-01-02T00:00:00.000Z' },
+      { name: 'Undated', description: 'd', url: 'https://back.example/undated', amount: null, deadline: null, publishedAt: null },
+    ];
+    const submitted = [];
+    const deps = {
+      getDue: async (_p, types) => (types.includes('rss') ? [S(12, 'rss', 'https://back.example/feed')] : []),
+      fetchSourceImpl: async () => items,
+      intake: async (_p, subs) => { submitted.push(subs); return { newUnique: 2 }; },
+      mark: async () => {},
+      getState: st.get, setState: st.set,
+    };
+    const r = await runRegistryWatch({}, { dryRun: false }, deps);
+    assert.equal(r.submitted, 2);
+    assert.equal(submitted[0][0].results.length, 2);
+  } finally {
+    delete process.env.REGISTRY_WATCH_SUBMIT_BACKLOG;
+  }
+});
+
+test('fil.org skips the plain fetch and scrapes once', async () => {
+  const st = state();
+  let plain = 0;
+  let scraped = 0;
+  const deps = {
+    getDue: async (_p, types) => (types.includes('grants_page') ? [S(13, 'grants_page', 'https://fil.org/grants')] : []),
+    fetchPage: async () => { plain++; throw new Error('must not plain-fetch fil.org'); },
+    scrapePage: async () => { scraped++; return '<p>Filecoin grants</p>'; },
+    pace: async () => {},
+    fetchSourceImpl: async () => [],
+    intake: async () => { throw new Error('must not intake'); },
+    mark: async () => {},
+    getState: st.get, setState: st.set,
+  };
+  const r = await runRegistryWatch({}, { dryRun: true }, deps);
+  assert.equal(plain, 0);
+  assert.equal(scraped, 1);
+  assert.equal(r.diff.errors, 0);
+  assert.ok(st.map.get('ws:hash:13'));
+  await runRegistryWatch({}, { dryRun: true }, deps);
+  assert.equal(plain, 0);
+  assert.equal(scraped, 2, 'the daily hash check still reads the page once');
+  assert.equal(r.diff.extracted || 0, 0, 'an unchanged page is not extracted');
+});
+
+test('HTTP 429 backs off once and does not retry the plain fetch', async () => {
+  const st = state();
+  let plain = 0;
+  let scraped = 0;
+  const paced = [];
+  const deps = {
+    getDue: async (_p, types) => (types.includes('grants_page') ? [S(14, 'grants_page', 'https://example.org/grants')] : []),
+    fetchPage: async () => { plain++; throw new Error('HTTP 429'); },
+    scrapePage: async () => { scraped++; return '<p>grants</p>'; },
+    pace: async (ms) => { paced.push(ms); },
+    fetchSourceImpl: async () => [],
+    intake: async () => {},
+    mark: async () => {},
+    getState: st.get, setState: st.set,
+  };
+  const r = await runRegistryWatch({}, { dryRun: true }, deps);
+  assert.equal(plain, 1);
+  assert.equal(scraped, 1);
+  assert.equal(r.diff.errors, 0);
+  assert.equal(paced.length, 1);
+  assert.ok(paced[0] >= 5000);
 });

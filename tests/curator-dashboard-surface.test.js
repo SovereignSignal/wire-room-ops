@@ -116,6 +116,27 @@ test('every dashboard UI route accepts a Hedwig curator token', () => {
       assert.match(jobs, /router\.get\('\/job\/:jobId\/progress',\s*requireAuthOrInternalKey/);
     }
   }
+
+  for (const [method, path, scope] of [
+    ['GET', '/api/accounts/monitored', 'read_queue'],
+    ['POST', '/api/accounts/monitored', 'decide'],
+    ['PATCH', '/api/accounts/monitored/handle', 'decide'],
+    ['DELETE', '/api/accounts/monitored/handle', 'decide'],
+    ['GET', '/api/registry-watch/pending', 'read_queue'],
+    ['GET', '/api/registry-watch/surfaces', 'read_queue'],
+    ['PUT', '/api/registry-watch/surfaces/1', 'decide'],
+    ['GET', '/api/source-feeds', 'read_queue'],
+    ['POST', '/api/source-feeds', 'decide'],
+    ['PUT', '/api/source-feeds/octant', 'decide'],
+    ['DELETE', '/api/source-feeds/octant', 'decide'],
+  ]) {
+    assert.equal(requiredCuratorScope(method, path), scope, `${method} ${path}`);
+    assert.ok(HEDWIG.has(scope), `${method} ${path}`);
+    assert.equal(sessionOnlyMount(server, path), null, `${method} ${path}`);
+  }
+  assert.match(server, /app\.use\('\/api\/accounts', requireAuthOrCurator/);
+  assert.match(server, /app\.use\('\/api\/registry-watch', requireAuthOrCurator/);
+  assert.match(server, /app\.use\('\/api\/source-feeds', requireAuthOrCurator/);
 });
 
 test('secret fields are redacted and risky writes require confirm', () => {

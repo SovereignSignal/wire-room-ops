@@ -344,10 +344,22 @@ Watchtower Discovery Layer (Phase 0) -- all default-safe:
 Watchtower Registry Watch (Phase 1) -- all default-safe:
 
 - `REGISTRY_WATCH_ENABLED` -- enable the registry watch lane (default: false). Before enabling in a new environment, seed baselines first: `railway run -- npx ts-node src/scripts/registry-watch-dryrun.ts` writes hashes/watermarks (state-writing, intake-free) so the first real pass doesn't treat an org's whole existing backlog as "fresh"
-- `REGISTRY_WATCH_DRY_RUN` -- log without submitting to intake (default: true). Note: dry-run withholds intake only; a changed page still triggers paid extraction (first-pass baselines never extract).
+- `REGISTRY_WATCH_DRY_RUN` -- log without submitting to intake (default: true). A dry run still stores the page hash and the seen-URL watermark, and writes the would-submit list for `GET /api/registry-watch/pending`. The first check of a page does not extract. A later change extracts once, then the stored hash skips that page until it changes again.
+- `REGISTRY_WATCH_LIVE_SINCE` -- optional ISO timestamp. The first live run uses it as the cutoff and then remembers it. Unset: that run stamps the current time.
+- `REGISTRY_WATCH_SUBMIT_BACKLOG` -- set to `true` only for the first live run if that run should submit the backlog anyway. It does not replay URLs a dry run already marked seen. Leave it unset after that run.
 - `REGISTRY_WATCH_RSS_CAP` -- max rss-lane surfaces polled per run (default: 60)
 - `REGISTRY_WATCH_DIFF_CAP` -- max html_diff-lane surfaces polled per run (default: 80). Tier-1/2 diff-eligible surfaces can exceed one run's cap; the scheduler calls this job from both the `source-feeds` and `daily-digest` branches, so a normal day's two runs still clear the backlog. Dead/blocked source URLs increment a surface's `failure_streak` instead of erroring out the run -- that's the registry's health signal working as designed, not a bug to chase
 - `REGISTRY_WATCH_EXTRACT_CAP` -- max LLM extractions per run, budget-gated (default: 10)
+
+### How to take registry watch live
+
+The lane can stay in dry run while the pending list is reviewed. `REGISTRY_WATCH_DRY_RUN` stays `true` until the steps below. Nothing here turns on the account monitor or sends a Telegram post.
+
+1. Deploy this code with `REGISTRY_WATCH_ENABLED=true` and `REGISTRY_WATCH_DRY_RUN=true` (the default). The migration retargets Gitcoin to `https://gitcoin.co/campaigns` and Octant to `https://octant.substack.com/feed`. `fil.org` is scraped once per check and is not plain-fetched.
+2. After the next dry run, read `GET /api/registry-watch/pending` with a curator token (`read_queue`). Each item has `title`, `url`, `org`, `wire`, and `reason`. Edit a bad page with `PUT /api/registry-watch/surfaces/:id`.
+3. Dry runs mark those URLs seen and store page hashes. The same unchanged page is not extracted again. The pending list is a review copy. A later quiet run keeps it (`lastRunItemCount` 0). It is not a queue that drains on go-live.
+4. To go live, set `REGISTRY_WATCH_DRY_RUN=false` and redeploy. The first live run records `registry-watch:live-since` (or `REGISTRY_WATCH_LIVE_SINCE` if you set that first) and submits only items published at or after that time. Undated items on that first run are marked seen and not submitted.
+5. To submit that backlog instead, set `REGISTRY_WATCH_SUBMIT_BACKLOG=true` before the first live run, then remove it. URLs a dry run already stored under `ws:seen:*` stay seen either way.
 
 The budget meter covers Grok discovery purposes and X reads; Firecrawl and Perplexity spend are outside it.
 

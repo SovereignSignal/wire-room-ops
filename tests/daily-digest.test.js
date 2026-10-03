@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   getFreshFinds, advanceDigestWatermark, pruneEmailedIds, DIGEST_WATERMARK_KEY, formatStaleSourceAnomalies,
+  formatEmptyScrapeAnomalies, nextEmptyScrapeStreak, EMPTY_SCRAPE_DAYS,
 } = require('../src/jobs/daily-digest');
 
 function fakePool() {
@@ -412,6 +413,19 @@ test('a source that has never succeeded is reported without a date', () => {
   const out = formatStaleSourceAnomalies([{ key: 'new-src', error: 'HTTP 404', lastOk: null }], NOW);
   assert.equal(out.length, 1);
   assert.match(out[0], /^Source feeds: new-src failing \(never succeeded\)$/);
+});
+
+test('a scraper at 0 items warns only after three days', () => {
+  assert.equal(nextEmptyScrapeStreak('scrape', 0, 0), 1);
+  assert.equal(nextEmptyScrapeStreak('scrape', 0, 2), 3);
+  assert.equal(nextEmptyScrapeStreak('scrape', 4, 3), 0);
+  assert.equal(nextEmptyScrapeStreak('rss', 0, 2), 0);
+  assert.equal(EMPTY_SCRAPE_DAYS, 3);
+  assert.deepEqual(formatEmptyScrapeAnomalies([{ key: 'longview', emptyStreak: 2 }]), []);
+  assert.deepEqual(
+    formatEmptyScrapeAnomalies([{ key: 'longview', emptyStreak: 3 }]),
+    ['Source feeds: longview fetched 0 items 3 days running'],
+  );
 });
 
 test('multiple stale sources each get their own line, worst first', () => {

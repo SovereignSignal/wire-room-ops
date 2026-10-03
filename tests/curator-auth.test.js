@@ -77,7 +77,6 @@ test('read_queue reaches GET /queue and a read-only key cannot submit', async ()
 test('a full curator key is still forbidden on producer and admin doors', async () => {
   for (const [method, path] of [
     ['POST', '/api/scan/telegram-batch'],
-    ['POST', '/api/accounts'],
     ['POST', '/api/scan/submit-batch'],
     ['POST', '/api/admin/purge-source'],
   ]) {
@@ -132,6 +131,30 @@ test('an intake key reaches POST /telegram-batch and nothing else', async () => 
     const res = await call(method, path, { key: INTAKE, body: {} });
     assert.equal(res.status, 403, `${method} ${path} returned ${res.status}`);
   }
+});
+
+test('curator token reaches accounts, registry watch, and source feeds', async () => {
+  const readerPost = await call('POST', '/api/accounts/monitored', { key: READ, body: { handle: 'octantapp' } });
+  assert.equal(readerPost.status, 403);
+
+  const intakeRead = await call('GET', '/api/registry-watch/pending', { key: INTAKE });
+  assert.equal(intakeRead.status, 403);
+
+  const remove = await call('DELETE', '/api/accounts/monitored/octantapp', { key: FULL });
+  assert.equal(remove.status, 400);
+  assert.equal((await remove.json()).error, 'confirm_required');
+
+  const surface = await call('PUT', '/api/registry-watch/surfaces/797', { key: FULL, body: {} });
+  assert.equal(surface.status, 400);
+  assert.match((await surface.json()).error, /editable fields/);
+
+  const feed = await call('POST', '/api/source-feeds', { key: FULL, body: {} });
+  assert.equal(feed.status, 400);
+  assert.match((await feed.json()).error, /https endpoint/);
+
+  const dropFeed = await call('DELETE', '/api/source-feeds/longview', { key: FULL });
+  assert.equal(dropFeed.status, 400);
+  assert.equal((await dropFeed.json()).error, 'confirm_required');
 });
 
 test('curator decide without reason is 400 and does not require the database', async () => {

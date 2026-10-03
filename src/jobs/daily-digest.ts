@@ -315,6 +315,20 @@ export interface StaleSourceInput {
 /** A source stale >= this many days is a production issue, not a blip. */
 const STALE_SOURCE_DAYS = 2;
 
+/** A scraper that returns an empty list this many runs in a row is treated as broken. */
+export const EMPTY_SCRAPE_DAYS = 3;
+
+export function nextEmptyScrapeStreak(method: string, fetched: number, previous?: number): number {
+  if (method !== 'scrape' || fetched > 0) return 0;
+  return (previous || 0) + 1;
+}
+
+export function formatEmptyScrapeAnomalies(perSource: Array<{ key: string; emptyStreak?: number }>): string[] {
+  return perSource
+    .filter(source => (source.emptyStreak || 0) >= EMPTY_SCRAPE_DAYS)
+    .map(source => `Source feeds: ${source.key} fetched 0 items ${source.emptyStreak} days running`);
+}
+
 /**
  * Name each failing source and how long it has been failing.
  *
