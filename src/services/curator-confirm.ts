@@ -1,11 +1,18 @@
 /**
  * Extra gate for curator-token writes that delete data, replace a secret,
- * or send a message. The dashboard session is unchanged. Other agent keys
- * still cannot send.
+ * or send a message. Post-text edits and withhold releases also require
+ * confirm from every caller, including a dashboard session. Other agent
+ * keys still cannot send.
  */
 
 import { Request } from 'express';
 import { isSecretKey } from './curator-audit';
+
+/** Post-text edits and withhold releases. Confirm is required. These are not sends. */
+const EDITORIAL_CONFIRM_PATHS: { method: string; pattern: RegExp }[] = [
+  { method: 'PATCH', pattern: /^\/api\/scan\/entries\/\d+\/content$/ },
+  { method: 'POST', pattern: /^\/api\/scan\/entries\/\d+\/unwithhold$/ },
+];
 
 const SEND_PATHS = [
   /^\/api\/distribution\/run\/[^/]+$/,
@@ -31,6 +38,12 @@ function requestPath(req: Request): string {
 export function isSendPath(method: string, path: string): boolean {
   if (method.toUpperCase() === 'GET' || method.toUpperCase() === 'HEAD') return false;
   return SEND_PATHS.some(pattern => pattern.test(path));
+}
+
+export function isEditorialConfirmPath(method: string, path: string): boolean {
+  const verb = method.toUpperCase();
+  const clean = (path || '').split('?')[0].replace(/\/+$/, '') || '/';
+  return EDITORIAL_CONFIRM_PATHS.some(item => item.method === verb && item.pattern.test(clean));
 }
 
 function isMasked(value: unknown): boolean {
@@ -60,6 +73,7 @@ export function curatorConfirmRequired(method: string, path: string, body: unkno
   if (verb === 'GET' || verb === 'HEAD' || verb === 'OPTIONS') return false;
   if (verb === 'DELETE') return true;
   if (isSendPath(verb, path)) return true;
+  if (isEditorialConfirmPath(verb, path)) return true;
   return bodyHasNewSecret(body);
 }
 
@@ -82,12 +96,24 @@ export function enforceCuratorGuards(req: Request): CuratorGuard | null {
   if (!agent.curator && isSendPath(method, path)) {
     return { status: 403, body: { error: 'Agents cannot publish. This action sends or retries a delivery.' } };
   }
-  if (agent.curator && curatorConfirmRequired(method, path, req.body) && !curatorConfirmed(req)) {
+  if (!agent.curator && isEditorialConfirmPath(method, path) && !curatorConfirmed(req)) {
     return {
       status: 400,
       body: {
         error: 'confirm_required',
-        message: 'This action deletes data, changes a secret, or sends a message. Retry with confirm=true.',
+        message: 'Editing post text or releasing a withhold needs confirm=true. This action does not send.',
+      },
+    };
+  }
+  if (agent.curator && curatorConfirmRequired(method, path, req.body) && !curatorConfirmed(req)) {
+    const editorial = isEditorialConfirmPath(method, path);
+    return {
+      status: 400,
+      body: {
+        error: 'confirm_required',
+        message: editorial
+          ? 'Editing post text or releasing a withhold needs confirm=true. This action does not send.'
+          : 'This action deletes data, changes a secret, or sends a message. Retry with confirm=true.',
       },
     };
   }

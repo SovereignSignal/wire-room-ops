@@ -183,6 +183,32 @@ test('curator approve without a quote is 400', async () => {
 });
 
 // Withhold rides the decide doors, so it needs the same evidence and never reaches an intake key.
+test('content edit and unwithhold need confirm and the decide scope', async () => {
+  for (const [method, path] of [
+    ['PATCH', '/api/scan/entries/18106/content'],
+    ['POST', '/api/scan/entries/18106/unwithhold'],
+  ]) {
+    const missing = await call(method, path, {
+      key: FULL,
+      body: { reason: 'Fix the post.', sources: ['https://example.org/program'] },
+    });
+    assert.equal(missing.status, 400, `${method} ${path} returned ${missing.status}`);
+    assert.equal((await missing.json()).error, 'confirm_required');
+
+    const reader = await call(method, path, {
+      key: READ,
+      body: { confirm: true, reason: 'Fix the post.', sources: ['https://example.org/program'] },
+    });
+    assert.equal(reader.status, 403, `${method} ${path} reader returned ${reader.status}`);
+
+    const intake = await call(method, path, {
+      key: INTAKE,
+      body: { confirm: true, reason: 'Fix the post.', sources: ['https://example.org/program'] },
+    });
+    assert.equal(intake.status, 403, `${method} ${path} intake returned ${intake.status}`);
+  }
+});
+
 test('curator withhold needs a reason on the single and bulk action doors', async () => {
   for (const [path, body] of [
     ['/api/scan/entries/1/action', { action: 'withhold' }],

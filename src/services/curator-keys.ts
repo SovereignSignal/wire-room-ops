@@ -169,7 +169,9 @@ export function requiredCuratorScope(method: string, rawPath: string): CuratorSc
     (m === 'POST' && path === '/api/scan/entries/bulk-action') ||
     (m === 'POST' && /^\/api\/scan\/entries\/\d+\/link-duplicate$/.test(path)) ||
     (m === 'PATCH' && /^\/api\/scan\/entries\/\d+\/wire$/.test(path)) ||
-    (m === 'PATCH' && /^\/api\/scan\/entries\/\d+\/source$/.test(path))
+    (m === 'PATCH' && /^\/api\/scan\/entries\/\d+\/source$/.test(path)) ||
+    (m === 'PATCH' && /^\/api\/scan\/entries\/\d+\/content$/.test(path)) ||
+    (m === 'POST' && /^\/api\/scan\/entries\/\d+\/unwithhold$/.test(path))
   ) return 'decide';
 
   if (
