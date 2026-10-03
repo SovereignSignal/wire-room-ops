@@ -94,12 +94,23 @@ export interface ScrapedIntakeData {
   scrapedContent: string | null;
 }
 
-async function scrapeForIntake(url: string): Promise<ScrapedIntakeData | null> {
+/** Telegram link pastes get one Firecrawl attempt. Other intake scrapes keep the shared default. */
+export function intakeFirecrawlOptions(scanSource: string): { job: 'telegram-link' | 'fallback'; attempts?: number } {
+  if (scanSource === 'telegram' || scanSource === 'telegram-intake') {
+    return { job: 'telegram-link', attempts: 1 };
+  }
+  return { job: 'fallback' };
+}
+
+async function scrapeForIntake(url: string, scrapeOpts: { job: string; attempts?: number }): Promise<ScrapedIntakeData | null> {
   if (/^https?:\/\/(x\.com|twitter\.com)\//i.test(url)) return null;
   if (!isScrapableUrl(url)) return null;
   try {
-    const result = await scrapeUrl(url);
-    if (!result.success || !result.content) return null;
+    const result = await scrapeUrl(url, { job: scrapeOpts.job, attempts: scrapeOpts.attempts });
+    if (!result.success || !result.content) {
+      console.log(`[IntakeCore] Scrape failed for ${url} (${result.error || 'empty'}); keeping the item without scraped text`);
+      return null;
+    }
     const truncated = truncateContent(result.content, 4000);
     let name = result.title || null;
     if (!name) {
@@ -683,7 +694,7 @@ export async function processIntakeMessage(
   let effectiveDescription = text;
   if (bareUrlMessage && allUrls.length > 0) {
     console.log(`[IntakeCore] Bare URL detected, scraping ${allUrls[0]}...`);
-    let scraped = await scrapeForIntake(allUrls[0]);
+    let scraped = await scrapeForIntake(allUrls[0], intakeFirecrawlOptions(scanSource));
     if (scanSource === 'x-monitor' && scraped && !scraped.name) {
       const fetchedTitle = await fetchUrlTitle(allUrls[0]);
       if (fetchedTitle) scraped = { ...scraped, name: fetchedTitle };

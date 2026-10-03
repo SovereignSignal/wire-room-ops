@@ -59,9 +59,10 @@ function toRaw(it: FeedItem): RawScanResult {
 /**
  * One retry, transient failures only.
  *
- * Deliberately not `withRetry()`: that helper retries every error, and the
- * `scrape` method calls Firecrawl (paid). Retrying a permanently-broken scrape
- * source would double that cost every day, forever.
+ * Deliberately not `withRetry()`: that helper retries every error, and a scrape
+ * source may fall back to Firecrawl (paid). The scrape loader already tries a
+ * plain fetch and, on failure, one Firecrawl call. A second loop here would
+ * double that cost every day.
  *
  * fetchImpl/sleepImpl are injectable seams so this is unit-testable without network.
  */

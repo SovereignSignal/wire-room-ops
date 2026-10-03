@@ -1,6 +1,6 @@
 import { DatabaseEntry, ProcessedEntry, ProcessingStats } from '../types';
 import { summarizeWithGrok, isXcomUrl } from './grok';
-import { summarizeWithOllama } from './ollama';
+import { completeNewsletterSummary, prepareNewsletterPrompt } from './ollama';
 import { findSummaryLeak } from './summary-guard';
 import { sleep } from '../utils/async';
 
@@ -33,7 +33,12 @@ export async function withRetry<T>(
   throw lastError;
 }
 
-export async function processEntry(entry: DatabaseEntry, models?: ModelOptions): Promise<ProcessedEntry> {
+export interface ProcessHooks {
+  prepareNonX?: typeof prepareNewsletterPrompt;
+  completeNonX?: typeof completeNewsletterSummary;
+}
+
+export async function processEntry(entry: DatabaseEntry, models?: ModelOptions, hooks?: ProcessHooks): Promise<ProcessedEntry> {
   const isXcom = isXcomUrl(entry.url);
 
   // X.com URLs use Grok (native tweet access). Every other URL uses the Ollama
@@ -53,14 +58,14 @@ export async function processEntry(entry: DatabaseEntry, models?: ModelOptions):
   };
 
   try {
-    const summary = await withRetry(async () => {
-      const text = isXcom
-        ? await summarizeWithGrok(entry, models?.grokModel)
-        : await summarizeWithOllama(entry, models?.ollamaModel);
-      const leak = findSummaryLeak(text);
-      if (leak) throw new Error(`${method} returned reasoning instead of a summary (${leak.rule})`);
-      return text;
-    });
+    const summary = isXcom
+      ? await withRetry(async () => {
+          const text = await summarizeWithGrok(entry, models?.grokModel);
+          const leak = findSummaryLeak(text);
+          if (leak) throw new Error(`${method} returned reasoning instead of a summary (${leak.rule})`);
+          return text;
+        })
+      : await summarizeNonXOnce(entry, models, hooks);
 
     baseResult.enrichedSummary = summary;
   } catch (error) {
@@ -70,6 +75,26 @@ export async function processEntry(entry: DatabaseEntry, models?: ModelOptions):
   }
 
   return baseResult;
+}
+
+/**
+ * Scrape once, then retry only the model call. A failed Firecrawl attempt
+ * stays failed: the prepared prompt already marks the summary missing.
+ */
+async function summarizeNonXOnce(
+  entry: DatabaseEntry,
+  models: ModelOptions | undefined,
+  hooks: ProcessHooks | undefined,
+): Promise<string> {
+  const prepare = hooks?.prepareNonX ?? prepareNewsletterPrompt;
+  const complete = hooks?.completeNonX ?? completeNewsletterSummary;
+  const prepared = await prepare(entry);
+  return withRetry(async () => {
+    const text = await complete(entry, prepared, models?.ollamaModel);
+    const leak = findSummaryLeak(text);
+    if (leak) throw new Error(`ollama returned reasoning instead of a summary (${leak.rule})`);
+    return text;
+  });
 }
 
 export interface ProcessOptions {

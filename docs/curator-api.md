@@ -459,6 +459,10 @@ curl -s -X POST "$WIREOPS_SERVER_URL/api/source-feeds" \
 
 ### Providers, usage, database, grants, integrations
 
+`GET /api/usage/summary` and `GET /api/usage/recent` use this bearer (`read_queue`). Summary rows are grouped by provider, purpose, and `job`, so Firecrawl spend splits without a second endpoint. `created_at` on each recent row is an ISO 8601 string.
+
+Optional `?job=` filters both routes. Firecrawl jobs are `registry-watch`, `source-feed:<feedKey>`, `summary`, `telegram-link`, and `fallback` (any other caller). An unknown `job` is `400 { "error": "Invalid job filter" }`. `GET /api/usage/summary?provider=firecrawl&days=30` is the per-job split. Older rows have `job: null`.
+
 ```bash
 curl -s -H "Authorization: Bearer $HEDWIG_TOKEN" \
   "$WIREOPS_SERVER_URL/api/providers"
@@ -480,7 +484,10 @@ curl -s -H "Authorization: Bearer $HEDWIG_TOKEN" \
   "$WIREOPS_SERVER_URL/api/usage/summary?days=7"
 
 curl -s -H "Authorization: Bearer $HEDWIG_TOKEN" \
-  "$WIREOPS_SERVER_URL/api/usage/recent?limit=20"
+  "$WIREOPS_SERVER_URL/api/usage/summary?days=30&provider=firecrawl"
+
+curl -s -H "Authorization: Bearer $HEDWIG_TOKEN" \
+  "$WIREOPS_SERVER_URL/api/usage/recent?limit=20&provider=firecrawl&job=summary"
 
 curl -s -H "Authorization: Bearer $HEDWIG_TOKEN" \
   "$WIREOPS_SERVER_URL/api/usage/coverage"

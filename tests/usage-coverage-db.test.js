@@ -17,7 +17,7 @@ test.before(async () => {
   await pool.query(`CREATE TABLE watch_surfaces(status text,surface_type text,tier text,last_checked_at timestamptz);
     CREATE TABLE monitored_accounts(enabled boolean,last_checked_at timestamptz);
     CREATE TABLE schedules(schedule_type text,enabled boolean);
-    CREATE TABLE api_usage_log(provider text,model text,purpose text,tokens_in int,tokens_out int,estimated_cost_usd numeric,success boolean,created_at timestamptz DEFAULT now());
+    CREATE TABLE api_usage_log(provider text,model text,purpose text,job text,tokens_in int,tokens_out int,estimated_cost_usd numeric,success boolean,created_at timestamptz DEFAULT now());
     INSERT INTO watch_surfaces VALUES ('active','rss','Tier 1',null),('active','application','Tier 2',now()),('active','social','Tier 1',null),('archived','rss','Tier 1',now());
     INSERT INTO monitored_accounts VALUES (true,null),(true,now()),(false,null);
     INSERT INTO schedules VALUES ('account-monitor',false),('daily-digest',true),('source-feeds',false);

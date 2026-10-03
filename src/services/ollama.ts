@@ -15,7 +15,7 @@ import { DatabaseEntry } from '../types';
 import { logApiUsage } from './api-usage';
 import { getCachedProvider } from './api-provider';
 import { findSummaryLeak } from './summary-guard';
-import { isScrapableUrl, scrapeUrl, truncateContent } from './scraper';
+import { isScrapableUrl, scrapeUrl, truncateContent, type ScrapeResult } from './scraper';
 import {
   finalAnswerText,
   SUMMARY_TOKEN_BUDGET,
@@ -183,12 +183,42 @@ REQUIREMENTS:
 Write ONLY the finished newsletter entry. No thinking, no explanation of the instructions.`;
 }
 
-async function buildNewsletterPrompt(entry: DatabaseEntry): Promise<{ prompt: string; scraped: boolean }> {
-  if (isScrapableUrl(entry.url)) {
-    console.log(`    Scraping ${entry.url}...`);
-    const scrapeResult = await scrapeUrl(entry.url);
-    if (scrapeResult.success) {
-      console.log(`    Scraped ${scrapeResult.content.length} chars`);
+export const UNSCRAPED_SUMMARY_NOTE = '*[Summary based on cached data - original source could not be accessed]*';
+
+export interface PreparedNewsletterPrompt {
+  prompt: string;
+  /** False when Firecrawl did not return page text. The summary is marked missing. */
+  scraped: boolean;
+}
+
+export function applySummaryScrapeNote(text: string, scraped: boolean): string {
+  if (scraped) return text;
+  return `${text}\n\n${UNSCRAPED_SUMMARY_NOTE}`;
+}
+
+/**
+ * One Firecrawl attempt. A failure keeps the entry and marks the summary as
+ * coming from cached text — it does not retry the scrape.
+ */
+export async function prepareNewsletterPrompt(
+  entry: DatabaseEntry,
+  scrape: (url: string, opts: { attempts?: number; job?: string }) => Promise<ScrapeResult> = scrapeUrl,
+): Promise<PreparedNewsletterPrompt> {
+  const fallback = {
+    scraped: false,
+    prompt: buildFallbackPrompt()
+      .replace('{url}', entry.url)
+      .replace('{existing_summary}', entry.quick_summary),
+  };
+  if (!isScrapableUrl(entry.url)) {
+    console.log(`    Skipping scrape for non-scrapable URL: ${entry.url}`);
+    return fallback;
+  }
+  console.log(`    Scraping ${entry.url}...`);
+  try {
+    const scrapeResult = await scrape(entry.url, { attempts: 1, job: 'summary' });
+    if (scrapeResult.success && scrapeResult.content.trim()) {
+      console.log(`    Scraped ${scrapeResult.content.length} chars via firecrawl`);
       return {
         scraped: true,
         prompt: buildScrapedContentPrompt()
@@ -197,41 +227,48 @@ async function buildNewsletterPrompt(entry: DatabaseEntry): Promise<{ prompt: st
           .replace('{existing_summary}', entry.quick_summary),
       };
     }
-    console.log(`    Scrape failed: ${scrapeResult.error}`);
-  } else {
-    console.log(`    Skipping scrape for non-scrapable URL: ${entry.url}`);
+    console.log(`    Scrape failed (${scrapeResult.error || 'empty'}); summary missing, using cached text`);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.log(`    Scrape failed (${message}); summary missing, using cached text`);
   }
-  return {
-    scraped: false,
-    prompt: buildFallbackPrompt()
-      .replace('{url}', entry.url)
-      .replace('{existing_summary}', entry.quick_summary),
-  };
+  return fallback;
 }
 
 /**
- * Newsletter summary for one entry. Tries the env primary model, then the
- * fallback model. An explicit `model` replaces that chain.
+ * Model chain only. The scrape already happened in prepareNewsletterPrompt,
+ * so a model failure must not fetch the page again.
  */
-export async function summarizeWithOllama(entry: DatabaseEntry, model?: string): Promise<string> {
-  const { prompt, scraped } = await buildNewsletterPrompt(entry);
+export async function completeNewsletterSummary(
+  entry: DatabaseEntry,
+  prepared: PreparedNewsletterPrompt,
+  model?: string,
+): Promise<string> {
   const models = summaryModelChain(model);
   if (models.length === 0) throw new Error('Ollama summary model is not configured');
 
   let lastError: Error | null = null;
   for (const useModel of models) {
     try {
-      const text = await chat(useModel, prompt, 'summarize', entry.wire);
+      const text = await chat(useModel, prepared.prompt, 'summarize', entry.wire);
       const leak = findSummaryLeak(text);
       if (leak) throw new Error(`Ollama API returned reasoning instead of a summary (${leak.rule})`);
-      if (scraped) return text;
-      return `${text}\n\n*[Summary based on cached data - original source could not be accessed]*`;
+      return applySummaryScrapeNote(text, prepared.scraped);
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
       console.warn(`[Ollama] summarize ${useModel} failed:`, lastError.message);
     }
   }
   throw lastError ?? new Error('Ollama summary failed');
+}
+
+/**
+ * Newsletter summary for one entry. One Firecrawl attempt, then the env
+ * primary model, then the fallback model. An explicit `model` replaces that chain.
+ */
+export async function summarizeWithOllama(entry: DatabaseEntry, model?: string): Promise<string> {
+  const prepared = await prepareNewsletterPrompt(entry);
+  return completeNewsletterSummary(entry, prepared, model);
 }
 
 /**

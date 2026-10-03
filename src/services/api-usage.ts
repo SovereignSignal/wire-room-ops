@@ -13,6 +13,8 @@ export interface UsageLogParams {
   provider: string;
   model?: string;
   purpose: string;
+  /** Caller label. Firecrawl uses registry-watch, source-feed:<key>, summary, telegram-link, or fallback. */
+  job?: string | null;
   tokens_in?: number;
   tokens_out?: number;
   wire?: string;
@@ -26,12 +28,49 @@ export interface UsageSummaryRow {
   models: (string | null)[];
   provider: string;
   purpose: string;
+  job: string | null;
   calls: number;
   tokens_in: number;
   tokens_out: number;
   estimated_cost_usd: number;
   errors: number;
   unpriced_calls: number;
+}
+
+const USAGE_JOB_QUERY = /^(registry-watch|summary|telegram-link|fallback|source-feed:[a-z0-9][a-z0-9_-]{0,63})$/;
+
+/** `?job=` on the usage routes. Empty means no filter. Unknown values are rejected. */
+export function parseUsageJobQuery(value: unknown): { ok: true; job?: string } | { ok: false } {
+  if (value == null || value === '') return { ok: true };
+  if (typeof value !== 'string' || !USAGE_JOB_QUERY.test(value)) return { ok: false };
+  return { ok: true, job: value };
+}
+
+/**
+ * node-pg returns timestamptz as a Date. JSON.stringify calls toJSON() on a
+ * real Date, but a Date that has lost its prototype — or a serializer that
+ * copies own properties — becomes {}. Always emit an ISO 8601 string.
+ */
+export function usageTimestamp(value: unknown): string | null {
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value.toISOString();
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+  }
+  if (value && typeof value === 'object') {
+    const toIso = (value as { toISOString?: unknown }).toISOString;
+    if (typeof toIso === 'function') {
+      try {
+        const out = toIso.call(value);
+        if (typeof out === 'string' && !Number.isNaN(Date.parse(out))) return new Date(out).toISOString();
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
 }
 
 export interface UsageTimelineRow {
@@ -113,9 +152,11 @@ export async function ensureApiUsageTables(): Promise<void> {
       duration_ms INTEGER NOT NULL,
       success BOOLEAN NOT NULL DEFAULT true,
       error_message TEXT,
+      job TEXT,
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
+  await ensureApiUsageJobColumn();
 
   // Indexes (IF NOT EXISTS isn't supported for CREATE INDEX on all PG versions, use DO block)
   await pool.query(`
@@ -168,6 +209,19 @@ export async function ensureApiUsageTables(): Promise<void> {
   await refreshPricingCache();
 }
 
+/** Nullable caller label so Firecrawl spend can be split without rewriting old rows. */
+export async function ensureApiUsageJobColumn(): Promise<void> {
+  const pool = getPool();
+  await pool.query(`ALTER TABLE api_usage_log ADD COLUMN IF NOT EXISTS job TEXT`);
+  await pool.query(`
+    DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_api_usage_provider_job') THEN
+        CREATE INDEX idx_api_usage_provider_job ON api_usage_log (provider, job);
+      END IF;
+    END $$;
+  `);
+}
+
 // ---- Fire-and-forget logging ----
 
 const pendingUsageWrites = new Set<Promise<void>>();
@@ -182,8 +236,8 @@ export function logApiUsage(params: UsageLogParams): void {
 
   const pool = getPool();
   const write = pool.query(
-    `INSERT INTO api_usage_log (provider, model, purpose, tokens_in, tokens_out, estimated_cost_usd, wire, entry_id, duration_ms, success, error_message)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+    `INSERT INTO api_usage_log (provider, model, purpose, tokens_in, tokens_out, estimated_cost_usd, wire, entry_id, duration_ms, success, error_message, job)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
     [
       params.provider,
       params.model || null,
@@ -196,6 +250,7 @@ export function logApiUsage(params: UsageLogParams): void {
       params.duration_ms,
       params.success ?? true,
       params.error_message || null,
+      params.job || null,
     ]
   ).then(() => undefined).catch(err => {
     usageWriteFailure = new Error('Usage accounting unavailable; discovery paused until restart');
@@ -212,6 +267,7 @@ export async function getUsageSummary(opts: {
   provider?: string;
   purpose?: string;
   wire?: string;
+  job?: string;
 }): Promise<UsageSummaryRow[]> {
   const pool = getPool();
   const days = Math.min(Math.max(opts.days, 1), 90);
@@ -230,11 +286,16 @@ export async function getUsageSummary(opts: {
     params.push(opts.wire);
     conditions.push(`wire = $${params.length}`);
   }
+  if (opts.job) {
+    params.push(opts.job);
+    conditions.push(`job = $${params.length}`);
+  }
 
   const { rows } = await pool.query(
     `SELECT
        provider,
        purpose,
+       job,
        array_agg(DISTINCT model) AS models,
        COUNT(*)::int AS calls,
        COALESCE(SUM(tokens_in), 0)::int AS tokens_in,
@@ -244,13 +305,14 @@ export async function getUsageSummary(opts: {
        COUNT(*) FILTER (WHERE NOT success)::int AS errors
      FROM api_usage_log
      WHERE ${conditions.join(' AND ')}
-     GROUP BY provider, purpose
+     GROUP BY provider, purpose, job
      ORDER BY estimated_cost_usd DESC`,
     params
   );
 
   return rows.map(r => ({
     ...r,
+    job: r.job ?? null,
     estimated_cost_usd: parseFloat(r.estimated_cost_usd) || 0,
   }));
 }
@@ -297,6 +359,7 @@ export async function getUsageTimeline(opts: {
 export async function getRecentUsage(opts: {
   limit?: number;
   provider?: string;
+  job?: string;
 }): Promise<any[]> {
   const pool = getPool();
   const limit = Math.min(opts.limit || 50, 200);
@@ -307,12 +370,16 @@ export async function getRecentUsage(opts: {
     params.push(opts.provider);
     conditions.push(`provider = $${params.length}`);
   }
+  if (opts.job) {
+    params.push(opts.job);
+    conditions.push(`job = $${params.length}`);
+  }
 
   params.push(limit);
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
   const { rows } = await pool.query(
-    `SELECT id, provider, model, purpose, tokens_in, tokens_out, estimated_cost_usd, wire, entry_id, duration_ms, success, error_message, created_at
+    `SELECT id, provider, model, purpose, job, tokens_in, tokens_out, estimated_cost_usd, wire, entry_id, duration_ms, success, error_message, created_at
      FROM api_usage_log
      ${where}
      ORDER BY created_at DESC
@@ -322,6 +389,8 @@ export async function getRecentUsage(opts: {
 
   return rows.map(r => ({
     ...r,
+    job: r.job ?? null,
+    created_at: usageTimestamp(r.created_at),
     estimated_cost_usd: r.estimated_cost_usd != null ? parseFloat(r.estimated_cost_usd) : null,
   }));
 }

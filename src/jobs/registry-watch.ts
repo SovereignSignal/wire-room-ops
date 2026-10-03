@@ -6,9 +6,10 @@
  *    source-feeds, smaller cap: this table is O(100s) of small surfaces, not
  *    a handful of high-volume aggregators).
  *  - html_diff: surfaces with only an HTML page. Hash the page's text content
- *    and only pay for an LLM extraction (Firecrawl + grok, via the same
- *    fetchSource('scrape') path) when the hash actually changes AND it isn't
- *    the surface's first-ever check (a baseline has nothing to diff against).
+ *    and only pay for an LLM extraction (via the same fetchSource('scrape')
+ *    path, which tries a plain fetch before Firecrawl) when the hash actually
+ *    changes AND it isn't the surface's first-ever check (a baseline has
+ *    nothing to diff against).
  *
  * Selection, seed-registry overlap, content hashing, and checked-state
  * writeback live in services/registry-watchers.ts; this job wires those into
@@ -220,14 +221,14 @@ const SCRAPE_FALLBACK_CAP = 15;
 const FIRECRAWL_PACE_MS = 6000;
 
 async function defaultScrapePage(url: string): Promise<string> {
-  const r = await scrapeUrl(url);
+  const r = await scrapeUrl(url, { job: 'registry-watch' });
   if (!r.success || !r.content) throw new Error(r.error || 'scrape returned empty content');
   return r.content;
 }
 
 /** One Firecrawl attempt. Used for fil.org and any plain fetch that already returned 429. */
 async function defaultScrapeOnce(url: string): Promise<string> {
-  const r = await scrapeUrl(url, { attempts: 1 });
+  const r = await scrapeUrl(url, { attempts: 1, job: 'registry-watch' });
   if (!r.success || !r.content) throw new Error(r.error || 'scrape returned empty content');
   return r.content;
 }
