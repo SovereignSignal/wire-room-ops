@@ -161,7 +161,7 @@ async function applyStatusChange(
       id: Number(row.id),
       wire: row.wire,
       wires: Array.isArray(row.wires) ? row.wires : [],
-    })), pace.intervalMinutes);
+    })), pace);
     await client.query('COMMIT');
     return result;
   } catch (error) {
