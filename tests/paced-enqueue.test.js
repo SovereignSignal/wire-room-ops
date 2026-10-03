@@ -593,3 +593,72 @@ test('an internal key approve stays quiet even when publish and pacing are set',
   assert.equal(stored.queue, null);
   assert.equal(stored.entry.actioned_by, 'agent:stringer');
 });
+
+function send(method, urlPath, body, { key = TOKEN, idempotency } = {}) {
+  return fetch(`${base}${urlPath}`, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(key ? { Authorization: `Bearer ${key}` } : {}),
+      ...(idempotency ? { 'Idempotency-Key': idempotency } : {}),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+
+test('a curator can read, regenerate, and override a queued post without sending', async () => {
+  const { isSendPath, curatorConfirmRequired } = require('../src/services/curator-confirm');
+  assert.equal(isSendPath('POST', '/api/distribution/queue/5/regenerate'), false);
+  assert.equal(isSendPath('PATCH', '/api/distribution/queue/5/post'), false);
+  assert.equal(curatorConfirmRequired('POST', '/api/distribution/queue/5/regenerate', {}), true);
+  assert.equal(curatorConfirmRequired('GET', '/api/distribution/queue/5', {}), false);
+  const row = await approvedQuiet('Review the draft');
+  await pool.query(
+    `INSERT INTO publication_queue (entry_id, status, available_at, post_text, model)
+     VALUES ($1, 'queued', NOW() + INTERVAL '1 hour', 'stored draft', 'mock-model')`,
+    [row.id],
+  );
+
+  const read = await send('GET', `/api/distribution/queue/${row.id}`);
+  assert.equal(read.status, 200);
+  assert.equal((await read.json()).postText, 'stored draft');
+
+  const reader = await send('POST', `/api/distribution/queue/${row.id}/regenerate`, {
+    confirm: true, reason: 'Refresh it.', sources: ['https://example.org/program'],
+  }, { key: READ, idempotency: idem() });
+  assert.equal(reader.status, 403);
+
+  const missing = await send('POST', `/api/distribution/queue/${row.id}/regenerate`, {
+    reason: 'Refresh it.', sources: ['https://example.org/program'],
+  }, { idempotency: idem() });
+  assert.equal(missing.status, 400);
+  assert.equal((await missing.json()).error, 'confirm_required');
+
+  const key = idem();
+  const body = { confirm: true, reason: 'Refresh it from the page.', sources: ['https://example.org/program'] };
+  const regenerated = await send('POST', `/api/distribution/queue/${row.id}/regenerate`, body, { idempotency: key });
+  assert.equal(regenerated.status, 200, await regenerated.clone().text());
+  const regenBody = await regenerated.json();
+  assert.equal(regenBody.postText, 'fixture');
+  assert.equal(regenBody.sent, false);
+  const replay = await send('POST', `/api/distribution/queue/${row.id}/regenerate`, body, { idempotency: key });
+  assert.equal(replay.headers.get('idempotent-replayed'), 'true');
+
+  const html = '<b>Review the draft — $50K</b>\n\n<a href="https://example.org/program">Source</a>';
+  const replaced = await send('PATCH', `/api/distribution/queue/${row.id}/post`, {
+    confirm: true,
+    reason: 'Operator rewrote the headline.',
+    sources: ['https://example.org/program'],
+    postText: html,
+  }, { idempotency: idem() });
+  assert.equal(replaced.status, 200, await replaced.clone().text());
+  assert.equal((await replaced.json()).postText, html);
+  const stored = (await pool.query('SELECT post_text, model, status FROM publication_queue WHERE entry_id = $1', [row.id])).rows[0];
+  assert.equal(stored.post_text, html);
+  assert.equal(stored.model, 'manual');
+  assert.equal(stored.status, 'queued');
+  const audit = (await pool.query('SELECT metadata FROM scan_entries WHERE id = $1', [row.id])).rows[0].metadata;
+  assert.equal(audit.post_edits.length, 2);
+  assert.equal(audit.post_edits[1].kind, 'override');
+  assert.equal(sends, 0);
+});

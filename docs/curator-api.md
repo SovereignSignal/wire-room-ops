@@ -130,11 +130,10 @@ Post text is refused, and nothing is written, when the publication is already ou
 - any `distribution_logs` row for the entry with `channel = 'telegram'` and `status = 'success'`
 - a pending Telegram log, or `publication_queue.status` of `running`
 - `publication_queue.status` of `review`
-- `publication_queue.status` of `queued` (booked, not yet sending)
 
-`queued` here is the publication row, not `scan_entries.status`. An entry still in the review queue, or approved with no publication row, or withheld, or `done` without a Telegram success, can have its post text edited. A booked row's text is not edited in place and this route does not drop the booking. Withhold it, edit, release the hold, then `POST /api/distribution/queue/:id/enqueue`. The response is `409` with `error`. Nothing on this route calls a sender, books a slot, or inserts a queue row.
+`queued` here is the publication row, not `scan_entries.status`. An entry still in the review queue, or approved with no publication row, or withheld, or `done` without a Telegram success, can have its post text edited. A booked (`queued`) row can be edited too. Changing `name`, `description`, `amount`, `deadline`, or `source_url` regenerates `publication_queue.post_text` from those fields and leaves the slot where it is. `enriched_summary` is not a post input, so editing only that field does not rewrite the frozen post. The response is `409` with `error` for a sent, running, or in-review publication. Nothing on this route calls a sender, books a slot, or inserts a queue row.
 
-`classification`, `tags`, and `metadata.amount` may be edited in those same states. `generatePosts` and the newsletter builder read `name`, `description`, the `amount` column, `deadline`, and `source_url`. They do not read classification, tags, or `metadata.amount`. A sent Telegram message is already delivered, and a booked slot still generates its post from the text fields, so correcting the record does not change that post. A patch that includes any text field together with these record fields is still refused in full and writes nothing.
+`classification`, `tags`, and `metadata.amount` may be edited in those same states. The post is built from `name`, `description`, the `amount` column, `deadline`, and `source_url`. It does not read classification, tags, or `metadata.amount`. A sent Telegram message is already delivered. A patch that includes any text field together with these record fields is still refused in full when the publication is sent, running, or in review, and writes nothing.
 
 - `classification` is the entry type: `GRANT` (a funding opportunity), `NEWS`, `EXPIRED`, `NOISE`, or `UNCHECKED`. Case is ignored and the stored value is uppercase. `type` is not a field.
 - `tags` replaces the entity labels. At most 5, each 1–60 characters after trimming, no duplicates. `[]` clears them.
@@ -260,6 +259,40 @@ Guards, all `409`, and none of them write:
 
 A withheld row stays withheld. A prior Telegram success stays unsent from this route so a second wire cannot repost it. The internal key is `403`. A curator token without `confirm` is `400 { "error": "confirm_required" }`. A `read_queue` key is `403`.
 
+Booking a row freezes the Telegram text on it (`post_text`, `generated_at`, `model`, `check_result`, `verifier_result`). Approve-with-publish and the other enqueue paths do the same. The worker sends that text. It generates a draft only when `post_text` is missing.
+
+`GET /api/distribution/outgoing` includes `postText` on each queued item. `GET /api/distribution/queue/:id` returns one row: `{ entryId, status, availableAt, postText, generatedAt, model, checkResult, verifierResult }`. `read_queue` can call it. `404` when the entry has no publication row.
+
+`POST /api/distribution/queue/:id/regenerate` writes a new draft from the current `name`, `description`, `amount`, `deadline`, and `source_url`. `PATCH /api/distribution/queue/:id/post` stores `postText` as given. Both need `confirm: true`, `reason`, and `sources` for every caller. A curator key also sends `Idempotency-Key`. Neither call sends or moves the slot. Both append `metadata.post_edits` (`at`, `actor`, `reason`, `sources`, `kind`, `from`, `to`) and set `actioned_by` and `action_reason`. The response includes the stored text, `enqueued: false`, and `sent: false`.
+
+`409` when the publication is not `queued`. Override `postText` must be Telegram HTML of at most 4096 characters; invalid HTML is `400` and writes nothing. A `read_queue` key is `403`.
+
+```bash
+curl -s -H "Authorization: Bearer $HEDWIG_TOKEN" \
+  "$WIREOPS_SERVER_URL/api/distribution/queue/18510"
+
+curl -s -X POST "$WIREOPS_SERVER_URL/api/distribution/queue/18510/regenerate" \
+  -H "Authorization: Bearer $HEDWIG_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: hedwig-post-18510" \
+  -d '{
+    "confirm": true,
+    "reason": "The amount on the page was corrected.",
+    "sources": ["https://example.org/program"]
+  }'
+
+curl -s -X PATCH "$WIREOPS_SERVER_URL/api/distribution/queue/18510/post" \
+  -H "Authorization: Bearer $HEDWIG_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: hedwig-post-override-18510" \
+  -d '{
+    "confirm": true,
+    "reason": "Operator rewrote the headline from the funder page.",
+    "sources": ["https://example.org/program"],
+    "postText": "<b>Example Foundation is accepting applications — $50K</b>\n\n🔗 <a href=\"https://example.org/program\">Source</a>"
+  }'
+```
+
 ### Distribution
 
 | Method | Path | Confirm |
@@ -268,7 +301,10 @@ A withheld row stays withheld. A prior Telegram success stays unsent from this r
 | PUT | `/api/distribution/pace` | |
 | GET | `/api/distribution/outgoing` | |
 | GET | `/api/distribution/review` | |
+| GET | `/api/distribution/queue/:id` | |
 | POST | `/api/distribution/queue/:id/enqueue` | yes |
+| POST | `/api/distribution/queue/:id/regenerate` | yes |
+| PATCH | `/api/distribution/queue/:id/post` | yes |
 | POST | `/api/distribution/queue/:id/retry` | yes |
 | POST | `/api/distribution/review/:id/resolve` | yes |
 | GET | `/api/distribution/config` | |

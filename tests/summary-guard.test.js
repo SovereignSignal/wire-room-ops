@@ -134,11 +134,13 @@ test('generateValidatedSummary rejects leaked output and falls back to the next 
     models: { primary: 'deepseek-v4.1-flash', fallback: 'glm-5.3-flash' },
     ollama: async (_opts, model) => {
       calls.push(model);
-      return model === 'glm-5.3-flash' ? CLEAN[0] : LEAKED[0];
+      return model === 'glm-5.3-flash'
+        ? 'Datapoint AI Data Grant doubles its data grant to $2M.'
+        : LEAKED[0];
     },
   });
   assert.deepEqual(calls, ['deepseek-v4.1-flash', 'glm-5.3-flash']);
-  assert.equal(result.summary, CLEAN[0]);
+  assert.equal(result.summary, 'Datapoint AI Data Grant doubles its data grant to $2M.');
   assert.equal(result.provider, 'ollama');
   assert.equal(result.model, 'glm-5.3-flash');
   assert.equal(result.attempts[0].outcome, 'rejected');

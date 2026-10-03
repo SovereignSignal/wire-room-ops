@@ -4,8 +4,9 @@
  * publication. Neither path books a slot or sends.
  *
  * Post text (name, description, enriched_summary, the amount column, deadline,
- * source_url) is refused when a publication is already sent, sending, in
- * review, or booked (`queued`). Classification, tags, and metadata.amount are
+ * source_url) is refused when a publication is already sent, sending, or in
+ * review. A booked (`queued`) row can still be edited; its frozen post is
+ * regenerated and the slot stays. Classification, tags, and metadata.amount are
  * not inputs to post generation, so a patch that sets only those can land
  * after a send. Releasing a withhold deletes that queue row and leaves the
  * entry approved. Enqueue stays POST /api/distribution/queue/:id/enqueue.
@@ -18,6 +19,7 @@ import { lockDuplicateGraph } from './duplicate-chain';
 import { normalizeUrl, parseAmount, parseDeadline } from './intake';
 import { findSummaryLeak } from './summary-guard';
 import { blockedSourceDomain, classifySourceLink } from './source-filter';
+import { refreshQueuedPost } from './publication-post';
 
 const POST_TEXT_FIELDS = ['name', 'description', 'enriched_summary', 'amount', 'deadline', 'source_url'] as const;
 const RECORD_FIELDS = ['classification', 'tags', 'metadata.amount'] as const;
@@ -301,17 +303,18 @@ function dateOnly(value: Date | null): string | null {
   return value.toISOString().slice(0, 10);
 }
 
+const POST_INPUT_FIELDS = ['name', 'description', 'amount', 'deadline', 'source_url'] as const;
+
 /**
- * Booked, in-flight, and already-sent publications stay as they are.
+ * Sent, in-flight, and in-review publications stay as they are.
+ * A queued publication can still be edited: the frozen post is regenerated
+ * from the new text and the slot is left where it is.
  * `queued` here is publication_queue.status, not the review-queue status.
  */
 function publicationBlock(queueStatus: string | null, telegramSent: boolean, telegramPending: boolean): string | null {
   if (telegramSent) return 'Entry already has a successful Telegram send';
   if (telegramPending || queueStatus === 'running') return 'Entry is sending now';
   if (queueStatus === 'review') return 'Entry is awaiting delivery review';
-  if (queueStatus === 'queued') {
-    return 'Entry is queued for send. Withhold it before editing, then enqueue again. This route does not re-book or send.';
-  }
   return null;
 }
 
@@ -462,7 +465,8 @@ function storedMetadataAmount(metadata: Record<string, unknown>): string | null 
 
 /**
  * Rewrite post text and record fields. Does not book a publication slot and does not send.
- * A sent, running, in-review, or queued publication blocks post text and writes nothing.
+ * A sent, running, or in-review publication blocks post text and writes nothing.
+ * A queued publication accepts the edit and regenerates its frozen post.
  * Classification, tags, and metadata.amount are not post inputs, so they still apply.
  */
 export async function updateEntryContent(
@@ -638,6 +642,15 @@ export async function updateEntryContent(
       params,
     );
     if (updated.rowCount !== 1) throw new ContentEditError('Entry changed before write', 409);
+    if (current.queue_status === 'queued' && POST_INPUT_FIELDS.some(field => changed.includes(field))) {
+      await refreshQueuedPost(client, current.id, {
+        name: text.name || current.name,
+        description: text.description || '',
+        amount: text.amount,
+        deadline: text.deadline,
+        sourceUrl: text.source_url || current.source_url,
+      }, current.wire);
+    }
     await client.query('COMMIT');
     const row = updated.rows[0];
     return {

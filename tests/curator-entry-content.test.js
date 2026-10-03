@@ -46,6 +46,7 @@ let db;
 let pool;
 let sends = 0;
 let generated = 0;
+let expectGenerated = 0;
 let idemSeq = 0;
 
 function idem() {
@@ -96,6 +97,7 @@ test.after(async () => {
 test.beforeEach(async (t) => {
   sends = 0;
   generated = 0;
+  expectGenerated = 0;
   await pool.query('TRUNCATE scan_entries, seen_urls, distribution_channels, distribution_config, distribution_logs, publication_queue, app_state RESTART IDENTITY CASCADE');
   t.mock.method(require('../src/services/post-generator'), 'generatePosts', async () => {
     generated += 1;
@@ -110,7 +112,7 @@ test.beforeEach(async (t) => {
 test.afterEach(async () => {
   for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve));
   assert.equal(sends, 0, 'this file must not send to Telegram');
-  assert.equal(generated, 0, 'this file must not generate a post');
+  assert.equal(generated, expectGenerated, 'post generation only happens when a queued edit asks for it');
 });
 
 function request(method, urlPath, body, { key = TOKEN, idempotency = idem() } = {}) {
@@ -389,7 +391,7 @@ test('a review-queue entry with no publication row can be edited and stays queue
   assert.equal(after.entry.actioned_by, 'agent:hedwig');
 });
 
-test('sent, running, review, and booked publications are refused', async () => {
+test('sent, running, and in-review publications are refused, and a booked row regenerates its post', async () => {
   const sent = await entry('Already sent');
   await pool.query(
     `INSERT INTO distribution_logs (entry_id, channel, wire, status, external_id)
@@ -402,7 +404,7 @@ test('sent, running, review, and booked publications are refused', async () => {
   assert.equal((await snap(sent.id)).entry.name, 'Already sent');
   assert.equal((await snap(sent.id)).entry.actioned_by, 'agent:earlier');
 
-  for (const status of ['running', 'review', 'queued']) {
+  for (const status of ['running', 'review']) {
     const row = await entry(status);
     await queue(row.id, status);
     const res = await patchContent(row.id, evidence({ name: 'Should not stick' }));
@@ -410,13 +412,27 @@ test('sent, running, review, and booked publications are refused', async () => {
     const error = (await res.json()).error;
     if (status === 'running') assert.match(error, /sending now/);
     if (status === 'review') assert.match(error, /delivery review/);
-    if (status === 'queued') assert.match(error, /queued for send/);
     const after = await snap(row.id);
     assert.equal(after.entry.name, status);
     assert.equal(after.queue.status, status);
     assert.equal(after.entry.metadata.content_edits, undefined);
     assert.equal(after.logs, 0);
   }
+
+  const booked = await entry('queued');
+  await queue(booked.id, 'queued');
+  expectGenerated = 1;
+  const bookedRes = await patchContent(booked.id, evidence({ name: 'Queued Grants Program' }));
+  assert.equal(bookedRes.status, 200, await bookedRes.clone().text());
+  const bookedBody = await bookedRes.json();
+  assert.equal(bookedBody.sent, false);
+  assert.equal(bookedBody.enqueued, false);
+  const bookedAfter = await snap(booked.id);
+  assert.equal(bookedAfter.entry.name, 'Queued Grants Program');
+  assert.equal(bookedAfter.queue.status, 'queued');
+  assert.equal(bookedAfter.logs, 0);
+  const frozen = (await pool.query('SELECT post_text FROM publication_queue WHERE entry_id = $1', [booked.id])).rows[0];
+  assert.equal(frozen.post_text, 'fixture');
 
   const pending = await entry('Pending send');
   await pool.query(

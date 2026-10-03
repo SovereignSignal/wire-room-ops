@@ -13,6 +13,7 @@ import { insertApprovedSummary } from '../db';
 import { validateForApproval } from './approval-guard';
 import { drainPublicationQueue } from './publication-queue';
 import { bookPacedQueue, getDistributionPace } from './distribution-pace';
+import { composePostsForIds, storedPostColumns } from './publication-post';
 import { autoSummarizeOnApprove } from './auto-summarize';
 import { isLeakedSummary } from './summary-guard';
 import { extractOrgFromName, upsertOrgProfile, linkEntryToOrg, findSimilarOrg } from './org-extractor';
@@ -132,15 +133,27 @@ async function applyStatusChange(
   const eligible = eligibleStatusesForAction(action);
   const params = [newStatus, distributable, opts.actor || null, opts.reason || null, entryIds, eligible ? [...eligible] : null];
   const pace = action === 'approve' && distributable ? await getDistributionPace() : null;
+  const posts = action === 'approve' && distributable ? await composePostsForIds(entryIds) : new Map();
+  const stored = storedPostColumns(entryIds, posts);
   if (!pace?.enabled) {
     return pool.query(
       `WITH changed AS (${STATUS_CHANGE_SQL}),
-       queued AS (INSERT INTO publication_queue (entry_id)
-         SELECT id FROM changed WHERE $1 = 'approved' AND $2
+       queued AS (INSERT INTO publication_queue (
+         entry_id, post_text, generated_at, model, check_result, verifier_result)
+         SELECT c.id, p.post_text, p.generated_at, p.model, p.check_result::jsonb, p.verifier_result::jsonb
+         FROM changed c
+         LEFT JOIN unnest($7::int[], $8::text[], $9::timestamptz[], $10::text[], $11::text[], $12::text[])
+           AS p(id, post_text, generated_at, model, check_result, verifier_result) ON p.id = c.id
+         WHERE $1 = 'approved' AND $2
          ON CONFLICT (entry_id) DO UPDATE SET status = 'queued', attempts = 0,
-           available_at = NOW(), lease_token = NULL, updated_at = NOW())
+           available_at = NOW(), lease_token = NULL, updated_at = NOW(),
+           post_text = COALESCE(EXCLUDED.post_text, publication_queue.post_text),
+           generated_at = COALESCE(EXCLUDED.generated_at, publication_queue.generated_at),
+           model = COALESCE(EXCLUDED.model, publication_queue.model),
+           check_result = COALESCE(EXCLUDED.check_result, publication_queue.check_result),
+           verifier_result = COALESCE(EXCLUDED.verifier_result, publication_queue.verifier_result))
        SELECT * FROM changed`,
-      params,
+      [...params, entryIds, stored.postText, stored.generatedAt, stored.model, stored.checkResult, stored.verifierResult],
     );
   }
 
@@ -161,7 +174,7 @@ async function applyStatusChange(
       id: Number(row.id),
       wire: row.wire,
       wires: Array.isArray(row.wires) ? row.wires : [],
-    })), pace);
+    })), pace, posts);
     await client.query('COMMIT');
     return result;
   } catch (error) {

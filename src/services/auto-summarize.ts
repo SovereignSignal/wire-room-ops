@@ -9,10 +9,12 @@
  * uses generateValidatedSummary, so it follows the same chain.
  */
 
+import { getBrand } from '../config/brand';
 import { config } from '../config';
 import { getPool } from '../db';
 import { getCachedProvider } from './api-provider';
 import { ollamaAutoSummarize } from './ollama';
+import { checkFaithfulness } from './post-faithfulness';
 import { findSummaryLeak } from './summary-guard';
 
 export function cleanText(s: string): string {
@@ -30,6 +32,46 @@ interface SummarizeOpts {
   deadline: string | null;
   sourceUrl: string | null;
   wire?: string;
+  prompt?: string;
+}
+
+export function summaryFactText(opts: Pick<SummarizeOpts, 'name' | 'description' | 'amount' | 'deadline' | 'sourceUrl'>): string {
+  return [opts.name, opts.description, opts.amount, opts.deadline, opts.sourceUrl]
+    .filter((part): part is string => typeof part === 'string' && part.trim() !== '')
+    .join('\n');
+}
+
+/**
+ * Enriched-summary instructions. Same faithfulness rules as the wire post:
+ * only facts in the input, the funder's own verb, no invented amounts, and no hype.
+ */
+export function buildEnrichedSummaryPrompt(opts: SummarizeOpts, violations?: string[]): string {
+  const brand = getBrand();
+  const wireLabel = opts.wire === 'ai' ? 'AI funding' : opts.wire === 'oss' ? 'open-source funding' : 'crypto grants';
+  const lines = [
+    `You are writing a concise opportunity summary for a ${wireLabel} newsletter (${brand.name}).`,
+    'Use only facts written in the fields below. If a detail is not there, leave it out.',
+    'If the fields are thin, write one sentence. Never add filler.',
+    'Keep the funder\'s own verb. Use opens, launches, new, or relaunch only when the fields say so.',
+    'For a program that is already running, use neutral wording such as "is accepting applications".',
+    'Say rolling or no deadline only when the fields state it.',
+    'Copy amounts and other numbers exactly as written. Do not add, round, or combine them.',
+    'Do not add opinion or hype (rare, one of the, notable, signals, worth exploring, major, significant, largest, groundbreaking, exciting, or similar praise).',
+    'When the fields include an apply path, a deadline, or eligibility, include it. Do not invent eligibility.',
+    '',
+    `Grant name: ${opts.name}`,
+    opts.amount ? `Amount: ${opts.amount}` : '',
+    opts.deadline ? `Deadline: ${opts.deadline}` : '',
+    opts.sourceUrl && opts.sourceUrl.startsWith('http') ? `Source: ${opts.sourceUrl}` : '',
+    `Description: ${opts.description || '(none)'}`,
+    '',
+    'Write ONLY the final summary. No thinking, no explanation, no markdown. Plain prose, no bullet points. Max 120 words.',
+  ];
+  if (violations?.length) {
+    lines.push('', 'The previous summary was rejected. Rewrite it so none of these remain:');
+    for (const violation of violations.slice(0, 12)) lines.push(`- ${violation}`);
+  }
+  return lines.filter((line, index, all) => line !== '' || all[index - 1] !== '').join('\n');
 }
 
 export type SummarySlot = 'primary' | 'fallback';
@@ -91,6 +133,7 @@ export async function generateValidatedSummary(
   input: SummaryInput,
   deps: {
     ollama?: (opts: SummarizeOpts, model: string) => Promise<string | null>;
+    check?: (input: string, output: string) => string[];
     available?: boolean;
     models?: { primary?: string; fallback?: string };
   } = {},
@@ -108,12 +151,46 @@ export async function generateValidatedSummary(
 
   const plan = planSummaryAttempts(deps.models);
   const callOllama = deps.ollama ?? ollamaAutoSummarize;
+  const check = deps.check ?? ((input: string, output: string) => checkFaithfulness(input, output, { html: false }).violations);
+  const facts = summaryFactText(opts);
   const attempts: SummaryAttempt[] = [];
+
+  const judge = (text: string | null, step: SummaryStep): { verdict: 'ok' | 'empty' | 'leak' | 'unfaithful'; summary: string | null; violations: string[] } => {
+    const trimmed = (text || '').trim();
+    if (trimmed.length < 20) {
+      attempts.push({ provider: 'ollama', model: step.model, slot: step.slot, outcome: 'empty' });
+      return { verdict: 'empty', summary: null, violations: [] };
+    }
+    const leak = findSummaryLeak(trimmed);
+    if (leak) {
+      attempts.push({
+        provider: 'ollama',
+        model: step.model,
+        slot: step.slot,
+        outcome: 'rejected',
+        detail: `${leak.rule}: ${leak.excerpt}`,
+      });
+      return { verdict: 'leak', summary: null, violations: [] };
+    }
+    const violations = check(facts, trimmed);
+    if (violations.length) {
+      attempts.push({
+        provider: 'ollama',
+        model: step.model,
+        slot: step.slot,
+        outcome: 'rejected',
+        detail: violations.slice(0, 3).join('; '),
+      });
+      return { verdict: 'unfaithful', summary: null, violations };
+    }
+    attempts.push({ provider: 'ollama', model: step.model, slot: step.slot, outcome: 'ok' });
+    return { verdict: 'ok', summary: trimmed, violations: [] };
+  };
 
   for (const step of plan) {
     let text: string | null;
     try {
-      text = await callOllama(opts, step.model);
+      text = await callOllama({ ...opts, prompt: buildEnrichedSummaryPrompt(opts) }, step.model);
     } catch (err) {
       attempts.push({
         provider: 'ollama',
@@ -125,24 +202,28 @@ export async function generateValidatedSummary(
       continue;
     }
 
-    const trimmed = (text || '').trim();
-    if (trimmed.length < 20) {
-      attempts.push({ provider: 'ollama', model: step.model, slot: step.slot, outcome: 'empty' });
-      continue;
+    const first = judge(text, step);
+    if (first.verdict === 'ok' && first.summary) {
+      return { summary: first.summary, provider: 'ollama', model: step.model, attempts };
     }
-    const leak = findSummaryLeak(trimmed);
-    if (leak) {
+    if (first.verdict !== 'unfaithful') continue;
+    let retried: string | null;
+    try {
+      retried = await callOllama({ ...opts, prompt: buildEnrichedSummaryPrompt(opts, first.violations) }, step.model);
+    } catch (err) {
       attempts.push({
         provider: 'ollama',
         model: step.model,
         slot: step.slot,
-        outcome: 'rejected',
-        detail: `${leak.rule}: ${leak.excerpt}`,
+        outcome: 'error',
+        detail: err instanceof Error ? err.message : String(err),
       });
       continue;
     }
-    attempts.push({ provider: 'ollama', model: step.model, slot: step.slot, outcome: 'ok' });
-    return { summary: trimmed, provider: 'ollama', model: step.model, attempts };
+    const second = judge(retried, step);
+    if (second.verdict === 'ok' && second.summary) {
+      return { summary: second.summary, provider: 'ollama', model: step.model, attempts };
+    }
   }
 
   return { summary: null, provider: null, model: null, attempts };

@@ -1633,6 +1633,8 @@ export async function ensureDistributionTables(): Promise<void> {
 
     const { applyPacedDistributionSchema } = await import('./paced-distribution');
     await applyPacedDistributionSchema(client);
+    const { applyPublicationPostSchema } = await import('./publication-post');
+    await applyPublicationPostSchema(client);
 
     await client.query('COMMIT');
     console.log('[DB] Distribution tables ready');

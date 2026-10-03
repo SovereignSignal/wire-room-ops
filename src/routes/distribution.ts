@@ -26,6 +26,10 @@
 
 import { Router, Request, Response } from 'express';
 import { enqueuePacedPublication, EnqueueConflictError, listPublicationReview, resolvePublication, listQueuedPublicationReview, retryQueuedPublication } from '../services/publication-queue';
+import { overrideQueuedPost, PublicationPostError, readPublicationPost, regenerateQueuedPost } from '../services/publication-post';
+import { openCuratorIdempotency } from '../services/curator-idempotency';
+import { parseCuratorEvidence } from '../services/curator-evidence';
+import { curatorConfirmed } from '../services/curator-confirm';
 import {
   getDistributionConfigs,
   upsertDistributionConfig,
@@ -163,6 +167,125 @@ router.post('/distribution/queue/:id/enqueue', async (req, res) => {
     }
     console.error('[Distribution] Enqueue failed:', error);
     res.status(500).json({ error: 'Could not enqueue publication' });
+  }
+});
+
+const POST_TEXT_CONFIRM = 'Regenerating or replacing a queued post needs confirm=true. This action does not send.';
+
+function queueEntryId(req: Request, res: Response): number | null {
+  const id = Number(req.params.id);
+  if (!Number.isSafeInteger(id) || id < 1) {
+    res.status(400).json({ error: 'Invalid entry ID' });
+    return null;
+  }
+  return id;
+}
+
+router.get('/distribution/queue/:id', async (req, res) => {
+  const id = queueEntryId(req, res);
+  if (id === null) return;
+  try {
+    const post = await readPublicationPost(id);
+    if (!post) {
+      res.status(404).json({ error: 'Entry has no publication row' });
+      return;
+    }
+    res.json(post);
+  } catch (error) {
+    console.error('[Distribution] Post read failed:', error);
+    res.status(500).json({ error: 'Could not load the queued post' });
+  }
+});
+
+async function beginQueuedPostWrite(req: Request, res: Response): Promise<
+  | { ok: false }
+  | {
+      ok: true;
+      actor: string;
+      reason: string;
+      sources: string[];
+      finish: (statusCode: number, payload: unknown) => Promise<void>;
+      abort: () => Promise<void>;
+    }
+> {
+  if (!curatorConfirmed(req)) {
+    res.status(400).json({ error: 'confirm_required', message: POST_TEXT_CONFIRM });
+    return { ok: false };
+  }
+  const parsed = parseCuratorEvidence(req.body, { requireQuote: false });
+  if (!parsed.ok) {
+    res.status(400).json({ error: parsed.error });
+    return { ok: false };
+  }
+  const idem = await openCuratorIdempotency(req, res);
+  if (idem.sent) return { ok: false };
+  const actor = (req as Request & { agentSession?: { userId?: string }; authSession?: { userId?: string } }).agentSession?.userId
+    || (req as Request & { authSession?: { userId?: string } }).authSession?.userId
+    || '';
+  if (!actor) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return { ok: false };
+  }
+  return { ok: true, actor, reason: parsed.evidence.reason, sources: parsed.evidence.sources, finish: idem.finish, abort: idem.abort };
+}
+
+router.post('/distribution/queue/:id/regenerate', async (req, res) => {
+  const id = queueEntryId(req, res);
+  if (id === null) return;
+  const gate = await beginQueuedPostWrite(req, res);
+  if (!gate.ok) return;
+  try {
+    const post = await regenerateQueuedPost(id, gate.actor, gate.reason, gate.sources);
+    noteCuratorChange(res, {
+      subject: `POST /api/distribution/queue/${id}/regenerate`,
+      old: { id },
+      next: { model: post.model, sent: false },
+    });
+    const payload = { ...post, enqueued: false, sent: false };
+    await gate.finish(200, payload);
+    res.status(200).json(payload);
+  } catch (error) {
+    if (error instanceof PublicationPostError) {
+      const payload = { error: error.message };
+      await gate.finish(error.statusCode, payload);
+      res.status(error.statusCode).json(payload);
+      return;
+    }
+    await gate.abort();
+    console.error('[Distribution] Post regenerate failed:', error);
+    res.status(500).json({ error: 'Could not regenerate the queued post' });
+  }
+});
+
+router.patch('/distribution/queue/:id/post', async (req, res) => {
+  const id = queueEntryId(req, res);
+  if (id === null) return;
+  if (typeof req.body?.postText !== 'string') {
+    res.status(400).json({ error: 'postText is required' });
+    return;
+  }
+  const gate = await beginQueuedPostWrite(req, res);
+  if (!gate.ok) return;
+  try {
+    const post = await overrideQueuedPost(id, req.body.postText, gate.actor, gate.reason, gate.sources);
+    noteCuratorChange(res, {
+      subject: `PATCH /api/distribution/queue/${id}/post`,
+      old: { id },
+      next: { model: 'manual', sent: false },
+    });
+    const payload = { ...post, enqueued: false, sent: false };
+    await gate.finish(200, payload);
+    res.status(200).json(payload);
+  } catch (error) {
+    if (error instanceof PublicationPostError) {
+      const payload = { error: error.message };
+      await gate.finish(error.statusCode, payload);
+      res.status(error.statusCode).json(payload);
+      return;
+    }
+    await gate.abort();
+    console.error('[Distribution] Post override failed:', error);
+    res.status(500).json({ error: 'Could not replace the queued post' });
   }
 });
 

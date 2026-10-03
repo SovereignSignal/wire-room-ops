@@ -63,7 +63,8 @@ test.before(async () => {
       available_at timestamptz,
       created_at timestamptz,
       error_message text,
-      attempts integer
+      attempts integer,
+      post_text text
     );
     CREATE TABLE distribution_channels (
       id uuid PRIMARY KEY,

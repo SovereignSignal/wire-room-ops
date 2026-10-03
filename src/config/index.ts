@@ -31,6 +31,10 @@ export const config = {
       // Env wins over api_providers.default_model for every summary call.
       defaultModel: process.env.OLLAMA_DEFAULT_MODEL || 'deepseek-v4.1-flash',
       fallbackModel: process.env.OLLAMA_FALLBACK_MODEL || 'glm-5.3-flash',
+      // Wire-post models. Unset follows the summary primary so a deploy
+      // without these variables keeps today's model.
+      postGenModel: process.env.POST_GEN_MODEL || process.env.OLLAMA_DEFAULT_MODEL || 'deepseek-v4.1-flash',
+      postVerifyModel: process.env.POST_VERIFY_MODEL || process.env.OLLAMA_DEFAULT_MODEL || 'deepseek-v4.1-flash',
     },
   },
 

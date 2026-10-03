@@ -294,6 +294,8 @@ Optional:
 - `ALLOWED_EMAILS`
 - `OLLAMA_DEFAULT_MODEL` -- summary primary model (default `deepseek-v4.1-flash`). Used instead of the Ollama provider row's `default_model`
 - `OLLAMA_FALLBACK_MODEL` -- summary fallback model (default `glm-5.3-flash`)
+- `POST_GEN_MODEL` -- Telegram post draft model (default: `OLLAMA_DEFAULT_MODEL`)
+- `POST_VERIFY_MODEL` -- post faithfulness verifier model (default: `OLLAMA_DEFAULT_MODEL`)
 - `TELEGRAM_BOT_TOKEN` -- bot token for channel distribution posting
 - `DB_SSL_REJECT_UNAUTHORIZED`
 - `FORUM_SCAN_ENABLED`

@@ -3,6 +3,7 @@ import type { Pool } from 'pg';
 import { getPool } from '../db';
 import { distributeEntry } from './distribution';
 import { bookPacedQueue, getDistributionPace, mergeQueueNote, paceRules, planQueue, sentTodayByTarget, UNSENT_TELEGRAM_DESTINATION_SQL, type DistributionPace } from './distribution-pace';
+import { composeStoredPost, fillMissingPublicationPost } from './publication-post';
 
 export const PACING_REQUIRED_ERROR = 'pacing must be on and not paused';
 
@@ -219,6 +220,7 @@ export async function resolvePublication(id: number, delivered: boolean, externa
       ON CONFLICT (entry_id) DO UPDATE SET status = 'queued', attempts = 0, lease_token = NULL,
       available_at = NOW(), updated_at = NOW()`, [row.entry_id]);
     await client.query('COMMIT');
+    await fillMissingPublicationPost(Number(row.entry_id));
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
@@ -343,7 +345,8 @@ export async function enqueuePacedPublication(
   try {
     await client.query('BEGIN');
     const row = (await client.query(
-      `SELECT se.id, se.status, se.wire, se.wires, q.status AS queue_status,
+      `SELECT se.id, se.status, se.wire, se.wires, se.name, se.description, se.amount, se.deadline, se.source_url,
+              q.status AS queue_status,
               ${UNSENT_TELEGRAM_DESTINATION_SQL} AS unsent,
               EXISTS (
                 SELECT 1 FROM distribution_logs dl
@@ -387,11 +390,18 @@ export async function enqueuePacedPublication(
        WHERE id = $1`,
       [entryId, actor, JSON.stringify(stamp)],
     );
+    const post = await composeStoredPost({
+      name: row.name,
+      description: row.description || '',
+      amount: row.amount,
+      deadline: row.deadline,
+      sourceUrl: row.source_url,
+    }, row.wire || 'crypto');
     await bookPacedQueue(client, [{
       id: Number(row.id),
       wire: row.wire,
       wires: Array.isArray(row.wires) ? row.wires : null,
-    }], pace);
+    }], pace, new Map([[Number(row.id), post]]));
     const booked = (await client.query(
       `SELECT status, available_at, error_message FROM publication_queue WHERE entry_id = $1`,
       [entryId],
@@ -424,4 +434,5 @@ export async function retryQueuedPublication(entryId: number): Promise<void> {
     available_at = NOW(), updated_at = NOW() WHERE entry_id = $1 AND status = 'review'
     AND NOT EXISTS (SELECT 1 FROM distribution_logs WHERE entry_id = $1 AND status = 'pending')`, [entryId]);
   if (!result.rowCount) throw new Error('Resolve uncertain deliveries before retrying');
+  await fillMissingPublicationPost(entryId);
 }
