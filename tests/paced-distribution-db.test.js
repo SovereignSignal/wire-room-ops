@@ -515,6 +515,86 @@ test('PUT /api/distribution/pace validates settings and logs who changed them', 
   }
 });
 
+test('a running row holds its chat for a full interval, and a recent send does too', async () => {
+  await channel('ai', 'ai-chat');
+  await channel('crypto', 'crypto-chat');
+  await enablePace({ quietHours: null });
+  const inflight = await entry('In flight', 'ai');
+  await pool.query(`UPDATE scan_entries SET status = 'approved', distributable = true WHERE id = $1`, [inflight.id]);
+  await pool.query(
+    `INSERT INTO publication_queue (entry_id, status, available_at, lease_expires_at)
+     VALUES ($1, 'running', NOW() - INTERVAL '1 minute', NOW() + INTERVAL '20 minutes')`,
+    [inflight.id],
+  );
+  const next = await entry('Next on ai', 'ai');
+  await pool.query(`UPDATE scan_entries SET status = 'approved', distributable = false WHERE id = $1`, [next.id]);
+  const other = await entry('Other chat', 'crypto');
+  await pool.query(`UPDATE scan_entries SET status = 'approved', distributable = false WHERE id = $1`, [other.id]);
+
+  const queue = require('../src/services/publication-queue');
+  const booked = await queue.enqueuePacedPublication(next.id, { actor: 'agent:hedwig', reason: 'after the in-flight send' });
+  const sameChat = (await pool.query(
+    `SELECT EXTRACT(EPOCH FROM (available_at - NOW())) / 60 AS minutes
+     FROM publication_queue WHERE entry_id = $1`,
+    [next.id],
+  )).rows[0];
+  assert.ok(sameChat.minutes > 19 && sameChat.minutes < 21, `expected about 20 minutes, got ${sameChat.minutes}`);
+  assert.equal(booked.entryId, next.id);
+  const stillRunning = (await pool.query(
+    `SELECT status FROM publication_queue WHERE entry_id = $1`,
+    [inflight.id],
+  )).rows[0];
+  assert.equal(stillRunning.status, 'running');
+
+  const elsewhere = await queue.enqueuePacedPublication(other.id, { actor: 'agent:hedwig', reason: 'different chat' });
+  const otherMinutes = (await pool.query(
+    `SELECT EXTRACT(EPOCH FROM (available_at - NOW())) / 60 AS minutes
+     FROM publication_queue WHERE entry_id = $1`,
+    [other.id],
+  )).rows[0].minutes;
+  assert.ok(otherMinutes < 1, `a different chat should not wait on the ai send, got ${otherMinutes}`);
+  assert.ok(Math.abs(new Date(elsewhere.availableAt).getTime() - Date.now()) < 60_000);
+
+  await channel('oss', 'oss-chat');
+  const sent = await entry('Sent five minutes ago', 'oss');
+  await pool.query(`UPDATE scan_entries SET status = 'approved' WHERE id = $1`, [sent.id]);
+  const channelId = (await pool.query(`SELECT id FROM distribution_channels WHERE target_id = 'oss-chat'`)).rows[0].id;
+  await pool.query(
+    `INSERT INTO distribution_logs (entry_id, channel, channel_id, wire, status, external_id, sent_at)
+     VALUES ($1, 'telegram', $2, 'oss', 'success', 'just-sent', NOW() - INTERVAL '5 minutes')`,
+    [sent.id, channelId],
+  );
+  const afterSend = await entry('After the recent send', 'oss');
+  await pool.query(`UPDATE scan_entries SET status = 'approved', distributable = false WHERE id = $1`, [afterSend.id]);
+  await queue.enqueuePacedPublication(afterSend.id, { actor: 'agent:hedwig', reason: 'after the receipt' });
+  const afterMinutes = (await pool.query(
+    `SELECT EXTRACT(EPOCH FROM (available_at - (NOW() - INTERVAL '5 minutes'))) / 60 AS minutes
+     FROM publication_queue WHERE entry_id = $1`,
+    [afterSend.id],
+  )).rows[0].minutes;
+  assert.ok(afterMinutes > 19 && afterMinutes < 21, `expected 20 minutes after the receipt, got ${afterMinutes}`);
+  assert.equal(sends, 0);
+});
+
+test('concurrent enqueues on one chat take different slots', async () => {
+  await channel('ai', 'ai-chat');
+  await enablePace({ quietHours: null });
+  const queue = require('../src/services/publication-queue');
+  const rows = [];
+  for (const name of ['First', 'Second']) {
+    const row = await entry(name, 'ai');
+    await pool.query(`UPDATE scan_entries SET status = 'approved', distributable = false WHERE id = $1`, [row.id]);
+    rows.push(row);
+  }
+  const booked = await Promise.all(rows.map(row => queue.enqueuePacedPublication(row.id, {
+    actor: 'agent:hedwig',
+    reason: 'concurrent',
+  })));
+  const gap = Math.abs(new Date(booked[0].availableAt).getTime() - new Date(booked[1].availableAt).getTime()) / 60000;
+  assert.ok(Math.abs(gap - 20) < 0.5, `expected 20 minutes apart, got ${gap}`);
+  assert.equal(sends, 0);
+});
+
 test('a paced approval rolls back when the queue insert fails', async () => {
   await channel('crypto', 'crypto-chat');
   await enablePace();
