@@ -4,9 +4,11 @@
  * Primary model, then the fallback model, then the local template.
  */
 
+import { config } from '../config';
 import type { GeneratedPosts } from '../types/intake';
 import { escapeHtml } from '../utils/html';
-import { ollamaComplete, summaryModelChain } from './ollama';
+import { checkFaithfulness, type FaithfulnessCheck } from './post-faithfulness';
+import { ollamaComplete } from './ollama';
 
 const WIRE_CONTEXT: Record<string, string> = {
   crypto: 'crypto/blockchain grants and funding',
@@ -169,7 +171,7 @@ function cleanEntry(entry: EntryInput): EntryInput & { bestLink: string } {
 
   return {
     name: cleanedName || entry.name,
-    description: finalDesc || 'Grant opportunity — see link for details.',
+    description: finalDesc,
     amount: cleanedAmount,
     deadline: cleanedDeadline,
     sourceUrl: entry.sourceUrl,
@@ -179,13 +181,22 @@ function cleanEntry(entry: EntryInput): EntryInput & { bestLink: string } {
 
 // --- Prompt building ---
 
-function buildPrompt(entry: ReturnType<typeof cleanEntry>, wire: string): string {
+export function buildPostPrompt(entry: ReturnType<typeof cleanEntry>, wire: string): string {
   const context = WIRE_CONTEXT[wire] || `${wire} grants and funding`;
+  const thin = !entry.description;
   const parts = [
-    `Generate social media posts for a ${context} opportunity.`,
+    `Write social posts for a ${context} item.`,
+    'Use only facts that appear in the fields below. If a detail is not written there, leave it out.',
+    'If the fields are thin, write one sentence or a headline only. Never add filler.',
+    'Keep the funder\'s own verb. Use opens, launches, new, or relaunch only when the fields say so.',
+    'For a program that is already running, use neutral wording such as "is accepting applications".',
+    'Say rolling or no deadline only when the fields state it.',
+    'Do not add opinion or hype (rare, one of the, notable, signals, worth exploring, major, significant, largest, groundbreaking, exciting, or similar praise).',
+    'Copy amounts and other numbers exactly as written. Do not add, round, or combine them.',
+    'When the fields include an apply path or a deadline, include it.',
     '',
     `Name: ${entry.name}`,
-    `Description: ${entry.description}`,
+    `Description: ${entry.description || '(none)'}`,
   ];
   if (entry.amount) parts.push(`Amount: ${entry.amount}`);
   if (entry.deadline) parts.push(`Deadline: ${entry.deadline}`);
@@ -195,30 +206,21 @@ function buildPrompt(entry: ReturnType<typeof cleanEntry>, wire: string): string
   parts.push('{"tweet":"...","telegram":"..."}');
   parts.push('');
   parts.push('Rules for tweet:');
-  parts.push('- Max 270 characters (leave room for link)');
+  parts.push('- Max 270 characters (leave room for the link)');
   parts.push('- Include the link at the end');
-  parts.push('- Punchy, informative, no hashtags');
-  parts.push('- Lead with what makes this interesting (amount, org, deadline)');
+  parts.push('- No hashtags, no @mentions');
+  parts.push('- Only facts from the fields above');
   parts.push('');
-  parts.push('Rules for telegram (use Telegram HTML formatting):');
-  parts.push('- EXACT structure (3 lines only):');
-  parts.push('  Line 1: <b>One-line headline</b> — weave org, what it is, and key figure (amount/deadline) into one natural sentence');
-  parts.push('  Line 2: blank');
-  parts.push('  Line 3: 1-2 sentence summary adding context beyond the headline (scope, eligibility, why it matters)');
-  parts.push('  Line 4: blank');
-  parts.push('  Line 5: 🔗 <a href="URL">Source</a>');
-  parts.push('');
-  parts.push('- The headline should read like a news wire alert, e.g.:');
-  parts.push('  <b>Linux Foundation 2025 Open Source ROI Report: $3.9B invested yields $23.2B in benefits</b>');
-  parts.push('  <b>Sovereign Tech Agency opens Fellowship for open source maintainers — 3-12 month contracts</b>');
-  parts.push('  <b>OpenAI launches €500K grant for Youth AI Safety Research in EMEA</b>');
-  parts.push('');
-  parts.push('- Do NOT add a separate amount/deadline line with emojis — fold key numbers INTO the headline');
-  parts.push('- Do NOT repeat the headline in the summary — add NEW information only');
-  parts.push('- Do NOT prefix summary with "LATEST:" or similar labels');
-  parts.push('- Use <b> for the headline only. Use <a href="...">Source</a> for the link');
-  parts.push('- NO hashtags, NO @mentions, NO markdown, NO code blocks, NO extra emoji lines');
-
+  parts.push('Rules for telegram (Telegram HTML):');
+  parts.push('- Line 1: <b>headline using only the fields above</b>');
+  parts.push('- Then a blank line');
+  parts.push(thin
+    ? '- Do not add a summary sentence. The headline and the link are enough.'
+    : '- Then one sentence, only when the description contains facts that are not already in the headline. Otherwise omit it.');
+  parts.push('- Then a blank line');
+  parts.push('- Then 🔗 <a href="URL">Source</a> using the link above');
+  parts.push('- Use <b> for the headline only, and <a href="..."> for the link');
+  parts.push('- No hashtags, no @mentions, no markdown, no code blocks');
   return parts.join('\n');
 }
 
@@ -250,7 +252,7 @@ function buildFallbackPosts(entry: ReturnType<typeof cleanEntry>): GeneratedPost
   if (entry.deadline) headlineBits.push(entry.amount ? `, deadline ${escapeHtml(entry.deadline)}` : `— deadline ${escapeHtml(entry.deadline)}`);
   tgParts.push(`<b>${headlineBits.join(' ')}</b>`);
   tgParts.push('');
-  if (shortDesc !== entry.name) {
+  if (shortDesc && shortDesc !== entry.name) {
     tgParts.push(escapeHtml(shortDesc));
     tgParts.push('');
   }
@@ -260,37 +262,193 @@ function buildFallbackPosts(entry: ReturnType<typeof cleanEntry>): GeneratedPost
   return { tweet, telegram };
 }
 
-export async function generatePosts(
-  entry: EntryInput,
-  wire: string
-): Promise<GeneratedPosts> {
-  // Clean all entry fields before generation
-  const cleaned = cleanEntry(entry);
-  const prompt = buildPrompt(cleaned, wire);
-  const models = summaryModelChain();
-  let lastError: Error | null = null;
+export function templatePosts(entry: EntryInput): GeneratedPosts {
+  return buildFallbackPosts(cleanEntry(entry));
+}
 
-  for (const model of models) {
+export interface VerifierResult {
+  ok: boolean;
+  model: string | null;
+  unsupported: string[];
+  error: string | null;
+}
+
+export interface PostCheckResult extends FaithfulnessCheck {
+  source: 'model' | 'template';
+  attempts: number;
+  rejected: string[];
+}
+
+export interface GeneratedPostRecord extends GeneratedPosts {
+  model: string | null;
+  checkResult: PostCheckResult;
+  verifierResult: VerifierResult;
+}
+
+/** POST_GEN_MODEL, otherwise the summary primary. Read at call time. */
+export function postGenerationModel(): string {
+  return (process.env.POST_GEN_MODEL || config.apis.ollama.defaultModel).trim();
+}
+
+/** POST_VERIFY_MODEL, otherwise the summary primary. Read at call time. */
+export function postVerificationModel(): string {
+  return (process.env.POST_VERIFY_MODEL || config.apis.ollama.defaultModel).trim();
+}
+
+function postModels(primary: string): string[] {
+  const fallback = config.apis.ollama.fallbackModel.trim();
+  if (fallback && fallback !== primary) return [primary, fallback];
+  return primary ? [primary] : [];
+}
+
+function inputText(entry: EntryInput): string {
+  return [entry.name, entry.description, entry.amount, entry.deadline, entry.sourceUrl]
+    .filter((part): part is string => typeof part === 'string' && part.trim() !== '')
+    .join('\n');
+}
+
+function parsePostJson(text: string): { tweet: string; telegram: string } | null {
+  const raw = text.trim().replace(/^```json?\s*/i, '').replace(/\s*```$/, '');
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start === -1 || end <= start) return null;
+  try {
+    const parsed = JSON.parse(raw.slice(start, end + 1)) as { tweet?: string; telegram?: string };
+    if (!parsed.tweet || !parsed.telegram) return null;
+    const tweet = parsed.tweet.length > 280 ? `${parsed.tweet.substring(0, 277)}...` : parsed.tweet;
+    return { tweet, telegram: parsed.telegram };
+  } catch {
+    return null;
+  }
+}
+
+function parseUnsupported(text: string): string[] | null {
+  const raw = text.trim().replace(/^```json?\s*/i, '').replace(/\s*```$/, '');
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start === -1 || end <= start) return null;
+  try {
+    const parsed = JSON.parse(raw.slice(start, end + 1)) as { unsupported?: unknown };
+    if (!Array.isArray(parsed.unsupported)) return null;
+    return parsed.unsupported
+      .filter((item): item is string => typeof item === 'string' && item.trim() !== '')
+      .map(item => item.trim());
+  } catch {
+    return null;
+  }
+}
+
+async function completeWith(prompt: string, purpose: string, primary: string, wire: string, temperature: number, numPredict: number): Promise<{ model: string; text: string }> {
+  let lastError: Error | null = null;
+  for (const model of postModels(primary)) {
     try {
-      const { text } = await ollamaComplete({
-        prompt,
-        purpose: 'post-gen',
-        model,
-        wire,
-        numPredict: 4096,
-      });
-      const raw = text.trim().replace(/^```json?\n?/, '').replace(/\n?```$/, '');
-      const parsed = JSON.parse(raw) as { tweet?: string; telegram?: string };
-      if (!parsed.tweet || !parsed.telegram) {
-        throw new Error('Missing tweet or telegram in AI response');
-      }
-      const tweet = parsed.tweet.length > 280 ? parsed.tweet.substring(0, 277) + '...' : parsed.tweet;
-      return { tweet, telegram: parsed.telegram };
+      return await ollamaComplete({ prompt, purpose, model, wire, numPredict, temperature });
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
     }
   }
+  throw lastError ?? new Error(`${purpose} failed`);
+}
 
-  console.error('[PostGenerator] AI generation failed, using fallback:', lastError);
-  return buildFallbackPosts(cleaned);
+function verifierPrompt(input: string, draft: string): string {
+  return [
+    'You check whether a draft Telegram post adds anything the source fields do not support.',
+    'Compare the draft only to the source fields. A claim is unsupported when the fields do not state it,',
+    'including combined or rounded amounts, extra eligibility, a news verb the fields do not use, a deadline the fields do not state, and opinion or hype.',
+    'Return EXACTLY this JSON and nothing else: {"unsupported":["short claim", "..."]}',
+    'Use an empty array when every claim in the draft is supported.',
+    '',
+    'Source fields:',
+    input || '(none)',
+    '',
+    'Draft:',
+    draft,
+  ].join('\n');
+}
+
+export async function verifyPostClaims(input: string, draft: string, wire: string): Promise<VerifierResult> {
+  try {
+    const { model, text } = await completeWith(
+      verifierPrompt(input, draft),
+      'post-verify',
+      postVerificationModel(),
+      wire,
+      0,
+      1024,
+    );
+    const unsupported = parseUnsupported(text);
+    if (!unsupported) {
+      return { ok: false, model, unsupported: [], error: 'verifier returned unreadable JSON' };
+    }
+    return { ok: unsupported.length === 0, model, unsupported, error: null };
+  } catch (error) {
+    return {
+      ok: false,
+      model: postVerificationModel() || null,
+      unsupported: [],
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function gateViolations(input: string, telegram: string, verifier: VerifierResult): string[] {
+  const violations = [...checkFaithfulness(input, telegram, { html: true }).violations];
+  if (!verifier.ok) {
+    if (verifier.unsupported.length) {
+      violations.push(...verifier.unsupported.map(item => `unsupported: ${item}`));
+    } else if (verifier.error) {
+      violations.push(`verifier: ${verifier.error}`);
+    } else {
+      violations.push('verifier rejected the draft');
+    }
+  }
+  return violations.slice(0, 12);
+}
+
+export async function generatePosts(entry: EntryInput, wire: string): Promise<GeneratedPostRecord> {
+  const cleaned = cleanEntry(entry);
+  const facts = inputText(entry);
+  const basePrompt = buildPostPrompt(cleaned, wire);
+  const rejected: string[] = [];
+  let lastVerifier: VerifierResult | null = null;
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const prompt = attempt === 0
+      ? basePrompt
+      : `${basePrompt}\n\nThe previous draft was rejected. Rewrite it so none of these remain:\n${rejected.map(item => `- ${item}`).join('\n')}`;
+    let drafted: { tweet: string; telegram: string; model: string };
+    try {
+      const completed = await completeWith(prompt, 'post-gen', postGenerationModel(), wire, 0.1, 4096);
+      const parsed = parsePostJson(completed.text);
+      if (!parsed) throw new Error('Missing tweet or telegram in AI response');
+      drafted = { ...parsed, model: completed.model };
+    } catch (error) {
+      console.error('[PostGenerator] AI generation failed, using fallback:', error);
+      break;
+    }
+    const verifier = await verifyPostClaims(facts, drafted.telegram, wire);
+    lastVerifier = verifier;
+    const violations = gateViolations(facts, drafted.telegram, verifier);
+    if (violations.length === 0) {
+      const tweetCheck = checkFaithfulness(facts, drafted.tweet, { html: false });
+      const telegramCheck = checkFaithfulness(facts, drafted.telegram, { html: true });
+      return {
+        tweet: tweetCheck.ok ? drafted.tweet : buildFallbackPosts(cleaned).tweet,
+        telegram: drafted.telegram,
+        model: drafted.model,
+        checkResult: { ...telegramCheck, source: 'model', attempts: attempt + 1, rejected: [...rejected] },
+        verifierResult: verifier,
+      };
+    }
+    rejected.splice(0, rejected.length, ...violations);
+  }
+
+  const fallback = buildFallbackPosts(cleaned);
+  const check = checkFaithfulness(facts, fallback.telegram, { html: true });
+  return {
+    ...fallback,
+    model: 'template',
+    checkResult: { ...check, source: 'template', attempts: rejected.length ? 2 : 0, rejected: [...rejected] },
+    verifierResult: lastVerifier ?? { ok: false, model: null, unsupported: [], error: 'not run', },
+  };
 }

@@ -547,7 +547,7 @@ Do not point a test at the production bot token. Do not call `sendTestMessage` a
 | Historical approvals get posted | Reconcile lists them. Enqueue is a separate POST and books the tail. The digest does not enqueue. |
 | `done` hides a missed send | `sent` requires a success log and message id. Reconciliation lists the rest. |
 | Multi-wire entry hits two chats at once | Slot is the max of the two chats, and both chats treat that time as busy. One message per chat, not a burst inside one chat. |
-| Claude post generated before auto-summarize finishes | Generation stays at send time, which pacing makes more likely to see the summary. Template fallback remains. A slow Claude call holds the 20-minute lease; the 60-second heartbeat already covers that. |
+| Post text changes after it was frozen | The draft is written onto `publication_queue` when the row is booked. Send uses that text. A content edit of a queued row regenerates it. The summary is not an input, so auto-summarize finishing later does not change the post. |
 | Second Railway instance | The app is single-instance. `SKIP LOCKED` plus the unique log index still prevent two senders from both posting if that assumption breaks. Do not add a second sender. |
 | tele-sum duplicate loop | Success rows keep `external_id` and `wire`. Pacing must not invent a log shape that omits them. |
 | Quiet hours look like a stuck queue | `scheduled` with a morning timestamp and the reason on the row. Pause says `paused`. Cap says `daily cap`. |

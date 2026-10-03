@@ -591,6 +591,7 @@ export async function bookPacedQueue(
   client: PoolClient,
   entries: { id: number; wire: string; wires: string[] | null }[],
   pace: DistributionPace,
+  posts?: Map<number, { postText: string; generatedAt: string; model: string | null; checkResult: unknown; verifierResult: unknown }>,
 ): Promise<void> {
   if (!entries.length) return;
   // Share-row-exclusive is self-exclusive, so two bookings cannot both read an empty chat and take the same slot.
@@ -651,13 +652,33 @@ export async function bookPacedQueue(
       sentToday,
     },
   );
+  const ids = assigned.map(row => row.id);
+  const stored = ids.map(id => posts?.get(id));
   await client.query(
-    `INSERT INTO publication_queue (entry_id, available_at, error_message)
-     SELECT id, at, NULLIF(note, '') FROM unnest($1::int[], $2::timestamptz[], $3::text[]) AS t(id, at, note)
+    `INSERT INTO publication_queue (
+       entry_id, available_at, error_message, post_text, generated_at, model, check_result, verifier_result
+     )
+     SELECT id, at, NULLIF(note, ''), post_text, generated_at, model, check_result::jsonb, verifier_result::jsonb
+     FROM unnest($1::int[], $2::timestamptz[], $3::text[], $4::text[], $5::timestamptz[], $6::text[], $7::text[], $8::text[])
+       AS t(id, at, note, post_text, generated_at, model, check_result, verifier_result)
      ON CONFLICT (entry_id) DO UPDATE
        SET status = 'queued', attempts = 0, available_at = EXCLUDED.available_at,
-           lease_token = NULL, lease_expires_at = NULL, error_message = EXCLUDED.error_message, updated_at = NOW()`,
-    [assigned.map(row => row.id), assigned.map(row => row.at.toISOString()), assigned.map(row => row.reason ?? '')],
+           lease_token = NULL, lease_expires_at = NULL, error_message = EXCLUDED.error_message, updated_at = NOW(),
+           post_text = COALESCE(EXCLUDED.post_text, publication_queue.post_text),
+           generated_at = COALESCE(EXCLUDED.generated_at, publication_queue.generated_at),
+           model = COALESCE(EXCLUDED.model, publication_queue.model),
+           check_result = COALESCE(EXCLUDED.check_result, publication_queue.check_result),
+           verifier_result = COALESCE(EXCLUDED.verifier_result, publication_queue.verifier_result)`,
+    [
+      ids,
+      assigned.map(row => row.at.toISOString()),
+      assigned.map(row => row.reason ?? ''),
+      stored.map(post => post?.postText ?? null),
+      stored.map(post => post?.generatedAt ?? null),
+      stored.map(post => post?.model ?? null),
+      stored.map(post => post ? JSON.stringify(post.checkResult) : null),
+      stored.map(post => post ? JSON.stringify(post.verifierResult) : null),
+    ],
   );
 }
 
@@ -692,6 +713,7 @@ export interface OutgoingItem {
   errorMessage: string | null;
   externalId: string | null;
   attempts: number | null;
+  postText: string | null;
 }
 
 export interface SentItem {
@@ -775,7 +797,7 @@ export async function listOutgoing(sentSince?: Date): Promise<OutgoingSnapshot> 
   const [queued, missing, blankReceipts, sent, chatRows, sentTodayRows, programsOnlyRows] = await Promise.all([
     pool.query(
       `SELECT q.entry_id, q.status, q.available_at, q.created_at, q.error_message, q.attempts,
-              se.name, se.wire
+              q.post_text, se.name, se.wire
        FROM publication_queue q
        JOIN scan_entries se ON se.id = q.entry_id
        WHERE q.status <> 'done'
@@ -859,6 +881,7 @@ export async function listOutgoing(sentSince?: Date): Promise<OutgoingSnapshot> 
       errorMessage: pace.enabled && pace.paused && state === 'due' && !row.error_message ? 'Paused' : row.error_message,
       externalId: null,
       attempts: Number(row.attempts),
+      postText: row.post_text ?? null,
     };
   });
   const seen = new Set(items.map(item => item.entryId));
@@ -876,6 +899,7 @@ export async function listOutgoing(sentSince?: Date): Promise<OutgoingSnapshot> 
       errorMessage: 'Telegram receipt has no message id',
       externalId: null,
       attempts: null,
+      postText: null,
     });
   }
   for (const row of missing.rows) {
@@ -892,6 +916,7 @@ export async function listOutgoing(sentSince?: Date): Promise<OutgoingSnapshot> 
       errorMessage: 'Approved and not sent, and not on the publication queue',
       externalId: null,
       attempts: null,
+      postText: null,
     });
   }
 

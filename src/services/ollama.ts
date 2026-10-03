@@ -89,6 +89,7 @@ async function chat(
   purpose: string,
   wire?: string,
   numPredict = SUMMARY_TOKEN_BUDGET,
+  temperature = 0.3,
 ): Promise<string> {
   const { apiKey, baseUrl } = ollamaEndpoint();
   if (!apiKey) throw new Error('Ollama API key not configured');
@@ -101,7 +102,7 @@ async function chat(
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`,
     },
-    body: JSON.stringify(buildOllamaChatBody(model, prompt, numPredict)),
+    body: JSON.stringify(buildOllamaChatBody(model, prompt, numPredict, temperature)),
   });
 
   if (!response.ok) {
@@ -283,20 +284,11 @@ export async function ollamaAutoSummarize(opts: {
   deadline: string | null;
   sourceUrl: string | null;
   wire?: string;
+  prompt?: string;
 }, model?: string): Promise<string | null> {
   const useModel = modelForSummary(model);
-  const brand = getBrand();
-  const wireLabel = opts.wire === 'ai' ? 'AI funding' : opts.wire === 'oss' ? 'open-source funding' : 'crypto grants';
-
-  const prompt = `You are writing a concise opportunity summary for a ${wireLabel} newsletter (${brand.name}).
-
-Grant name: ${opts.name}
-${opts.amount ? `Amount: ${opts.amount}` : ''}
-${opts.deadline ? `Deadline: ${opts.deadline}` : ''}
-${opts.sourceUrl && opts.sourceUrl.startsWith('http') ? `Source: ${opts.sourceUrl}` : ''}
-Description: ${opts.description}
-
-Write ONLY the final newsletter summary below. No thinking, no explanation, no markdown formatting. 2-4 sentences. Lead with the organization/program name and a strong action verb. Include all specific numbers (amounts, dates, eligibility requirements). Plain prose, no bullet points, no fluff, no hype words. Max 120 words.`;
+  const prompt = opts.prompt;
+  if (!prompt) return null;
 
   try {
     const summary = (await chat(useModel, prompt, 'auto-summarize', opts.wire))
@@ -316,13 +308,14 @@ export async function ollamaComplete(params: {
   model?: string;
   wire?: string;
   numPredict?: number;
+  temperature?: number;
 }): Promise<{ model: string; text: string }> {
   const models = summaryModelChain(params.model);
   if (models.length === 0) throw new Error('Ollama summary model is not configured');
   let lastError: Error | null = null;
   for (const model of models) {
     try {
-      const text = await chat(model, params.prompt, params.purpose, params.wire, params.numPredict);
+      const text = await chat(model, params.prompt, params.purpose, params.wire, params.numPredict, params.temperature);
       return { model, text };
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));

@@ -6,7 +6,7 @@
 
 import { getDistributionConfigs, getUndistributedEntries, logDistribution, claimDistributionLog, finalizeDistributionLog, getDistributionLogs, getPool, getEnabledDistributionChannelsForWire, DistributionChannelRecord } from '../db';
 import { getCachedProvider } from './api-provider';
-import { generatePosts } from './post-generator';
+import { generatePosts, templatePosts } from './post-generator';
 
 function getTelegramBotToken(): string {
   return getCachedProvider('telegram')?.api_key || '';
@@ -353,6 +353,7 @@ export async function distributeEntry(entryId: number, wire: string, wireOnly = 
   const detail: DistributeResult['details'][0] = { entryId: entry.id, name: entry.name, channels: {} };
   const result: DistributeResult = { wire, totalEntries: 1, distributed: 0, failed: 0, skipped: 0, details: [detail] };
   const multiWire = wireList.length > 1;
+  let storedTelegram: string | null | undefined;
 
   for (const w of wireList) {
     const configs = await getDistributionConfigs(w);
@@ -365,14 +366,25 @@ export async function distributeEntry(entryId: number, wire: string, wireOnly = 
 
     if (enabledConfigs.length === 0 && managedChannels.length === 0) continue;
 
-    // Posts are generated per wire so each channel gets its wire's branding
-    const posts = await generatePosts({
+    if (storedTelegram === undefined) {
+      const stored = (await pool.query(
+        `SELECT post_text FROM publication_queue WHERE entry_id = $1`,
+        [entry.id],
+      )).rows[0];
+      const text = typeof stored?.post_text === 'string' ? stored.post_text.trim() : '';
+      storedTelegram = text || null;
+    }
+    const source = {
       name: entry.name,
       description: entry.description || '',
       amount: entry.amount,
       deadline: entry.deadline,
       sourceUrl: entry.source_url,
-    }, w);
+    };
+    // A frozen queue draft is sent exactly. Missing text is a legacy row.
+    const posts = storedTelegram
+      ? { tweet: templatePosts(source).tweet, telegram: storedTelegram }
+      : await generatePosts(source, w);
 
     for (const cfg of enabledConfigs) {
       const channelResult = await dispatchToChannel(cfg, entry, posts, telegramBotToken);

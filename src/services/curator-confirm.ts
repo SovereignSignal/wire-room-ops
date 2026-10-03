@@ -14,6 +14,12 @@ const EDITORIAL_CONFIRM_PATHS: { method: string; pattern: RegExp }[] = [
   { method: 'POST', pattern: /^\/api\/scan\/entries\/\d+\/unwithhold$/ },
 ];
 
+/** Frozen post regenerate and override. Confirm is required. These do not send. */
+const POST_TEXT_CONFIRM_PATHS: { method: string; pattern: RegExp }[] = [
+  { method: 'POST', pattern: /^\/api\/distribution\/queue\/\d+\/regenerate$/ },
+  { method: 'PATCH', pattern: /^\/api\/distribution\/queue\/\d+\/post$/ },
+];
+
 const SEND_PATHS = [
   /^\/api\/distribution\/run\/[^/]+$/,
   /^\/api\/distribution\/channels\/[^/]+\/test$/,
@@ -40,10 +46,18 @@ export function isSendPath(method: string, path: string): boolean {
   return SEND_PATHS.some(pattern => pattern.test(path));
 }
 
-export function isEditorialConfirmPath(method: string, path: string): boolean {
+function matchesPath(method: string, path: string, paths: { method: string; pattern: RegExp }[]): boolean {
   const verb = method.toUpperCase();
   const clean = (path || '').split('?')[0].replace(/\/+$/, '') || '/';
-  return EDITORIAL_CONFIRM_PATHS.some(item => item.method === verb && item.pattern.test(clean));
+  return paths.some(item => item.method === verb && item.pattern.test(clean));
+}
+
+export function isEditorialConfirmPath(method: string, path: string): boolean {
+  return matchesPath(method, path, EDITORIAL_CONFIRM_PATHS);
+}
+
+export function isPostTextConfirmPath(method: string, path: string): boolean {
+  return matchesPath(method, path, POST_TEXT_CONFIRM_PATHS);
 }
 
 function isMasked(value: unknown): boolean {
@@ -74,6 +88,7 @@ export function curatorConfirmRequired(method: string, path: string, body: unkno
   if (verb === 'DELETE') return true;
   if (isSendPath(verb, path)) return true;
   if (isEditorialConfirmPath(verb, path)) return true;
+  if (isPostTextConfirmPath(verb, path)) return true;
   return bodyHasNewSecret(body);
 }
 
@@ -105,15 +120,27 @@ export function enforceCuratorGuards(req: Request): CuratorGuard | null {
       },
     };
   }
-  if (agent.curator && curatorConfirmRequired(method, path, req.body) && !curatorConfirmed(req)) {
-    const editorial = isEditorialConfirmPath(method, path);
+  if (!agent.curator && isPostTextConfirmPath(method, path) && !curatorConfirmed(req)) {
     return {
       status: 400,
       body: {
         error: 'confirm_required',
-        message: editorial
-          ? 'Editing entry content or releasing a withhold needs confirm=true. This action does not send.'
-          : 'This action deletes data, changes a secret, or sends a message. Retry with confirm=true.',
+        message: 'Regenerating or replacing a queued post needs confirm=true. This action does not send.',
+      },
+    };
+  }
+  if (agent.curator && curatorConfirmRequired(method, path, req.body) && !curatorConfirmed(req)) {
+    const editorial = isEditorialConfirmPath(method, path);
+    const postText = isPostTextConfirmPath(method, path);
+    return {
+      status: 400,
+      body: {
+        error: 'confirm_required',
+        message: postText
+          ? 'Regenerating or replacing a queued post needs confirm=true. This action does not send.'
+          : editorial
+            ? 'Editing entry content or releasing a withhold needs confirm=true. This action does not send.'
+            : 'This action deletes data, changes a secret, or sends a message. Retry with confirm=true.',
       },
     };
   }
