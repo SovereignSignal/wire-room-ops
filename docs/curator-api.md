@@ -57,7 +57,7 @@ Monitored accounts, registry watch, and source feeds are dashboard controls. Rea
 - `POST /api/scan/entries/:id/link-duplicate`
 - `PATCH /api/scan/entries/:id/wire`
 - `PATCH /api/scan/entries/:id/source`
-- `PATCH /api/scan/entries/:id/content` — edit post fields; `confirm=true` required; never sends
+- `PATCH /api/scan/entries/:id/content` — edit post text plus classification, tags, and `metadata.amount`; `confirm=true` required; never sends
 - `POST /api/scan/entries/:id/unwithhold` — release a withheld publication back to approved; `confirm=true` required; does not enqueue or send
 - Every dashboard write listed under [Dashboard](#dashboard)
 
@@ -117,22 +117,28 @@ curl -s -X POST "$WIREOPS_SERVER_URL/api/scan/entries/bulk-action" \
 
 Response: `{ "success": true, "action": "withhold", "dryRun": false, "withheld": [3, 9, 12], "alreadyWithheld": [] }`.
 
-## Post text
+## Entry content
 
-`PATCH /api/scan/entries/:id/content` edits the fields a Telegram post is generated from at send time: `name`, `description`, `enriched_summary`, `amount`, `deadline`, `source_url`. Send any subset. `confirm: true`, `reason`, and `sources` are required for every caller, including a dashboard session. A curator key also sends `Idempotency-Key`. No quote is required.
+`PATCH /api/scan/entries/:id/content` edits the fields a Telegram post is generated from at send time: `name`, `description`, `enriched_summary`, `amount`, `deadline`, `source_url`. The same call also edits record fields that are not post inputs: `classification`, `tags`, and `metadata.amount`. Send any subset. `confirm: true`, `reason`, and `sources` are required for every caller, including a dashboard session. A curator key also sends `Idempotency-Key`. No quote is required.
 
-The write sets `actioned_by` to the caller (`agent:<name>` for a curator key) and `action_reason` to the reason. It appends one object to `metadata.content_edits` (`at`, `actor`, `reason`, `sources`, `previous_actioned_by`, `from`, `to`) and stores the evidence packet on `metadata.curator_evidence`. `amount` and `deadline` stay in step with `metadata.amount` and `metadata.deadline`. `enriched_summary` stays in step with `metadata.summary`, which is the summary the dashboard card shows. A new summary clears `auto_summarize_failed`. No new table.
+The write sets `actioned_by` to the caller (`agent:<name>` for a curator key) and `action_reason` to the reason. It appends one object to `metadata.content_edits` (`at`, `actor`, `reason`, `sources`, `previous_actioned_by`, `from`, `to`) and stores the evidence packet on `metadata.curator_evidence`. The `amount` column stays in step with `metadata.amount` unless the call also sets `metadata.amount`. `deadline` stays in step with `metadata.deadline`. `enriched_summary` stays in step with `metadata.summary`, which is the summary the dashboard card shows. A new summary clears `auto_summarize_failed`. No new table. A classification change does not change `status`, `operator_route`, `quality_score`, or `program_id`, and it does not send.
 
 Validation matches the intake and approval checks: name 1–120 characters, description 10–8000, summary 10–8000 and not model reasoning, deadline at most 50 characters with no URL or stray punctuation (`none` / `n/a` clears it), amount is not a bare sum under $100 or a duration, source URL is `http` or `https` and not a shortener, placeholder, or blocked aggregator. A source URL change moves `seen_urls` ownership for that wire. A URL another entry already owns is `409` and nothing is written.
 
-The route refuses, and writes nothing, when the publication is already out or in flight:
+Post text is refused, and nothing is written, when the publication is already out or in flight:
 
 - any `distribution_logs` row for the entry with `channel = 'telegram'` and `status = 'success'`
 - a pending Telegram log, or `publication_queue.status` of `running`
 - `publication_queue.status` of `review`
 - `publication_queue.status` of `queued` (booked, not yet sending)
 
-`queued` here is the publication row, not `scan_entries.status`. An entry still in the review queue, or approved with no publication row, or withheld, or `done` without a Telegram success, can be edited. A booked row is not edited in place and this route does not drop the booking. Withhold it, edit, release the hold, then `POST /api/distribution/queue/:id/enqueue`. The response is `409` with `error`. Nothing on this route calls a sender, books a slot, or inserts a queue row.
+`queued` here is the publication row, not `scan_entries.status`. An entry still in the review queue, or approved with no publication row, or withheld, or `done` without a Telegram success, can have its post text edited. A booked row's text is not edited in place and this route does not drop the booking. Withhold it, edit, release the hold, then `POST /api/distribution/queue/:id/enqueue`. The response is `409` with `error`. Nothing on this route calls a sender, books a slot, or inserts a queue row.
+
+`classification`, `tags`, and `metadata.amount` may be edited in those same states. `generatePosts` and the newsletter builder read `name`, `description`, the `amount` column, `deadline`, and `source_url`. They do not read classification, tags, or `metadata.amount`. A sent Telegram message is already delivered, and a booked slot still generates its post from the text fields, so correcting the record does not change that post. A patch that includes any text field together with these record fields is still refused in full and writes nothing.
+
+- `classification` is the entry type: `GRANT` (a funding opportunity), `NEWS`, `EXPIRED`, `NOISE`, or `UNCHECKED`. Case is ignored and the stored value is uppercase. `type` is not a field.
+- `tags` replaces the entity labels. At most 5, each 1–60 characters after trimming, no duplicates. `[]` clears them.
+- `metadata` accepts only `amount`. `null` removes `metadata.amount` and leaves the `amount` column as it is. Send it as `{ "metadata": { "amount": "$75,000" } }`.
 
 ```bash
 curl -s -X PATCH "$WIREOPS_SERVER_URL/api/scan/entries/18106/content?confirm=true" \
@@ -151,6 +157,25 @@ curl -s -X PATCH "$WIREOPS_SERVER_URL/api/scan/entries/18106/content?confirm=tru
 ```
 
 Response includes `changed`, `actioned_by`, `enqueued: false`, and `sent: false`. `dryRun: true` validates and writes nothing.
+
+A record-only correction, including one on an entry that already has a Telegram success:
+
+```bash
+curl -s -X PATCH "$WIREOPS_SERVER_URL/api/scan/entries/18106/content?confirm=true" \
+  -H "Authorization: Bearer $HEDWIG_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: hedwig-record-18106" \
+  -d '{
+    "confirm": true,
+    "reason": "Official page is a news item, and the extracted amount was wrong.",
+    "sources": ["https://example.org/news"],
+    "classification": "NEWS",
+    "tags": ["Example Foundation"],
+    "metadata": { "amount": "$75,000" }
+  }'
+```
+
+`changed` lists `classification`, `tags`, and `metadata.amount`. The `amount` column is left as it was.
 
 ## Release a withhold
 

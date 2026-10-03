@@ -1,4 +1,4 @@
-// Curator post-text edits and withhold release. Neither path sends or enqueues.
+// Curator content edits and withhold release. Neither path sends or enqueues.
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -168,7 +168,7 @@ async function snap(id) {
   const row = (await pool.query(
     `SELECT id, status, distributable, actioned_by, action_reason, name, description, enriched_summary,
             amount, amount_numeric, amount_currency, deadline, deadline_parsed::text AS deadline_parsed,
-            source_url, auto_summarize_failed, decision_at, metadata
+            source_url, classification, tags, auto_summarize_failed, decision_at, metadata
      FROM scan_entries WHERE id = $1`,
     [id],
   )).rows[0];
@@ -252,6 +252,7 @@ test('field validation refuses junk and writes nothing', async () => {
     [{ amount: '$12' }, /misparse/],
     [{ source_url: 'https://bit.ly/abc' }, /shortener/],
     [{ headline: 'nope' }, /Unknown field/],
+    [{ classification: 'funding' }, /must be one of/],
   ];
   for (const [fields, pattern] of cases) {
     const res = await patchContent(row.id, evidence(fields));
@@ -260,9 +261,39 @@ test('field validation refuses junk and writes nothing', async () => {
   }
   const after = await snap(row.id);
   assert.equal(after.entry.name, 'Junk check');
+  assert.equal(after.entry.classification, 'GRANT');
   assert.equal(after.entry.actioned_by, 'agent:earlier');
   assert.equal(after.entry.metadata.content_edits, undefined);
   assert.equal(after.logs, 0);
+});
+
+test('record-field shapes are rejected before a write', () => {
+  const { parseContentPatch } = require('../src/services/entry-content');
+  const cases = [
+    [{ type: 'NEWS' }, /classification/],
+    [{ classification: 'funding' }, /GRANT, EXPIRED, NEWS, NOISE, UNCHECKED/],
+    [{ tags: 'Example Foundation' }, /array/],
+    [{ tags: ['x'.repeat(61)] }, /60/],
+    [{ tags: ['Example', 'example'] }, /duplicate/],
+    [{ tags: ['One', 'Two', 'Three', 'Four', 'Five', 'Six'] }, /at most 5/],
+    [{ metadata: { headline: 'nope' } }, /Unknown metadata field/],
+    [{ metadata: { amount: '$12' } }, /metadata\.amount looks like a misparse/],
+    [{ 'metadata.amount': '$75,000' }, /\{"metadata":\{"amount"/],
+  ];
+  for (const [fields, pattern] of cases) {
+    const parsed = parseContentPatch(evidence(fields));
+    assert.equal(parsed.ok, false, JSON.stringify(fields));
+    assert.match(parsed.error, pattern, JSON.stringify(fields));
+  }
+  const parsed = parseContentPatch(evidence({
+    classification: ' news ',
+    tags: ['  Example Foundation  ', 'Ethereum'],
+    metadata: { amount: null },
+  }));
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.patch.classification, 'NEWS');
+  assert.deepEqual(parsed.patch.tags, ['Example Foundation', 'Ethereum']);
+  assert.deepEqual(parsed.patch.metadata, { amount: null });
 });
 
 test('a withheld entry can be corrected without booking or sending', async () => {
@@ -397,6 +428,225 @@ test('sent, running, review, and booked publications are refused', async () => {
   assert.equal(pendingRes.status, 409);
   assert.match((await pendingRes.json()).error, /sending now/);
   assert.equal((await snap(pending.id)).entry.name, 'Pending send');
+});
+
+test('classification, tags, and metadata.amount do not change the post amount or send', async () => {
+  const row = await entry('Record fix', {
+    metadata: { keeper: true, amount: '$1,000', operator_route: 'publish', summary: 'Old card summary.' },
+  });
+  await pool.query(
+    `UPDATE scan_entries
+     SET tags = $2::text[], amount = $3, amount_numeric = 1000, amount_currency = 'USD'
+     WHERE id = $1`,
+    [row.id, ['Old Org'], '$1,000'],
+  );
+  const before = await snap(row.id);
+
+  const dry = await patchContent(row.id, evidence({ classification: 'NEWS', dryRun: true }));
+  assert.equal(dry.status, 200, await dry.clone().text());
+  const dryBody = await dry.json();
+  assert.equal(dryBody.dryRun, true);
+  assert.equal(dryBody.enqueued, false);
+  assert.equal(dryBody.sent, false);
+  assert.equal(dryBody.entry.classification, 'NEWS');
+  assert.equal((await snap(row.id)).entry.classification, 'GRANT');
+  assert.equal((await snap(row.id)).entry.actioned_by, 'agent:earlier');
+
+  const res = await patchContent(row.id, evidence({
+    classification: 'NEWS',
+    tags: ['Example Foundation', 'Ethereum'],
+    metadata: { amount: '$75,000' },
+  }));
+  assert.equal(res.status, 200, await res.clone().text());
+  const body = await res.json();
+  assert.equal(body.enqueued, false);
+  assert.equal(body.sent, false);
+  assert.equal(body.actioned_by, 'agent:hedwig');
+  assert.deepEqual(body.changed.sort(), ['classification', 'metadata.amount', 'tags']);
+  assert.equal(body.entry.classification, 'NEWS');
+  assert.deepEqual(body.entry.tags, ['Example Foundation', 'Ethereum']);
+  assert.equal(body.entry.amount, '$1,000');
+
+  const after = await snap(row.id);
+  assert.equal(after.entry.status, 'approved');
+  assert.equal(after.entry.classification, 'NEWS');
+  assert.deepEqual(after.entry.tags, ['Example Foundation', 'Ethereum']);
+  assert.equal(after.entry.amount, '$1,000');
+  assert.equal(Number(after.entry.amount_numeric), 1000);
+  assert.equal(after.entry.amount_currency, 'USD');
+  assert.equal(after.entry.name, 'Record fix');
+  assert.equal(after.entry.metadata.amount, '$75,000');
+  assert.equal(after.entry.metadata.keeper, true);
+  assert.equal(after.entry.metadata.operator_route, 'publish');
+  assert.equal(after.entry.metadata.content_edits.length, 1);
+  assert.equal(after.entry.metadata.content_edits[0].actor, 'agent:hedwig');
+  assert.equal(after.entry.metadata.content_edits[0].previous_actioned_by, 'agent:earlier');
+  assert.equal(after.entry.metadata.content_edits[0].from.classification, 'GRANT');
+  assert.equal(after.entry.metadata.content_edits[0].to.classification, 'NEWS');
+  assert.deepEqual(after.entry.metadata.content_edits[0].from.tags, ['Old Org']);
+  assert.deepEqual(after.entry.metadata.content_edits[0].to.tags, ['Example Foundation', 'Ethereum']);
+  assert.equal(after.entry.metadata.content_edits[0].from['metadata.amount'], '$1,000');
+  assert.equal(after.entry.metadata.content_edits[0].to['metadata.amount'], '$75,000');
+  assert.equal(after.entry.actioned_by, 'agent:hedwig');
+  assert.equal(after.entry.action_reason, evidence().reason);
+  assert.equal(new Date(after.entry.decision_at).toISOString(), new Date(before.entry.decision_at).toISOString());
+  assert.equal(after.queue, null);
+  assert.equal(after.logs, 0);
+
+  const cleared = await patchContent(row.id, evidence({
+    tags: [],
+    metadata: { amount: null },
+  }));
+  assert.equal(cleared.status, 200, await cleared.clone().text());
+  const clearedRow = await snap(row.id);
+  assert.deepEqual(clearedRow.entry.tags, []);
+  assert.equal(clearedRow.entry.metadata.amount, undefined);
+  assert.equal(clearedRow.entry.amount, '$1,000');
+  assert.equal(clearedRow.entry.classification, 'NEWS');
+  assert.equal(clearedRow.entry.metadata.keeper, true);
+  assert.equal(clearedRow.entry.metadata.operator_route, 'publish');
+  assert.equal(clearedRow.entry.metadata.content_edits.length, 2);
+  assert.equal(clearedRow.logs, 0);
+});
+
+test('record fields stay editable after send, and a text field in the same patch is still refused', async () => {
+  const sent = await entry('Already sent record');
+  await pool.query(
+    `UPDATE scan_entries
+     SET tags = $2::text[], amount = '$1,000', amount_numeric = 1000, amount_currency = 'USD', metadata = $3::jsonb
+     WHERE id = $1`,
+    [sent.id, ['Old Org'], JSON.stringify({ keeper: true, amount: '$1,000', operator_route: 'publish' })],
+  );
+  await pool.query(
+    `INSERT INTO distribution_logs (entry_id, channel, wire, status, external_id)
+     VALUES ($1, 'telegram', 'crypto', 'success', 'posted-once')`,
+    [sent.id],
+  );
+
+  const text = await patchContent(sent.id, evidence({ name: 'Should not stick' }));
+  assert.equal(text.status, 409);
+  assert.match((await text.json()).error, /successful Telegram send/);
+
+  const mixed = await patchContent(sent.id, evidence({ name: 'Should not stick', classification: 'NEWS' }));
+  assert.equal(mixed.status, 409);
+  const mixedRow = await snap(sent.id);
+  assert.equal(mixedRow.entry.name, 'Already sent record');
+  assert.equal(mixedRow.entry.classification, 'GRANT');
+  assert.equal(mixedRow.entry.actioned_by, 'agent:earlier');
+  assert.equal(mixedRow.entry.metadata.content_edits, undefined);
+  assert.equal(mixedRow.logs, 1);
+
+  const record = await patchContent(sent.id, evidence({
+    classification: 'NEWS',
+    tags: ['Example Foundation'],
+    metadata: { amount: '$75,000' },
+  }));
+  assert.equal(record.status, 200, await record.clone().text());
+  const recordBody = await record.json();
+  assert.equal(recordBody.enqueued, false);
+  assert.equal(recordBody.sent, false);
+  const after = await snap(sent.id);
+  assert.equal(after.entry.name, 'Already sent record');
+  assert.equal(after.entry.amount, '$1,000');
+  assert.equal(Number(after.entry.amount_numeric), 1000);
+  assert.equal(after.entry.classification, 'NEWS');
+  assert.deepEqual(after.entry.tags, ['Example Foundation']);
+  assert.equal(after.entry.metadata.amount, '$75,000');
+  assert.equal(after.entry.metadata.keeper, true);
+  assert.equal(after.entry.metadata.operator_route, 'publish');
+  assert.equal(after.entry.actioned_by, 'agent:hedwig');
+  assert.equal(after.entry.metadata.content_edits.length, 1);
+  assert.equal(after.logs, 1);
+  assert.equal(after.queue, null);
+
+  const booked = await entry('Booked record');
+  await queue(booked.id, 'queued');
+  const allowed = await patchContent(booked.id, evidence({
+    classification: 'NEWS',
+    tags: ['Example Foundation'],
+  }));
+  assert.equal(allowed.status, 200, await allowed.clone().text());
+  const allowedBody = await allowed.json();
+  assert.equal(allowedBody.enqueued, false);
+  assert.equal(allowedBody.sent, false);
+  const snapRow = await snap(booked.id);
+  assert.equal(snapRow.entry.classification, 'NEWS');
+  assert.deepEqual(snapRow.entry.tags, ['Example Foundation']);
+  assert.equal(snapRow.entry.name, 'Booked record');
+  assert.equal(snapRow.queue.status, 'queued');
+  assert.equal(snapRow.logs, 0);
+  assert.equal(snapRow.entry.metadata.content_edits.length, 1);
+
+  const pending = await entry('Pending record');
+  await pool.query(
+    `INSERT INTO distribution_logs (entry_id, channel, wire, status)
+     VALUES ($1, 'telegram', 'crypto', 'pending')`,
+    [pending.id],
+  );
+  const pendingText = await patchContent(pending.id, evidence({ name: 'Should not stick' }));
+  assert.equal(pendingText.status, 409);
+  const pendingRecord = await patchContent(pending.id, evidence({ classification: 'EXPIRED' }));
+  assert.equal(pendingRecord.status, 200, await pendingRecord.clone().text());
+  const pendingAfter = await snap(pending.id);
+  assert.equal(pendingAfter.entry.name, 'Pending record');
+  assert.equal(pendingAfter.entry.classification, 'EXPIRED');
+  assert.equal(pendingAfter.logs, 1);
+});
+
+test('the amount column still syncs metadata.amount unless the call sets it', async () => {
+  const row = await entry('Split amount', {
+    metadata: { keeper: true, amount: 'stale', summary: 'Old card summary.' },
+  });
+  await pool.query(
+    `UPDATE scan_entries SET amount = '$1,000', amount_numeric = 1000, amount_currency = 'USD' WHERE id = $1`,
+    [row.id],
+  );
+
+  const synced = await patchContent(row.id, evidence({ amount: '$50K' }));
+  assert.equal(synced.status, 200, await synced.clone().text());
+  let after = await snap(row.id);
+  assert.equal(after.entry.amount, '$50K');
+  assert.equal(Number(after.entry.amount_numeric), 50000);
+  assert.equal(after.entry.metadata.amount, '$50K');
+  assert.equal(after.entry.metadata.keeper, true);
+  assert.equal(after.logs, 0);
+
+  const split = await entry('Explicit metadata amount', {
+    metadata: { keeper: true, amount: '$1,000' },
+  });
+  await pool.query(
+    `UPDATE scan_entries SET amount = '$1,000', amount_numeric = 1000, amount_currency = 'USD' WHERE id = $1`,
+    [split.id],
+  );
+  const both = await patchContent(split.id, evidence({
+    amount: '$50K',
+    metadata: { amount: '€40k' },
+  }));
+  assert.equal(both.status, 200, await both.clone().text());
+  const bothBody = await both.json();
+  assert.deepEqual(bothBody.changed.sort(), ['amount', 'metadata.amount']);
+  after = await snap(split.id);
+  assert.equal(after.entry.amount, '$50K');
+  assert.equal(Number(after.entry.amount_numeric), 50000);
+  assert.equal(after.entry.metadata.amount, '€40k');
+  assert.equal(after.entry.metadata.keeper, true);
+
+  const held = await entry('Hold metadata amount', {
+    metadata: { keeper: true, amount: '€40k' },
+  });
+  await pool.query(`UPDATE scan_entries SET amount = '$1,000' WHERE id = $1`, [held.id]);
+  const keep = await patchContent(held.id, evidence({
+    amount: '$80K',
+    metadata: { amount: '€40k' },
+  }));
+  assert.equal(keep.status, 200, await keep.clone().text());
+  const keepBody = await keep.json();
+  assert.deepEqual(keepBody.changed, ['amount']);
+  const kept = await snap(held.id);
+  assert.equal(kept.entry.amount, '$80K');
+  assert.equal(kept.entry.metadata.amount, '€40k');
+  assert.equal(kept.logs, 0);
+  assert.equal(kept.queue, null);
 });
 
 test('a done publication without a Telegram success can be edited and stays done', async () => {

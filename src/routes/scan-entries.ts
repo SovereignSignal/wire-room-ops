@@ -14,7 +14,7 @@
  * GET    /prompt-stats           — prompt effectiveness
  * PATCH  /entries/:id/wire       — reassign wire
  * PATCH  /entries/:id/source     — guarded canonical source rewrite
- * PATCH  /entries/:id/content    — edit post fields; never sends
+ * PATCH  /entries/:id/content    — edit post text and record fields; never sends
  * POST   /entries/:id/unwithhold — release a withheld publication; never enqueues or sends
  * POST   /entries/:id/link-duplicate — guarded explicit duplicate link
  * POST   /entries/bulk-action    — bulk approve/decline/reviewlater/restore
@@ -946,7 +946,7 @@ function entryIdParam(req: Request, res: Response): number | null {
   return entryId;
 }
 
-const CONFIRM_MESSAGE = 'Editing post text or releasing a withhold needs confirm=true. This action does not send.';
+const CONFIRM_MESSAGE = 'Editing entry content or releasing a withhold needs confirm=true. This action does not send.';
 
 function requireExplicitConfirm(req: Request, res: Response): boolean {
   if (curatorConfirmed(req)) return true;
@@ -969,7 +969,7 @@ async function beginEvidenceWrite(req: Request, res: Response): Promise<CuratorG
   return { ...gate, evidence: parsed.evidence };
 }
 
-// PATCH /entries/:id/content — edit the fields a Telegram post is generated from. Never sends.
+// PATCH /entries/:id/content — edit post text, classification, tags, and metadata.amount. Never sends.
 router.patch('/entries/:id/content', async (req: Request, res: Response) => {
   const entryId = entryIdParam(req, res);
   if (entryId === null) return;
