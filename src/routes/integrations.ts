@@ -12,6 +12,7 @@
 
 import { Router, Request, Response } from 'express';
 import { getIntegrationConfigs, getIntegrationById, upsertIntegration, updateIntegration, deleteIntegration, validateNotionToken, validateNotionDatabase, syncOrgsToNotion } from '../services/notion-sync';
+import { noteCuratorChange } from '../services/curator-audit';
 
 const router = Router();
 
@@ -59,6 +60,7 @@ router.post('/', async (req: Request, res: Response) => {
     const { provider = 'notion', name, enabled = false, config: configData } = req.body;
     if (!name) { res.status(400).json({ error: 'name is required' }); return; }
     const result = await upsertIntegration(provider, name, enabled, configData || {});
+    noteCuratorChange(res, { subject: 'POST /api/integrations', old: null, next: result });
     res.json({
       ...result,
       config: {
@@ -92,6 +94,7 @@ router.put('/:id', async (req: Request, res: Response) => {
     }
 
     const result = await updateIntegration(id, { enabled, config: mergedConfig });
+    noteCuratorChange(res, { subject: `PUT /api/integrations/${id}`, old: existing, next: result });
     res.json({
       ...result,
       config: {
@@ -109,7 +112,9 @@ router.put('/:id', async (req: Request, res: Response) => {
 router.delete('/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10);
+    const existing = await getIntegrationById(id);
     await deleteIntegration(id);
+    noteCuratorChange(res, { subject: `DELETE /api/integrations/${id}`, old: existing, next: { deleted: true } });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete integration' });
@@ -160,6 +165,7 @@ router.post('/:id/sync', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10);
     const stats = await syncOrgsToNotion(id);
+    noteCuratorChange(res, { subject: `POST /api/integrations/${id}/sync`, old: null, next: { id, ...stats } });
     res.json({ success: true, ...stats });
   } catch (err) {
     console.error('[API] Sync failed:', err);
