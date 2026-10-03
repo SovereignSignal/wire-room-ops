@@ -120,7 +120,7 @@ export async function extractAndResolveUrls(text: string): Promise<Map<string, s
   return urlMap;
 }
 
-export async function scrapeUrl(url: string): Promise<ScrapeResult> {
+export async function scrapeUrl(url: string, opts: { attempts?: number } = {}): Promise<ScrapeResult> {
   if (!isSafeHttpUrl(url)) {
     return {
       success: false,
@@ -129,6 +129,9 @@ export async function scrapeUrl(url: string): Promise<ScrapeResult> {
       error: 'URL is not a safe public HTTP(S) target',
     };
   }
+  const attempts = Number.isFinite(opts.attempts)
+    ? Math.max(1, Math.min(RETRY_DELAYS.length, Math.floor(opts.attempts as number)))
+    : RETRY_DELAYS.length;
 
   const provider = getCachedProvider('firecrawl');
   if (!provider?.api_key) {
@@ -144,7 +147,7 @@ export async function scrapeUrl(url: string): Promise<ScrapeResult> {
 
   let lastError: string | null = null;
 
-  for (let attempt = 0; attempt < RETRY_DELAYS.length; attempt++) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
     try {
       const result = await scrapeWithFirecrawl(url);
       if (result.success) {
@@ -155,7 +158,7 @@ export async function scrapeUrl(url: string): Promise<ScrapeResult> {
       lastError = error instanceof Error ? error.message : 'Unknown error';
     }
 
-    if (attempt < RETRY_DELAYS.length - 1) {
+    if (attempt < attempts - 1) {
       console.log(`  Scrape attempt ${attempt + 1} failed for ${url}, retrying...`);
       await sleep(RETRY_DELAYS[attempt]);
     }

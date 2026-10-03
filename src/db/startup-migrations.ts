@@ -41,9 +41,10 @@ import { ensureOrgMetrics } from './org-metrics';
 import { ensureProgramMetrics } from './program-metrics';
 import { ensureProgramDecisions } from './program-decisions';
 import { ensurePacedDistribution } from './paced-distribution';
+import { ensureWatchSurfaceRepairs } from './watch-surface-repairs';
 
 // Increment whenever the schema contract changes, including enum constants.
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 export const STARTUP_MIGRATIONS: ReadonlyArray<{ name: string; version?: number; run: () => Promise<void> }> = [
   { name: 'sessions', run: ensureSessionsTable },
@@ -73,6 +74,7 @@ export const STARTUP_MIGRATIONS: ReadonlyArray<{ name: string; version?: number;
   { name: 'program-metrics', version: 3, run: ensureProgramMetrics },
   { name: 'program-decisions', version: 4, run: ensureProgramDecisions },
   { name: 'paced-distribution', version: 5, run: ensurePacedDistribution },
+  { name: 'watch-surface-repairs', version: 6, run: ensureWatchSurfaceRepairs },
 ];
 
 export interface StartupMigrationHealth {

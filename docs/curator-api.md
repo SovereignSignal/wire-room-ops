@@ -31,7 +31,9 @@ Dashboard reads need `read_queue`. Dashboard writes need `decide`. Hedwig's exis
 
 The audit identity on queue decisions stays `agent:<name>`. Settings and other token writes are logged as `curator-api` with the old value and the new value. Do not send `actor`. `?force=true` is ignored for every agent, including curator keys.
 
-These stay closed to a curator key: monitored accounts, `POST /api/scan/submit-batch`, `POST /api/scan/agent/send-brief`, `POST /api/admin/*`, the manual job triggers (`/api/summary-sync`, `/api/process-raw`, `/api/enrich`, `/api/scan/classify-queue`), login and logout, and the Telegram webhook. `POST /api/scan/telegram-batch` stays `intake` only. `/api/orgs` and `/api/export` are not dashboard controls and stay on the session. The internal master key does not open the dashboard routers.
+These stay closed to a curator key: `POST /api/scan/submit-batch`, `POST /api/scan/agent/send-brief`, `POST /api/admin/*`, the manual job triggers (`/api/summary-sync`, `/api/process-raw`, `/api/enrich`, `/api/scan/classify-queue`), login and logout, and the Telegram webhook. `POST /api/scan/telegram-batch` stays `intake` only. `/api/orgs` and `/api/export` are not dashboard controls and stay on the session. The internal master key does not open the dashboard routers.
+
+Monitored accounts, registry watch, and source feeds are dashboard controls. Reads need `read_queue`. Writes need `decide`. Deletes need `confirm=true`. Writes are logged as `curator-api`. This does not turn the account-monitor schedule back on, and it does not send anything to Telegram.
 
 ## Scopes
 
@@ -372,6 +374,88 @@ curl -s -H "Authorization: Bearer $HEDWIG_TOKEN" \
 ```
 
 `DELETE /api/feeds/:key` archives the feed. It does not drop rows.
+
+### Monitored accounts
+
+List, add, enable, and remove X accounts. The account-monitor schedule stays off until someone enables that schedule on its own.
+
+| Method | Path | Confirm |
+| --- | --- | --- |
+| GET | `/api/accounts/monitored` | |
+| POST | `/api/accounts/monitored` | |
+| PATCH | `/api/accounts/monitored/:handle` | |
+| DELETE | `/api/accounts/monitored/:handle` | yes |
+
+```bash
+curl -s -H "Authorization: Bearer $HEDWIG_TOKEN" \
+  "$WIREOPS_SERVER_URL/api/accounts/monitored"
+
+curl -s -X POST "$WIREOPS_SERVER_URL/api/accounts/monitored" \
+  -H "Authorization: Bearer $HEDWIG_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"handle":"octantapp","wire":"crypto","enabled":true}'
+
+curl -s -X PATCH "$WIREOPS_SERVER_URL/api/accounts/monitored/octantapp" \
+  -H "Authorization: Bearer $HEDWIG_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"enabled":false}'
+
+curl -s -X DELETE "$WIREOPS_SERVER_URL/api/accounts/monitored/octantapp?confirm=true" \
+  -H "Authorization: Bearer $HEDWIG_TOKEN"
+```
+
+`handle` is the X handle without `@`. `wire` is `crypto`, `ai`, or `oss`.
+
+### Registry watch
+
+`GET /api/registry-watch/pending` returns would-submit items from the last dry run that had any: `title`, `url`, `org`, `wire`, `reason`. `recordedAt` is when that list was saved. `lastRunAt` is the newest dry run, and `lastRunItemCount` is how many items that run added. A later quiet run keeps the list and sets `lastRunItemCount` to 0. The list is a review copy. Those URLs are marked seen, so going live does not submit them.
+
+`GET /api/registry-watch/surfaces` lists watched pages. Optional `status=active|paused` and `wire=crypto|ai|oss`.
+
+`PUT /api/registry-watch/surfaces/:id` edits `url`, `surface_type`, `wire`, `tier`, `status` (`active` or `paused`), and `org_name`.
+
+```bash
+curl -s -H "Authorization: Bearer $HEDWIG_TOKEN" \
+  "$WIREOPS_SERVER_URL/api/registry-watch/pending"
+
+curl -s -H "Authorization: Bearer $HEDWIG_TOKEN" \
+  "$WIREOPS_SERVER_URL/api/registry-watch/surfaces?status=active"
+
+curl -s -X PUT "$WIREOPS_SERVER_URL/api/registry-watch/surfaces/797" \
+  -H "Authorization: Bearer $HEDWIG_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://gitcoin.co/campaigns","surface_type":"grants_page","status":"active"}'
+```
+
+Taking the lane live is a Railway variable change, not a curator call. See the README section "How to take registry watch live". Dry run stays the default. This API does not flip `REGISTRY_WATCH_DRY_RUN`.
+
+### Source feeds
+
+The built-in list in `SOURCE_REGISTRY` is the default. This API stores an overlay in `app_state` (`source-feeds:config`) so a feed can be retargeted, disabled, or added without a deploy. Added feeds are `rss` or `scrape` only.
+
+| Method | Path | Confirm |
+| --- | --- | --- |
+| GET | `/api/source-feeds` | |
+| POST | `/api/source-feeds` | |
+| PUT | `/api/source-feeds/:key` | |
+| DELETE | `/api/source-feeds/:key` | yes |
+
+`DELETE` on a built-in key disables it. `DELETE` on an added key removes it.
+
+```bash
+curl -s -H "Authorization: Bearer $HEDWIG_TOKEN" \
+  "$WIREOPS_SERVER_URL/api/source-feeds"
+
+curl -s -X PUT "$WIREOPS_SERVER_URL/api/source-feeds/longview" \
+  -H "Authorization: Bearer $HEDWIG_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"endpoint":"https://www.longview.org/grantmaking/","enabled":true}'
+
+curl -s -X POST "$WIREOPS_SERVER_URL/api/source-feeds" \
+  -H "Authorization: Bearer $HEDWIG_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"key":"example-feed","name":"Example","wire":"oss","method":"rss","endpoint":"https://example.org/feed"}'
+```
 
 ### Providers, usage, database, grants, integrations
 

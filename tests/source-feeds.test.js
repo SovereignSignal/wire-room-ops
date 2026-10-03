@@ -69,20 +69,60 @@ test('Giveth extractor: constructs qf URL and drops already-ended rounds', () =>
   assert.equal(extract({ name: 'Old', slug: 'old', endDate: '2020-01-01T00:00:00Z' }), null); // ended → dropped
 });
 
-test('Avalanche extractor: unique round URL + reward string', () => {
-  const extract = reg('avax-retro9000').extract;
-  const r = extract({ id: 'cmabc', name: 'C-Chain Round 4', description: 'd', potential_reward: { amount: 10000, currency: 'AVAX' }, submission_ends_at: '2026-06-18T18:00:00Z', created_at: '2026-05-27T17:34:21Z' });
-  assert.equal(r.url, 'https://retro9000.avax.network/?round=cmabc');
-  assert.equal(r.amount, '10000 AVAX');
-  assert.ok(r.deadline.startsWith('2026-06-18'));
+test('registry: dead feeds are gone and the October 2026 replacements are wired', () => {
+  assert.equal(reg('manifund'), undefined);
+  assert.equal(reg('avax-retro9000'), undefined);
+  assert.equal(reg('ai2050'), undefined);
+  assert.ok(reg('karma-gap').enabled);
+
+  const avax = reg('avax-grants');
+  assert.equal(avax.method, 'scrape');
+  assert.equal(avax.endpoint, 'https://build.avax.network/grants');
+  assert.equal(avax.wire, 'crypto');
+  assert.equal(avax.enabled, true);
+
+  assert.equal(reg('longview').endpoint, 'https://www.longview.org/grantmaking/');
+
+  const schmidt = reg('schmidt-sciences');
+  assert.equal(schmidt.method, 'rss');
+  assert.equal(schmidt.endpoint, 'https://www.schmidtsciences.org/feed/');
+  assert.equal(schmidt.titleAllow.test('Schmidt Sciences Names 28 AI2050 Fellows'), true);
+  assert.equal(schmidt.titleAllow.test('AI agents evolve their own languages'), false);
+
+  const octant = reg('octant');
+  assert.equal(octant.method, 'rss');
+  assert.equal(octant.endpoint, 'https://octant.substack.com/feed');
+  assert.equal(octant.titleAllow.test('Epoch 13 - The Privacy Round'), true);
+  assert.equal(octant.titleAllow.test('A closer look at the new Octant Voting App'), false);
+
+  const esp = reg('ef-esp-rfp');
+  assert.equal(esp.method, 'scrape');
+  assert.equal(esp.endpoint, 'https://esp.ethereum.foundation/applicants/rfp');
+  assert.equal(esp.enabled, true);
+
+  const gitcoin = reg('gitcoin-campaigns');
+  assert.equal(gitcoin.method, 'scrape');
+  assert.equal(gitcoin.endpoint, 'https://gitcoin.co/campaigns');
+
+  const alpha = reg('alpha-omega');
+  assert.equal(alpha.method, 'rss');
+  assert.equal(alpha.endpoint, 'https://alpha-omega.dev/feed/');
+  assert.equal(alpha.titleAllow.test('Open call: security grants'), true);
+  assert.equal(alpha.titleAllow.test('Securing Hex: How Alpha-Omega Helped Strengthen a Package Ecosystem'), false);
 });
 
-test('registry: feed sources wired; Manifund re-enabled via scrape', () => {
-  assert.ok(SOURCE_REGISTRY.length >= 10);
-  const mf = reg('manifund');
-  assert.equal(mf.enabled, true);
-  assert.equal(mf.method, 'scrape');
-  assert.ok(reg('karma-gap').enabled);
+test('new RSS feeds parse an item and the title filter keeps the call', () => {
+  const xml = `<rss><channel>
+    <item><title>Epoch 13 - The Privacy Round</title><link>https://octant.substack.com/p/epoch-13</link>
+      <pubDate>Wed, 11 Aug 2026 12:00:00 +0000</pubDate><description>Applications are open.</description></item>
+    <item><title>A closer look at the new Octant Voting App</title><link>https://octant.substack.com/p/voting</link>
+      <pubDate>Wed, 01 Jul 2026 12:00:00 +0000</pubDate><description>Product notes.</description></item>
+  </channel></rss>`;
+  const source = reg('octant');
+  const items = parseFeed(xml, source).filter(it => source.titleAllow.test(it.name));
+  assert.equal(items.length, 1);
+  assert.equal(items[0].url, 'https://octant.substack.com/p/epoch-13');
+  assert.ok(items[0].publishedAt.startsWith('2026-08-11'));
 });
 
 test('EA Forum/LessWrong sources: multiple Forum-Magnum graphql feeds wired with itemsPath', () => {

@@ -88,8 +88,21 @@ export function surfaceToScrapeSource(s: WatchSurface): FeedSource {
 
 const SEED_ENDPOINTS = new Set(SOURCE_REGISTRY.filter(x => x.enabled).map(x => normalizeUrl(x.endpoint)));
 
-export function overlapsSeedRegistry(s: WatchSurface): boolean {
-  return SEED_ENDPOINTS.has(normalizeUrl(s.url));
+export function overlapsSeedRegistry(s: WatchSurface, endpoints: Set<string> = SEED_ENDPOINTS): boolean {
+  return endpoints.has(normalizeUrl(s.url));
+}
+
+/**
+ * fil.org answers 429 to every non-browser client. A plain fetch there is a
+ * wasted request that still falls through to Firecrawl. Skip it and scrape once.
+ */
+export function skipsPlainFetch(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase().replace(/\.$/, '');
+    return host === 'fil.org' || host.endsWith('.fil.org');
+  } catch {
+    return false;
+  }
 }
 
 /** Strip tags/scripts/styles, collapse whitespace. Deliberately keeps text only. */

@@ -112,6 +112,9 @@ const DASHBOARD_PREFIXES = [
   '/api/integrations',
   '/api/scan/prompts',
   '/api/job/',
+  '/api/accounts',
+  '/api/registry-watch',
+  '/api/source-feeds',
 ];
 
 function isDashboardCuratorPath(path: string): boolean {
@@ -140,9 +143,9 @@ export function requiredCuratorScope(method: string, rawPath: string): CuratorSc
   const path = (rawPath || '').split('?')[0].replace(/\/+$/, '') || '/';
   const m = method.toUpperCase();
 
-  // Not dashboard controls. Accounts stay Notion-driven. submit-batch and the
-  // agent brief are producer doors. Admin maintenance stays on the session.
-  if (path.startsWith('/api/accounts')) return 'forbidden';
+  // Not dashboard controls. submit-batch and the agent brief are producer
+  // doors. Admin maintenance stays on the session. Monitored accounts are
+  // dashboard controls: read_queue to list, decide to add, remove, or enable.
   if (path.startsWith('/api/admin')) return 'forbidden';
   if (path === '/api/scan/submit-batch') return 'forbidden';
   if (path === '/api/scan/agent/send-brief') return 'forbidden';

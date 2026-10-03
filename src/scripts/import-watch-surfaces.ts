@@ -135,7 +135,7 @@ export const SCOUT_SEED_SURFACES: SurfaceRow[] = [
   scout('Ethereum Foundation', 'crypto', 'https://ethereum.org/en/community/grants/'),
   scout('Filecoin Foundation', 'crypto', 'https://fil.org/grants'),
   scout('Cosmos', 'crypto', 'https://cosmos.network'),
-  scout('Gitcoin', 'crypto', 'https://www.gitcoin.co'),
+  scout('Gitcoin', 'crypto', 'https://gitcoin.co/campaigns'),
   scout('Anthropic (safety)', 'ai', 'https://safety.anthropic.com'),
   scout('OpenAI (security)', 'ai', 'https://openai.com/security'),
   scout('NSF', 'ai', 'https://www.nsf.gov/funding/'),

@@ -18,16 +18,29 @@
  *
  * Gates: default OFF (REGISTRY_WATCH_ENABLED, read at call time — the
  * scheduler also guards this; double gate is deliberate) and default dry-run
- * (registryWatchDryRun). Baselines and no-op checks advance in dry-run. A
- * changed surface with fresh items advances only after durable intake, so a
- * dry-run or transient intake failure stays retryable.
+ * (registryWatchDryRun). Baselines and no-op checks advance in dry-run.
+ *
+ * A dry run does not call intake. It does store the new page hash and the
+ * seen-URL watermark, and it writes the would-submit list to app_state
+ * (`registry-watch:pending`) for GET /api/registry-watch/pending. That stops
+ * the same unchanged page from being extracted again the next day.
+ *
+ * The first live run records `registry-watch:live-since` and submits only
+ * items published at or after that instant. Undated items on that first run
+ * are the pre-existing backlog: they are marked seen and not submitted.
+ * REGISTRY_WATCH_SUBMIT_BACKLOG=true submits them. REGISTRY_WATCH_LIVE_SINCE
+ * sets the cutoff explicitly (ISO timestamp) before that first live run.
+ * A failed live intake still leaves the hash and watermark for those items
+ * unchanged, so the run can retry. The go-live stamp is written only after
+ * the run finishes without an intake error.
  */
 import type { Pool } from 'pg';
 import type { ScanSubmission, RawScanResult } from '../types/intake';
 import { getAppState, setAppState } from '../db';
 import { normalizeUrl } from '../utils/url';
 import { runDailyIntake } from './daily-intake';
-import { fetchSource, type FeedItem } from '../services/source-feeds';
+import { fetchSource, SOURCE_REGISTRY, type FeedItem } from '../services/source-feeds';
+import { applySourceFeedConfig, normalizeSourceFeedConfig, SOURCE_FEED_CONFIG_KEY } from '../services/source-feed-config';
 import {
   getDueSurfaces,
   surfaceToRssSource,
@@ -35,6 +48,7 @@ import {
   overlapsSeedRegistry,
   contentHash,
   markChecked,
+  skipsPlainFetch,
 } from '../services/registry-watchers';
 import { checkBudget } from '../services/budget-guard';
 import { scrapeUrl } from '../services/scraper';
@@ -59,10 +73,87 @@ export interface RegistryWatchResult {
   ran: boolean;
   mode: 'disabled' | 'dry-run' | 'live';
   submitted: number;
+  pending: number;
   deferred_surfaces: number;
   reason?: string;
   rss: LaneStat;
   diff: LaneStat;
+}
+
+/** Latest dry-run would-submit list. Curator GET /api/registry-watch/pending reads this. */
+export const REGISTRY_WATCH_PENDING_KEY = 'registry-watch:pending';
+/** ISO timestamp written at the end of the first successful live run. */
+export const REGISTRY_WATCH_LIVE_SINCE_KEY = 'registry-watch:live-since';
+const PENDING_ITEM_CAP = 2000;
+
+export interface RegistryWatchPendingItem {
+  title: string;
+  url: string;
+  org: string;
+  wire: string;
+  reason: string;
+  surfaceId: number;
+  recordedAt: string;
+}
+
+export interface RegistryWatchPendingSnapshot {
+  recordedAt: string | null;
+  itemCount: number;
+  items: RegistryWatchPendingItem[];
+  /** When the latest dry run finished. May be later than recordedAt. */
+  lastRunAt?: string | null;
+  /** How many items that latest run would have submitted. 0 keeps the previous list. */
+  lastRunItemCount?: number;
+}
+
+export function emptyPendingSnapshot(): RegistryWatchPendingSnapshot {
+  return { recordedAt: null, itemCount: 0, items: [] };
+}
+
+export function normalizePendingSnapshot(raw: unknown): RegistryWatchPendingSnapshot {
+  if (!raw || typeof raw !== 'object') return emptyPendingSnapshot();
+  const row = raw as Record<string, unknown>;
+  const recordedAt = typeof row.recordedAt === 'string' ? row.recordedAt : null;
+  const items: RegistryWatchPendingItem[] = [];
+  if (Array.isArray(row.items)) {
+    for (const item of row.items) {
+      if (!item || typeof item !== 'object') continue;
+      const it = item as Record<string, unknown>;
+      if (typeof it.title !== 'string' || typeof it.url !== 'string') continue;
+      items.push({
+        title: it.title,
+        url: it.url,
+        org: typeof it.org === 'string' ? it.org : '',
+        wire: typeof it.wire === 'string' ? it.wire : '',
+        reason: typeof it.reason === 'string' ? it.reason : '',
+        surfaceId: typeof it.surfaceId === 'number' ? it.surfaceId : 0,
+        recordedAt: typeof it.recordedAt === 'string' ? it.recordedAt : recordedAt || '',
+      });
+    }
+  }
+  const itemCount = typeof row.itemCount === 'number' ? row.itemCount : items.length;
+  const lastRunAt = typeof row.lastRunAt === 'string' ? row.lastRunAt : null;
+  const lastRunItemCount = typeof row.lastRunItemCount === 'number' ? row.lastRunItemCount : itemCount;
+  return { recordedAt, itemCount, items, lastRunAt, lastRunItemCount };
+}
+
+/**
+ * Live-run gate. Dated items submit only when published at or after the
+ * go-live cutoff. Undated items submit on later runs (they were not in the
+ * backlog the cutoff run already marked seen). The backlog override submits
+ * every fresh item.
+ */
+export function keepForLiveSubmit(
+  item: { publishedAt?: string | null },
+  liveSinceIso: string,
+  firstLiveRun: boolean,
+  submitBacklog: boolean,
+): boolean {
+  if (submitBacklog) return true;
+  const published = item.publishedAt ? Date.parse(item.publishedAt) : NaN;
+  const cutoff = Date.parse(liveSinceIso);
+  if (!Number.isNaN(published) && !Number.isNaN(cutoff)) return published >= cutoff;
+  return !firstLiveRun;
 }
 
 /** Injectable seams so runRegistryWatch's branches are unit-testable without network or DB. */
@@ -72,6 +163,8 @@ export interface RegistryWatchDeps {
   fetchPage?: (url: string) => Promise<string>;
   /** Fallback content fetch when the plain fetch fails (bot-walled surfaces). */
   scrapePage?: (url: string) => Promise<string>;
+  /** One-shot scrape for hosts that 429 a plain fetch. Defaults to a single Firecrawl attempt. */
+  scrapeOnce?: (url: string) => Promise<string>;
   /** Rate-limit gap between Firecrawl-bound calls; injectable so tests don't sleep. */
   pace?: (ms: number) => Promise<void>;
   intake?: typeof runDailyIntake;
@@ -132,6 +225,13 @@ async function defaultScrapePage(url: string): Promise<string> {
   return r.content;
 }
 
+/** One Firecrawl attempt. Used for fil.org and any plain fetch that already returned 429. */
+async function defaultScrapeOnce(url: string): Promise<string> {
+  const r = await scrapeUrl(url, { attempts: 1 });
+  if (!r.success || !r.content) throw new Error(r.error || 'scrape returned empty content');
+  return r.content;
+}
+
 /**
  * Net-new items against a surface's seen-URL watermark (same shape/merge logic
  * as source-feeds' per-source watermark, cap lowered to SEEN_CAP). First-ever
@@ -173,13 +273,16 @@ export async function runRegistryWatch(
   // Read at call time (not module load) so tests don't need require-cache
   // gymnastics to flip it; the scheduler's own gate is the module-load-time one.
   if (process.env.REGISTRY_WATCH_ENABLED !== 'true') {
-    return { ran: false, mode: 'disabled', submitted: 0, deferred_surfaces: 0, reason: 'disabled', rss: emptyStat(), diff: emptyStat() };
+    return { ran: false, mode: 'disabled', submitted: 0, pending: 0, deferred_surfaces: 0, reason: 'disabled', rss: emptyStat(), diff: emptyStat() };
   }
 
   const getDueImpl = deps.getDue ?? getDueSurfaces;
   const fetchSourceImpl = deps.fetchSourceImpl ?? fetchSource;
   const fetchPageImpl = deps.fetchPage ?? defaultFetchPage;
   const scrapePageImpl = deps.scrapePage ?? defaultScrapePage;
+  // Tests that stub scrapePage cover both paths. Production uses one attempt
+  // for a host that already 429'd, and the full retry only for other failures.
+  const scrapeOnceImpl = deps.scrapeOnce ?? deps.scrapePage ?? defaultScrapeOnce;
   const paceImpl = deps.pace ?? sleep;
   const intakeImpl = deps.intake ?? runDailyIntake;
   const markImpl = deps.mark ?? markChecked;
@@ -196,6 +299,8 @@ export async function runRegistryWatch(
   const today = new Date().toISOString().split('T')[0];
   const nowIso = new Date().toISOString();
   const submissions: ScanSubmission[] = [];
+  const pendingItems: RegistryWatchPendingItem[] = [];
+  let submittedCount = 0;
   const pendingDeliveries: Array<{
     checkpoint: () => Promise<void>;
     markSuccess: () => Promise<void>;
@@ -203,13 +308,88 @@ export async function runRegistryWatch(
     markFailure: () => Promise<void>;
   }> = [];
 
+  const storedLiveSince = dryRun ? null : await getStateImpl<string>(REGISTRY_WATCH_LIVE_SINCE_KEY);
+  const firstLiveRun = !dryRun && !storedLiveSince;
+  const submitBacklog = process.env.REGISTRY_WATCH_SUBMIT_BACKLOG === 'true';
+  const envLiveSince = process.env.REGISTRY_WATCH_LIVE_SINCE;
+  const liveSince = storedLiveSince
+    || (envLiveSince && !Number.isNaN(Date.parse(envLiveSince)) ? new Date(envLiveSince).toISOString() : nowIso);
+
+  const feedConfig = normalizeSourceFeedConfig(await getStateImpl(SOURCE_FEED_CONFIG_KEY));
+  const seedEndpoints = new Set(
+    applySourceFeedConfig(SOURCE_REGISTRY, feedConfig)
+      .filter(source => source.enabled)
+      .map(source => normalizeUrl(source.endpoint)),
+  );
+
+  async function deliverFresh(args: {
+    surf: { id: number; org_name: string; wire: string | null };
+    fresh: FeedItem[];
+    nextState: SeenState;
+    stateKey: string;
+    submittedBy: string;
+    reason: string;
+    hashKey?: string;
+    hash?: string;
+  }): Promise<void> {
+    const toSubmit = dryRun
+      ? args.fresh
+      : args.fresh.filter(it => keepForLiveSubmit(it, liveSince, firstLiveRun, submitBacklog));
+
+    if (dryRun) {
+      for (const it of toSubmit) {
+        if (pendingItems.length >= PENDING_ITEM_CAP) break;
+        pendingItems.push({
+          title: it.name,
+          url: it.url,
+          org: args.surf.org_name,
+          wire: args.surf.wire || 'crypto',
+          reason: args.reason,
+          surfaceId: args.surf.id,
+          recordedAt: nowIso,
+        });
+      }
+    }
+
+    const checkpoint = async () => {
+      await setStateImpl(args.stateKey, args.nextState);
+      if (args.hashKey) await setStateImpl(args.hashKey, args.hash);
+    };
+
+    if (dryRun || toSubmit.length === 0) {
+      await checkpoint();
+      await markImpl(pool, args.surf.id, {
+        changed: true,
+        itemsFound: dryRun ? args.fresh.length : toSubmit.length,
+        failed: false,
+      });
+      return;
+    }
+
+    submittedCount += toSubmit.length;
+    submissions.push({
+      wire: args.surf.wire || 'crypto',
+      promptVariant: 'N',
+      scanDate: today,
+      source: 'feed',
+      submittedBy: args.submittedBy,
+      results: toSubmit.map(toRaw),
+    });
+    pendingDeliveries.push({
+      checkpoint,
+      markSuccess: () => markImpl(pool, args.surf.id, { changed: true, itemsFound: toSubmit.length, failed: false }),
+      markDeferred: () => markImpl(pool, args.surf.id, { changed: true, itemsFound: 0, failed: false }),
+      markFailure: () => markImpl(pool, args.surf.id, { failed: true }),
+    });
+  }
+
   // ---- RSS lane ----
   const rssStat: LaneStat = { surfaces: 0, fresh: 0, errors: 0 };
   const rssSurfaces = await getDueImpl(pool, ['rss'], rssCap, config.watchtower.registryTiers);
   rssStat.surfaces = rssSurfaces.length;
 
   for (const surf of rssSurfaces) {
-    if (overlapsSeedRegistry(surf)) {
+    if (overlapsSeedRegistry(surf, seedEndpoints)) {
       // Already ingested via the seed registry's own feed source — stop it
       // from coming up as due again without treating it as a failure.
       await markImpl(pool, surf.id, { itemsFound: 0 });
@@ -222,19 +402,13 @@ export async function runRegistryWatch(
       const { fresh, nextState } = diffSeen(items, seenState, nowIso);
 
       if (fresh.length) {
-        submissions.push({
-          wire: surf.wire || 'crypto',
-          promptVariant: 'N',
-          scanDate: today,
-          source: 'feed',
+        await deliverFresh({
+          surf,
+          fresh,
+          nextState,
+          stateKey,
           submittedBy: `ws-rss:${surf.id}`,
-          results: fresh.map(toRaw),
-        });
-        pendingDeliveries.push({
-          checkpoint: () => setStateImpl(stateKey, nextState),
-          markSuccess: () => markImpl(pool, surf.id, { changed: true, itemsFound: fresh.length, failed: false }),
-          markDeferred: () => markImpl(pool, surf.id, { changed: true, itemsFound: 0, failed: false }),
-          markFailure: () => markImpl(pool, surf.id, { failed: true }),
+          reason: 'New item on the RSS feed',
         });
       } else {
         // Baselines and clean no-op polls have no downstream durability
@@ -273,33 +447,60 @@ export async function runRegistryWatch(
     if (firecrawlCalls++ > 0) await paceImpl(FIRECRAWL_PACE_MS);
   };
 
+  const scrapeLimited = async (url: string, why: string): Promise<string> => {
+    if (scrapeFallbacksUsed >= SCRAPE_FALLBACK_CAP) {
+      throw new Error(`${why} (scrape-fallback cap ${SCRAPE_FALLBACK_CAP} reached)`);
+    }
+    scrapeFallbacksUsed++;
+    await paceFirecrawl();
+    try {
+      return await scrapeOnceImpl(url);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`${why}; scrape fallback failed: ${msg}`);
+    }
+  };
+
   for (const surf of diffSurfaces) {
     let html: string;
     try {
-      html = await fetchPageImpl(surf.url);
+      if (skipsPlainFetch(surf.url)) {
+        // fil.org 429s every non-browser client. One paced scrape, no plain-fetch loop.
+        html = await scrapeLimited(surf.url, `plain fetch skipped (${new URL(surf.url).hostname} returns 429 to non-browser clients)`);
+        console.log(`[RegistryWatch] diff surface ${surf.id} (${surf.org_name}) scrape-only — skipped plain fetch`);
+      } else {
+        try {
+          html = await fetchPageImpl(surf.url);
+        } catch (err) {
+          // Bot-walled funder sites reject the plain fetch but serve Firecrawl fine.
+          // NOTE: the hash basis flips between raw HTML and scraped markdown when a
+          // surface transitions between modes — worst case one spurious "changed"
+          // extraction, still capped and budget-gated below.
+          const firstErr = err instanceof Error ? err.message : String(err);
+          if (/HTTP 429/.test(firstErr)) {
+            await paceImpl(FIRECRAWL_PACE_MS);
+            html = await scrapeLimited(surf.url, `plain fetch failed (${firstErr})`);
+            console.log(`[RegistryWatch] diff surface ${surf.id} (${surf.org_name}) HTTP 429 — one scrape after backoff`);
+          } else if (scrapeFallbacksUsed >= SCRAPE_FALLBACK_CAP) {
+            throw new Error(`${firstErr} (scrape-fallback cap ${SCRAPE_FALLBACK_CAP} reached)`);
+          } else {
+            scrapeFallbacksUsed++;
+            await paceFirecrawl();
+            try {
+              html = await scrapePageImpl(surf.url);
+            } catch (err2) {
+              const msg = err2 instanceof Error ? err2.message : String(err2);
+              throw new Error(`${firstErr}; scrape fallback failed: ${msg}`);
+            }
+            console.log(`[RegistryWatch] diff surface ${surf.id} (${surf.org_name}) plain fetch failed (${firstErr}) — used scrape fallback`);
+          }
+        }
+      }
     } catch (err) {
-      // Bot-walled funder sites reject the plain fetch but serve Firecrawl fine.
-      // NOTE: the hash basis flips between raw HTML and scraped markdown when a
-      // surface transitions between modes — worst case one spurious "changed"
-      // extraction, still capped and budget-gated below.
-      const firstErr = err instanceof Error ? err.message : String(err);
-      if (scrapeFallbacksUsed >= SCRAPE_FALLBACK_CAP) {
-        diffStat.errors++;
-        await markImpl(pool, surf.id, { failed: true });
-        console.warn(`[RegistryWatch] diff surface ${surf.id} (${surf.org_name}) fetch failed: ${firstErr} (scrape-fallback cap ${SCRAPE_FALLBACK_CAP} reached)`);
-        continue;
-      }
-      scrapeFallbacksUsed++;
-      try {
-        await paceFirecrawl();
-        html = await scrapePageImpl(surf.url);
-        console.log(`[RegistryWatch] diff surface ${surf.id} (${surf.org_name}) plain fetch failed (${firstErr}) — used scrape fallback`);
-      } catch (err2) {
-        diffStat.errors++;
-        await markImpl(pool, surf.id, { failed: true });
-        console.warn(`[RegistryWatch] diff surface ${surf.id} (${surf.org_name}) fetch failed: ${firstErr}; scrape fallback failed:`, err2 instanceof Error ? err2.message : err2);
-        continue;
-      }
+      diffStat.errors++;
+      await markImpl(pool, surf.id, { failed: true });
+      console.warn(`[RegistryWatch] diff surface ${surf.id} (${surf.org_name}) fetch failed:`, err instanceof Error ? err.message : err);
+      continue;
     }
 
     const hash = contentHash(html);
@@ -366,24 +567,15 @@ export async function runRegistryWatch(
       const { fresh, nextState } = diffSeen(items, seenState, nowIso, { baselineWhenMissing: false });
 
       if (fresh.length) {
-        submissions.push({
-          wire: surf.wire || 'crypto',
-          promptVariant: 'N',
-          scanDate: today,
-          source: 'feed',
+        await deliverFresh({
+          surf,
+          fresh,
+          nextState,
+          stateKey,
           submittedBy: `ws-diff:${surf.id}`,
-          results: fresh.map(toRaw),
-        });
-        pendingDeliveries.push({
-          // Write seen state first. If the hash write fails afterward, the
-          // retry re-extracts but does not resubmit already-durable URLs.
-          checkpoint: async () => {
-            await setStateImpl(stateKey, nextState);
-            await setStateImpl(hashKey, hash);
-          },
-          markSuccess: () => markImpl(pool, surf.id, { changed: true, itemsFound: fresh.length, failed: false }),
-          markDeferred: () => markImpl(pool, surf.id, { changed: true, itemsFound: 0, failed: false }),
-          markFailure: () => markImpl(pool, surf.id, { failed: true }),
+          reason: 'Page content changed',
+          hashKey,
+          hash,
         });
       } else {
         // Extraction itself completed and produced nothing new, so this
@@ -400,28 +592,54 @@ export async function runRegistryWatch(
     }
   }
 
-  const totalFresh = rssStat.fresh + diffStat.fresh;
-  if (totalFresh > 0) {
-    if (dryRun) {
-      console.log(`[RegistryWatch] DRY RUN — would submit ${submissions.length} submission(s), ${totalFresh} fresh item(s)`);
-      for (const pending of pendingDeliveries) await pending.markDeferred();
+  if (dryRun) {
+    // A quiet run must not erase the last review copy. Those URLs are already
+    // marked seen, so the copy is for reading, not a queue that go-live drains.
+    let snapshot: RegistryWatchPendingSnapshot;
+    if (pendingItems.length === 0) {
+      const existing = normalizePendingSnapshot(await getStateImpl(REGISTRY_WATCH_PENDING_KEY));
+      snapshot = existing.items.length > 0
+        ? { ...existing, lastRunAt: nowIso, lastRunItemCount: 0 }
+        : { recordedAt: nowIso, itemCount: 0, items: [], lastRunAt: nowIso, lastRunItemCount: 0 };
     } else {
-      try {
-        await intakeImpl(pool, submissions, {});
-        for (const pending of pendingDeliveries) {
-          await pending.checkpoint();
-          await pending.markSuccess();
-        }
-      } catch (err) {
-        for (const pending of pendingDeliveries) {
-          await pending.markFailure().catch(() => undefined);
-        }
-        logApiUsage({ provider: 'watchtower', model: 'registry-watch', purpose: 'watchtower-registry-run', duration_ms: Date.now() - start, success: false, error_message: err instanceof Error ? err.message : String(err) });
-        throw err;
+      snapshot = {
+        recordedAt: nowIso,
+        itemCount: pendingItems.length,
+        items: pendingItems,
+        lastRunAt: nowIso,
+        lastRunItemCount: pendingItems.length,
+      };
+    }
+    await setStateImpl(REGISTRY_WATCH_PENDING_KEY, snapshot);
+    console.log(`[RegistryWatch] DRY RUN — would submit ${pendingItems.length} item(s); saved to ${REGISTRY_WATCH_PENDING_KEY}`);
+  } else if (submissions.length > 0) {
+    try {
+      await intakeImpl(pool, submissions, {});
+      for (const pending of pendingDeliveries) {
+        await pending.checkpoint();
+        await pending.markSuccess();
       }
+    } catch (err) {
+      for (const pending of pendingDeliveries) {
+        await pending.markFailure().catch(() => undefined);
+      }
+      logApiUsage({ provider: 'watchtower', model: 'registry-watch', purpose: 'watchtower-registry-run', duration_ms: Date.now() - start, success: false, error_message: err instanceof Error ? err.message : String(err) });
+      throw err;
     }
   }
 
+  if (!dryRun && firstLiveRun) {
+    await setStateImpl(REGISTRY_WATCH_LIVE_SINCE_KEY, liveSince);
+  }
+
   logApiUsage({ provider: 'watchtower', model: 'registry-watch', purpose: 'watchtower-registry-run', duration_ms: Date.now() - start, success: rssStat.errors + diffStat.errors === 0, error_message: rssStat.errors + diffStat.errors > 0 ? 'Partial run: some surfaces failed' : undefined });
-  return { ran: true, mode: dryRun ? 'dry-run' : 'live', submitted: dryRun ? 0 : totalFresh, deferred_surfaces: deferredSurfaces + (dryRun ? pendingDeliveries.length : 0), rss: rssStat, diff: diffStat };
+  return {
+    ran: true,
+    mode: dryRun ? 'dry-run' : 'live',
+    submitted: dryRun ? 0 : submittedCount,
+    pending: pendingItems.length,
+    deferred_surfaces: deferredSurfaces,
+    rss: rssStat,
+    diff: diffStat,
+  };
 }

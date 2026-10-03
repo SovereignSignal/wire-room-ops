@@ -666,30 +666,50 @@ export const SOURCE_REGISTRY: FeedSource[] = [
     },
   },
   {
-    // Avalanche Retro9000 funding rounds (ingest 'rounds', not applicant 'submissions').
-    key: 'avax-retro9000',
-    name: 'Avalanche — Retro9000',
+    // Retro9000's API host (api-retro-9000.avax.network) returns 530.
+    // The builder hub page is the live list (verified 200 on 2026-10-03).
+    key: 'avax-grants',
+    name: 'Avalanche — Grants',
     wire: 'crypto',
-    method: 'rest_json',
-    endpoint: 'https://api-retro-9000.avax.network/api/rounds?status=ACTIVE&page=1&perPage=50',
-    itemsPath: 'data',
+    method: 'scrape',
+    endpoint: 'https://build.avax.network/grants',
+    urlPrefix: 'https://build.avax.network',
+    scrapePrompt: 'Extract each currently open Avalanche grant program, research call, or bounty a builder can apply to. Use each program\'s own URL.',
     enabled: true,
-    extract: (it) => {
-      const name = pick(it, 'name');
-      const id = pick(it, 'id');
-      if (!name) return null;
-      const amtNum = pick(it, 'potential_reward.amount');
-      const cur = pick(it, 'potential_reward.currency');
-      const amount = amtNum ? `${amtNum} ${cur || ''}`.trim() : pick(it, 'potential_reward');
-      return {
-        name: name.slice(0, 200),
-        description: clip(pick(it, 'description') || name),
-        url: id ? `https://retro9000.avax.network/?round=${id}` : 'https://retro9000.avax.network/',
-        amount,
-        deadline: pick(it, 'submission_ends_at'),
-        publishedAt: toIso(pick(it, 'created_at')),
-      };
-    },
+  },
+  {
+    // octant.app 403s datacenter IPs. The Substack feed carries the epoch posts
+    // (verified 2026-10-03: Epoch 13). Title filter drops product essays.
+    key: 'octant',
+    name: 'Octant — Epochs',
+    wire: 'crypto',
+    method: 'rss',
+    endpoint: 'https://octant.substack.com/feed',
+    enabled: true,
+    titleAllow: /epoch|grant|apply|deadline|\bround\b|funding|\brfp\b/i,
+  },
+  {
+    // Open RFPs page verified 200 on 2026-10-03.
+    key: 'ef-esp-rfp',
+    name: 'Ethereum Foundation ESP — Open RFPs',
+    wire: 'crypto',
+    method: 'scrape',
+    endpoint: 'https://esp.ethereum.foundation/applicants/rfp',
+    urlPrefix: 'https://esp.ethereum.foundation',
+    scrapePrompt: 'Extract each currently open Ethereum Foundation ESP request for proposals. Use each RFP\'s own URL. Skip closed or archived RFPs.',
+    enabled: true,
+  },
+  {
+    // grants.gitcoin.co no longer resolves. Grants Stack shut down in May 2025.
+    // Campaigns are listed on gitcoin.co (verified 200 on 2026-10-03).
+    key: 'gitcoin-campaigns',
+    name: 'Gitcoin — Campaigns',
+    wire: 'crypto',
+    method: 'scrape',
+    endpoint: 'https://gitcoin.co/campaigns',
+    urlPrefix: 'https://gitcoin.co',
+    scrapePrompt: 'Extract each currently open Gitcoin campaign or funding round a builder can apply to. Skip closed historical Gitcoin Grants rounds. Use each campaign\'s own URL.',
+    enabled: true,
   },
   // =================== AI ===================
   // US federal grants, AI-scoped. Three keyword variants share the same extract logic via
@@ -697,20 +717,6 @@ export const SOURCE_REGISTRY: FeedSource[] = [
   grantsGovSource('grants-gov-ai', 'artificial intelligence'),
   grantsGovSource('grants-gov-ml', 'machine learning'),
   grantsGovSource('grants-gov-fm', 'foundation models'),
-  {
-    // Direct API is Vercel-bot-blocked; Firecrawl renders the page and bypasses it.
-    // Using /causes/ai-safety (primary); /about/regranting also tried — both yield ~1 aggregate
-    // regranting item per run rather than a rich discrete-opportunity list. Flagged for
-    // verification review; enabled so the regranting signal is captured even if thin.
-    key: 'manifund',
-    name: 'Manifund — AI Safety Grants',
-    wire: 'ai',
-    method: 'scrape',
-    endpoint: 'https://manifund.org/causes/ai-safety',
-    urlPrefix: 'https://manifund.org',
-    scrapePrompt: 'Extract active grant/regranting opportunities and open projects seeking funding on this AI-safety page. Use each project/program URL (manifund.org/projects/<slug> or /about/regranting).',
-    enabled: true,
-  },
   // EA Forum and LessWrong: three Forum-Magnum GraphQL sources via the forumMagnumSource factory.
   // Two EA Forum tags + one LessWrong tag broaden coverage beyond the single funding tag.
   forumMagnumSource('ea-forum-funding', 'EA Forum — Funding Opportunities', 'https://forum.effectivealtruism.org', 'be4pBryMKxLhkmgvE'),
@@ -809,7 +815,7 @@ export const SOURCE_REGISTRY: FeedSource[] = [
   // =================== OWN-SITE FUNDERS (continued) ===================
   {
     key: 'longview', name: 'Longview — Grants', wire: 'ai',
-    method: 'scrape', endpoint: 'https://www.longview.org/funds/', urlPrefix: 'https://www.longview.org',
+    method: 'scrape', endpoint: 'https://www.longview.org/grantmaking/', urlPrefix: 'https://www.longview.org',
     scrapePrompt: 'Extract each currently-open grant/fund/fellowship/RFP a builder can apply to; use the program\'s own application/details URL.',
     enabled: true,
   },
@@ -820,10 +826,12 @@ export const SOURCE_REGISTRY: FeedSource[] = [
     enabled: true,
   },
   {
-    key: 'ai2050', name: 'AI2050 — Grants', wire: 'ai',
-    method: 'scrape', endpoint: 'https://ai2050.schmidtsciences.org/', urlPrefix: 'https://ai2050.schmidtsciences.org',
-    scrapePrompt: 'Extract each currently-open grant/fund/fellowship/RFP a builder can apply to; use the program\'s own application/details URL.',
+    // The old AI2050 page fetched 0 items. This feed is the live Schmidt
+    // Sciences list (verified 2026-10-03). Title filter keeps calls and awards.
+    key: 'schmidt-sciences', name: 'Schmidt Sciences — Calls & Awards', wire: 'ai',
+    method: 'rss', endpoint: 'https://www.schmidtsciences.org/feed/',
     enabled: true,
+    titleAllow: /grant|fellow|funding|award|\brfp\b|\bcall\b|ai2050|polymath/i,
   },
   {
     key: 'cohere-labs', name: 'Cohere Labs — Research Grants', wire: 'ai',
@@ -854,6 +862,14 @@ export const SOURCE_REGISTRY: FeedSource[] = [
     method: 'scrape', endpoint: 'https://freebsdfoundation.org/our-work/grants/', urlPrefix: 'https://freebsdfoundation.org',
     scrapePrompt: 'Extract each currently-open grant/fund/fellowship/RFP a builder can apply to; use the program\'s own application/details URL.',
     enabled: true,
+  },
+  {
+    // Feed verified live 2026-10-03. Most posts are case studies; the title
+    // filter keeps a funding call when one is posted.
+    key: 'alpha-omega', name: 'Alpha-Omega — Updates', wire: 'oss',
+    method: 'rss', endpoint: 'https://alpha-omega.dev/feed/',
+    enabled: true,
+    titleAllow: /grant|funding|fellowship|\brfp\b|open call|call for|applicants?/i,
   },
   {
     key: 'open-source-collective', name: 'Open Source Collective — Funding', wire: 'oss',

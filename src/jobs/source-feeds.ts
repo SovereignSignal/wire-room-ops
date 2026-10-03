@@ -16,13 +16,14 @@ import { sleep } from '../utils/async';
 import { runDailyIntake } from './daily-intake';
 import {
   SOURCE_REGISTRY,
-  getEnabledSources,
   fetchSource,
   classifyFetchError,
   DEFAULT_TIMEOUT_MS,
   type FeedSource,
   type FeedItem,
 } from '../services/source-feeds';
+import { applySourceFeedConfig, normalizeSourceFeedConfig, SOURCE_FEED_CONFIG_KEY } from '../services/source-feed-config';
+import { EMPTY_SCRAPE_DAYS, nextEmptyScrapeStreak } from './daily-digest';
 
 export interface SourceFeedsOptions {
   wire?: string;
@@ -32,7 +33,7 @@ export interface SourceFeedsOptions {
 }
 
 export interface SourceFeedsResult {
-  perSource: Array<{ key: string; name: string; fetched: number; fresh: number; firstRun: boolean; error?: string; lastOk?: string | null }>;
+  perSource: Array<{ key: string; name: string; fetched: number; fresh: number; firstRun: boolean; error?: string; lastOk?: string | null; emptyStreak?: number }>;
   totalFresh: number;
   intakeSummary: IntakeRunSummary;
   durationMs: number;
@@ -41,7 +42,7 @@ export interface SourceFeedsResult {
 const SEEN_CAP = 800;             // rolling per-source seen-URL memory
 const FIRST_RUN_LIMIT = 12;       // baseline items to submit when a source is first seen
 
-interface SeenState { urls: string[]; lastRun?: string }
+interface SeenState { urls: string[]; lastRun?: string; emptyStreak?: number }
 
 function toRaw(it: FeedItem): RawScanResult {
   return {
@@ -94,9 +95,14 @@ export async function runSourceFeeds(
   const today = new Date().toISOString().split('T')[0];
   const nowIso = new Date().toISOString();
 
+  let feedConfig = normalizeSourceFeedConfig(null);
+  try {
+    feedConfig = normalizeSourceFeedConfig(await getAppState(SOURCE_FEED_CONFIG_KEY));
+  } catch { /* a missing config table uses the built-in registry */ }
+  const effective = applySourceFeedConfig(SOURCE_REGISTRY, feedConfig);
   const sources: FeedSource[] = options.sourceKeys?.length
-    ? SOURCE_REGISTRY.filter(s => options.sourceKeys!.includes(s.key))
-    : getEnabledSources(options.wire);
+    ? effective.filter(s => options.sourceKeys!.includes(s.key))
+    : effective.filter(s => s.enabled && (!options.wire || s.wire === options.wire));
 
   progress(`Pulling ${sources.length} feed sources...`, 0);
 
@@ -183,9 +189,13 @@ export async function runSourceFeeds(
       const dedupedUrls: string[] = [];
       const s = new Set<string>();
       for (const u of mergedUrls) { if (!s.has(u)) { s.add(u); dedupedUrls.push(u); } if (dedupedUrls.length >= SEEN_CAP) break; }
-      pendingSeenStates.push({ stateKey, state: { urls: dedupedUrls, lastRun: nowIso } });
+      const emptyStreak = nextEmptyScrapeStreak(source.method, items.length, state?.emptyStreak);
+      pendingSeenStates.push({ stateKey, state: { urls: dedupedUrls, lastRun: nowIso, emptyStreak } });
 
-      perSource.push({ key: source.key, name: source.name, fetched: items.length, fresh: fresh.length, firstRun });
+      perSource.push({ key: source.key, name: source.name, fetched: items.length, fresh: fresh.length, firstRun, emptyStreak });
+      if (emptyStreak >= EMPTY_SCRAPE_DAYS) {
+        console.warn(`[Feeds] ${source.key}: fetched 0 items ${emptyStreak} days running — the page may have moved`);
+      }
       console.log(`[Feeds] ${source.key}: ${items.length} fetched, ${fresh.length} fresh${capped ? ` (first-run capped to ${FIRST_RUN_LIMIT})` : ''}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
