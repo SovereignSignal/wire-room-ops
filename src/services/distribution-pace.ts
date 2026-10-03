@@ -593,6 +593,7 @@ export async function bookPacedQueue(
   pace: DistributionPace,
 ): Promise<void> {
   if (!entries.length) return;
+  // Share-row-exclusive is self-exclusive, so two bookings cannot both read an empty chat and take the same slot.
   await client.query('LOCK TABLE publication_queue IN SHARE ROW EXCLUSIVE MODE');
   const now = new Date();
   const channels = (await client.query(
@@ -600,30 +601,42 @@ export async function bookPacedQueue(
      WHERE enabled AND channel = 'telegram' AND target_id <> ''`,
   )).rows as { target_id: string; wire: string }[];
   const channelTargets = channels.map(row => ({ targetId: row.target_id, wire: row.wire }));
+  const entryIds = entries.map(entry => entry.id);
+  // A running row is an in-flight send. Its available_at is already in the past, so count it as occupying the chat now.
+  // Rows in this batch are excluded, or a re-book would space the entry after itself.
   const bookedRows = (await client.query(
-    `SELECT dc.target_id, q.available_at
+    `SELECT dc.target_id, q.status,
+            CASE WHEN q.status = 'running' THEN GREATEST(q.available_at, NOW())
+                 ELSE q.available_at END AS available_at
      FROM publication_queue q
      JOIN scan_entries se ON se.id = q.entry_id
      JOIN distribution_channels dc
        ON dc.enabled AND dc.channel = 'telegram' AND dc.target_id <> ''
       AND (dc.wire = se.wire OR dc.wire = ANY(COALESCE(se.wires, ARRAY[]::text[])))
-     WHERE q.status = 'queued'`,
-  )).rows as { target_id: string; available_at: Date }[];
+     WHERE q.status IN ('queued', 'running')
+       AND NOT (q.entry_id = ANY($1::int[]))`,
+    [entryIds],
+  )).rows as { target_id: string; status: string; available_at: Date }[];
   const sentRows = (await client.query(
-    `SELECT dc.target_id, MAX(dl.sent_at) AS sent_at
+    `SELECT dc.target_id, MAX(COALESCE(dl.sent_at, dl.created_at)) AS sent_at
      FROM distribution_logs dl
      JOIN distribution_channels dc ON dc.id = dl.channel_id
-     WHERE dl.channel = 'telegram' AND dl.status = 'success' AND dl.sent_at IS NOT NULL
+     WHERE dl.channel = 'telegram' AND dl.status = 'success'
        AND dc.enabled AND dc.channel = 'telegram'
      GROUP BY dc.target_id`,
   )).rows as { target_id: string; sent_at: Date }[];
   const booked = new Map<string, Date[]>();
-  for (const row of bookedRows) {
-    const slots = booked.get(row.target_id) ?? [];
-    slots.push(new Date(row.available_at));
-    booked.set(row.target_id, slots);
-  }
   const lastSent = new Map<string, Date | null>(sentRows.map(row => [row.target_id, new Date(row.sent_at)]));
+  for (const row of bookedRows) {
+    const at = new Date(row.available_at);
+    const slots = booked.get(row.target_id) ?? [];
+    slots.push(at);
+    booked.set(row.target_id, slots);
+    if (row.status === 'running') {
+      const prev = lastSent.get(row.target_id);
+      if (!prev || at > prev) lastSent.set(row.target_id, at);
+    }
+  }
   const sentToday = await sentTodayByTarget(client, pace, now);
   const assigned = assignSlots(
     entries.map(entry => ({ id: entry.id, targets: targetsFor(entry, channelTargets) })),
