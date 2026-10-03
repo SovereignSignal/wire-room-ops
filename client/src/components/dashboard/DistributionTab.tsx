@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { OutgoingDistribution } from './OutgoingDistribution';
+import { PaceSettings } from './PaceSettings';
 import { PublicationReview } from './PublicationReview';
 import { useToast } from '@/hooks/use-toast';
 
@@ -198,6 +199,7 @@ export function DistributionTab(_: DistributionTabProps) {
   if (loading) {
     return (
       <div className="space-y-6">
+        <PaceSettings />
         <OutgoingDistribution />
         <div className="flex items-center justify-center py-20">
           <div className="text-center space-y-3">
@@ -228,6 +230,7 @@ export function DistributionTab(_: DistributionTabProps) {
         </button>
       </div>
 
+      <PaceSettings />
       <OutgoingDistribution />
       <PublicationReview />
 

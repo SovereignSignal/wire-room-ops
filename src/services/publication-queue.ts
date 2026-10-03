@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import type { Pool } from 'pg';
 import { getPool } from '../db';
 import { distributeEntry } from './distribution';
-import { getDistributionPace, UNSENT_TELEGRAM_DESTINATION_SQL } from './distribution-pace';
+import { getDistributionPace, mergeQueueNote, paceRules, planQueue, sentTodayByTarget, UNSENT_TELEGRAM_DESTINATION_SQL, type DistributionPace } from './distribution-pace';
 
 let running = false;
 
@@ -91,9 +91,63 @@ async function completeUnpublishable(pool: Pool): Promise<void> {
     )`);
 }
 
-/** One due post per Telegram chat, then push the other overdue rows forward so a restart cannot burst. */
-async function drainPaced(pool: Pool, intervalMinutes: number): Promise<void> {
+/**
+ * Push queued rows that would send inside quiet hours or past the daily cap.
+ * Overdue rows keep a single due slot per chat; the rest move forward by the interval.
+ * A row that is already due and still allowed to send is left where it is, so the claim below can take it.
+ */
+async function enforcePaceWindow(pool: Pool, pace: DistributionPace): Promise<void> {
+  const now = new Date();
+  const rules = paceRules(pace, now);
+  const queued = (await pool.query(`
+    SELECT q.entry_id, q.available_at, q.error_message,
+           COALESCE(array_agg(DISTINCT dc.target_id) FILTER (WHERE dc.target_id IS NOT NULL AND dc.target_id <> ''), ARRAY[]::text[]) AS targets
+    FROM publication_queue q
+    JOIN scan_entries se ON se.id = q.entry_id
+    LEFT JOIN distribution_channels dc
+      ON dc.enabled AND dc.channel = 'telegram' AND dc.target_id <> ''
+     AND (dc.wire = se.wire OR dc.wire = ANY(COALESCE(se.wires, ARRAY[]::text[])))
+    WHERE q.status = 'queued'
+    GROUP BY q.entry_id, q.available_at, q.error_message
+    ORDER BY q.available_at, q.entry_id
+  `)).rows as { entry_id: number; available_at: Date; error_message: string | null; targets: string[] | null }[];
+  if (!queued.length) return;
+  const sentToday = await sentTodayByTarget(pool, pace, now);
+  const planned = planQueue(queued.map(row => ({
+    id: row.entry_id,
+    at: new Date(row.available_at),
+    targets: targetsOf(row.targets),
+  })), sentToday, rules);
+  const current = new Map(queued.map(row => [row.entry_id, row]));
+  const ids: number[] = [];
+  const ats: string[] = [];
+  const notes: (string | null)[] = [];
+  for (const item of planned) {
+    const row = current.get(item.id);
+    if (!row) continue;
+    const nextAt = item.at.getTime();
+    const dueAndSendable = nextAt <= now.getTime() + 2000 && new Date(row.available_at).getTime() <= now.getTime() + 2000;
+    const note = mergeQueueNote(row.error_message, item.reason);
+    const timeChanged = !dueAndSendable && Math.abs(nextAt - new Date(row.available_at).getTime()) > 1500;
+    if (!timeChanged && note === row.error_message) continue;
+    ids.push(item.id);
+    ats.push((dueAndSendable ? new Date(row.available_at) : item.at).toISOString());
+    notes.push(note ?? '');
+  }
+  if (!ids.length) return;
+  await pool.query(
+    `UPDATE publication_queue q
+     SET available_at = v.at, error_message = NULLIF(v.note, ''), updated_at = NOW()
+     FROM unnest($1::int[], $2::timestamptz[], $3::text[]) AS v(entry_id, at, note)
+     WHERE q.entry_id = v.entry_id AND q.status = 'queued'`,
+    [ids, ats, notes],
+  );
+}
+
+/** One due post per Telegram chat. Quiet hours, the daily cap, and catch-up spacing are applied first. */
+async function drainPaced(pool: Pool, pace: DistributionPace): Promise<void> {
   await completeUnpublishable(pool);
+  await enforcePaceWindow(pool, pace);
   const due = (await pool.query(DUE_TARGETS)).rows as { entry_id: number; targets: string[] | null }[];
   const taken = new Set<string>();
   for (const row of due) {
@@ -105,45 +159,6 @@ async function drainPaced(pool: Pool, intervalMinutes: number): Promise<void> {
     for (const target of targets) taken.add(target);
     await runClaimedJob(pool, job, token);
   }
-  if (!taken.size) return;
-  const overdue = (await pool.query(`
-    SELECT q.entry_id, q.available_at,
-           COALESCE(array_agg(DISTINCT dc.target_id) FILTER (WHERE dc.target_id IS NOT NULL AND dc.target_id <> ''), ARRAY[]::text[]) AS targets
-    FROM publication_queue q
-    JOIN scan_entries se ON se.id = q.entry_id
-    LEFT JOIN distribution_channels dc
-      ON dc.enabled AND dc.channel = 'telegram' AND dc.target_id <> ''
-     AND (dc.wire = se.wire OR dc.wire = ANY(COALESCE(se.wires, ARRAY[]::text[])))
-    WHERE q.status = 'queued' AND q.available_at <= NOW()
-    GROUP BY q.entry_id, q.available_at
-    ORDER BY q.available_at, q.entry_id
-  `)).rows as { entry_id: number; targets: string[] | null }[];
-  const byTarget = new Map<string, number[]>();
-  for (const row of overdue) {
-    for (const target of targetsOf(row.targets)) {
-      if (!taken.has(target)) continue;
-      const list = byTarget.get(target) ?? [];
-      list.push(row.entry_id);
-      byTarget.set(target, list);
-    }
-  }
-  const now = Date.now();
-  const assigned = new Map<number, number>();
-  for (const ids of byTarget.values()) {
-    ids.forEach((id, index) => {
-      const at = now + (index + 1) * intervalMinutes * 60_000;
-      const previous = assigned.get(id);
-      if (previous === undefined || at > previous) assigned.set(id, at);
-    });
-  }
-  if (!assigned.size) return;
-  const ids = [...assigned.keys()];
-  await pool.query(
-    `UPDATE publication_queue q SET available_at = v.at, updated_at = NOW()
-     FROM unnest($1::int[], $2::timestamptz[]) AS v(entry_id, at)
-     WHERE q.entry_id = v.entry_id AND q.status = 'queued'`,
-    [ids, ids.map(id => new Date(assigned.get(id)!).toISOString())],
-  );
 }
 
 /** Bounded worker for approvals durably enqueued in the status-change statement. */
@@ -155,7 +170,7 @@ export async function drainPublicationQueue(): Promise<void> {
     await reconcileStaleDeliveries();
     const pace = await getDistributionPace();
     if (pace.enabled) {
-      if (!pace.paused) await drainPaced(pool, pace.intervalMinutes);
+      if (!pace.paused) await drainPaced(pool, pace);
       return;
     }
     for (let i = 0; i < 10; i++) {

@@ -1,3 +1,4 @@
+process.env.DEV_MODE = 'true';
 require('ts-node/register/transpile-only');
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -49,7 +50,15 @@ async function channel(wire, target) {
 }
 
 async function enablePace(extra = {}) {
-  await db.setAppState(PACE_STATE_KEY, { enabled: true, intervalMinutes: 20, ...extra });
+  await db.setAppState(PACE_STATE_KEY, {
+    enabled: true,
+    intervalMinutes: 20,
+    timezone: 'America/Los_Angeles',
+    quietHours: null,
+    dailyCap: null,
+    paused: false,
+    ...extra,
+  });
 }
 
 function minutesApart(later, earlier) {
@@ -318,6 +327,191 @@ test('a curator key withholds through bulk-action, replays, and gets a 409 that 
     await new Promise(resolve => server.close(resolve));
     if (previous === undefined) delete process.env.WIRE_ROOM_CURATOR_KEYS;
     else process.env.WIRE_ROOM_CURATOR_KEYS = previous;
+  }
+});
+
+function minutesOf(date, timeZone) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+    timeZone, hourCycle: 'h23', hour: '2-digit', minute: '2-digit',
+  }).formatToParts(date).filter(part => part.type !== 'literal').map(part => [part.type, part.value]));
+  let hour = Number(parts.hour);
+  if (hour === 24) hour = 0;
+  return hour * 60 + Number(parts.minute);
+}
+
+function hhmm(total) {
+  const minute = ((total % 1440) + 1440) % 1440;
+  return `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
+}
+
+function quietCovering(date) {
+  const minute = minutesOf(date, 'America/Los_Angeles');
+  return { start: hhmm(minute - 30), end: hhmm(minute + 90) };
+}
+
+async function queueOverdue(name, minutesAgo = 30) {
+  const row = await entry(name);
+  await pool.query(`UPDATE scan_entries SET status = 'approved' WHERE id = $1`, [row.id]);
+  await pool.query(`INSERT INTO publication_queue (entry_id, available_at) VALUES ($1, NOW() - ($2 || ' minutes')::interval)`, [row.id, String(minutesAgo)]);
+  return row;
+}
+
+test('quiet hours hold every due row until the window ends, then space them', async () => {
+  await channel('crypto', 'crypto-chat');
+  const now = new Date();
+  await enablePace({ quietHours: quietCovering(now) });
+  const rows = [await queueOverdue('Night 1', 40), await queueOverdue('Night 2', 20), await queueOverdue('Night 3', 5)];
+  await queue.drainPublicationQueue();
+  assert.equal(sends, 0);
+  const booked = (await pool.query(`SELECT entry_id, available_at, error_message FROM publication_queue ORDER BY available_at, entry_id`)).rows;
+  assert.equal(booked.length, 3);
+  assert.ok(booked.every(row => new Date(row.available_at).getTime() > now.getTime() + 60_000));
+  assert.ok(booked.every(row => row.error_message === 'quiet hours'));
+  for (let i = 1; i < booked.length; i++) {
+    assert.ok(Math.abs(minutesApart(booked[i].available_at, booked[i - 1].available_at) - 20) < 0.1);
+  }
+  await queue.drainPublicationQueue();
+  assert.equal(sends, 0);
+  assert.deepEqual(rows.map(row => row.id).sort((a, b) => a - b), booked.map(row => row.entry_id).sort((a, b) => a - b));
+});
+
+test('an approval during quiet hours is booked after the window, and the drain does not send it', async (t) => {
+  await channel('crypto', 'crypto-chat');
+  const now = new Date();
+  await enablePace({ quietHours: quietCovering(now) });
+  const row = await entry('Late approval');
+  await approve(t, [row.id]);
+  const booked = (await pool.query('SELECT available_at, error_message FROM publication_queue WHERE entry_id = $1', [row.id])).rows[0];
+  assert.ok(new Date(booked.available_at).getTime() > now.getTime() + 60_000);
+  assert.equal(booked.error_message, 'quiet hours');
+  await queue.drainPublicationQueue();
+  assert.equal(sends, 0);
+  assert.equal((await pool.query('SELECT status FROM publication_queue WHERE entry_id = $1', [row.id])).rows[0].status, 'queued');
+});
+
+test('a daily cap sends one and rolls the overflow to the next day, still spaced', async () => {
+  await channel('crypto', 'crypto-chat');
+  await enablePace({ dailyCap: 2, quietHours: null });
+  await queueOverdue('Cap 1', 40);
+  await queueOverdue('Cap 2', 30);
+  await queueOverdue('Cap 3', 20);
+  await queueOverdue('Cap 4', 10);
+  await queue.drainPublicationQueue();
+  assert.equal(sends, 1);
+  const waiting = (await pool.query(`SELECT available_at, error_message FROM publication_queue WHERE status = 'queued' ORDER BY available_at`)).rows;
+  assert.equal(waiting.length, 3);
+  assert.ok(Math.abs(minutesApart(waiting[0].available_at, new Date()) - 20) < 1);
+  const { zonedDayBounds } = require('../src/services/distribution-pace');
+  const tomorrow = zonedDayBounds(new Date(), 'America/Los_Angeles').end;
+  assert.ok(Math.abs(minutesApart(waiting[1].available_at, tomorrow)) < 1);
+  assert.equal(waiting[1].error_message, 'daily cap');
+  assert.ok(Math.abs(minutesApart(waiting[2].available_at, waiting[1].available_at) - 20) < 0.1);
+  assert.equal(waiting[2].error_message, 'daily cap');
+  await queue.drainPublicationQueue();
+  assert.equal(sends, 1);
+});
+
+test('once today is already full the drain sends nothing and rolls the queue', async () => {
+  await channel('crypto', 'crypto-chat');
+  await enablePace({ dailyCap: 1, quietHours: null });
+  const prior = await entry('Sent earlier');
+  await pool.query(`UPDATE scan_entries SET status = 'approved' WHERE id = $1`, [prior.id]);
+  const channelId = (await pool.query(`SELECT id FROM distribution_channels WHERE target_id = 'crypto-chat'`)).rows[0].id;
+  await pool.query(`INSERT INTO distribution_logs (entry_id, channel, channel_id, wire, status, external_id, sent_at)
+    VALUES ($1, 'telegram', $2, 'crypto', 'success', 'already-sent', NOW())`, [prior.id, channelId]);
+  await queueOverdue('Later 1', 15);
+  await queueOverdue('Later 2', 5);
+  await queue.drainPublicationQueue();
+  assert.equal(sends, 0);
+  const waiting = (await pool.query(`SELECT error_message FROM publication_queue WHERE status = 'queued'`)).rows;
+  assert.equal(waiting.length, 2);
+  assert.ok(waiting.every(row => row.error_message === 'daily cap'));
+});
+
+test('pause keeps slots, and resume sends one per chat instead of the backlog', async (t) => {
+  await channel('crypto', 'crypto-chat');
+  await channel('ai', 'ai-chat');
+  await enablePace({ paused: true, quietHours: null, dailyCap: null });
+  const first = await entry('Paused crypto', 'crypto');
+  const second = await entry('Paused crypto 2', 'crypto');
+  const other = await entry('Paused ai', 'ai');
+  await approve(t, [first.id, second.id, other.id]);
+  await queue.drainPublicationQueue();
+  assert.equal(sends, 0);
+  const booked = (await pool.query(`SELECT entry_id, available_at FROM publication_queue ORDER BY available_at, entry_id`)).rows;
+  assert.equal(booked.length, 3);
+  const cryptoTimes = booked.filter(row => row.entry_id === first.id || row.entry_id === second.id).map(row => row.available_at);
+  assert.ok(Math.abs(minutesApart(cryptoTimes[1], cryptoTimes[0]) - 20) < 0.5);
+
+  await enablePace({ paused: false, quietHours: null, dailyCap: null });
+  await queue.drainPublicationQueue();
+  assert.equal(sends, 2);
+  await queue.drainPublicationQueue();
+  assert.equal(sends, 2);
+  const rest = (await pool.query(`SELECT available_at FROM publication_queue WHERE status = 'queued' ORDER BY available_at`)).rows;
+  assert.equal(rest.length, 1);
+  assert.ok(Math.abs(minutesApart(rest[0].available_at, new Date()) - 20) < 1);
+});
+
+test('pacing off ignores quiet hours, the cap, and pause', async () => {
+  await channel('crypto', 'crypto-chat');
+  const now = new Date();
+  await db.setAppState(PACE_STATE_KEY, {
+    enabled: false,
+    paused: true,
+    dailyCap: 1,
+    intervalMinutes: 20,
+    timezone: 'America/Los_Angeles',
+    quietHours: quietCovering(now),
+  });
+  await queueOverdue('Immediate 1', 10);
+  await queueOverdue('Immediate 2', 8);
+  await queueOverdue('Immediate 3', 6);
+  await queue.drainPublicationQueue();
+  assert.equal(sends, 3);
+  const outgoing = await listOutgoing();
+  assert.equal(outgoing.pace.enabled, false);
+  assert.match(outgoing.banner, /Pacing off/);
+});
+
+test('PUT /api/distribution/pace validates settings and logs who changed them', async () => {
+  const { app } = require('../src/server');
+  const server = await new Promise(resolve => { const listening = app.listen(0, '127.0.0.1', () => resolve(listening)); });
+  const put = (body) => fetch(`http://127.0.0.1:${server.address().port}/api/distribution/pace`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  try {
+    assert.equal((await put({ timezone: 'Not/AZone' })).status, 400);
+    assert.equal((await put({ quietHours: { start: '25:00', end: '08:00' } })).status, 400);
+    assert.equal((await put({ dailyCap: 0 })).status, 400);
+    assert.equal((await put({ paused: 'yes' })).status, 400);
+    assert.equal((await put({ enabled: 'true' })).status, 400);
+    const saved = await put({
+      enabled: false,
+      intervalMinutes: 999,
+      timezone: 'America/Los_Angeles',
+      quietHours: { start: '22:00', end: '8:00' },
+      dailyCap: null,
+      paused: false,
+    });
+    assert.equal(saved.status, 200);
+    const body = await saved.json();
+    assert.equal(body.pace.enabled, false);
+    assert.equal(body.pace.intervalMinutes, 180);
+    assert.deepEqual(body.pace.quietHours, { start: '22:00', end: '08:00' });
+    assert.equal(body.changed, true);
+    assert.match(body.changes[0].actor, /^user:/);
+    assert.match(body.changes[0].summary, /180/);
+    assert.ok(body.changes[0].at);
+    const stored = await db.getAppState(PACE_STATE_KEY);
+    assert.equal(stored.enabled, false);
+    const again = await fetch(`http://127.0.0.1:${server.address().port}/api/distribution/pace`);
+    assert.equal(again.status, 200);
+    assert.equal((await again.json()).changes.length, 1);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
   }
 });
 

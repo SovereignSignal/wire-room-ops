@@ -4,6 +4,9 @@
  * Mounted at /api — keeps full sub-paths since routes span both
  * /api/distribution/* and /api/scan/entries/:id/* namespaces.
  *
+ * GET    /distribution/pace                      — pace settings and the change log
+ * PUT    /distribution/pace                      — validate and store pace settings
+ * GET    /distribution/outgoing                  — scheduled, sent, and stuck rows
  * GET    /distribution/config                     — list distribution configs (creds masked)
  * PUT    /distribution/config/:wire/:channel      — update channel config
  * POST   /distribution/run/:wire                  — trigger distribution
@@ -35,12 +38,46 @@ import {
   getFeedByKey,
 } from '../db';
 import { distributeEntries, generateNewsletterMarkdown, confirmNewsletterDistribution, sendTestMessage } from '../services/distribution';
-import { listOutgoing } from '../services/distribution-pace';
+import { getDistributionPace, listPaceChanges, PaceValidationError, parsePaceUpdate, saveDistributionPace, listOutgoing } from '../services/distribution-pace';
 import { maskConfig, maskCredentials } from '../utils/masking';
 import { rateLimit } from '../middleware/rate-limit';
 import { isValidUuid, isValidFeedKey } from '../utils/validation';
 
 const router = Router();
+
+function paceActor(req: Request): string {
+  return (req as Request & { authSession?: { userId?: string } }).authSession?.userId || 'unknown';
+}
+
+router.get('/distribution/pace', async (_req, res) => {
+  try {
+    res.json({ pace: await getDistributionPace(), changes: await listPaceChanges() });
+  } catch (error) {
+    console.error('[Distribution] Pace settings read failed:', error);
+    res.status(500).json({ error: 'Could not load pace settings' });
+  }
+});
+
+router.put('/distribution/pace', async (req, res) => {
+  const actor = paceActor(req);
+  if (!rateLimit(`distribution-pace:${actor}`, 30, 15 * 60 * 1000)) {
+    res.status(429).json({ error: 'Too many pace changes. Wait a few minutes and try again.' });
+    return;
+  }
+  try {
+    const current = await getDistributionPace();
+    const next = parsePaceUpdate(req.body, current);
+    const saved = await saveDistributionPace(next, actor);
+    res.json({ pace: saved.pace, changed: saved.changed, changes: await listPaceChanges() });
+  } catch (error) {
+    if (error instanceof PaceValidationError) {
+      res.status(400).json({ error: error.message });
+      return;
+    }
+    console.error('[Distribution] Pace settings update failed:', error);
+    res.status(500).json({ error: 'Could not save pace settings' });
+  }
+});
 
 router.get('/distribution/outgoing', async (req, res) => {
   const raw = req.query.sentSince;
