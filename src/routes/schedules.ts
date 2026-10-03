@@ -17,6 +17,7 @@ import { SCHEDULE_TYPES } from '../types/intake';
 import { getPool } from '../db';
 import { isValidUuid } from '../utils/validation';
 import { getSchedule, getSchedules, setSchedule, addSchedule, removeSchedule, formatScheduleDescription, getNextRunTime, sendTestAlert, getSchedulerStatus, ScheduleConfig } from '../services/scheduler';
+import { noteCuratorChange } from '../services/curator-audit';
 
 const router = Router();
 
@@ -88,6 +89,7 @@ router.post('/schedules', async (req: Request, res: Response) => {
     const newSchedule = await addSchedule(scheduleData);
     const nextRun = getNextRunTime(newSchedule.id);
     const description = formatScheduleDescription(newSchedule);
+    noteCuratorChange(res, { subject: 'POST /api/schedules', old: null, next: newSchedule });
 
     res.json({
       ...newSchedule,
@@ -133,6 +135,7 @@ router.put('/schedules/:id', async (req: Request, res: Response) => {
   if (notifyEmails !== undefined) updates.notifyEmails = notifyEmails || undefined;
 
   try {
+    const previous = getSchedule(id);
     const updatedSchedule = await setSchedule(id, updates);
     if (!updatedSchedule) {
       res.status(404).json({ error: 'Schedule not found' });
@@ -141,6 +144,7 @@ router.put('/schedules/:id', async (req: Request, res: Response) => {
 
     const nextRun = getNextRunTime(updatedSchedule.id);
     const description = formatScheduleDescription(updatedSchedule);
+    noteCuratorChange(res, { subject: `PUT /api/schedules/${id}`, old: previous, next: updatedSchedule });
 
     res.json({
       ...updatedSchedule,
@@ -162,11 +166,13 @@ router.delete('/schedules/:id', async (req: Request, res: Response) => {
   }
 
   try {
+    const previous = getSchedule(id);
     const deleted = await removeSchedule(id);
     if (!deleted) {
       res.status(404).json({ error: 'Schedule not found' });
       return;
     }
+    noteCuratorChange(res, { subject: `DELETE /api/schedules/${id}`, old: previous, next: { deleted: true } });
     res.json({ success: true });
   } catch (error) {
     console.error('Failed to delete schedule:', error);
@@ -196,6 +202,11 @@ router.post('/digest/send-now', async (req: Request, res: Response) => {
       : undefined;
 
     const summary = await assembleAndSendDailyDigest(pool, { recipients });
+    noteCuratorChange(res, {
+      subject: 'POST /api/digest/send-now',
+      old: null,
+      next: { date: summary.date, fresh: summary.freshCount, totalNew: summary.totalNew },
+    });
     res.json({
       success: true,
       message: `Digest sent to ${recipients?.join(', ') || 'default recipients'}`,
@@ -215,6 +226,7 @@ router.post('/test-alert', async (req: Request, res: Response) => {
   try {
     const result = await sendTestAlert();
     if (result.success) {
+      noteCuratorChange(res, { subject: 'POST /api/test-alert', old: null, next: { sent: true } });
       res.json({ success: true, message: result.message });
     } else {
       res.status(500).json({ success: false, error: result.message });

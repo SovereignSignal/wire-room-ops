@@ -14,6 +14,7 @@
 import { Router, Request, Response } from 'express';
 import { PROMPT_VARIANTS, TOOL_TYPES } from '../types/intake';
 import { getPool, getAllScanPrompts, getScanPromptById, createScanPrompt, updateScanPrompt, deleteScanPrompt, getAllFeeds } from '../db';
+import { noteCuratorChange } from '../services/curator-audit';
 import { rateLimit } from '../middleware/rate-limit';
 import { isValidUuid } from '../utils/validation';
 import { executeScanPrompt } from '../services/grok';
@@ -202,6 +203,7 @@ router.post('/', async (req: Request, res: Response) => {
       outputFormat: outputFormat || undefined,
       intent: intent || undefined,
     });
+    noteCuratorChange(res, { subject: 'POST /api/scan/prompts', old: null, next: prompt });
 
     res.json(prompt);
   } catch (error) {
@@ -270,11 +272,13 @@ router.put('/:id', async (req: Request, res: Response) => {
   }
 
   try {
+    const previous = await getScanPromptById(id);
     const updated = await updateScanPrompt(id, updates);
     if (!updated) {
       res.status(404).json({ error: 'Prompt not found' });
       return;
     }
+    noteCuratorChange(res, { subject: `PUT /api/scan/prompts/${id}`, old: previous, next: updated });
     res.json(updated);
   } catch (error) {
     console.error('Failed to update scan prompt:', error);
@@ -291,11 +295,13 @@ router.delete('/:id', async (req: Request, res: Response) => {
   }
 
   try {
+    const previous = await getScanPromptById(id);
     const deleted = await deleteScanPrompt(id);
     if (!deleted) {
       res.status(404).json({ error: 'Prompt not found' });
       return;
     }
+    noteCuratorChange(res, { subject: `DELETE /api/scan/prompts/${id}`, old: previous, next: { deleted: true } });
     res.json({ success: true });
   } catch (error) {
     console.error('Failed to delete scan prompt:', error);
@@ -478,6 +484,11 @@ router.post('/:id/run', async (req: Request, res: Response) => {
 
     console.log(`[PromptRun] "${prompt.label}" → ${parsed.length} parsed (${parseStrategy}), ${intakeSummary.newUnique} new, ${intakeSummary.highQualityCount} high quality`);
 
+    noteCuratorChange(res, {
+      subject: `POST /api/scan/prompts/${prompt.id}/run`,
+      old: null,
+      next: { promptId: prompt.id, parsed: parsed.length, newUnique: intakeSummary.newUnique },
+    });
     res.json({
       success: true,
       parsedCount: parsed.length,

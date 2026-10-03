@@ -8,6 +8,11 @@
  * Scopes: read_queue, decide, propose, intake. A key only receives the scopes listed.
  * intake is the producer scope: it opens POST /telegram-batch and nothing else,
  * so a batch producer gets its own agent:<name> identity without the internal key.
+ *
+ * Dashboard reads use read_queue and dashboard writes use decide, so Hedwig's
+ * existing scopes open the same controls the dashboard session can use.
+ * No new scope is required. Evidence and Idempotency-Key stay on the editorial
+ * decide/curate writes only.
  */
 
 import crypto from 'crypto';
@@ -92,21 +97,56 @@ export function matchCuratorKey(token: string, keys: CuratorKey[], now = new Dat
   return null;
 }
 
+const DASHBOARD_PREFIXES = [
+  '/api/distribution',
+  '/api/schedules',
+  '/api/dashboard',
+  '/api/feeds',
+  '/api/wires',
+  '/api/models',
+  '/api/providers',
+  '/api/usage',
+  '/api/pricing',
+  '/api/database',
+  '/api/grants-intel',
+  '/api/integrations',
+  '/api/scan/prompts',
+  '/api/job/',
+];
+
+function isDashboardCuratorPath(path: string): boolean {
+  if (
+    path === '/api/digest/send-now' ||
+    path === '/api/test-alert' ||
+    path === '/api/scheduler-status' ||
+    path === '/api/scan/manual-intake' ||
+    path === '/api/scan/run' ||
+    path === '/api/forum/run' ||
+    path === '/api/cohort/run' ||
+    path === '/api/scan/prompt-stats' ||
+    path === '/api/scan/cost-stats' ||
+    path === '/api/scan/stats'
+  ) return true;
+  if (/^\/api\/scan\/entries\/\d+\/(distribution|redistribute|retry-summarize)$/.test(path)) return true;
+  return DASHBOARD_PREFIXES.some(prefix => path === prefix || path.startsWith(prefix.endsWith('/') ? prefix : `${prefix}/`));
+}
+
 /**
  * Which scope a curator key needs for this request.
- * Anything not listed is forbidden — curator keys are not a second internal key.
+ * Editorial routes keep their original scopes. Dashboard routes the UI calls
+ * use read_queue for reads and decide for writes. Anything else is forbidden.
  */
 export function requiredCuratorScope(method: string, rawPath: string): CuratorScope | 'forbidden' {
   const path = (rawPath || '').split('?')[0].replace(/\/+$/, '') || '/';
   const m = method.toUpperCase();
 
-  if (path.startsWith('/api/scan/prompts')) return 'forbidden';
-  if (path === '/api/scan/run' || path === '/api/forum/run' || path === '/api/feeds/run' || path === '/api/cohort/run') return 'forbidden';
+  // Not dashboard controls. Accounts stay Notion-driven. submit-batch and the
+  // agent brief are producer doors. Admin maintenance stays on the session.
   if (path.startsWith('/api/accounts')) return 'forbidden';
-  if (path.startsWith('/api/grants-intel')) return 'forbidden';
-  if (path.startsWith('/api/job/')) return 'forbidden';
-  if (path === '/api/scan/manual-intake' || path === '/api/scan/submit-batch') return 'forbidden';
-  if (/\/redistribute$/.test(path)) return 'forbidden';
+  if (path.startsWith('/api/admin')) return 'forbidden';
+  if (path === '/api/scan/submit-batch') return 'forbidden';
+  if (path === '/api/scan/agent/send-brief') return 'forbidden';
+  if (path === '/api/summary-sync' || path === '/api/process-raw' || path === '/api/enrich' || path === '/api/scan/classify-queue') return 'forbidden';
 
   // Rows from a scoped key start raw like any agent batch (handleTextIntake keys off isAgent).
   if (m === 'POST' && path === '/api/scan/telegram-batch') return 'intake';
@@ -133,6 +173,10 @@ export function requiredCuratorScope(method: string, rawPath: string): CuratorSc
     (m === 'POST' && /^\/api\/scan\/entries\/\d+\/curate$/.test(path)) ||
     (m === 'POST' && path === '/api/scan/submit')
   ) return 'propose';
+
+  if (isDashboardCuratorPath(path)) {
+    return m === 'GET' || m === 'HEAD' ? 'read_queue' : 'decide';
+  }
 
   return 'forbidden';
 }

@@ -16,6 +16,7 @@ import { runScanExecution } from '../jobs/scan-execution';
 import { runForumScan } from '../jobs/forum-scan';
 import { runSourceFeeds } from '../jobs/source-feeds';
 import { runCohortBridge } from '../jobs/cohort-bridge';
+import { noteCuratorChange } from '../services/curator-audit';
 
 const router = Router();
 
@@ -47,6 +48,7 @@ router.post('/scan/run', async (req: Request, res: Response) => {
 
   const jobId = jobQueue.createJob();
   runningScanJobId = jobId;
+  noteCuratorChange(res, { subject: 'POST /api/scan/run', old: null, next: { jobId } });
   res.json({ jobId });
 
   (async () => {
@@ -105,6 +107,7 @@ router.post('/forum/run', async (req: Request, res: Response) => {
 
   const jobId = jobQueue.createJob();
   runningForumJobId = jobId;
+  noteCuratorChange(res, { subject: 'POST /api/forum/run', old: null, next: { jobId } });
   res.json({ jobId });
 
   (async () => {
@@ -157,6 +160,7 @@ router.post('/feeds/run', async (req: Request, res: Response) => {
 
   const jobId = jobQueue.createJob();
   runningFeedsJobId = jobId;
+  noteCuratorChange(res, { subject: 'POST /api/feeds/run', old: null, next: { jobId } });
   res.json({ jobId });
 
   (async () => {
@@ -204,6 +208,7 @@ router.post('/cohort/run', async (req: Request, res: Response) => {
   const pool = getPool();
   const jobId = jobQueue.createJob();
   runningCohortJobId = jobId;
+  noteCuratorChange(res, { subject: 'POST /api/cohort/run', old: null, next: { jobId } });
   res.json({ jobId });
 
   (async () => {

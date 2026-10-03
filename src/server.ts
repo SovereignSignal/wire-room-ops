@@ -4,7 +4,7 @@ import cookieParser from 'cookie-parser';
 import { config } from './config';
 import { stopAuthCleanup } from './services/auth';
 import { requireAuth } from './middleware/auth';
-import { requireAuthOrInternalKey } from './middleware/internal-auth';
+import { requireAuthOrCurator, requireAuthOrInternalKey } from './middleware/internal-auth';
 import { closePool, getPool } from './db';
 import { jobQueue } from './services/job-queue';
 import { getSchedules, addSchedule, initScheduler, stopScheduler, getSchedulerStatus } from './services/scheduler';
@@ -112,32 +112,32 @@ app.use('/api/scan', requireAuthOrInternalKey, scanEntryRouter);
 // prefix-shadow POST /api/feeds/run and /api/forum/run and would 401 the internal key.
 app.use('/api', requireAuthOrInternalKey, scanExecutionRouter);
 
-// Feed CRUD API (session only) — mounted AFTER scanExecutionRouter so /api/feeds/run
-// resolves to the trigger above, not this CRUD router.
-app.use('/api/feeds', requireAuth, feedRouter);
+// Feed CRUD API — mounted AFTER scanExecutionRouter so /api/feeds/run
+// resolves to the trigger above, not this CRUD router. Curator token or session.
+app.use('/api/feeds', requireAuthOrCurator, feedRouter);
 
 // Schedule, digest & scheduler status API
-app.use('/api', requireAuth, scheduleRouter);
+app.use('/api', requireAuthOrCurator, scheduleRouter);
 
 // Dashboard overview stats
-app.use('/api/dashboard', requireAuth, dashboardRouter);
+app.use('/api/dashboard', requireAuthOrCurator, dashboardRouter);
 
 // Background job triggers + SSE progress + Telegram webhook
 // NOTE: jobRouter contains the Telegram webhook which does NOT use requireAuth.
 // Models & wires lookup
-app.use('/api', requireAuth, modelRouter);
+app.use('/api', requireAuthOrCurator, modelRouter);
 
-// Distribution API (config, channels CRUD, run, newsletter, status, redistribute)
-app.use('/api', requireAuth, distributionRouter);
+// Distribution API (config, channels CRUD, run, newsletter, status)
+app.use('/api', requireAuthOrCurator, distributionRouter);
 
-// CSV export API
+// CSV export API (not a dashboard control; session only)
 app.use('/api/export', requireAuth, exportRouter);
 
 // API providers, usage tracking & pricing
-app.use('/api', requireAuth, providerRouter);
+app.use('/api', requireAuthOrCurator, providerRouter);
 
 // Database introspection API
-app.use('/api/database', requireAuth, databaseRouter);
+app.use('/api/database', requireAuthOrCurator, databaseRouter);
 
 // Grants intelligence intake / four-pillar review view
 app.use('/api/grants-intel', requireAuthOrInternalKey, grantsIntelRouter);
@@ -146,7 +146,7 @@ app.use('/api/grants-intel', requireAuthOrInternalKey, grantsIntelRouter);
 app.use('/api/orgs', requireAuth, orgRouter);
 
 // Integrations API (Notion CRM Sync)
-app.use('/api/integrations', requireAuth, integrationRouter);
+app.use('/api/integrations', requireAuthOrCurator, integrationRouter);
 
 // Admin operations (migrations, backfills, purges)
 app.use('/api/admin', requireAuth, adminRouter);

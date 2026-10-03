@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { Pool } from 'pg';
 import { getEffectiveDbUrl, getDbConfigMeta, isDatabaseUrlChangeAllowed, saveDbConfig } from '../config/db-config';
+import { noteCuratorChange } from '../services/curator-audit';
 
 const router = Router();
 
@@ -84,11 +85,13 @@ router.post('/config/test', async (req: Request, res: Response) => {
   try {
     const result = await testPool.query('SELECT version()');
     const latencyMs = Date.now() - start;
-    res.json({
+    const outcome = {
       success: true,
       latencyMs,
       version: result.rows[0]?.version || null,
-    });
+    };
+    noteCuratorChange(res, { subject: 'POST /api/database/config/test', old: null, next: { success: true } });
+    res.json(outcome);
   } catch (error) {
     const latencyMs = Date.now() - start;
     res.json({
@@ -130,9 +133,12 @@ router.post('/config', async (req: Request, res: Response) => {
   }
 
   try {
+    const previous = getDbConfigMeta();
     const result = saveDbConfig(databaseUrl);
     resetPool(); // Force pool recreation with new URL
-    res.json({ ...result, ...getDbConfigMeta() });
+    const saved = { ...result, ...getDbConfigMeta() };
+    noteCuratorChange(res, { subject: 'POST /api/database/config', old: previous, next: saved });
+    res.json(saved);
   } catch (error) {
     res.status(500).json({ error: 'Failed to save config' });
   }

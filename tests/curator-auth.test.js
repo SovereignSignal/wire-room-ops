@@ -74,21 +74,41 @@ test('read_queue reaches GET /queue and a read-only key cannot submit', async ()
   assert.equal(forbidden.error, 'forbidden');
 });
 
-test('a full curator key is forbidden on operator doors', async () => {
+test('a full curator key is still forbidden on producer and admin doors', async () => {
   for (const [method, path] of [
-    ['POST', '/api/feeds/run'],
-    ['POST', '/api/forum/run'],
-    ['POST', '/api/scan/run'],
-    ['POST', '/api/cohort/run'],
-    ['POST', '/api/scan/prompts'],
     ['POST', '/api/scan/telegram-batch'],
-    ['POST', '/api/scan/manual-intake'],
     ['POST', '/api/accounts'],
-    ['POST', '/api/scan/entries/1/redistribute'],
+    ['POST', '/api/scan/submit-batch'],
+    ['POST', '/api/admin/purge-source'],
   ]) {
     const res = await call(method, path, { key: FULL, body: {} });
     assert.equal(res.status, 403, `${method} ${path} returned ${res.status}`);
   }
+});
+
+test('dashboard settings reject a missing token, a wrong token, a read-only key, and a bad pace body', async () => {
+  const missing = await call('GET', '/api/distribution/pace');
+  assert.equal(missing.status, 401);
+  const wrong = await call('GET', '/api/distribution/outgoing', { key: 'not-a-curator-token' });
+  assert.equal(wrong.status, 401);
+  const reader = await call('PUT', '/api/distribution/pace', { key: READ, body: { intervalMinutes: 15 } });
+  assert.equal(reader.status, 403);
+
+  const invalid = await call('PUT', '/api/distribution/pace', { key: FULL, body: { timezone: 'Not/AZone' } });
+  assert.equal(invalid.status, 400);
+  assert.match((await invalid.json()).error, /timezone/);
+
+  const destroy = await call('DELETE', '/api/distribution/channels/00000000-0000-4000-8000-000000000001', { key: FULL });
+  assert.equal(destroy.status, 400);
+  assert.equal((await destroy.json()).error, 'confirm_required');
+
+  const secret = await call('PUT', '/api/providers/grok', { key: FULL, body: { api_key: 'new-key-value' } });
+  assert.equal(secret.status, 400);
+  assert.equal((await secret.json()).error, 'confirm_required');
+
+  const paste = await call('POST', '/api/scan/manual-intake', { key: FULL, body: {} });
+  assert.equal(paste.status, 400);
+  assert.match((await paste.json()).error, /text is required/);
 });
 
 // The Grok Telegram Batch workflow posts here. Its key must open this door and no other.
@@ -100,6 +120,9 @@ test('an intake key reaches POST /telegram-batch and nothing else', async () => 
   for (const [method, path] of [
     ['GET', '/api/scan/queue'],
     ['GET', '/api/scan/telegram-batch'],
+    ['GET', '/api/distribution/pace'],
+    ['GET', '/api/distribution/outgoing'],
+    ['PUT', '/api/distribution/pace'],
     ['POST', '/api/scan/submit'],
     ['POST', '/api/scan/manual-intake'],
     ['POST', '/api/scan/submit-batch'],
