@@ -1,6 +1,6 @@
 /**
  * Extra gate for curator-token writes that delete data, replace a secret,
- * or send a message. Post-text edits and withhold releases also require
+ * or send a message. Entry content edits and withhold releases also require
  * confirm from every caller, including a dashboard session. Other agent
  * keys still cannot send.
  */
@@ -8,7 +8,7 @@
 import { Request } from 'express';
 import { isSecretKey } from './curator-audit';
 
-/** Post-text edits and withhold releases. Confirm is required. These are not sends. */
+/** Entry content edits and withhold releases. Confirm is required. These are not sends. */
 const EDITORIAL_CONFIRM_PATHS: { method: string; pattern: RegExp }[] = [
   { method: 'PATCH', pattern: /^\/api\/scan\/entries\/\d+\/content$/ },
   { method: 'POST', pattern: /^\/api\/scan\/entries\/\d+\/unwithhold$/ },
@@ -101,7 +101,7 @@ export function enforceCuratorGuards(req: Request): CuratorGuard | null {
       status: 400,
       body: {
         error: 'confirm_required',
-        message: 'Editing post text or releasing a withhold needs confirm=true. This action does not send.',
+        message: 'Editing entry content or releasing a withhold needs confirm=true. This action does not send.',
       },
     };
   }
@@ -112,7 +112,7 @@ export function enforceCuratorGuards(req: Request): CuratorGuard | null {
       body: {
         error: 'confirm_required',
         message: editorial
-          ? 'Editing post text or releasing a withhold needs confirm=true. This action does not send.'
+          ? 'Editing entry content or releasing a withhold needs confirm=true. This action does not send.'
           : 'This action deletes data, changes a secret, or sends a message. Retry with confirm=true.',
       },
     };
