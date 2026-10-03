@@ -15,6 +15,7 @@ import { getDiscoveryCoverage } from '../services/discovery-coverage';
 
 import { Router, Request, Response } from 'express';
 import { getAllProviders, upsertProvider, testProviderConnection } from '../services/api-provider';
+import { noteCuratorChange } from '../services/curator-audit';
 import { getUsageSummary, getUsageTimeline, getRecentUsage, getModelPricing, upsertModelPricing } from '../services/api-usage';
 
 const router = Router();
@@ -77,12 +78,18 @@ router.put('/providers/:provider', async (req: Request, res: Response) => {
   const cleanKey = api_key && typeof api_key === 'string' && api_key.startsWith('****') ? undefined : api_key;
 
   try {
+    const previous = (await getAllProviders()).find(row => row.provider === provider) || null;
     const result = await upsertProvider(provider, {
       api_key: cleanKey,
       base_url,
       default_model,
       enabled,
       display_name,
+    });
+    noteCuratorChange(res, {
+      subject: `PUT /api/providers/${provider}`,
+      old: previous ? { provider: previous.provider, enabled: previous.enabled, base_url: previous.base_url, default_model: previous.default_model, api_key: previous.api_key } : null,
+      next: { provider, enabled, base_url, default_model, api_key: result.api_key },
     });
     res.json({
       ...result,
@@ -102,6 +109,7 @@ router.post('/providers/:provider/test', async (req: Request, res: Response) => 
   }
   try {
     const result = await testProviderConnection(req.params.provider);
+    noteCuratorChange(res, { subject: `POST /api/providers/${req.params.provider}/test`, old: null, next: { provider: req.params.provider, success: result.success } });
     res.json(result);
   } catch (error) {
     console.error('[Providers] Test failed:', error);
@@ -161,11 +169,13 @@ router.put('/pricing/:provider/:model', async (req: Request, res: Response) => {
   const { input_cost_per_1m, output_cost_per_1m, per_request_cost } = req.body;
 
   try {
+    const previous = (await getModelPricing()).find(row => row.provider === provider && row.model === model) || null;
     const result = await upsertModelPricing(provider, model, {
       input_cost_per_1m,
       output_cost_per_1m,
       per_request_cost,
     });
+    noteCuratorChange(res, { subject: `PUT /api/pricing/${provider}/${model}`, old: previous, next: result });
     res.json(result);
   } catch (error) {
     console.error('[Pricing] Failed to update:', error);
