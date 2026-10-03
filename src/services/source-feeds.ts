@@ -3,7 +3,7 @@
  *
  * Each source is config (method + endpoint + field mapping). A handler fetches the
  * source's container format (RSS/Atom, JSON REST, GraphQL, GitHub raw file, or a
- * Firecrawl scrape) and normalizes each record to a FeedItem {name, description, url,
+ * page scrape) and normalizes each record to a FeedItem {name, description, url,
  * amount, deadline, publishedAt}. The job layer (jobs/source-feeds.ts) filters to
  * net-new since a per-source watermark and pushes items through the existing intake
  * pipeline (precision pass -> dedup -> classifier -> queue) as scan_source='feed'.
@@ -21,6 +21,7 @@ import { getCachedProvider } from './api-provider';
 import { logApiUsage } from './api-usage';
 import { chatCompletionExtras, DEFAULT_GROK_MODEL } from './grok';
 import { detectWireFromText } from './intake-core';
+import { isSafeHttpUrl, safePublicFetch } from '../utils/ssrf';
 
 // --- Types ---
 
@@ -52,9 +53,9 @@ export interface FeedSource {
   scrapePrompt?: string;
   maxItems?: number;           // safety cap per fetch (default 40)
   timeoutMs?: number;          // per-source fetch fuse; defaults to DEFAULT_TIMEOUT_MS.
-                                // Only honored by rss/rest_json/graphql/github_csv — the
-                                // scrape method delegates to scrapeUrl(), which hardcodes
-                                // its own 30s timeout; this field is a no-op for scrape sources.
+                                // Honored by rss/rest_json/graphql/github_csv and the scrape
+                                // method's plain fetch. Firecrawl's own 30s timeout applies
+                                // only when that plain fetch falls back.
   // For rest_json/graphql sources whose shape needs URL construction, fallback chains,
   // unit conversion, or filtering that dot-path `fields` can't express. Return null to drop.
   extract?: (item: unknown) => FeedItem | null;
@@ -434,11 +435,180 @@ function parseCsv(text: string): string[][] {
   return rows;
 }
 
-/** Scrape a portal page with Firecrawl, then LLM-extract opportunities. */
+/** Visible text shorter than this, and fewer than three real links, is not a page. */
+export const PLAIN_FETCH_MIN_TEXT = 200;
+
+const BLOCKED_PAGE = /cf-browser-verification|cf-challenge|challenge-platform|\/cdn-cgi\/challenge|Just a moment\.\.\.|Attention Required!\s*\|\s*Cloudflare|Checking your browser|Enable JavaScript and cookies to continue|Please enable JavaScript|you need to enable JavaScript|DDoS protection by Cloudflare|Sorry, you have been blocked|cf-error-details/i;
+const UNSAFE_PAGE = 'URL is not a safe public HTTP(S) target';
+
+export interface PlainPageFetch {
+  status: number;
+  body: string;
+}
+
+export interface ExtractedPage {
+  text: string;
+  links: Array<{ text: string; href: string }>;
+}
+
+export type PlainFetchDecision =
+  | { fallback: false; content: string }
+  | { fallback: true; reason: 'http' | 'empty' | 'blocked' | 'error'; detail: string };
+
+export interface ScrapePageLoad {
+  content: string;
+  path: 'fetch' | 'firecrawl';
+  reason: string;
+}
+
+export function firecrawlJobForFeed(source: { key: string; usagePurpose?: string }): string {
+  if (source.usagePurpose === 'watchtower-registry-extract' || /^ws-(?:diff|rss)-\d+$/.test(source.key)) {
+    return 'registry-watch';
+  }
+  return `source-feed:${source.key}`;
+}
+
+function resolveHttpLink(href: string, baseUrl: string): string | null {
+  if (!href || href.startsWith('#') || /^(javascript|mailto|tel|data):/i.test(href)) return null;
+  try {
+    const url = new URL(href, baseUrl);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+/** Drop scripts and styles, keep visible text, and resolve anchor hrefs. */
+export function extractPageTextAndLinks(html: string, baseUrl: string): ExtractedPage {
+  const cleaned = html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ');
+  const links: ExtractedPage['links'] = [];
+  const seen = new Set<string>();
+  const anchors = cleaned.matchAll(/<a\b([^>]*?)>([\s\S]*?)<\/a>/gi);
+  for (const match of anchors) {
+    const hrefRaw = match[1].match(/\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')/i);
+    const href = hrefRaw?.[1] ?? hrefRaw?.[2];
+    if (!href) continue;
+    const absolute = resolveHttpLink(decodeEntities(href).trim(), baseUrl);
+    if (!absolute || seen.has(absolute)) continue;
+    seen.add(absolute);
+    links.push({
+      text: stripTags(decodeEntities(match[2])).slice(0, 180),
+      href: absolute,
+    });
+  }
+  return { text: stripTags(decodeEntities(cleaned)), links };
+}
+
+export function pageContentForExtract(extracted: ExtractedPage): string {
+  const lines = extracted.links.slice(0, 80).map(link => (link.text ? `${link.text} — ${link.href}` : link.href));
+  if (!lines.length) return extracted.text;
+  return `${extracted.text}\n\nLINKS:\n${lines.join('\n')}`.trim();
+}
+
+function looksLikeJsShell(html: string, usefulLength: number, substantialLinks: number): boolean {
+  if (usefulLength >= PLAIN_FETCH_MIN_TEXT || substantialLinks >= 3) return false;
+  const externalScripts = (html.match(/<script\b[^>]*\bsrc\s*=/gi) || []).length;
+  const hasAppRoot = /id=["'](?:root|__next|app)["']/i.test(html);
+  const asksForJs = /enable javascript|requires javascript/i.test(html);
+  return asksForJs || (externalScripts > 0 && hasAppRoot) || (externalScripts > 0 && usefulLength < 80);
+}
+
+/**
+ * Decide whether a plain HTTP response is usable page text.
+ * Fallback reasons match the credit rule: non-2xx, empty, or a bot wall.
+ */
+export function decidePlainFetch(page: PlainPageFetch, baseUrl: string): PlainFetchDecision {
+  const body = page.body || '';
+  const blocked = BLOCKED_PAGE.test(body);
+  if (page.status === 403 || page.status === 429 || blocked) {
+    const detail = page.status === 403 || page.status === 429 ? `HTTP ${page.status}` : 'bot challenge';
+    return { fallback: true, reason: 'blocked', detail };
+  }
+  if (page.status < 200 || page.status >= 300) {
+    return { fallback: true, reason: 'http', detail: `HTTP ${page.status}` };
+  }
+  const extracted = extractPageTextAndLinks(body, baseUrl);
+  const useful = `${extracted.text} ${extracted.links.map(link => link.text).join(' ')}`.replace(/\s+/g, ' ').trim();
+  const substantialLinks = extracted.links.filter(link => link.text.length >= 8).length;
+  if (looksLikeJsShell(body, useful.length, substantialLinks)) {
+    return { fallback: true, reason: 'blocked', detail: 'js-only shell' };
+  }
+  if (useful.length < PLAIN_FETCH_MIN_TEXT && substantialLinks < 3) {
+    return { fallback: true, reason: 'empty', detail: `${useful.length} chars` };
+  }
+  return { fallback: false, content: pageContentForExtract(extracted) };
+}
+
+const BROWSER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+
+async function defaultPlainFetch(url: string, timeoutMs: number): Promise<PlainPageFetch> {
+  if (!isSafeHttpUrl(url)) throw new Error(UNSAFE_PAGE);
+  // A null response is a DNS or redirect failure, not a private-IP target.
+  // That is a network error: the caller falls back to one Firecrawl attempt.
+  // Unsafe URLs never get that far, so they are not sent to Firecrawl.
+  const resp = await safePublicFetch(url, {
+    headers: {
+      'User-Agent': BROWSER_UA,
+      Accept: 'text/html,application/xhtml+xml;q=0.9,text/plain;q=0.8,*/*;q=0.7',
+    },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!resp) throw new Error('plain fetch failed');
+  return { status: resp.status, body: await resp.text() };
+}
+
+export interface ScrapePageDeps {
+  fetchPage?: (url: string, timeoutMs: number) => Promise<PlainPageFetch>;
+  scrape?: typeof scrapeUrl;
+}
+
+/**
+ * Plain HTTP first. Firecrawl runs once, and only when the plain fetch fails,
+ * comes back empty, or looks like a bot wall / JS shell.
+ */
+export async function loadScrapePage(
+  source: Pick<FeedSource, 'key' | 'endpoint'> & Partial<Pick<FeedSource, 'timeoutMs' | 'usagePurpose'>>,
+  deps: ScrapePageDeps = {},
+): Promise<ScrapePageLoad> {
+  const timeoutMs = source.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const fetchPage = deps.fetchPage ?? defaultPlainFetch;
+  const scrape = deps.scrape ?? scrapeUrl;
+  const job = firecrawlJobForFeed(source);
+
+  let decision: PlainFetchDecision;
+  try {
+    decision = decidePlainFetch(await fetchPage(source.endpoint, timeoutMs), source.endpoint);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message === UNSAFE_PAGE) throw new FeedFetchError(message, false);
+    const name = (err as { name?: string })?.name;
+    const detail = name === 'TimeoutError' || name === 'AbortError'
+      ? `timeout after ${Math.round(timeoutMs / 1000)}s`
+      : message;
+    decision = { fallback: true, reason: 'error', detail };
+  }
+
+  if (!decision.fallback) {
+    console.log(`[Feeds] ${source.key} scrape path=fetch`);
+    return { content: decision.content, path: 'fetch', reason: 'ok' };
+  }
+
+  console.log(`[Feeds] ${source.key} scrape path=firecrawl (${decision.reason}: ${decision.detail})`);
+  const scraped = await scrape(source.endpoint, { attempts: 1, job });
+  if (!scraped.success || !scraped.content) {
+    throw new FeedFetchError(`scrape failed: ${scraped.error || 'no content'}`, false);
+  }
+  return { content: scraped.content, path: 'firecrawl', reason: decision.reason };
+}
+
+/** Load a portal page (plain fetch, else one Firecrawl call), then LLM-extract opportunities. */
 async function fetchScrape(source: FeedSource): Promise<FeedItem[]> {
-  const scraped = await scrapeUrl(source.endpoint);
-  if (!scraped.success || !scraped.content) throw new Error(`scrape failed: ${scraped.error || 'no content'}`);
-  return llmExtractOpportunities(scraped.content.slice(0, 16000), source);
+  const loaded = await loadScrapePage(source);
+  return llmExtractOpportunities(loaded.content.slice(0, 16000), source);
 }
 
 const SCRAPE_SCHEMA_HINT = `[{"name":"<program/RFP name>","description":"<one sentence: what it funds + who can apply>","url":"<application/details URL, absolute>","amount":"<$ or null>","deadline":"<date/Rolling/null>"}]`;
@@ -519,8 +689,6 @@ export async function fetchSource(source: FeedSource): Promise<FeedItem[]> {
 // The seed registry — verified machine-readable sources first.
 // Populated/expanded from the grant-source-registry audit workflow.
 // =====================================================================
-
-const BROWSER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
 // Grants.gov keyword "artificial intelligence" pulls federal grants where AI is merely a
 // TOOL applied to an unrelated field (medicine, agriculture, diplomacy) — off the AI beat.

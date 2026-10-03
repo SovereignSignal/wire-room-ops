@@ -3,6 +3,21 @@ import { isSafeHttpUrl, safePublicFetch } from '../utils/ssrf';
 import { logApiUsage } from './api-usage';
 import { getCachedProvider, isProviderExplicitlyDisabled } from './api-provider';
 
+/** Firecrawl usage jobs. Anything else is stored as `fallback`. */
+export const FIRECRAWL_JOBS = ['registry-watch', 'summary', 'telegram-link', 'fallback'] as const;
+export type FirecrawlJob = typeof FIRECRAWL_JOBS[number] | `source-feed:${string}`;
+
+const SOURCE_FEED_JOB = /^source-feed:[a-z0-9][a-z0-9_-]{0,63}$/;
+/** These callers must not ride the shared retry loop. One paid attempt, then stop. */
+const SINGLE_ATTEMPT_JOBS = new Set<string>(['summary', 'telegram-link']);
+
+export function resolveFirecrawlJob(job: string | undefined | null): string {
+  const trimmed = (job || '').trim();
+  if ((FIRECRAWL_JOBS as readonly string[]).includes(trimmed)) return trimmed;
+  if (SOURCE_FEED_JOB.test(trimmed)) return trimmed;
+  return 'fallback';
+}
+
 const SHORTENER_UA = 'Mozilla/5.0 (compatible; WireRoomOps/1.0)';
 
 export interface ScrapeResult {
@@ -120,7 +135,7 @@ export async function extractAndResolveUrls(text: string): Promise<Map<string, s
   return urlMap;
 }
 
-export async function scrapeUrl(url: string, opts: { attempts?: number } = {}): Promise<ScrapeResult> {
+export async function scrapeUrl(url: string, opts: { attempts?: number; job?: string } = {}): Promise<ScrapeResult> {
   if (!isSafeHttpUrl(url)) {
     return {
       success: false,
@@ -129,9 +144,15 @@ export async function scrapeUrl(url: string, opts: { attempts?: number } = {}): 
       error: 'URL is not a safe public HTTP(S) target',
     };
   }
-  const attempts = Number.isFinite(opts.attempts)
-    ? Math.max(1, Math.min(RETRY_DELAYS.length, Math.floor(opts.attempts as number)))
+  const job = resolveFirecrawlJob(opts.job);
+  const requested = Number.isFinite(opts.attempts)
+    ? Math.floor(opts.attempts as number)
     : RETRY_DELAYS.length;
+  // Summary and Telegram-link scrapes are one Firecrawl call per URL per run.
+  // Nested callers used to multiply the default 3 attempts into ~9 paid calls.
+  const attempts = SINGLE_ATTEMPT_JOBS.has(job)
+    ? 1
+    : Math.max(1, Math.min(RETRY_DELAYS.length, requested));
 
   const provider = getCachedProvider('firecrawl');
   if (!provider?.api_key) {
@@ -149,7 +170,7 @@ export async function scrapeUrl(url: string, opts: { attempts?: number } = {}): 
 
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
-      const result = await scrapeWithFirecrawl(url);
+      const result = await scrapeWithFirecrawl(url, job);
       if (result.success) {
         return result;
       }
@@ -159,7 +180,7 @@ export async function scrapeUrl(url: string, opts: { attempts?: number } = {}): 
     }
 
     if (attempt < attempts - 1) {
-      console.log(`  Scrape attempt ${attempt + 1} failed for ${url}, retrying...`);
+      console.log(`  Scrape attempt ${attempt + 1} failed for ${url} (${job}), retrying...`);
       await sleep(RETRY_DELAYS[attempt]);
     }
   }
@@ -172,7 +193,7 @@ export async function scrapeUrl(url: string, opts: { attempts?: number } = {}): 
   };
 }
 
-async function scrapeWithFirecrawl(url: string): Promise<ScrapeResult> {
+async function scrapeWithFirecrawl(url: string, job: string): Promise<ScrapeResult> {
   if (!isSafeHttpUrl(url)) {
     return {
       success: false,
@@ -203,14 +224,14 @@ async function scrapeWithFirecrawl(url: string): Promise<ScrapeResult> {
 
   if (!response.ok) {
     const errorText = await response.text();
-    logApiUsage({ provider: 'firecrawl', model: 'scrape', purpose: 'scrape', duration_ms: Date.now() - start, success: false, error_message: `${response.status} ${errorText.slice(0, 200)}`.trim() });
+    logApiUsage({ provider: 'firecrawl', model: 'scrape', purpose: 'scrape', job, duration_ms: Date.now() - start, success: false, error_message: `${response.status} ${errorText.slice(0, 200)}`.trim() });
     throw new Error(`Firecrawl API error: ${response.status} - ${errorText}`);
   }
 
   const data = await response.json() as FirecrawlResponse;
 
   if (!data.success) {
-    logApiUsage({ provider: 'firecrawl', model: 'scrape', purpose: 'scrape', duration_ms: Date.now() - start, success: false, error_message: data.error || 'unsuccessful' });
+    logApiUsage({ provider: 'firecrawl', model: 'scrape', purpose: 'scrape', job, duration_ms: Date.now() - start, success: false, error_message: data.error || 'unsuccessful' });
     return {
       success: false,
       content: '',
@@ -222,7 +243,7 @@ async function scrapeWithFirecrawl(url: string): Promise<ScrapeResult> {
   const content = data.data?.markdown || data.data?.content || '';
 
   if (!content || content.trim().length < 50) {
-    logApiUsage({ provider: 'firecrawl', model: 'scrape', purpose: 'scrape', duration_ms: Date.now() - start, success: false, error_message: 'empty content' });
+    logApiUsage({ provider: 'firecrawl', model: 'scrape', purpose: 'scrape', job, duration_ms: Date.now() - start, success: false, error_message: 'empty content' });
     return {
       success: false,
       content: '',
@@ -231,7 +252,7 @@ async function scrapeWithFirecrawl(url: string): Promise<ScrapeResult> {
     };
   }
 
-  logApiUsage({ provider: 'firecrawl', model: 'scrape', purpose: 'scrape', duration_ms: Date.now() - start });
+  logApiUsage({ provider: 'firecrawl', model: 'scrape', purpose: 'scrape', job, duration_ms: Date.now() - start });
 
   return {
     success: true,

@@ -32,7 +32,7 @@ import { ensureProgramsTable } from '../services/program-identity';
 import { ensureIntegrationConfigTable } from '../services/notion-sync';
 import { ensureEntryActionColumns } from '../services/entry-actions';
 import { ensureApiProviderTables } from '../services/api-provider';
-import { ensureApiUsageTables } from '../services/api-usage';
+import { ensureApiUsageJobColumn, ensureApiUsageTables } from '../services/api-usage';
 import { ensureTelegramIntakeReceiptsTable } from '../services/telegram-intake-receipts';
 import { ensureGrantsIntelTables } from '../routes/grants-intel';
 import { ensureFilesTable } from '../services/storage';
@@ -44,7 +44,7 @@ import { ensurePacedDistribution } from './paced-distribution';
 import { ensureWatchSurfaceRepairs } from './watch-surface-repairs';
 
 // Increment whenever the schema contract changes, including enum constants.
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 export const STARTUP_MIGRATIONS: ReadonlyArray<{ name: string; version?: number; run: () => Promise<void> }> = [
   { name: 'sessions', run: ensureSessionsTable },
@@ -75,6 +75,7 @@ export const STARTUP_MIGRATIONS: ReadonlyArray<{ name: string; version?: number;
   { name: 'program-decisions', version: 4, run: ensureProgramDecisions },
   { name: 'paced-distribution', version: 5, run: ensurePacedDistribution },
   { name: 'watch-surface-repairs', version: 6, run: ensureWatchSurfaceRepairs },
+  { name: 'api-usage-job', version: 7, run: ensureApiUsageJobColumn },
 ];
 
 export interface StartupMigrationHealth {

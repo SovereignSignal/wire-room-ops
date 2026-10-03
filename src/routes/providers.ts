@@ -6,9 +6,9 @@ import { getDiscoveryCoverage } from '../services/discovery-coverage';
  * GET  /providers                    — list all providers (masked keys)
  * PUT  /providers/:provider          — upsert provider config
  * POST /providers/:provider/test     — test connection
- * GET  /usage/summary                — aggregated usage
+ * GET  /usage/summary                — aggregated usage (grouped by provider, purpose, job)
  * GET  /usage/timeline               — daily rollup for charts
- * GET  /usage/recent                 — last N raw log entries
+ * GET  /usage/recent                 — last N raw log entries (created_at is ISO 8601)
  * GET  /pricing                      — list all model pricing
  * PUT  /pricing/:provider/:model     — update pricing for a model
  */
@@ -16,7 +16,7 @@ import { getDiscoveryCoverage } from '../services/discovery-coverage';
 import { Router, Request, Response } from 'express';
 import { getAllProviders, upsertProvider, testProviderConnection } from '../services/api-provider';
 import { noteCuratorChange } from '../services/curator-audit';
-import { getUsageSummary, getUsageTimeline, getRecentUsage, getModelPricing, upsertModelPricing } from '../services/api-usage';
+import { getUsageSummary, getUsageTimeline, getRecentUsage, getModelPricing, upsertModelPricing, parseUsageJobQuery } from '../services/api-usage';
 
 const router = Router();
 
@@ -119,15 +119,27 @@ router.post('/providers/:provider/test', async (req: Request, res: Response) => 
 
 // --- API Usage ---
 
-// GET /usage/summary — aggregated usage
+function usageJob(req: Request, res: Response): string | undefined | null {
+  const parsed = parseUsageJobQuery(req.query.job);
+  if (!parsed.ok) {
+    res.status(400).json({ error: 'Invalid job filter' });
+    return null;
+  }
+  return parsed.job;
+}
+
+// GET /usage/summary — aggregated usage, one row per provider + purpose + job
 router.get('/usage/summary', async (req: Request, res: Response) => {
   try {
+    const job = usageJob(req, res);
+    if (job === null) return;
     const days = Math.min(Math.max(Number(req.query.days) || 7, 1), 90);
     const rows = await getUsageSummary({
       days,
       provider: req.query.provider as string | undefined,
       purpose: req.query.purpose as string | undefined,
       wire: req.query.wire as string | undefined,
+      job,
     });
     res.json(rows);
   } catch (error) {
@@ -136,12 +148,15 @@ router.get('/usage/summary', async (req: Request, res: Response) => {
   }
 });
 
-// GET /usage/recent — last N raw log entries
+// GET /usage/recent — last N raw log entries. created_at is an ISO 8601 string.
 router.get('/usage/recent', async (req: Request, res: Response) => {
   try {
+    const job = usageJob(req, res);
+    if (job === null) return;
     const rows = await getRecentUsage({
       limit: Number(req.query.limit) || 50,
       provider: req.query.provider as string | undefined,
+      job,
     });
     res.json(rows);
   } catch (error) {
