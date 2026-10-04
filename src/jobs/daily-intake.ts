@@ -26,6 +26,7 @@ import {
   type IntakeRunSummary,
   type IntakeJobConfig,
 } from '../types/intake';
+import { parseWireArea } from '../types/wire-area';
 import {
   parseStructuredOutput,
   parseAmount,
@@ -238,7 +239,7 @@ export async function runDailyIntake(
 
   // Build batched multi-row INSERT (chunks of 50 to stay within param limits)
   const BATCH_SIZE = 50;
-  const COLS_PER_ROW = 18;
+  const COLS_PER_ROW = 19;
 
   for (let batchStart = 0; batchStart < allResults.length; batchStart += BATCH_SIZE) {
     const batch = allResults.slice(batchStart, batchStart + BATCH_SIZE);
@@ -252,7 +253,7 @@ export async function runDailyIntake(
       const offset = i * COLS_PER_ROW;
 
       valueClauses.push(
-        `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8}, $${offset + 9}, $${offset + 10}, $${offset + 11}, $${offset + 12}, 'raw', $${offset + 13}, $${offset + 14}, $${offset + 15}, $${offset + 16}, $${offset + 17}, $${offset + 18})`
+        `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8}, $${offset + 9}, $${offset + 10}, $${offset + 11}, $${offset + 12}, 'raw', $${offset + 13}, $${offset + 14}, $${offset + 15}, $${offset + 16}, $${offset + 17}, $${offset + 18}, $${offset + 19})`
       );
       values.push(
         item.result.name,
@@ -273,13 +274,14 @@ export async function runDailyIntake(
         item.rawOutput || null,
         item.parseStrategy || null,
         item.result.metadata ? JSON.stringify(item.result.metadata) : null,
+        parseWireArea(item.result.metadata?.wire_area),
       );
     }
 
     const res = await pool.query(
       `INSERT INTO scan_entries
        (name, description, source_url, amount, amount_numeric, amount_currency,
-        deadline, deadline_parsed, wire, prompt_variant, scan_source, scan_date, status, prompt_id, submitted_by, source_published_at, raw_output, parse_strategy, metadata)
+        deadline, deadline_parsed, wire, prompt_variant, scan_source, scan_date, status, prompt_id, submitted_by, source_published_at, raw_output, parse_strategy, metadata, wire_area)
        VALUES ${valueClauses.join(', ')}
        RETURNING id`,
       values
@@ -454,6 +456,7 @@ export async function runDailyIntake(
       const mergedMetadata = {
         ...classResult.extracted,
         operator_route: classResult.operatorRoute,
+        wire_area: classResult.wireArea,
         ...freshnessDecision.metadata,
       };
 
@@ -462,7 +465,8 @@ export async function runDailyIntake(
          SET quality_score = $1, quality_breakdown = $2, status = $8,
              classification = $3, classification_reason = $4,
              metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
-             tags = $6
+             tags = $6,
+             wire_area = $16
          WHERE id = $7
            AND status = 'deduped'
            AND name IS NOT DISTINCT FROM $9
@@ -494,6 +498,7 @@ export async function runDailyIntake(
           entry.deadline_parsed,
           entry.source_published_at,
           entry.amount,
+          classResult.wireArea,
         ]
       );
       if (classified.rowCount !== 1) continue;
@@ -580,6 +585,7 @@ export async function runDailyIntake(
         const mergedMetadata = {
           ...classResult.extracted,
           operator_route: classResult.operatorRoute,
+          wire_area: classResult.wireArea,
           ...freshnessDecision.metadata,
         };
 
@@ -588,7 +594,8 @@ export async function runDailyIntake(
            SET quality_score = $1, quality_breakdown = $2, status = $8,
                classification = $3, classification_reason = $4,
                metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
-               tags = $6
+               tags = $6,
+               wire_area = $16
            WHERE id = $7
              AND status = 'queued'
              AND name IS NOT DISTINCT FROM $9
@@ -620,6 +627,7 @@ export async function runDailyIntake(
             entry.deadline_parsed,
             entry.source_published_at,
             entry.amount,
+            classResult.wireArea,
           ]
         );
         if (retried.rowCount !== 1) continue;

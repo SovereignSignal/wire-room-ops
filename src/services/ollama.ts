@@ -15,6 +15,7 @@ import { DatabaseEntry } from '../types';
 import { logApiUsage } from './api-usage';
 import { getCachedProvider } from './api-provider';
 import { findSummaryLeak } from './summary-guard';
+import { FACTS_ONLY_SUMMARY_RULES, isSummarySkip } from '../types/wire-area';
 import { isScrapableUrl, scrapeUrl, truncateContent, type ScrapeResult } from './scraper';
 import {
   finalAnswerText,
@@ -130,7 +131,7 @@ async function chat(
   return text;
 }
 
-function buildScrapedContentPrompt(): string {
+export function buildScrapedContentPrompt(): string {
   const brand = getBrand();
   return `Summarize this web page for the ${brand.name} newsletter.
 
@@ -143,22 +144,19 @@ Reference summary (may be outdated): {existing_summary}
 
 Write a newsletter entry that is INFORMATIVE yet CONCISE. Format:
 
-**[Organization/Project Name]** [action verb] [what happened with key details]. [Additional context, numbers, or requirements]. [Deadline/application info if available].
+**[Organization/Project Name]** [the funder's own verb] [who, what, amount, and dates exactly as written].
 
 REQUIREMENTS:
 - 3-5 sentences, roughly 75-150 words
-- Lead with a strong action verb (announced, launched, opened, unveiled, allocated, distributed, published, released)
-- Include ALL specific numbers from the content: funding amounts, token quantities, number of recipients/applicants, ROI metrics, percentages, dates
-- Include deadlines, eligibility requirements, and how to apply when mentioned
-- Provide enough context that a reader understands the significance for ${brand.audience}
+- ${FACTS_ONLY_SUMMARY_RULES}
 - No bullet points - write in flowing paragraphs
 - Exclude: committee member names, lengthy historical background, detailed mechanism explanations
 - Do not use: crucial, significantly, innovative, exciting, revolutionary, game-changing, foster, comprehensive
 
-Write ONLY the finished newsletter entry. No thinking, no explanation of the instructions.`;
+Write ONLY the finished newsletter entry, or the single word SKIP. No thinking, no explanation of the instructions.`;
 }
 
-function buildFallbackPrompt(): string {
+export function buildFallbackPrompt(): string {
   const brand = getBrand();
   return `You are writing a newsletter entry for ${brand.name}, covering ${brand.audience}.
 
@@ -166,25 +164,12 @@ URL: {url}
 
 Reference summary (may be outdated): {existing_summary}
 
-Write a newsletter entry that is INFORMATIVE yet CONCISE. Format:
+The source page could not be retrieved. ${FACTS_ONLY_SUMMARY_RULES}
 
-**[Organization/Project Name]** [action verb] [what happened with key details]. [Additional context, numbers, or requirements]. [Deadline/application info if available].
-
-REQUIREMENTS:
-- 3-5 sentences, roughly 75-150 words
-- Lead with a strong action verb (announced, launched, opened, unveiled, allocated, distributed, published, released)
-- Include ALL specific numbers: funding amounts, token quantities, number of recipients, ROI metrics, dates
-- Include deadlines, eligibility requirements, and how to apply when mentioned
-- Provide enough context that a reader understands WHY this matters for ${brand.audience}
-- No bullet points - write in flowing paragraphs
-- No flowery language, but DO include substantive details
-- Do not use: crucial, significantly, innovative, exciting, revolutionary, game-changing, foster, comprehensive
-- Work with the information provided - do not say "unable to access"
-
-Write ONLY the finished newsletter entry. No thinking, no explanation of the instructions.`;
+Write ONLY the single word SKIP. No thinking, no explanation of the instructions.`;
 }
 
-export const UNSCRAPED_SUMMARY_NOTE = '*[Summary based on cached data - original source could not be accessed]*';
+export { isSummarySkip };
 
 export interface PreparedNewsletterPrompt {
   prompt: string;
@@ -193,8 +178,8 @@ export interface PreparedNewsletterPrompt {
 }
 
 export function applySummaryScrapeNote(text: string, scraped: boolean): string {
-  if (scraped) return text;
-  return `${text}\n\n${UNSCRAPED_SUMMARY_NOTE}`;
+  if (!scraped || isSummarySkip(text)) return 'SKIP';
+  return text;
 }
 
 /**
@@ -245,6 +230,7 @@ export async function completeNewsletterSummary(
   prepared: PreparedNewsletterPrompt,
   model?: string,
 ): Promise<string> {
+  if (!prepared.scraped) return 'SKIP';
   const models = summaryModelChain(model);
   if (models.length === 0) throw new Error('Ollama summary model is not configured');
 
@@ -252,9 +238,10 @@ export async function completeNewsletterSummary(
   for (const useModel of models) {
     try {
       const text = await chat(useModel, prepared.prompt, 'summarize', entry.wire);
+      if (isSummarySkip(text)) return 'SKIP';
       const leak = findSummaryLeak(text);
       if (leak) throw new Error(`Ollama API returned reasoning instead of a summary (${leak.rule})`);
-      return applySummaryScrapeNote(text, prepared.scraped);
+      return text;
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
       console.warn(`[Ollama] summarize ${useModel} failed:`, lastError.message);
@@ -294,6 +281,7 @@ export async function ollamaAutoSummarize(opts: {
     const summary = (await chat(useModel, prompt, 'auto-summarize', opts.wire))
       .replace(/^["']|["']$/g, '')
       .trim();
+    if (isSummarySkip(summary)) return null;
     return summary.length >= 20 ? summary : null;
   } catch (err) {
     console.warn(`[Ollama] auto-summarize ${useModel} failed:`, err instanceof Error ? err.message : err);

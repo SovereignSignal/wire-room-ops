@@ -399,6 +399,55 @@ test('x-monitor park classifications settle outside the review queue', async () 
   classifier.classifyEntry = async () => { throw new Error('classifier stubbed out in tests'); };
 });
 
+test('x-monitor publish routes for wire areas 1, 2, 4, 5, and 6 enter the queue', async () => {
+  const areas = ['1', '2', '4', '5', '6'];
+  for (const wireArea of areas) {
+    let batchCalls = 0;
+    classifier.classifyEntry = async () => ({
+      classification: wireArea === '1' ? 'NEWS' : 'NEWS',
+      reason: `area ${wireArea}`,
+      qualityScore: 70,
+      scoreReason: 'sourced from the funder',
+      operatorRoute: 'publish',
+      tags: ['funder'],
+      inScope: true,
+      detectedWire: 'crypto',
+      wireArea,
+      extracted: {},
+    });
+    const row = {
+      id: 700 + Number(wireArea),
+      name: `Area ${wireArea} item`,
+      description: 'A sufficiently detailed source description that should be classified before review.',
+      source_url: `https://example.org/area-${wireArea}`,
+      amount: null,
+      deadline: null,
+      deadline_parsed: null,
+      source_published_at: null,
+      wire: 'crypto',
+      scan_source: 'x-monitor',
+      scan_date: '2026-10-04',
+      prompt_id: null,
+      prompt_intent: null,
+    };
+    const pool = routingPool([
+      [RAW_BATCH, () => (++batchCalls === 1 ? { rows: [row] } : { rows: [] })],
+      ["WHERE id = $1 AND status = 'deduped'", { rows: [{ id: row.id }], rowCount: 1 }],
+      ['SET classification = $1', { rows: [{ id: row.id }], rowCount: 1 }],
+    ]);
+    const stats = await processRawEntries(pool);
+    const classified = pool.calls.find(c => c.sql.includes('SET classification = $1'));
+    assert.ok(classified, `area ${wireArea} was not classified`);
+    assert.match(classified.sql, /wire_area = \$17/);
+    assert.equal(classified.params[7], 'queued', `area ${wireArea} publish route must queue`);
+    assert.equal(classified.params[16], wireArea);
+    assert.equal(JSON.parse(classified.params[4]).wire_area, wireArea);
+    assert.equal(stats.queued, 1, `area ${wireArea}`);
+    assert.equal(stats.archived, 0, `area ${wireArea}`);
+  }
+  classifier.classifyEntry = async () => { throw new Error('classifier stubbed out in tests'); };
+});
+
 test('x-monitor classifier failure returns the row to raw instead of leaking UNCHECKED into the queue', async () => {
   let batchCalls = 0;
   classifier.classifyEntry = async () => { throw new Error('temporary classifier failure'); };

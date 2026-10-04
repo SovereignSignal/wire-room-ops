@@ -19,6 +19,7 @@ export interface ScanEntry {
   distribution_channels?: string[];
   classification?: Classification;
   classification_reason?: string;
+  wire_area?: '1' | '2' | '3' | '4' | '5' | '6' | 'out' | null;
   tags?: string[];
   metadata?: {
     amount?: string;

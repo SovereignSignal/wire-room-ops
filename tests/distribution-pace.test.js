@@ -78,7 +78,7 @@ test('pacing stays off until the dashboard turns it on', () => {
   const route = fs.readFileSync(path.join(__dirname, '../src/routes/distribution.ts'), 'utf8');
   const actions = fs.readFileSync(path.join(__dirname, '../src/services/entry-actions.ts'), 'utf8');
   assert.match(pace, /enabled: false/);
-  assert.match(migrations, /SCHEMA_VERSION = 9/);
+  assert.match(migrations, /SCHEMA_VERSION = 10/);
   assert.match(migrations, /version: 5, run: ensurePacedDistribution/);
   assert.doesNotMatch(schema, /distribution:pace/);
   assert.doesNotMatch(migrations, /distribution:pace/);

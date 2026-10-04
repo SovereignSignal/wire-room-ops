@@ -9,7 +9,7 @@
  * Three-outcome semantics, fail-open by design:
  *  - same_listing (high confidence, matched entry was approved/declined/queued)
  *      → marked duplicate with a pointer to the decided entry
- *  - update (same program, NEW round / reopened / material change)
+ *  - update (same program, NEW round / reopened / results / material change)
  *      → STAYS QUEUED, gains an operator note with context. Updates are
  *        signal, not noise — never auto-filtered.
  *  - distinct / uncertain / any error → stays queued untouched.
@@ -156,7 +156,7 @@ ${candidates.map(c => `- id ${c.id} [${c.wire}, ${c.status}${c.resolve_to ? ` ->
 
 Verdicts:
 - "same_listing": the NEW entry is the SAME program AND the SAME round/cycle with no material new information. (A tweet about a program vs the program page = same_listing.)
-- "update": same program but a NEW round, a reopening, a changed deadline or amount, or otherwise material NEW information. Updates are valuable — the operator must see them.
+- "update": same program but a NEW round, a reopening, a changed deadline or amount, a result announcement for that program (awards, recipients, round outcomes, or a retro), or otherwise material NEW information. Results for a known program count as "update". Updates are valuable — the operator must see them.
 - "distinct": a different program, even if from the same organization.
 
 CRITICAL BIAS RULE: if torn between same_listing and update, answer "update". Filtering out a real update costs far more than showing a near-duplicate.

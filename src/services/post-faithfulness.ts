@@ -299,6 +299,29 @@ export function checkTelegramHtml(html: string): string[] {
   return violations;
 }
 
+const COMMENTARY_RE = /\b(this shows|this means|this matters|why it matters|it matters|underscores|highlights the importance|should stay|should remain|ought to)\b/i;
+const ATTRIBUTION_RE = /["“”]|\b(argues|argue|says|said|writes|wrote|believes|claims|contends|according to|noted that|in (?:his|her|their) view)\b/i;
+
+function draftSentences(text: string): string[] {
+  return text
+    .replace(/<[^>]+>/g, ' ')
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map(sentence => sentence.replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+}
+
+/** Opinion stated as the writer's fact, without a named speaker or a quote. */
+export function unattributedOpinionViolations(_input: string, output: string): string[] {
+  const failures: string[] = [];
+  for (const sentence of draftSentences(output)) {
+    if (!COMMENTARY_RE.test(sentence) || ATTRIBUTION_RE.test(sentence)) continue;
+    const claim = sentence.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!claim) continue;
+    failures.push(`unattributed opinion: ${claim.slice(0, 180)}`);
+  }
+  return failures;
+}
+
 function hrefViolations(html: string, input: string): string[] {
   const violations: string[] = [];
   for (const match of html.matchAll(/\bhref\s*=\s*"([^"]*)"/gi)) {
@@ -337,6 +360,7 @@ export function checkFaithfulness(input: string, output: string, opts: { html?: 
     ...absentPhrases(source, draft, OPINION_PHRASES, 'opinion'),
     ...absentPhrases(source, draft, ELIGIBILITY_PHRASES, 'eligibility'),
     ...absentPhrases(source, draft, DEADLINE_PHRASES, 'deadline wording'),
+    ...unattributedOpinionViolations(source, draft),
   ];
   if (opts.html !== false) {
     violations.push(...checkTelegramHtml(output || ''), ...hrefViolations(output || '', source));

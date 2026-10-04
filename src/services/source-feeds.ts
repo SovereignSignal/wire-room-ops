@@ -20,6 +20,7 @@ import { scrapeUrl } from './scraper';
 import { getCachedProvider } from './api-provider';
 import { logApiUsage } from './api-usage';
 import { chatCompletionExtras, DEFAULT_GROK_MODEL } from './grok';
+import { parseWireArea, type WireArea } from '../types/wire-area';
 import { detectWireFromText } from './intake-core';
 import { isSafeHttpUrl, safePublicFetch } from '../utils/ssrf';
 
@@ -611,7 +612,38 @@ async function fetchScrape(source: FeedSource): Promise<FeedItem[]> {
   return llmExtractOpportunities(loaded.content.slice(0, 16000), source);
 }
 
-const SCRAPE_SCHEMA_HINT = `[{"name":"<program/RFP name>","description":"<one sentence: what it funds + who can apply>","url":"<application/details URL, absolute>","amount":"<$ or null>","deadline":"<date/Rolling/null>"}]`;
+const OPEN_EXTRACT_SCHEMA = `[{"name":"<program/RFP name>","description":"<one sentence: what it funds + who can apply>","url":"<application/details URL, absolute>","amount":"<$ or null>","deadline":"<date/Rolling/null>","wire_area":"3"}]`;
+const WIRE_EXTRACT_SCHEMA = `[{"name":"<result or decision name>","description":"<one sentence of facts: who, what, amount, date>","url":"<announcement URL, absolute>","amount":"<$ or null>","deadline":"<date or null>","wire_area":"1"}]`;
+
+export function inferTitleWireArea(name: string): '1' | '2' | null {
+  if (/\b(awarded|recipients|results|retro|retrospective)\b/i.test(name)) return '2';
+  if (/\b(treasury|allocation|framework)\b/i.test(name)) return '1';
+  return null;
+}
+
+export function stampFeedWireArea(item: FeedItem): FeedItem {
+  const existing = parseWireArea(item.metadata?.wire_area);
+  if (existing) {
+    return item.metadata?.wire_area === existing
+      ? item
+      : { ...item, metadata: { ...item.metadata, wire_area: existing } };
+  }
+  const inferred = inferTitleWireArea(item.name);
+  if (!inferred) return item;
+  return { ...item, metadata: { ...item.metadata, wire_area: inferred } };
+}
+
+export function buildOpenExtractPrompt(source: FeedSource, markdown: string): string {
+  return `From the following ${source.name} page content, extract every CURRENTLY-OPEN funding opportunity (grant program, RFP, ecosystem fund, fellowship, bounty round) that a builder could apply to. Tag each wire_area 3. Area-3 items are the only grants.watch-eligible ones. ${source.scrapePrompt || ''}\n\nReturn ONLY a JSON array (no prose, no fences):\n${OPEN_EXTRACT_SCHEMA}\nUse absolute URLs (prefix ${source.urlPrefix || source.endpoint} for relative links). If none are clearly open, return [].\n\nPAGE CONTENT:\n${markdown}`;
+}
+
+export function buildWireResultExtractPrompt(source: FeedSource, markdown: string): string {
+  return `From the following ${source.name} page content, extract a second, wire-only set. Tag result announcements (awards, recipients, round outcomes, retros) wire_area 2. Tag program-framework changes (governance or treasury decisions that move capital or change a grant framework) wire_area 1. Do not include currently-open applications; those are wire_area 3 and are extracted separately. Closed programs stay out of area 3, but their result announcements are area 2. ${source.scrapePrompt || ''}\n\nReturn ONLY a JSON array (no prose, no fences):\n${WIRE_EXTRACT_SCHEMA}\nUse absolute URLs (prefix ${source.urlPrefix || source.endpoint} for relative links). If none, return [].\n\nPAGE CONTENT:\n${markdown}`;
+}
+
+function itemUrlKey(url: string): string {
+  return url.trim().toLowerCase().replace(/\/+$/, '');
+}
 
 async function llmExtractOpportunities(markdown: string, source: FeedSource): Promise<FeedItem[]> {
   const provider = getCachedProvider('grok');
@@ -619,9 +651,35 @@ async function llmExtractOpportunities(markdown: string, source: FeedSource): Pr
   const apiKey = provider?.api_key;
   const baseUrl = provider?.base_url || config.apis.grok.baseUrl;
   if (!apiKey) return [];
-  const prompt = `From the following ${source.name} page content, extract every CURRENTLY-OPEN funding opportunity (grant program, RFP, ecosystem fund, fellowship, bounty round) that a builder could apply to. ${source.scrapePrompt || ''}\n\nReturn ONLY a JSON array (no prose, no fences):\n${SCRAPE_SCHEMA_HINT}\nUse absolute URLs (prefix ${source.urlPrefix || source.endpoint} for relative links). If none are clearly open, return [].\n\nPAGE CONTENT:\n${markdown}`;
-  const start = Date.now();
-  try {
+
+  const parsePass = (content: string, allowed: ReadonlyArray<WireArea>): FeedItem[] => {
+    const cleaned = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+    const s = cleaned.indexOf('[');
+    const e = cleaned.lastIndexOf(']');
+    const arr = JSON.parse(s >= 0 && e > s ? cleaned.slice(s, e + 1) : cleaned);
+    if (!Array.isArray(arr)) return [];
+    const items: FeedItem[] = [];
+    for (const raw of arr) {
+      const row = raw as { name?: unknown; description?: string; url?: unknown; amount?: string; deadline?: string; wire_area?: unknown };
+      if (!row || typeof row.name !== 'string' || typeof row.url !== 'string') continue;
+      const tagged = parseWireArea(row.wire_area);
+      const area = tagged ?? (allowed.length === 1 ? allowed[0] : null);
+      if (!area || !allowed.includes(area)) continue;
+      items.push({
+        name: row.name.slice(0, 200),
+        description: (row.description || row.name).slice(0, 600),
+        url: row.url,
+        amount: typeof row.amount === 'string' && /\d/.test(row.amount) ? row.amount : null,
+        deadline: typeof row.deadline === 'string' && row.deadline.toLowerCase() !== 'null' ? row.deadline.slice(0, 50) : null,
+        publishedAt: null,
+        metadata: { wire_area: area },
+      });
+    }
+    return items;
+  };
+
+  const runPass = async (prompt: string, allowed: ReadonlyArray<WireArea>, purpose: string): Promise<FeedItem[]> => {
+    const start = Date.now();
     const r = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       signal: AbortSignal.timeout(120000),
@@ -629,32 +687,32 @@ async function llmExtractOpportunities(markdown: string, source: FeedSource): Pr
       body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], max_tokens: 6000, temperature: 0.1, ...chatCompletionExtras(baseUrl) }),
     });
     if (!r.ok) {
-      logApiUsage({ provider: 'grok', model, purpose: source.usagePurpose || 'feed-scrape-extract', wire: source.wire, duration_ms: Date.now() - start, success: false, error_message: String(r.status) });
+      logApiUsage({ provider: 'grok', model, purpose, wire: source.wire, duration_ms: Date.now() - start, success: false, error_message: String(r.status) });
       throw new Error(`extract HTTP ${r.status}`);
     }
     const data = await r.json() as { choices?: Array<{ message?: { content?: string } }>; usage?: { prompt_tokens?: number; completion_tokens?: number } };
-    logApiUsage({ provider: 'grok', model, purpose: source.usagePurpose || 'feed-scrape-extract', wire: source.wire, duration_ms: Date.now() - start, tokens_in: data.usage?.prompt_tokens, tokens_out: data.usage?.completion_tokens });
-    const content = data.choices?.[0]?.message?.content || '';
-    const cleaned = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
-    const s = cleaned.indexOf('['), e = cleaned.lastIndexOf(']');
-    const arr = JSON.parse(s >= 0 && e > s ? cleaned.slice(s, e + 1) : cleaned);
-    if (!Array.isArray(arr)) return [];
-    return arr
-      .filter((o: { name?: unknown; url?: unknown }) => o && typeof o.name === 'string' && typeof o.url === 'string')
-      .map((o: { name: string; description?: string; url: string; amount?: string; deadline?: string }) => ({
-        name: o.name.slice(0, 200),
-        description: (o.description || o.name).slice(0, 600),
-        url: o.url,
-        amount: typeof o.amount === 'string' && /\d/.test(o.amount) ? o.amount : null,
-        deadline: typeof o.deadline === 'string' && o.deadline.toLowerCase() !== 'null' ? o.deadline.slice(0, 50) : null,
-        publishedAt: null,
-      }))
-      .slice(0, source.maxItems || DEFAULT_MAX_ITEMS);
+    logApiUsage({ provider: 'grok', model, purpose, wire: source.wire, duration_ms: Date.now() - start, tokens_in: data.usage?.prompt_tokens, tokens_out: data.usage?.completion_tokens });
+    return parsePass(data.choices?.[0]?.message?.content || '', allowed);
+  };
+
+  const openPurpose = source.usagePurpose || 'feed-scrape-extract';
+  let openItems: FeedItem[] = [];
+  let wireItems: FeedItem[] = [];
+  try {
+    openItems = await runPass(buildOpenExtractPrompt(source, markdown), ['3'], openPurpose);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[Feeds] scrape-extract failed for ${source.key}: ${msg}`);
-    return [];
+    console.warn(`[Feeds] scrape-extract open pass failed for ${source.key}:`, err instanceof Error ? err.message : err);
   }
+  try {
+    wireItems = await runPass(buildWireResultExtractPrompt(source, markdown), ['1', '2'], `${openPurpose}-wire`);
+  } catch (err) {
+    console.warn(`[Feeds] scrape-extract wire pass failed for ${source.key}:`, err instanceof Error ? err.message : err);
+  }
+
+  const byUrl = new Map<string, FeedItem>();
+  for (const item of wireItems) byUrl.set(itemUrlKey(item.url), item);
+  for (const item of openItems) byUrl.set(itemUrlKey(item.url), item);
+  return [...byUrl.values()].slice(0, source.maxItems || DEFAULT_MAX_ITEMS);
 }
 
 /** Ensure a usable absolute http(s) URL; returns null for un-fixable values. */
@@ -682,7 +740,8 @@ export async function fetchSource(source: FeedSource): Promise<FeedItem[]> {
     .map(it => { const url = ensureHttp(it.url); return url ? { ...it, url } : null; })
     .filter((it): it is FeedItem => it !== null)
     .filter(it => !source.titleBlock || !source.titleBlock.test(it.name))
-    .filter(it => !source.titleAllow || source.titleAllow.test(it.name));
+    .filter(it => !source.titleAllow || source.titleAllow.test(it.name))
+    .map(stampFeedWireArea);
 }
 
 // =====================================================================
@@ -854,7 +913,7 @@ export const SOURCE_REGISTRY: FeedSource[] = [
     method: 'rss',
     endpoint: 'https://octant.substack.com/feed',
     enabled: true,
-    titleAllow: /epoch|grant|apply|deadline|\bround\b|funding|\brfp\b/i,
+    titleAllow: /epoch|grant|apply|deadline|\bround\b|funding|\brfp\b|awarded|recipients|\bresults\b|retro|treasury|allocation|incentive/i,
   },
   {
     // Open RFPs page verified 200 on 2026-10-03.
@@ -909,7 +968,7 @@ export const SOURCE_REGISTRY: FeedSource[] = [
     urlPrefix: 'https://nlnet.nl',
     enabled: true,
     // NLnet's feed is mostly org news; calls are titled "Apply for funding…" / "open call".
-    titleAllow: /apply for funding|open call|call for proposal|request for proposal|grants? (are |is )?open|funding (round|is open|available)/i,
+    titleAllow: /apply for funding|open call|call for proposal|request for proposal|grants? (are |is )?open|funding (round|is open|available)|awarded|recipients|\bresults\b|retro|treasury|allocation|framework/i,
   },
   {
     key: 'otf-news',
@@ -919,7 +978,7 @@ export const SOURCE_REGISTRY: FeedSource[] = [
     endpoint: 'https://www.opentech.fund/feed/',
     enabled: true,
     // OTF RFPs are titled "Request for Proposals: …"; the rest is blog/news.
-    titleAllow: /request for proposal|\bRFP\b|open call|call for|fellowship|funding (round|opportunit)/i,
+    titleAllow: /request for proposal|\bRFP\b|open call|call for|fellowship|funding (round|opportunit)|awarded|recipients|\bresults\b|retro|treasury|allocation/i,
   },
   {
     key: 'otf-funds',
@@ -1037,7 +1096,7 @@ export const SOURCE_REGISTRY: FeedSource[] = [
     key: 'alpha-omega', name: 'Alpha-Omega — Updates', wire: 'oss',
     method: 'rss', endpoint: 'https://alpha-omega.dev/feed/',
     enabled: true,
-    titleAllow: /grant|funding|fellowship|\brfp\b|open call|call for|applicants?/i,
+    titleAllow: /grant|funding|fellowship|\brfp\b|open call|call for|applicants?|awarded|recipients|\bresults\b|retro|treasury|allocation/i,
   },
   {
     key: 'open-source-collective', name: 'Open Source Collective — Funding', wire: 'oss',

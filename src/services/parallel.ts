@@ -17,6 +17,7 @@ import { getCachedProvider, isProviderExplicitlyDisabled } from './api-provider'
 import { blockedDomains } from './source-filter';
 import type { ScanUsagePurpose } from '../types/intake';
 import { DEFAULT_GROK_MODEL, chatCompletionExtras } from './grok';
+import { WIRE_AREA_LIST, WIRE_OUT_LIST } from '../types/wire-area';
 
 const PARALLEL_BASE_URL = 'https://api.parallel.ai';
 
@@ -78,11 +79,15 @@ function extractExplicitQueries(promptText: string): string[] | null {
   return queries.length > 0 ? queries : null;
 }
 
+export function parallelAreaGuide(): string {
+  return `Wire areas: ${WIRE_AREA_LIST}. OUT (skip): ${WIRE_OUT_LIST}.`;
+}
+
 /** Plan 2-3 short keyword queries (3-6 words each) for the Parallel search. */
 async function planQueries(objective: string, wire?: string, usagePurpose: ScanUsagePurpose = 'scan'): Promise<string[]> {
   const wireHint = wire ? `The vertical is "${wire}". ` : '';
   const content = await grokChat(
-    `${wireHint}Turn this research objective into 2-3 concise web search queries (3-6 keywords each) that will surface NEW grant/funding programs, open application rounds, and major funding news. Return ONLY a JSON array of strings, nothing else.\n\nObjective: ${objective.slice(0, 1200)}`,
+    `${wireHint}${parallelAreaGuide()} Turn this research objective into 2-3 concise web search queries (3-6 keywords each) that will surface items in areas 1-6: open calls, award and round results, governance or treasury decisions that move capital, incentives, funding-mechanism analysis, and grant tools. Return ONLY a JSON array of strings, nothing else.\n\nObjective: ${objective.slice(0, 1200)}`,
     2000, usagePurpose === 'scan-test' ? 'parallel-test-queries' : 'parallel-queries', wire
   );
   if (content) {
@@ -97,7 +102,7 @@ async function planQueries(objective: string, wire?: string, usagePurpose: ScanU
   }
   // Heuristic fallback — keeps the scan working if query planning fails
   const base = wire ? `${wire} ` : '';
-  return [`${base}grant programs open applications 2026`, `${base}ecosystem fund new grants funding`];
+  return [`${base}grant programs open applications 2026`, `${base}grant award recipients round results`];
 }
 
 export async function executeParallelScan(
@@ -190,7 +195,7 @@ export async function executeParallelScan(
   const format = options?.responseFormat ||
     `1. **Program Name** — Description including funding amount and who runs it\nDeadline: [date, "Rolling", or "None listed"]\nPublished: [date]\nSource URL: [direct canonical link from the results above]`;
 
-  const extractPrompt = `You are extracting ${getBrand().contentType} from web search results. From the results below, list every distinct grant/funding program, open application round, or major funding announcement. Use ONLY the canonical Source URL shown for each result — never invent URLs. Skip duplicates, closed programs, and pure marketing. If nothing qualifies, return "No results."\n\nFormat each entry exactly:\n${format}\n\nSEARCH RESULTS:\n${resultsBlock}`;
+  const extractPrompt = `You are extracting wire items from web search results. ${parallelAreaGuide()} From the results below, list every distinct item in areas 1-6. Use ONLY the canonical Source URL shown for each result — never invent URLs. Skip duplicates, the OUT list, and pure marketing. Closed programs stay skipped when they would be area 3, but their result announcements are area 2 and should be included. If nothing qualifies, return "No results."\n\nFormat each entry exactly:\n${format}\n\nSEARCH RESULTS:\n${resultsBlock}`;
 
   const extracted = await grokChat(
     extractPrompt,

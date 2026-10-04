@@ -101,6 +101,40 @@ test('Telegram HTML must use allowed, balanced tags', () => {
   assert.deepEqual(checkTelegramHtml('<b>Headline</b>\n\n<a href="https://example.org/a">Source</a>'), []);
 });
 
+test('post verifier fails unattributed opinion and derived numbers', async (t) => {
+  const ollama = require('../src/services/ollama');
+  const { verifyPostClaims, buildVerifierPrompt } = require('../src/services/post-generator');
+  t.mock.method(ollama, 'ollamaComplete', async () => ({ model: 'verifier-test', text: '{"unsupported":[]}' }));
+
+  const opinion = await verifyPostClaims(
+    'Vitalik argues that retro funding should stay small.\n$50,000\nhttps://example.org/a',
+    '<b>Retro funding should stay small</b>\n\n<a href="https://example.org/a">Source</a>',
+    'crypto',
+  );
+  assert.equal(opinion.ok, false);
+  assert.match(opinion.unsupported.join('\n'), /unattributed opinion/i);
+
+  const attributed = await verifyPostClaims(
+    'Vitalik argues that retro funding should stay small.\n$50,000\nhttps://example.org/a',
+    '<b>Vitalik argues that retro funding should stay small</b>\n\n<a href="https://example.org/a">Source</a>',
+    'crypto',
+  );
+  assert.equal(attributed.unsupported.some(item => /unattributed opinion/.test(item)), false);
+
+  const derived = await verifyPostClaims(
+    'Two awards: $40,000 and $60,000.\nhttps://example.org/a',
+    '<b>Awards totaled $100,000</b>\n\n<a href="https://example.org/a">Source</a>',
+    'crypto',
+  );
+  assert.equal(derived.ok, false);
+  assert.match(derived.unsupported.join('\n'), /derived number/i);
+  assert.match(derived.unsupported.join('\n'), /100000/);
+
+  const prompt = buildVerifierPrompt('source', 'draft');
+  assert.match(prompt, /FAIL if an opinion is stated as fact without attribution/);
+  assert.match(prompt, /any number is derived or added up/);
+});
+
 test('the post prompt no longer asks for new information or opens/launches examples', () => {
   const prompt = buildPostPrompt({
     name: 'Example',

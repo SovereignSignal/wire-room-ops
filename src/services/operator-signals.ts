@@ -36,6 +36,8 @@ export interface OperatorSignals {
 // ============================================================
 
 const LOOKBACK_DAYS = 30;
+/** Decisions before the six-area scope change must not teach the classifier to down-rank awards or governance. */
+export const SIGNAL_DECISION_CUTOFF = '2026-10-04';
 const MIN_OCCURRENCES = 3;
 const MAX_SIGNALS = 8;
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
@@ -68,6 +70,52 @@ function tokenize(name: string): string[] {
     .filter((w) => w.length > 2 && !SIGNAL_STOP_WORDS.has(w));
 }
 
+/**
+ * Scope declines from the pre-six-area wire rules. Award slates, "not an open
+ * call", and governance votes are eligible areas now, so they must not pull
+ * scores down.
+ */
+export function isScopeDeclineReason(reason: string | null | undefined): boolean {
+  if (!reason || !reason.trim()) return false;
+  return /not[-\s]+open|not an open|\baward|\bgovernance\b/i.test(reason);
+}
+
+export function includeOperatorSignalRow(
+  row: { status: string; decision_at?: string | Date | null; action_reason?: string | null },
+  now = new Date(),
+): boolean {
+  if (row.status !== 'approved' && row.status !== 'declined') return false;
+  if (row.decision_at == null || row.decision_at === '') return false;
+  const decided = row.decision_at instanceof Date ? row.decision_at : new Date(row.decision_at);
+  if (Number.isNaN(decided.getTime())) return false;
+  const cutoff = new Date(`${SIGNAL_DECISION_CUTOFF}T00:00:00.000Z`);
+  if (decided < cutoff) return false;
+  const lookback = now.getTime() - LOOKBACK_DAYS * 24 * 60 * 60 * 1000;
+  if (decided.getTime() < lookback) return false;
+  if (row.status === 'declined' && isScopeDeclineReason(row.action_reason)) return false;
+  return true;
+}
+
+export function operatorSignalQuery(wire?: string): { sql: string; params: Array<string | number> } {
+  const params: Array<string | number> = [LOOKBACK_DAYS];
+  let whereClause = '';
+  if (wire) {
+    params.push(wire);
+    whereClause = ` AND wire = $${params.length}`;
+  }
+  const sql = `SELECT LOWER(name) AS name, status, action_reason, decision_at
+     FROM scan_entries
+     WHERE status IN ('approved', 'declined')
+       AND decision_at >= $${params.length + 1}::timestamptz
+       AND decision_at >= NOW() - INTERVAL '1 day' * $1
+       AND NOT (
+         status = 'declined'
+         AND COALESCE(action_reason, '') ~* 'not[-[:space:]]+open|not an open|\\maward|governance'
+       )
+       ${whereClause}`;
+  return { sql, params: [...params, SIGNAL_DECISION_CUTOFF] };
+}
+
 export async function computeOperatorSignals(wire?: string): Promise<OperatorSignals> {
   const cacheKey = wire || '__all__';
   const cached = signalCache.get(cacheKey);
@@ -76,21 +124,14 @@ export async function computeOperatorSignals(wire?: string): Promise<OperatorSig
   }
 
   const pool = getPool();
-  const params: (string | number)[] = [LOOKBACK_DAYS];
-  let whereClause = '';
-  if (wire) {
-    params.push(wire);
-    whereClause = ` AND wire = $${params.length}`;
-  }
-
-  const { rows } = await pool.query<{ name: string; status: string }>(
-    `SELECT LOWER(name) AS name, status
-     FROM scan_entries
-     WHERE status IN ('approved', 'declined')
-       AND created_at >= NOW() - INTERVAL '1 day' * $1
-       ${whereClause}`,
-    params
-  );
+  const signalQuery = operatorSignalQuery(wire);
+  const { rows: fetched } = await pool.query<{
+    name: string;
+    status: string;
+    action_reason: string | null;
+    decision_at: string | Date | null;
+  }>(signalQuery.sql, signalQuery.params);
+  const rows = fetched.filter(row => includeOperatorSignalRow(row));
 
   // Tokenize and compute frequency per status
   const freq = new Map<string, { approved: number; declined: number }>();

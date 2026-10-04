@@ -219,6 +219,21 @@ export async function getAllProviders(): Promise<ProviderConfig[]> {
   return Array.from(providerCache.values());
 }
 
+/** Blank, null, or a masked key means "leave the stored key alone". */
+export function cleanProviderApiKey(apiKey: unknown): string {
+  if (typeof apiKey !== 'string') return '';
+  const trimmed = apiKey.trim();
+  if (!trimmed || trimmed.startsWith('****')) return '';
+  return trimmed;
+}
+
+/** Undefined, null, or blank means the column was omitted from the update. */
+function omittedText(value: string | null | undefined): string | null {
+  if (value === undefined || value === null) return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
 export async function upsertProvider(
   provider: string,
   data: { api_key?: string; base_url?: string | null; default_model?: string | null; enabled?: boolean; display_name?: string }
@@ -229,23 +244,30 @@ export async function upsertProvider(
   const pool = getPool();
   const defaults = PROVIDER_DEFAULTS[provider];
   const displayName = data.display_name || defaults?.displayName || provider;
+  // Null parameters keep the stored row on update. A first insert still
+  // receives the code default, because there is no stored value to keep.
+  const baseUrl = omittedText(data.base_url);
+  const defaultModel = omittedText(data.default_model);
+  const enabled = typeof data.enabled === 'boolean' ? data.enabled : null;
 
   await pool.query(
     `INSERT INTO api_providers (provider, display_name, api_key, base_url, default_model, enabled)
-     VALUES ($1, $2, $3, $4, $5, $6)
+     VALUES ($1, $2, $3, COALESCE($4, $7), COALESCE($5, $8), COALESCE($6, true))
      ON CONFLICT (provider) DO UPDATE SET
        display_name = COALESCE(NULLIF($2, ''), api_providers.display_name),
        api_key = CASE WHEN $3 = '' THEN api_providers.api_key ELSE $3 END,
        base_url = COALESCE($4, api_providers.base_url),
        default_model = COALESCE($5, api_providers.default_model),
-       enabled = $6`,
+       enabled = COALESCE($6, api_providers.enabled)`,
     [
       provider,
       displayName,
-      data.api_key || '',
-      data.base_url ?? defaults?.baseUrl() ?? null,
-      data.default_model ?? defaults?.defaultModel ?? null,
-      data.enabled ?? true,
+      cleanProviderApiKey(data.api_key),
+      baseUrl,
+      defaultModel,
+      enabled,
+      defaults?.baseUrl() ?? null,
+      defaults?.defaultModel ?? null,
     ]
   );
 
@@ -253,6 +275,41 @@ export async function upsertProvider(
   const updated = getProviderState(provider);
   if (!updated) throw new Error(`Provider cache missing after upsert: ${provider}`);
   return updated;
+}
+
+function isOllamaBase(baseUrl: string): boolean {
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase();
+    return host === 'ollama.com' || host.endsWith('.ollama.com');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * xAI exposes GET /v1/api-key. An Ollama base (the grok slot sometimes points
+ * at ollama.com) has no such route. Probe the same OpenAI-compatible
+ * /chat/completions path classification uses, with a one-token prompt.
+ */
+async function fetchGrokProbe(baseUrl: string, apiKey: string, model: string | null): Promise<Response> {
+  if (isOllamaBase(baseUrl)) {
+    return fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: model || 'glm-5.2',
+        messages: [{ role: 'user', content: 'ping' }],
+        max_tokens: 1,
+      }),
+    });
+  }
+  const root = baseUrl.replace(/\/v1$/, '');
+  return fetch(`${root}/v1/api-key`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
 }
 
 // ---- Connection test ----
@@ -275,10 +332,9 @@ export async function testProviderConnection(provider: string): Promise<{ succes
   try {
     switch (provider) {
       case 'grok': {
-        const baseUrl = (cached.base_url || 'https://api.x.ai/v1').replace(/\/v1$/, '');
-        const res = await fetch(`${baseUrl}/v1/api-key`, {
-          headers: { 'Authorization': `Bearer ${cached.api_key}` },
-        });
+        const configured = (cached.base_url || 'https://api.x.ai/v1').replace(/\/$/, '');
+        const res = await fetchGrokProbe(configured, cached.api_key, cached.default_model);
+        if (res.status === 401 || res.status === 403) throw new Error('Invalid API key');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return { success: true, latencyMs: Date.now() - start };
       }

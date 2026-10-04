@@ -3,7 +3,7 @@ require('ts-node/register/transpile-only');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { grantsFeedItemToRaw, fetchGrantsFeedResults } = require('../src/services/forum');
+const { grantsFeedItemToRaw, fetchGrantsFeedResults, DISCUSS_WATCH_NEWS_QUERY } = require('../src/services/forum');
 
 // --- grantsFeedItemToRaw mapping ---
 
@@ -104,6 +104,25 @@ test('fetchGrantsFeedResults maps items, skips uniswap (operator conflict) and s
   assert.match(calls[0], /\/grants\?/);
   assert.match(calls[0], /wire=crypto/);
   assert.match(calls[0], /min_confidence=\d+/);
+});
+
+test('discuss.watch NEWS pull requests awarded and voting and still skips Uniswap', async (t) => {
+  const originalFetch = global.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+  const fresh = new Date().toISOString();
+  const calls = stubFetch({
+    items: [
+      { title: 'Season results', url: 'https://gov.optimism.io/t/results/1', protocol: 'Optimism', confidence: 90, status: 'awarded', topicCreatedAt: fresh },
+      { title: 'Uniswap vote', url: 'https://gov.uniswap.org/t/vote/2', protocol: 'Uniswap', confidence: 99, status: 'voting', topicCreatedAt: fresh },
+    ],
+  });
+  const { results } = await fetchGrantsFeedResults('crypto', '2026-10-01', { ...DISCUSS_WATCH_NEWS_QUERY });
+  assert.equal(results.length, 1);
+  assert.equal(results[0].name, 'Season results');
+  assert.equal(results[0].metadata.wire_area, '2');
+  assert.match(calls[0], /classification=NEWS/);
+  assert.match(decodeURIComponent(calls[0]), /status=awarded,voting/);
+  assert.doesNotMatch(results.map(item => item.sourceUrl).join('\n'), /uniswap/i);
 });
 
 test('fetchGrantsFeedResults fails soft on HTTP errors and API errors', async (t) => {

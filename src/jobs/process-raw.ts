@@ -140,6 +140,7 @@ export interface RawClassificationWrite {
   metadata: unknown;
   tags: string[];
   status: 'queued' | 'archived';
+  wireArea: string | null;
 }
 
 export interface RawClassificationSnapshot {
@@ -168,7 +169,8 @@ export async function applyClassificationIfQueued(
          quality_breakdown = $4,
          metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
          tags = $6,
-         status = $8
+         status = $8,
+         wire_area = $17
      WHERE id = $7 AND status = $9
        AND ($10::text IS NULL OR (
          source_url = $10 AND name = $11
@@ -196,6 +198,7 @@ export async function applyClassificationIfQueued(
       expected?.amount ?? null,
       expected?.deadlineParsed ?? null,
       expected?.sourcePublishedAt ?? null,
+      result.wireArea,
     ],
   );
   return classified.rowCount === 1;
@@ -376,9 +379,14 @@ export async function processRawEntries(pool?: Pool): Promise<{
                 },
                 // operator_route MUST persist into metadata. It is the BD
                 // loop's source signal and the queue's route filter.
-                metadata: { ...classResult.extracted, operator_route: classResult.operatorRoute || null },
+                metadata: {
+                  ...classResult.extracted,
+                  operator_route: classResult.operatorRoute || null,
+                  wire_area: classResult.wireArea,
+                },
                 tags: classResult.tags,
                 status: classStatus,
+                wireArea: classResult.wireArea,
               }, isXMonitor ? 'deduped' : 'queued', {
                 sourceUrl: row.source_url,
                 name: row.name,

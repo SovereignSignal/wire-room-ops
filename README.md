@@ -292,6 +292,7 @@ Optional:
 - `STARTUP_LLM_RESCORE_ENABLED` -- opt in to queue-only LLM score repair at startup (default false; may spend API credits)
 - `FROM_EMAIL`
 - `ALLOWED_EMAILS`
+- `GROK_SEARCH_MODEL` -- x_search/web_search fallback when the provider model is not a Grok id (default `grok-4.7`). Stored scan-prompt models are unchanged
 - `OLLAMA_DEFAULT_MODEL` -- summary primary model (default `deepseek-v4.1-flash`). Used instead of the Ollama provider row's `default_model`
 - `OLLAMA_FALLBACK_MODEL` -- summary fallback model (default `glm-5.3-flash`)
 - `POST_GEN_MODEL` -- Telegram post draft model (default: `OLLAMA_DEFAULT_MODEL`)

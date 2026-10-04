@@ -186,6 +186,7 @@ export async function ensureApiUsageTables(): Promise<void> {
   // Seed default pricing
   const seeds = [
     ['grok', 'grok-4.20-beta-0309-non-reasoning', 2.0, 10.0, null],
+    ['grok', 'grok-4.7', 2.0, 6.0, null],
     ['anthropic', 'claude-opus-4-1-20250805', 15.0, 75.0, null],
     ['anthropic', 'claude-sonnet-4-6', 3.0, 15.0, null],
     ['perplexity', 'sonar-pro', 3.0, 15.0, null],

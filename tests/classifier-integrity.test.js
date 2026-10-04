@@ -39,6 +39,7 @@ function validReply(overrides = {}) {
     score_reason: 'Credible open program with complete details.',
     reason: 'Applications are open.',
     tags: ['NLnet'],
+    wire_area: '3',
     extracted: {},
     ...overrides,
   });
@@ -179,6 +180,54 @@ test('known-program cycle guard does not rewrite an in-scope GRANT or NEWS label
   assert.equal(guardedNews.classification, 'NEWS');
   assert.equal(guardedNews.inScope, true);
   assert.equal(processRawStatus(guardedNews), 'queued');
+});
+
+test('classification prompt keeps GRANT for open programs and asks for wire_area', () => {
+  const prompt = buildClassificationPrompt({
+    name: 'Round results',
+    description: 'The foundation published the recipient slate.',
+    source_url: 'https://example.org/results',
+    wire: 'crypto',
+  });
+  assert.match(prompt, /wire_area/);
+  assert.match(prompt, /Keep GRANT strictly for open programs someone can apply to now/);
+  assert.match(prompt, /grants\.watch/);
+  assert.match(prompt, /Award announcements and round results are wire_area 2/);
+  assert.match(prompt, /Items in areas 1–6 with a primary source are eligible for operator_route publish or source_check/);
+  assert.match(prompt, /`out` → NOISE\/decline/);
+  assert.doesNotMatch(prompt, /Announcements about awarded funding are usually relationship_signal/);
+  assert.doesNotMatch(prompt, /Classify as NEWS unless it is clearly a direct grant application opportunity/);
+});
+
+test('wire_area out declines and a non-open GRANT is not left as GRANT', () => {
+  const award = parseClassificationResponse(validReply({
+    classification: 'NEWS',
+    wire_area: '2',
+    operator_route: 'publish',
+    reason: 'Funder published the round results.',
+  }));
+  assert.equal(award.wireArea, '2');
+  assert.equal(award.classification, 'NEWS');
+  assert.equal(award.operatorRoute, 'publish');
+
+  const mislabeled = parseClassificationResponse(validReply({
+    classification: 'GRANT',
+    wire_area: '2',
+    operator_route: 'publish',
+  }));
+  assert.equal(mislabeled.classification, 'NEWS');
+  assert.equal(mislabeled.wireArea, '2');
+  assert.equal(mislabeled.operatorRoute, 'publish');
+
+  const out = parseClassificationResponse(validReply({
+    classification: 'NEWS',
+    wire_area: 'out',
+    operator_route: 'publish',
+  }));
+  assert.equal(out.wireArea, 'out');
+  assert.equal(out.classification, 'NOISE');
+  assert.equal(out.operatorRoute, 'decline');
+  assert.throws(() => parseClassificationResponse(validReply({ wire_area: 'maybe' })), /wire_area/);
 });
 
 test('automatic startup rescore is opt-in and queue-only', () => {

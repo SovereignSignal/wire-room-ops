@@ -107,8 +107,9 @@ test('insert-only intake persists Grok Scout metadata in scan_entries JSONB', as
 
   assert.equal(summary.totalIngested, 1);
   assert.equal(calls.length, 1);
-  assert.match(calls[0].sql, /raw_output, parse_strategy, metadata\)/);
-  assert.equal(calls[0].values.length, 18);
+  assert.match(calls[0].sql, /raw_output, parse_strategy, metadata, wire_area\)/);
+  assert.equal(calls[0].values.length, 19);
+  assert.equal(calls[0].values[18], null);
   assert.equal(calls[0].values[9], 'S');
   assert.equal(calls[0].values[10], 'grok-scout');
   assert.equal(calls[0].values[15], rawManifest);

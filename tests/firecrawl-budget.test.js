@@ -14,7 +14,7 @@ const {
   PLAIN_FETCH_MIN_TEXT,
 } = require('../src/services/source-feeds');
 const { scrapeUrl, resolveFirecrawlJob } = require('../src/services/scraper');
-const { prepareNewsletterPrompt, applySummaryScrapeNote, UNSCRAPED_SUMMARY_NOTE } = require('../src/services/ollama');
+const { prepareNewsletterPrompt, applySummaryScrapeNote, buildFallbackPrompt, completeNewsletterSummary } = require('../src/services/ollama');
 const { processEntry } = require('../src/services/processor');
 const { intakeFirecrawlOptions } = require('../src/services/intake-core');
 const apiProvider = require('../src/services/api-provider');
@@ -223,9 +223,17 @@ test('a summary scrape is one attempt and a failure marks the summary missing', 
   assert.deepEqual(calls[0].opts, { attempts: 1, job: 'summary' });
   assert.equal(prepared.scraped, false);
   assert.doesNotMatch(prepared.prompt, /PAGE CONTENT|scraped_content/i);
-  assert.match(prepared.prompt, /Cached blurb/);
-  assert.match(applySummaryScrapeNote('Draft summary.', false), new RegExp(UNSCRAPED_SUMMARY_NOTE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(prepared.prompt, /return SKIP/i);
+  assert.doesNotMatch(prepared.prompt, /unable to access/i);
+  assert.equal(applySummaryScrapeNote('Draft summary.', false), 'SKIP');
   assert.equal(applySummaryScrapeNote('Draft summary.', true), 'Draft summary.');
+  assert.equal(applySummaryScrapeNote('SKIP', true), 'SKIP');
+  const skipped = await completeNewsletterSummary({
+    id: '1', url: 'https://example.com/program', quick_summary: 'Cached blurb',
+    category: 'Grant', timestamp: new Date(), source: 'feed', wire: 'crypto',
+  }, prepared);
+  assert.equal(skipped, 'SKIP');
+  assert.match(buildFallbackPrompt(), /return SKIP/i);
 });
 
 test('a throwing summary scrape still degrades without a second attempt', async () => {

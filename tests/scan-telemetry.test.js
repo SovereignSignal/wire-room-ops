@@ -11,6 +11,7 @@ const read = (rel) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
 
 test('legacy xAI search tools reject the configured GLM chat model before an API call', () => {
   assert.equal(supportsGrokSearchTools('grok-4.20-beta-0309-non-reasoning'), true);
+  assert.equal(supportsGrokSearchTools('grok-4.7'), true);
   assert.equal(supportsGrokSearchTools('grok-4'), true);
   assert.equal(supportsGrokSearchTools('glm-5.2'), false);
   assert.equal(supportsGrokSearchTools('claude-sonnet-4-6'), false);
@@ -24,6 +25,22 @@ test('search lanes fall back from glm-5.2 without changing the provider chat def
   assert.equal(resolveGrokSearchModel(undefined), GROK_SEARCH_MODEL);
   assert.equal(resolveGrokSearchModel('grok-4'), 'grok-4');
   assert.equal(resolveGrokSearchModel('grok-4.20-beta-0309-non-reasoning'), 'grok-4.20-beta-0309-non-reasoning');
+  assert.equal(GROK_SEARCH_MODEL, 'grok-4.7');
+});
+
+test('GROK_SEARCH_MODEL overrides the search fallback and a non-Grok override is ignored', () => {
+  const { grokSearchModel } = require('../src/services/grok');
+  const previous = process.env.GROK_SEARCH_MODEL;
+  try {
+    process.env.GROK_SEARCH_MODEL = 'grok-4.6';
+    assert.equal(grokSearchModel(), 'grok-4.6');
+    assert.equal(resolveGrokSearchModel('glm-5.2'), 'grok-4.6');
+    process.env.GROK_SEARCH_MODEL = 'glm-5.2';
+    assert.equal(grokSearchModel(), 'grok-4.7');
+  } finally {
+    if (previous === undefined) delete process.env.GROK_SEARCH_MODEL;
+    else process.env.GROK_SEARCH_MODEL = previous;
+  }
 });
 
 test('org enrichment and contact discovery pin a Grok search model', () => {

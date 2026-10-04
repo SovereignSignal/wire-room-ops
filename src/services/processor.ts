@@ -1,6 +1,7 @@
 import { DatabaseEntry, ProcessedEntry, ProcessingStats } from '../types';
 import { summarizeWithGrok, isXcomUrl } from './grok';
 import { completeNewsletterSummary, prepareNewsletterPrompt } from './ollama';
+import { isSummarySkip } from '../types/wire-area';
 import { findSummaryLeak } from './summary-guard';
 import { sleep } from '../utils/async';
 
@@ -67,7 +68,12 @@ export async function processEntry(entry: DatabaseEntry, models?: ModelOptions, 
         })
       : await summarizeNonXOnce(entry, models, hooks);
 
-    baseResult.enrichedSummary = summary;
+    if (isSummarySkip(summary)) {
+      baseResult.enrichedSummary = '';
+      baseResult.processingError = 'SKIP';
+    } else {
+      baseResult.enrichedSummary = summary;
+    }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     baseResult.processingError = errorMessage;

@@ -145,6 +145,8 @@ interface EntryInput {
   amount?: string | null;
   deadline?: string | null;
   sourceUrl: string;
+  /** 1–6 or out. Apply path and deadline are included only for area 3. */
+  wireArea?: string | null;
 }
 
 /**
@@ -176,6 +178,7 @@ function cleanEntry(entry: EntryInput): EntryInput & { bestLink: string } {
     deadline: cleanedDeadline,
     sourceUrl: entry.sourceUrl,
     bestLink,
+    wireArea: entry.wireArea ?? null,
   };
 }
 
@@ -193,7 +196,10 @@ export function buildPostPrompt(entry: ReturnType<typeof cleanEntry>, wire: stri
     'Say rolling or no deadline only when the fields state it.',
     'Do not add opinion or hype (rare, one of the, notable, signals, worth exploring, major, significant, largest, groundbreaking, exciting, or similar praise).',
     'Copy amounts and other numbers exactly as written. Do not add, round, or combine them.',
-    'When the fields include an apply path or a deadline, include it.',
+    "Match the item's area: award/result posts name the funder, recipients and amounts as stated; governance posts state the decision, vote result and capital moved. Attributed commentary must be quoted or framed as the named person's view ('X argues…'), never stated as fact. Do not compute or add up totals, averages, counts or percentages that the source doesn't state in exactly those words.",
+    entry.wireArea === '3' || entry.wireArea == null
+      ? 'When the fields include an apply path or a deadline, include it.'
+      : 'Do not include an apply path or an application deadline. This item is not an open call.',
     '',
     `Name: ${entry.name}`,
     `Description: ${entry.description || '(none)'}`,
@@ -350,11 +356,12 @@ async function completeWith(prompt: string, purpose: string, primary: string, wi
   throw lastError ?? new Error(`${purpose} failed`);
 }
 
-function verifierPrompt(input: string, draft: string): string {
+export function buildVerifierPrompt(input: string, draft: string): string {
   return [
     'You check whether a draft Telegram post adds anything the source fields do not support.',
     'Compare the draft only to the source fields. A claim is unsupported when the fields do not state it,',
     'including combined or rounded amounts, extra eligibility, a news verb the fields do not use, a deadline the fields do not state, and opinion or hype.',
+    'FAIL if an opinion is stated as fact without attribution, or if any number is derived or added up rather than quoted from the source.',
     'Return EXACTLY this JSON and nothing else: {"unsupported":["short claim", "..."]}',
     'Use an empty array when every claim in the draft is supported.',
     '',
@@ -366,10 +373,19 @@ function verifierPrompt(input: string, draft: string): string {
   ].join('\n');
 }
 
+export function localVerifierFailures(input: string, draft: string): string[] {
+  const html = /<[^>]+>/.test(draft);
+  const faith = checkFaithfulness(input, draft, { html });
+  return faith.violations
+    .filter(violation => violation.startsWith('amount ') || violation.startsWith('number ') || violation.startsWith('unattributed opinion'))
+    .map(violation => violation.startsWith('unattributed opinion') ? violation : `derived number: ${violation}`);
+}
+
 export async function verifyPostClaims(input: string, draft: string, wire: string): Promise<VerifierResult> {
+  const local = localVerifierFailures(input, draft);
   try {
     const { model, text } = await completeWith(
-      verifierPrompt(input, draft),
+      buildVerifierPrompt(input, draft),
       'post-verify',
       postVerificationModel(),
       wire,
@@ -378,10 +394,14 @@ export async function verifyPostClaims(input: string, draft: string, wire: strin
     );
     const unsupported = parseUnsupported(text);
     if (!unsupported) {
-      return { ok: false, model, unsupported: [], error: 'verifier returned unreadable JSON' };
+      return { ok: false, model, unsupported: local, error: local.length ? null : 'verifier returned unreadable JSON' };
     }
-    return { ok: unsupported.length === 0, model, unsupported, error: null };
+    const combined = [...local, ...unsupported];
+    return { ok: combined.length === 0, model, unsupported: combined, error: null };
   } catch (error) {
+    if (local.length) {
+      return { ok: false, model: postVerificationModel() || null, unsupported: local, error: null };
+    }
     return {
       ok: false,
       model: postVerificationModel() || null,

@@ -600,7 +600,7 @@ router.get('/entries', async (req: Request, res: Response) => {
       const pool = getPool();
       const failedResult = await pool.query(
         `SELECT id, name, description, source_url, wire, status, quality_score, classification,
-                amount, deadline, enriched_summary, scan_source, actioned_by, action_reason,
+                wire_area, amount, deadline, enriched_summary, scan_source, actioned_by, action_reason,
                 created_at, updated_at
          FROM scan_entries
          WHERE auto_summarize_failed = true
@@ -1320,14 +1320,14 @@ router.get('/agent/approval-patterns', async (_req: Request, res: Response) => {
   try {
     const pool = getPool();
     const approved = await pool.query(
-      `SELECT name, wire, quality_score, classification, scan_source,
+      `SELECT name, wire, wire_area, quality_score, classification, scan_source,
               LEFT(description, 200) as description, source_url
        FROM scan_entries
        WHERE status = 'approved'
        ORDER BY created_at DESC LIMIT 30`
     );
     const declined = await pool.query(
-      `SELECT name, wire, quality_score, classification, scan_source,
+      `SELECT name, wire, wire_area, quality_score, classification, scan_source,
               LEFT(description, 200) as description, action_reason
        FROM scan_entries
        WHERE status = 'declined'
