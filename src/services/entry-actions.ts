@@ -14,6 +14,7 @@ import { validateForApproval } from './approval-guard';
 import { drainPublicationQueue } from './publication-queue';
 import { bookPacedQueue, getDistributionPace } from './distribution-pace';
 import { composePostsForIds, storedPostColumns } from './publication-post';
+import { enforceRepeatFunderHold, recordRepeatFunderOverride } from './repeat-funder';
 import { autoSummarizeOnApprove } from './auto-summarize';
 import { isLeakedSummary } from './summary-guard';
 import { extractOrgFromName, upsertOrgProfile, linkEntryToOrg, findSimilarOrg } from './org-extractor';
@@ -32,6 +33,8 @@ export interface ActionOptions {
   actor?: string;   // who is taking this action ('stringer' | 'sov' | 'system')
   reason?: string;  // why this action was taken (for audit trail)
   dryRun?: boolean; // if true, validate and return result without committing
+  /** Book the publication even when this funder posted to Telegram inside the window. Requires reason. */
+  overrideRepeatFunder?: boolean;
 }
 
 /** Force is reserved for authenticated human operators, never agent principals. */
@@ -133,10 +136,13 @@ async function applyStatusChange(
   const eligible = eligibleStatusesForAction(action);
   const params = [newStatus, distributable, opts.actor || null, opts.reason || null, entryIds, eligible ? [...eligible] : null];
   const pace = action === 'approve' && distributable ? await getDistributionPace() : null;
+  const repeatOverrides = action === 'approve' && distributable
+    ? await enforceRepeatFunderHold(pool, entryIds, { override: opts.overrideRepeatFunder, reason: opts.reason })
+    : [];
   const posts = action === 'approve' && distributable ? await composePostsForIds(entryIds) : new Map();
   const stored = storedPostColumns(entryIds, posts);
   if (!pace?.enabled) {
-    return pool.query(
+    const result = await pool.query(
       `WITH changed AS (${STATUS_CHANGE_SQL}),
        queued AS (INSERT INTO publication_queue (
          entry_id, post_text, generated_at, model, check_result, verifier_result)
@@ -155,6 +161,10 @@ async function applyStatusChange(
        SELECT * FROM changed`,
       [...params, entryIds, stored.postText, stored.generatedAt, stored.model, stored.checkResult, stored.verifierResult],
     );
+    if (repeatOverrides.length) {
+      await recordRepeatFunderOverride(pool, repeatOverrides, opts.actor || 'unknown', opts.reason || '');
+    }
+    return result;
   }
 
   const client = await pool.connect();
@@ -175,6 +185,9 @@ async function applyStatusChange(
       wire: row.wire,
       wires: Array.isArray(row.wires) ? row.wires : [],
     })), pace, posts);
+    if (repeatOverrides.length) {
+      await recordRepeatFunderOverride(client, repeatOverrides, opts.actor || 'unknown', opts.reason || '');
+    }
     await client.query('COMMIT');
     return result;
   } catch (error) {

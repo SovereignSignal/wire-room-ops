@@ -259,6 +259,50 @@ Guards, all `409`, and none of them write:
 
 A withheld row stays withheld. A prior Telegram success stays unsent from this route so a second wire cannot repost it. The internal key is `403`. A curator token without `confirm` is `400 { "error": "confirm_required" }`. A `read_queue` key is `403`.
 
+### Repeat-funder hold
+
+A funder that already has a successful Telegram post on any wire stays off the queue for `REPEAT_FUNDER_WINDOW_DAYS` (default 30). The match is `org_id`, `program_id`, or a normalized funder name taken from the entry name and tags (the leading name, the text before a dash or colon, and each tag). The entry's own posts do not count.
+
+This runs on every enqueue: approve with publish, `POST /api/distribution/queue/:id/enqueue`, a review retry, and a resolve that puts the entry back to send. The call writes nothing and returns `409`:
+
+```json
+{
+  "error": "repeat_funder",
+  "reason": "repeat_funder",
+  "message": "This funder already had a successful Telegram post in the last 30 days.",
+  "windowDays": 30,
+  "holds": [
+    {
+      "entryId": 42,
+      "held": true,
+      "windowDays": 30,
+      "priors": [
+        { "entryId": 10, "name": "Btrust — Builder Grants", "wire": "crypto", "externalId": "9001", "sentAt": "2026-09-20T12:00:00.000Z" }
+      ]
+    }
+  ]
+}
+```
+
+`GET /api/distribution/entries/:id/repeat-funder` (`read_queue`) returns that same hold object for one entry (`held: false` and `priors: []` when the window is clear). `404` when the entry does not exist.
+
+`override_repeat_funder: true` with a `reason` books the slot anyway. The reason is appended to `metadata.repeat_funder_overrides` (`at`, `actor`, `reason`, `windowDays`, `priors`). Override without a reason is `400 { "error": "reason_required" }`.
+
+```bash
+curl -s -H "Authorization: Bearer $HEDWIG_TOKEN" \
+  "$WIREOPS_SERVER_URL/api/distribution/entries/42/repeat-funder"
+
+curl -s -X POST "$WIREOPS_SERVER_URL/api/distribution/queue/42/enqueue" \
+  -H "Authorization: Bearer $HEDWIG_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "confirm": true,
+    "override_repeat_funder": true,
+    "reason": "Starter Grants is a distinct round from the three posts already sent.",
+    "sources": ["https://example.org/btrust/starter"]
+  }'
+```
+
 Booking a row freezes the Telegram text on it (`post_text`, `generated_at`, `model`, `check_result`, `verifier_result`). Approve-with-publish and the other enqueue paths do the same. The worker sends that text. It generates a draft only when `post_text` is missing.
 
 `GET /api/distribution/outgoing` includes `postText` on each queued item. `GET /api/distribution/queue/:id` returns one row: `{ entryId, status, availableAt, postText, generatedAt, model, checkResult, verifierResult }`. `read_queue` can call it. `404` when the entry has no publication row.
@@ -301,6 +345,7 @@ curl -s -X PATCH "$WIREOPS_SERVER_URL/api/distribution/queue/18510/post" \
 | PUT | `/api/distribution/pace` | |
 | GET | `/api/distribution/outgoing` | |
 | GET | `/api/distribution/review` | |
+| GET | `/api/distribution/entries/:id/repeat-funder` | |
 | GET | `/api/distribution/queue/:id` | |
 | POST | `/api/distribution/queue/:id/enqueue` | yes |
 | POST | `/api/distribution/queue/:id/regenerate` | yes |
