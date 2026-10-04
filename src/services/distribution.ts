@@ -358,9 +358,14 @@ export async function distributeEntry(entryId: number, wire: string, wireOnly = 
   for (const w of wireList) {
     const configs = await getDistributionConfigs(w);
     const logs = await getDistributionLogs(entryId);
-    const settled = (channel: string, channelId?: string) => logs.some(l =>
-      l.wire === w && l.channel === channel && (l.channelId || null) === (channelId || null)
-      && (l.status === 'success' || l.status === 'pending'));
+    const settled = (channel: string, channelId?: string) => logs.some(l => {
+      if (l.wire !== w || l.channel !== channel) return false;
+      const sameSlot = (l.channelId || null) === (channelId || null);
+      if (sameSlot && (l.status === 'success' || l.status === 'pending' || l.status === 'acknowledged')) return true;
+      // Historical telegram failures have no channel id. Closing one of those
+      // covers every telegram destination on this wire.
+      return l.status === 'acknowledged' && l.channel === 'telegram' && !l.channelId && channel === 'telegram';
+    });
     const enabledConfigs = configs.filter(c => c.enabled && c.channel !== 'newsletter' && !settled(c.channel));
     const managedChannels = (await getEnabledDistributionChannelsForWire(w)).filter(c => !settled(c.channel, c.id));
 

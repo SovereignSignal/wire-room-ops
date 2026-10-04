@@ -136,6 +136,140 @@ test('approval and queue insertion commit together; quiet approvals create no pu
   }
 });
 
+test('acknowledging a failed log closes it without a new send or a queue row', async () => {
+  const e = await entry(); const ch = await channel();
+  const failed = await db.logDistribution({
+    entryId: e.id, channel: 'telegram', channelId: ch, wire: e.wire,
+    status: 'failed', errorMessage: 'Telegram API call failed', externalId: 'leave-this',
+  });
+  const closed = await queue.acknowledgeFailedDistribution(failed.id, 'user:test', 'Telegram rejected the chat');
+  assert.equal(closed.status, 'acknowledged');
+  assert.equal(closed.externalId, 'leave-this');
+  assert.equal(closed.enqueued, false);
+  assert.equal(closed.sent, false);
+  const stored = (await pool.query(
+    `SELECT status, external_id, acknowledged_by, acknowledged_reason, acknowledged_at FROM distribution_logs WHERE id = $1`,
+    [failed.id],
+  )).rows[0];
+  assert.equal(stored.status, 'acknowledged');
+  assert.equal(stored.external_id, 'leave-this');
+  assert.equal(stored.acknowledged_by, 'user:test');
+  assert.equal(stored.acknowledged_reason, 'Telegram rejected the chat');
+  assert.ok(stored.acknowledged_at);
+  assert.equal((await pool.query('SELECT count(*) FROM publication_queue')).rows[0].count, '0');
+  assert.equal((await pool.query(`SELECT count(*) FROM distribution_logs WHERE status = 'failed'`)).rows[0].count, '0');
+  assert.equal((await db.getUndistributedEntries(e.wire)).length, 0);
+  await dist.retryDistribution(e.id, e.wire);
+  await queue.drainPublicationQueue();
+  assert.equal(sends, 0);
+  await pool.query(`UPDATE distribution_logs SET lease_expires_at = NOW() - INTERVAL '2 days' WHERE id = $1`, [failed.id]);
+  await queue.reconcileStaleDeliveries();
+  const afterSweep = (await pool.query('SELECT status, needs_review FROM distribution_logs WHERE id = $1', [failed.id])).rows[0];
+  assert.equal(afterSweep.status, 'acknowledged');
+  assert.equal(afterSweep.needs_review, false);
+});
+
+test('acknowledge refuses a success log and a pending log', async () => {
+  const e = await entry(); const ch = await channel();
+  const success = await db.logDistribution({
+    entryId: e.id, channel: 'telegram', channelId: ch, wire: e.wire, status: 'success', externalId: '1',
+  });
+  await assert.rejects(
+    queue.acknowledgeFailedDistribution(success.id, 'user:test', 'no'),
+    /status is success/,
+  );
+  const pending = await db.claimDistributionLog({
+    entryId: e.id, channel: 'telegram', channelId: ch, wire: e.wire, postText: 'x',
+  });
+  assert.equal(pending, null);
+  const other = await entry('Other');
+  const claimed = await db.claimDistributionLog({
+    entryId: other.id, channel: 'telegram', channelId: ch, wire: other.wire,
+  });
+  await assert.rejects(
+    queue.acknowledgeFailedDistribution(claimed.id, 'user:test', 'no'),
+    /status is pending/,
+  );
+  assert.equal((await pool.query('SELECT status FROM distribution_logs WHERE id = $1', [success.id])).rows[0].status, 'success');
+  assert.equal((await pool.query('SELECT status FROM distribution_logs WHERE id = $1', [claimed.id])).rows[0].status, 'pending');
+});
+
+test('a queued failed destination becomes done and is not sent', async () => {
+  const e = await entry(); const ch = await channel();
+  const failed = await db.logDistribution({
+    entryId: e.id, channel: 'telegram', channelId: ch, wire: e.wire, status: 'failed',
+  });
+  await pool.query(`INSERT INTO publication_queue (entry_id, status) VALUES ($1, 'queued')`, [e.id]);
+  await queue.acknowledgeFailedDistribution(failed.id, 'user:test', 'Closed');
+  assert.equal((await pool.query('SELECT status FROM publication_queue WHERE entry_id = $1', [e.id])).rows[0].status, 'done');
+  await queue.drainPublicationQueue();
+  assert.equal(sends, 0);
+  assert.equal((await pool.query(`SELECT count(*) FROM distribution_logs WHERE entry_id = $1 AND status = 'pending'`, [e.id])).rows[0].count, '0');
+});
+
+test('a live claim blocks acknowledge and a needs-review sibling does not', async () => {
+  const live = await entry('Live'); const ch = await channel();
+  const failed = await db.logDistribution({
+    entryId: live.id, channel: 'telegram', channelId: ch, wire: live.wire, status: 'failed',
+  });
+  const pending = await pool.query(
+    `INSERT INTO distribution_logs (entry_id, channel, channel_id, wire, status, needs_review)
+     VALUES ($1, 'telegram', $2, $3, 'pending', false) RETURNING id`,
+    [live.id, ch, live.wire],
+  );
+  await assert.rejects(
+    queue.acknowledgeFailedDistribution(failed.id, 'user:test', 'no'),
+    /already in progress/,
+  );
+  assert.equal((await pool.query('SELECT status FROM distribution_logs WHERE id = $1', [failed.id])).rows[0].status, 'failed');
+
+  const review = await entry('Review');
+  const failedReview = await db.logDistribution({
+    entryId: review.id, channel: 'telegram', channelId: ch, wire: review.wire, status: 'failed',
+  });
+  await pool.query(
+    `INSERT INTO distribution_logs (entry_id, channel, channel_id, wire, status, needs_review)
+     VALUES ($1, 'telegram', $2, $3, 'pending', true)`,
+    [review.id, ch, review.wire],
+  );
+  await pool.query(`INSERT INTO publication_queue (entry_id, status) VALUES ($1, 'queued')`, [review.id]);
+  const closed = await queue.acknowledgeFailedDistribution(failedReview.id, 'user:test', 'The failed row is closed');
+  assert.equal(closed.status, 'acknowledged');
+  assert.equal((await pool.query(
+    `SELECT status, needs_review FROM distribution_logs WHERE entry_id = $1 AND status = 'pending'`,
+    [review.id],
+  )).rows[0].needs_review, true);
+  assert.equal((await pool.query('SELECT status FROM publication_queue WHERE entry_id = $1', [review.id])).rows[0].status, 'queued');
+  assert.equal(pending.rows.length, 1);
+});
+
+test('a telegram failure with no channel id closes the managed channel', async () => {
+  const e = await entry(); const ch = await channel();
+  const inserted = await pool.query(
+    `INSERT INTO distribution_logs (entry_id, channel, channel_id, wire, status, error_message)
+     VALUES ($1, 'telegram', NULL, $2, 'failed', 'Telegram API call failed') RETURNING id`,
+    [e.id, e.wire],
+  );
+  await queue.acknowledgeFailedDistribution(inserted.rows[0].id, 'user:test', 'Historical failure');
+  assert.equal((await db.getUndistributedEntries(e.wire)).length, 0);
+  assert.equal(await db.claimDistributionLog({
+    entryId: e.id, channel: 'telegram', channelId: ch, wire: e.wire,
+  }), null);
+  await dist.retryDistribution(e.id, e.wire);
+  assert.equal(sends, 0);
+});
+
+test('an acknowledged row can sit beside a success row for the same destination', async () => {
+  const e = await entry(); const ch = await channel();
+  await db.logDistribution({
+    entryId: e.id, channel: 'telegram', channelId: ch, wire: e.wire, status: 'success', externalId: '9',
+  });
+  await db.logDistribution({
+    entryId: e.id, channel: 'telegram', channelId: ch, wire: e.wire, status: 'acknowledged',
+  });
+  assert.equal((await pool.query('SELECT count(*) FROM distribution_logs WHERE entry_id = $1', [e.id])).rows[0].count, '2');
+});
+
 test('network-ambiguous sends keep the attempted text and require review without resending', async (t) => {
   const e = await entry(); await channel();
   t.mock.method(require('../src/services/telegram-channel'), 'sendChannelMessage', async () => { sends++; return null; });

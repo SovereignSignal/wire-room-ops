@@ -38,6 +38,20 @@ test('live sends claim a pending log before talking to Telegram or X', () => {
   assert.equal(liveClaims.length, 5, 'telegram/discord/slack managed + telegram/x legacy must claim before send');
 });
 
+test('acknowledging a failed send is not a publish path and does not write a message id', () => {
+  const route = read('src/routes/distribution.ts');
+  const confirm = read('src/services/curator-confirm.ts');
+  const start = route.indexOf("router.post('/distribution/logs/:id/acknowledge'");
+  assert.ok(start > 0, 'acknowledge route missing');
+  const handler = route.slice(start, start + 2200);
+  assert.doesNotMatch(handler, /enqueuePacedPublication|retryDistribution|distributeEntry|resolvePublication/);
+  assert.doesNotMatch(handler, /external_id/);
+  const { isSendPath, curatorConfirmRequired } = require('../src/services/curator-confirm');
+  assert.equal(isSendPath('POST', '/api/distribution/logs/12/acknowledge'), false);
+  assert.equal(curatorConfirmRequired('POST', '/api/distribution/logs/12/acknowledge', {}), true);
+  assert.match(confirm, /Acknowledging a failed send needs confirm=true/);
+});
+
 test('the double-post guard index only covers pending/success — failed logs never block a retry', () => {
   const dbSource = read('src/db/index.ts');
   const idx = dbSource.match(/UNIQUE INDEX[^;]*distribution_logs[^;]*WHERE[^;]*status IN \(([^)]+)\)/i);

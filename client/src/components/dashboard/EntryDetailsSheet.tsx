@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { EntryDistributionLog, ScanEntry } from '@/types';
-import { fetchEntryDistribution, redistributeEntry } from '@/api';
+import { acknowledgeFailedSend, fetchEntryDistribution, redistributeEntry } from '@/api';
 import { useToast } from '@/hooks/use-toast';
 import {
   Sheet,
@@ -37,6 +37,16 @@ const WIRES_DECISION = getQueueDecision('wires');
 const PROGRAMS_DECISION = getQueueDecision('programs');
 const REJECT_DECISION = getQueueDecision('reject');
 
+function acknowledgedCloseCovers(log: EntryDistributionLog, logs: EntryDistributionLog[]): boolean {
+  return logs.some(other => {
+    if (other.status !== 'acknowledged' || other.channel !== log.channel) return false;
+    if ((other.wire || '') !== (log.wire || '') && other.wire && log.wire) return false;
+    const sameSlot = (other.channelId || null) === (log.channelId || null);
+    if (sameSlot) return true;
+    return other.channel === 'telegram' && !other.channelId;
+  });
+}
+
 interface EntryDetailsSheetProps {
   entry: ScanEntry | null;
   onClose: () => void;
@@ -49,6 +59,9 @@ export function EntryDetailsSheet({ entry, onClose, onApproveToWires, onApproveT
   const { toast } = useToast();
   const [distributionLogs, setDistributionLogs] = useState<EntryDistributionLog[]>([]);
   const [retrying, setRetrying] = useState(false);
+  const [acknowledgeReasons, setAcknowledgeReasons] = useState<Record<number, string>>({});
+  const [acknowledgeErrors, setAcknowledgeErrors] = useState<Record<number, string>>({});
+  const [acknowledgingId, setAcknowledgingId] = useState<number | null>(null);
 
   const loadDistribution = (id: string) => {
     return fetchEntryDistribution(id)
@@ -72,11 +85,35 @@ export function EntryDetailsSheet({ entry, onClose, onApproveToWires, onApproveT
     () => [...new Set(distributionLogs.filter(log => log.status === 'success').map(log => log.channel))],
     [distributionLogs],
   );
-  const failedLogs = useMemo(
-    () => distributionLogs.filter(log => log.status === 'failed'),
+  const openFailedLogs = useMemo(
+    () => distributionLogs.filter(log => log.status === 'failed' && !acknowledgedCloseCovers(log, distributionLogs)),
+    [distributionLogs],
+  );
+  const acknowledgedLogs = useMemo(
+    () => distributionLogs.filter(log => log.status === 'acknowledged'),
     [distributionLogs],
   );
   const hasPublicationProof = successfulChannels.length > 0;
+
+  const handleAcknowledge = async (log: EntryDistributionLog) => {
+    if (!entry || acknowledgingId !== null) return;
+    const reason = (acknowledgeReasons[log.id] || '').trim();
+    if (!reason) return;
+    setAcknowledgingId(log.id);
+    setAcknowledgeErrors(prev => ({ ...prev, [log.id]: '' }));
+    try {
+      await acknowledgeFailedSend(log.id, reason);
+      toast({ title: 'Send acknowledged', description: 'This failure will not be retried.' });
+      await loadDistribution(entry.id);
+    } catch (err) {
+      const status = err && typeof err === 'object' && 'status' in err ? Number((err as { status?: number }).status) : 0;
+      const message = err instanceof Error ? err.message : 'Could not acknowledge the send';
+      setAcknowledgeErrors(prev => ({ ...prev, [log.id]: message }));
+      if (status === 409) await loadDistribution(entry.id);
+    } finally {
+      setAcknowledgingId(null);
+    }
+  };
 
   const handleRetryFailedSends = async () => {
     if (!entry || retrying) return;
@@ -297,22 +334,51 @@ export function EntryDetailsSheet({ entry, onClose, onApproveToWires, onApproveT
                   {successfulChannels.length > 0 && (
                     <DistributionBadges channels={successfulChannels} />
                   )}
-                  {failedLogs.length > 0 && (
+                  {(openFailedLogs.length > 0 || acknowledgedLogs.length > 0) && (
                     <div className="space-y-2">
-                      {failedLogs.map(log => (
-                        <div key={log.id} className="text-xs font-mono text-status-danger">
-                          {log.channel} failed{log.errorMessage ? `: ${log.errorMessage}` : ''}
+                      {acknowledgedLogs.map(log => (
+                        <div key={log.id} className="text-xs font-mono text-muted-foreground">
+                          {log.channel} acknowledged{log.acknowledgedReason ? `: ${log.acknowledgedReason}` : ''}
                         </div>
                       ))}
-                      <button
-                        type="button"
-                        onClick={handleRetryFailedSends}
-                        disabled={retrying}
-                        aria-label="Retry failed sends"
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-[10px] font-display tracking-wider uppercase border border-status-danger/40 text-status-danger hover:bg-status-danger/10 disabled:opacity-50"
-                      >
-                        {retrying ? 'RETRYING…' : 'RETRY FAILED SENDS'}
-                      </button>
+                      {openFailedLogs.map(log => (
+                        <div key={log.id} className="space-y-1">
+                          <div className="text-xs font-mono text-status-danger">
+                            {log.channel} failed{log.errorMessage ? `: ${log.errorMessage}` : ''}
+                          </div>
+                          <input
+                            aria-label={`Reason for acknowledging ${log.channel}`}
+                            value={acknowledgeReasons[log.id] || ''}
+                            maxLength={2000}
+                            onChange={event => setAcknowledgeReasons(prev => ({ ...prev, [log.id]: event.target.value }))}
+                            placeholder="Why this send stays closed"
+                            className="w-full rounded border border-border bg-background px-2 py-1 text-xs font-mono"
+                          />
+                          {acknowledgeErrors[log.id] && (
+                            <div className="text-[10px] font-mono text-status-danger">{acknowledgeErrors[log.id]}</div>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleAcknowledge(log)}
+                            disabled={acknowledgingId === log.id || !(acknowledgeReasons[log.id] || '').trim()}
+                            aria-label={`Acknowledge ${log.channel} failure`}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-[10px] font-display tracking-wider uppercase border border-border text-muted-foreground hover:bg-muted/40 disabled:opacity-50"
+                          >
+                            {acknowledgingId === log.id ? 'ACKNOWLEDGING…' : 'ACKNOWLEDGE'}
+                          </button>
+                        </div>
+                      ))}
+                      {openFailedLogs.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleRetryFailedSends}
+                          disabled={retrying}
+                          aria-label="Retry failed sends"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-[10px] font-display tracking-wider uppercase border border-status-danger/40 text-status-danger hover:bg-status-danger/10 disabled:opacity-50"
+                        >
+                          {retrying ? 'RETRYING…' : 'RETRY FAILED SENDS'}
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>

@@ -249,7 +249,7 @@ export interface SeenName {
 // --- Distribution types ---
 
 export type DistributionChannel = 'telegram' | 'discord' | 'slack' | 'x' | 'newsletter';
-export type DistributionStatus = 'pending' | 'success' | 'failed' | 'skipped';
+export type DistributionStatus = 'pending' | 'success' | 'failed' | 'skipped' | 'acknowledged';
 
 export interface DistributionConfig {
   wire: string;
@@ -269,6 +269,9 @@ export interface DistributionLog {
   externalId: string | null;
   errorMessage: string | null;
   createdAt: Date;
+  acknowledgedAt: Date | null;
+  acknowledgedBy: string | null;
+  acknowledgedReason: string | null;
 }
 
 export interface GeneratedPosts {

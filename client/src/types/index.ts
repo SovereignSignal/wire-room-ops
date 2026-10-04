@@ -97,9 +97,14 @@ export interface EntryDistributionLog {
   id: number;
   entryId: number;
   channel: string;
-  status: 'pending' | 'success' | 'failed' | 'skipped';
+  channelId?: string | null;
+  wire?: string;
+  status: 'pending' | 'success' | 'failed' | 'skipped' | 'acknowledged';
   errorMessage?: string | null;
   createdAt: string;
+  acknowledgedAt?: string | null;
+  acknowledgedBy?: string | null;
+  acknowledgedReason?: string | null;
 }
 
 export interface DbConfigMeta {

@@ -20,6 +20,13 @@ const POST_TEXT_CONFIRM_PATHS: { method: string; pattern: RegExp }[] = [
   { method: 'PATCH', pattern: /^\/api\/distribution\/queue\/\d+\/post$/ },
 ];
 
+/** Close a failed send. Confirm is required. This does not send. */
+const ACKNOWLEDGE_CONFIRM_PATHS: { method: string; pattern: RegExp }[] = [
+  { method: 'POST', pattern: /^\/api\/distribution\/logs\/\d+\/acknowledge$/ },
+];
+
+export const ACKNOWLEDGE_CONFIRM_MESSAGE = 'Acknowledging a failed send needs confirm=true. This action does not send.';
+
 const SEND_PATHS = [
   /^\/api\/distribution\/run\/[^/]+$/,
   /^\/api\/distribution\/channels\/[^/]+\/test$/,
@@ -60,6 +67,10 @@ export function isPostTextConfirmPath(method: string, path: string): boolean {
   return matchesPath(method, path, POST_TEXT_CONFIRM_PATHS);
 }
 
+export function isAcknowledgeConfirmPath(method: string, path: string): boolean {
+  return matchesPath(method, path, ACKNOWLEDGE_CONFIRM_PATHS);
+}
+
 function isMasked(value: unknown): boolean {
   return typeof value === 'string' && value.startsWith('****');
 }
@@ -89,6 +100,7 @@ export function curatorConfirmRequired(method: string, path: string, body: unkno
   if (isSendPath(verb, path)) return true;
   if (isEditorialConfirmPath(verb, path)) return true;
   if (isPostTextConfirmPath(verb, path)) return true;
+  if (isAcknowledgeConfirmPath(verb, path)) return true;
   return bodyHasNewSecret(body);
 }
 
@@ -132,6 +144,7 @@ export function enforceCuratorGuards(req: Request): CuratorGuard | null {
   if (agent.curator && curatorConfirmRequired(method, path, req.body) && !curatorConfirmed(req)) {
     const editorial = isEditorialConfirmPath(method, path);
     const postText = isPostTextConfirmPath(method, path);
+    const acknowledge = isAcknowledgeConfirmPath(method, path);
     return {
       status: 400,
       body: {
@@ -140,7 +153,9 @@ export function enforceCuratorGuards(req: Request): CuratorGuard | null {
           ? 'Regenerating or replacing a queued post needs confirm=true. This action does not send.'
           : editorial
             ? 'Editing entry content or releasing a withhold needs confirm=true. This action does not send.'
-            : 'This action deletes data, changes a secret, or sends a message. Retry with confirm=true.',
+            : acknowledge
+              ? ACKNOWLEDGE_CONFIRM_MESSAGE
+              : 'This action deletes data, changes a secret, or sends a message. Retry with confirm=true.',
       },
     };
   }

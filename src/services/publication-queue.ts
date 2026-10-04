@@ -55,8 +55,24 @@ async function runClaimedJob(pool: Pool, job: { entry_id: number; attempts: numb
       const unresolved = await pool.query(`SELECT id FROM distribution_logs
         WHERE entry_id = $1 AND status = 'pending'`, [job.entry_id]);
       if (unresolved.rows.length) { state = 'review'; error = 'A send needs verification before retrying'; }
-      else if (result.failed || result.skipped || (result.totalEntries === 0 && !(await pool.query("SELECT id FROM distribution_logs WHERE entry_id = $1 AND status = 'success' LIMIT 1", [job.entry_id])).rows.length)) {
+      else if (result.failed || result.skipped) {
         state = 'review'; error = 'No new delivery confirmed; check destinations and receipts';
+      } else if (result.totalEntries === 0) {
+        const closed = await pool.query(
+          `SELECT
+             BOOL_OR(status = 'success') AS success,
+             BOOL_OR(status = 'acknowledged') AS acknowledged
+           FROM distribution_logs WHERE entry_id = $1`,
+          [job.entry_id],
+        );
+        const row = closed.rows[0];
+        if (!row?.success && row?.acknowledged) {
+          state = 'done';
+          error = null;
+        } else if (!row?.success) {
+          state = 'review';
+          error = 'No new delivery confirmed; check destinations and receipts';
+        }
       }
     }
   } catch (err) {
@@ -237,6 +253,160 @@ export async function resolvePublication(
     await client.query('ROLLBACK');
     throw error;
   } finally { client.release(); }
+}
+
+export class AcknowledgeDistributionError extends Error {
+  constructor(message: string, public readonly statusCode: 404 | 409) {
+    super(message);
+    this.name = 'AcknowledgeDistributionError';
+  }
+}
+
+export interface AcknowledgedDistribution {
+  id: number;
+  entryId: number;
+  status: 'acknowledged';
+  acknowledgedAt: string;
+  acknowledgedBy: string;
+  acknowledgedReason: string;
+  externalId: string | null;
+  enqueued: false;
+  sent: false;
+  delivered: false;
+}
+
+/**
+ * Close one failed distribution log. Does not write external_id, does not
+ * insert a queue row, and does not send.
+ */
+export async function acknowledgeFailedDistribution(id: number, actor: string, reason: string): Promise<AcknowledgedDistribution> {
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    const located = (await client.query(
+      `SELECT entry_id FROM distribution_logs WHERE id = $1`,
+      [id],
+    )).rows[0];
+    if (!located) throw new AcknowledgeDistributionError('Distribution log not found', 404);
+    await client.query('SELECT id FROM scan_entries WHERE id = $1 FOR UPDATE', [located.entry_id]);
+    const row = (await client.query(
+      `SELECT * FROM distribution_logs WHERE id = $1 FOR UPDATE`,
+      [id],
+    )).rows[0];
+    if (!row) throw new AcknowledgeDistributionError('Distribution log not found', 404);
+    if (row.status !== 'failed') {
+      throw new AcknowledgeDistributionError(
+        `Only a failed send can be acknowledged (status is ${row.status})`,
+        409,
+      );
+    }
+
+    const queue = (await client.query(
+      `SELECT status FROM publication_queue WHERE entry_id = $1 FOR UPDATE`,
+      [row.entry_id],
+    )).rows[0];
+    if (queue?.status === 'running') {
+      throw new AcknowledgeDistributionError('A send is in progress for this entry', 409);
+    }
+
+    const liveClaim = (await client.query(
+      `SELECT id FROM distribution_logs
+       WHERE entry_id = $1 AND wire = $2 AND channel = $3 AND id <> $4
+         AND status = 'pending' AND NOT needs_review
+         AND (
+           channel_id IS NOT DISTINCT FROM $5::uuid
+           OR ($3 = 'telegram' AND $5::uuid IS NULL AND channel = 'telegram')
+         )
+       LIMIT 1`,
+      [row.entry_id, row.wire, row.channel, row.id, row.channel_id],
+    )).rows[0];
+    if (liveClaim) {
+      throw new AcknowledgeDistributionError('A send is already in progress for this destination', 409);
+    }
+
+    const updated = (await client.query(
+      `UPDATE distribution_logs
+       SET status = 'acknowledged',
+           acknowledged_at = NOW(),
+           acknowledged_by = $2,
+           acknowledged_reason = $3
+       WHERE id = $1 AND status = 'failed'
+       RETURNING id, entry_id, external_id, acknowledged_at, acknowledged_by, acknowledged_reason`,
+      [id, actor, reason],
+    )).rows[0];
+    if (!updated) {
+      throw new AcknowledgeDistributionError('Only a failed send can be acknowledged', 409);
+    }
+
+    if (queue && (queue.status === 'queued' || queue.status === 'review')) {
+      const pending = (await client.query(
+        `SELECT 1 FROM distribution_logs WHERE entry_id = $1 AND status = 'pending' LIMIT 1`,
+        [row.entry_id],
+      )).rows[0];
+      const open = pending ? true : await entryHasOpenDestination(client, Number(row.entry_id));
+      if (!open) {
+        await client.query(
+          `UPDATE publication_queue
+           SET status = 'done', lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
+           WHERE entry_id = $1 AND status IN ('queued', 'review')`,
+          [row.entry_id],
+        );
+      }
+    }
+
+    await client.query('COMMIT');
+    return {
+      id: Number(updated.id),
+      entryId: Number(updated.entry_id),
+      status: 'acknowledged',
+      acknowledgedAt: new Date(updated.acknowledged_at).toISOString(),
+      acknowledgedBy: updated.acknowledged_by,
+      acknowledgedReason: updated.acknowledged_reason,
+      externalId: updated.external_id || null,
+      enqueued: false,
+      sent: false,
+      delivered: false,
+    };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function entryHasOpenDestination(client: { query: Pool['query'] }, entryId: number): Promise<boolean> {
+  const open = await client.query(
+    `WITH entry AS (
+       SELECT id, wire, wires FROM scan_entries WHERE id = $1
+     ),
+     destinations AS (
+       SELECT dc.channel, dc.id AS channel_id, dc.wire
+       FROM distribution_channels dc, entry se
+       WHERE dc.enabled AND dc.channel IN ('telegram', 'discord', 'slack')
+         AND (dc.wire = se.wire OR dc.wire = ANY(COALESCE(se.wires, ARRAY[]::text[])))
+       UNION ALL
+       SELECT cfg.channel, NULL::uuid, cfg.wire
+       FROM distribution_config cfg, entry se
+       WHERE cfg.enabled AND cfg.channel IN ('telegram', 'x')
+         AND (cfg.wire = se.wire OR cfg.wire = ANY(COALESCE(se.wires, ARRAY[]::text[])))
+     )
+     SELECT 1
+     FROM destinations d, entry se
+     WHERE NOT EXISTS (
+       SELECT 1 FROM distribution_logs dl
+       WHERE dl.entry_id = se.id
+         AND dl.wire = d.wire
+         AND dl.channel = d.channel
+         AND (
+           (dl.channel_id IS NOT DISTINCT FROM d.channel_id AND dl.status IN ('pending', 'success', 'acknowledged'))
+           OR (dl.status = 'acknowledged' AND dl.channel = 'telegram' AND dl.channel_id IS NULL AND d.channel = 'telegram')
+         )
+     )
+     LIMIT 1`,
+    [entryId],
+  );
+  return open.rows.length > 0;
 }
 
 export class WithholdConflictError extends Error {

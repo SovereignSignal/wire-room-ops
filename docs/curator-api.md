@@ -27,7 +27,7 @@ Paste the JSON object into the array. Do not put the bearer in the variable. A p
 
 Send `Authorization: Bearer <token>`. A matched key without the scope for that route gets `403 { "error": "forbidden" }`. A missing or unknown bearer on these routes is `401`.
 
-Dashboard reads need `read_queue`. Dashboard writes need `decide`. Hedwig's existing scopes (`read_queue`, `decide`, `propose`) cover both, so no new scope and no new secret. Evidence and `Idempotency-Key` stay on the editorial decide and curate writes only. They are not required for settings.
+Dashboard reads need `read_queue`. Dashboard writes need `decide`. Hedwig's existing scopes (`read_queue`, `decide`, `propose`) cover both, so no new scope and no new secret. Evidence stays on the editorial decide and curate writes. `Idempotency-Key` is required on those writes and on acknowledging a failed distribution log. Neither is required for settings.
 
 The audit identity on queue decisions stays `agent:<name>`. Settings and other token writes are logged as `curator-api` with the old value and the new value. Do not send `actor`. `?force=true` is ignored for every agent, including curator keys.
 
@@ -352,6 +352,7 @@ curl -s -X PATCH "$WIREOPS_SERVER_URL/api/distribution/queue/18510/post" \
 | PATCH | `/api/distribution/queue/:id/post` | yes |
 | POST | `/api/distribution/queue/:id/retry` | yes |
 | POST | `/api/distribution/review/:id/resolve` | yes |
+| POST | `/api/distribution/logs/:id/acknowledge` | yes |
 | GET | `/api/distribution/config` | |
 | PUT | `/api/distribution/config/:wire/:channel` | when the body has a new secret |
 | POST | `/api/distribution/run/:wire` | yes |
@@ -363,6 +364,19 @@ curl -s -X PATCH "$WIREOPS_SERVER_URL/api/distribution/queue/18510/post" \
 | PUT | `/api/distribution/channels/:id` | when the body has a new secret |
 | DELETE | `/api/distribution/channels/:id` | yes |
 | POST | `/api/distribution/channels/:id/test` | yes |
+
+`POST /api/distribution/logs/:id/acknowledge` closes one `distribution_logs` row whose status is already `failed`. `:id` is the log id. `confirm: true` and a non-empty `reason` (at most 2000 characters) are required for every caller, including a dashboard session. A curator key also sends `Idempotency-Key`. Sources are not required. The log becomes `acknowledged`, with `acknowledged_at`, `acknowledged_by`, and `acknowledged_reason`. `external_id` is left as it was. The call does not send, does not insert a queue row, and does not set a queue row back to `queued`. It is not resolve, not retry, and not withhold. A log that is not `failed` is `409` and is left unchanged, including a `pending` send that still needs review. A missing log is `404`. The response is `{ id, entryId, status, acknowledgedAt, acknowledgedBy, acknowledgedReason, externalId, enqueued: false, sent: false, delivered: false }`. The same key and body replay that response with `Idempotent-Replayed: true`. A `read_queue` key is `403`.
+
+```bash
+curl -s -X POST "$WIREOPS_SERVER_URL/api/distribution/logs/9001/acknowledge" \
+  -H "Authorization: Bearer $HEDWIG_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: hedwig-ack-9001" \
+  -d '{
+    "confirm": true,
+    "reason": "Telegram rejected the chat. This send will not be retried."
+  }'
+```
 
 ```bash
 curl -s -H "Authorization: Bearer $HEDWIG_TOKEN" \
