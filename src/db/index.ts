@@ -1775,33 +1775,36 @@ export async function claimDistributionLog(params: {
   channelId?: string;
   postText?: string;
 }): Promise<DistributionLog | null> {
-  const pool = getPool();
-  // An acknowledged close does not hold the unique pending/success slot, so the
-  // insert has to refuse it here. A telegram close with no channel id covers
-  // every telegram destination on that entry and wire.
-  const covered = await pool.query(
-    `SELECT 1 FROM distribution_logs
-     WHERE entry_id = $1 AND wire = $2 AND channel = $3 AND status = 'acknowledged'
-       AND (
-         channel_id IS NOT DISTINCT FROM $4::uuid
-         OR (channel = 'telegram' AND channel_id IS NULL AND $3 = 'telegram')
-       )
-     LIMIT 1`,
-    [params.entryId, params.wire, params.channel, params.channelId || null],
-  );
-  if (covered.rows.length) return null;
+  const client = await getPool().connect();
+  const status: 'pending' = 'pending';
   try {
-    return await logDistribution({
-      entryId: params.entryId,
-      channel: params.channel,
-      wire: params.wire,
-      channelId: params.channelId,
-      status: 'pending',
-      postText: params.postText,
-    });
+    await client.query('BEGIN');
+    // Same entry lock as acknowledge, so a close cannot commit between this
+    // check and the insert. An acknowledged telegram row with no channel id
+    // covers every telegram destination on that entry and wire.
+    await client.query('SELECT id FROM scan_entries WHERE id = $1 FOR UPDATE', [params.entryId]);
+    const inserted = await client.query(
+      `INSERT INTO distribution_logs (entry_id, channel, channel_id, wire, status, post_text)
+       SELECT $1, $2, $3, $4, $5, $6
+       WHERE NOT EXISTS (
+         SELECT 1 FROM distribution_logs
+         WHERE entry_id = $1 AND wire = $4 AND channel = $2 AND status = 'acknowledged'
+           AND (
+             channel_id IS NOT DISTINCT FROM $3::uuid
+             OR (channel = 'telegram' AND channel_id IS NULL AND $2 = 'telegram')
+           )
+       )
+       RETURNING *`,
+      [params.entryId, params.channel, params.channelId || null, params.wire, status, params.postText || null],
+    );
+    await client.query('COMMIT');
+    return inserted.rows[0] ? parseDistributionLogRow(inserted.rows[0]) : null;
   } catch (err: any) {
+    await client.query('ROLLBACK');
     if (err?.code === '23505') return null;
     throw err;
+  } finally {
+    client.release();
   }
 }
 

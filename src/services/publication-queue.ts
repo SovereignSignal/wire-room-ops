@@ -283,6 +283,12 @@ export async function acknowledgeFailedDistribution(id: number, actor: string, r
   const client = await getPool().connect();
   try {
     await client.query('BEGIN');
+    const located = (await client.query(
+      `SELECT entry_id FROM distribution_logs WHERE id = $1`,
+      [id],
+    )).rows[0];
+    if (!located) throw new AcknowledgeDistributionError('Distribution log not found', 404);
+    await client.query('SELECT id FROM scan_entries WHERE id = $1 FOR UPDATE', [located.entry_id]);
     const row = (await client.query(
       `SELECT * FROM distribution_logs WHERE id = $1 FOR UPDATE`,
       [id],
