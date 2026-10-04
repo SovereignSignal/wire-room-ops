@@ -1,4 +1,5 @@
 import { getBrand } from '../config/brand';
+import { FACTS_ONLY_SUMMARY_RULES, isSummarySkip } from '../types/wire-area';
 import { DatabaseEntry } from '../types';
 import type { ScanUsagePurpose, ToolType } from '../types/intake';
 import { logApiUsage } from './api-usage';
@@ -6,7 +7,7 @@ import { getCachedProvider, isProviderExplicitlyDisabled } from './api-provider'
 import { fetchThreadContext, type ThreadContext } from './x-thread';
 import { getPool } from '../db';
 
-function buildGrokPrompt(): string {
+export function buildGrokPrompt(): string {
   const brand = getBrand();
   return `You have access to X.com posts. Access and summarize this X.com/Twitter post for the ${brand.name} newsletter.
 
@@ -16,23 +17,52 @@ Reference summary (may be outdated): {existing_summary}
 
 Write a newsletter entry that is INFORMATIVE yet CONCISE. Format:
 
-**[Organization/Project Name]** [action verb] [what happened with key details]. [Additional context, numbers, or requirements]. [Deadline/application info if available].
+**[Organization/Project Name]** [the funder's own verb] [who, what, amount, and dates exactly as written].
 
 REQUIREMENTS:
 - 3-5 sentences, roughly 75-150 words
-- Lead with a strong action verb (announced, launched, opened, unveiled, allocated, distributed, published, released)
-- Include ALL specific numbers: funding amounts, token quantities, number of recipients, ROI metrics, dates
-- Include deadlines, eligibility requirements, and how to apply when mentioned
-- Provide enough context that a reader understands WHY this matters for ${brand.audience}
+- ${FACTS_ONLY_SUMMARY_RULES}
 - No bullet points - write in flowing paragraphs
 - No flowery language, but DO include substantive details
 - Do not use: crucial, significantly, innovative, exciting, revolutionary, game-changing, foster, comprehensive
 
 GOOD EXAMPLE:
-**Optimism Grants Council** published its Season 8 impact analysis, reporting that 1.8M OP distributed to 12 projects generated $3.0M in attribution-adjusted TVL uplift with an ROI of $1.7 per OP token over a 56-day observation period. The full program approved 6.3M OP (~$2.2M) to 23 projects, with recipients mobilizing $1.6M in co-incentives. Top performers include Truemarkets ($4.8/OP ROI), Morpho (+$11.5M TVL), and PancakeSwap (+$6.9M TVL with $1.1M CAKE co-incentives).
+**Example Foundation** awarded $50,000 to Northwind on March 4, 2026. The foundation's post states the amount as $50,000 and the date as March 4, 2026.
 
-BAD EXAMPLE (too vague):
-**Optimism** released a grants report showing positive results. Several projects received funding and showed growth. More details available in the post.`;
+BAD EXAMPLE (too vague, and it invents a total):
+**Optimism** released a grants report showing positive results. Several projects received funding and the round totaled far more than any single award. More details available in the post.`;
+}
+
+export function buildAggregatorThreadPrompt(input: {
+  authorHandle: string;
+  authorName: string;
+  tweetCount: number;
+  url: string;
+  existingSummary: string;
+  fullThreadText: string;
+}): string {
+  const brand = getBrand();
+  return `You have access to X.com posts. This is an AGGREGATOR THREAD by @${input.authorHandle} (${input.authorName}) containing ${input.tweetCount} tweets.
+
+Original URL: ${input.url}
+Reference summary (may be outdated): ${input.existingSummary}
+
+FULL THREAD TEXT:
+${input.fullThreadText}
+
+IMPORTANT: This thread lists MULTIPLE programs/opportunities. Summarize ALL of them, not just the first one.
+
+Write a newsletter entry for the ${brand.name} newsletter that covers ALL programs mentioned in the thread.
+
+REQUIREMENTS:
+- Lead with who posted and how many items, only if the thread states that count
+- List each program with the facts the thread states (who, what, amount, dates, link)
+- 4-8 sentences, roughly 100-250 words (longer than usual because multiple items)
+- Plain prose, flowing paragraphs, no bullet points
+- ${FACTS_ONLY_SUMMARY_RULES}
+- Do not use: crucial, significantly, innovative, exciting, revolutionary, game-changing, foster, comprehensive
+
+Write ONLY the finished newsletter entry, or the single word SKIP.`;
 }
 
 interface GrokResponse {
@@ -99,26 +129,14 @@ export async function summarizeWithGrok(entry: DatabaseEntry, model?: string): P
 
   let prompt: string;
   if (threadContext?.isThread) {
-    const brand = getBrand();
-    prompt = `You have access to X.com posts. This is an AGGREGATOR THREAD by @${threadContext.authorHandle} (${threadContext.authorName}) containing ${threadContext.tweetCount} tweets.
-
-Original URL: ${entry.url}
-Reference summary (may be outdated): ${entry.quick_summary}
-
-FULL THREAD TEXT:
-${threadContext.fullThreadText}
-
-IMPORTANT: This thread lists MULTIPLE programs/opportunities. Summarize ALL of them, not just the first one.
-
-Write a newsletter entry for the ${brand.name} newsletter that covers ALL programs mentioned in the thread.
-
-REQUIREMENTS:
-- Lead with the aggregator context: who posted and how many items
-- List each program/opportunity with its key details (amounts, deadlines, eligibility)
-- 4-8 sentences, roughly 100-250 words (longer than usual because multiple items)
-- Plain prose, flowing paragraphs, no bullet points
-- Include ALL specific numbers: funding amounts, token quantities, dates
-- Do not use: crucial, significantly, innovative, exciting, revolutionary, game-changing, foster, comprehensive`;
+    prompt = buildAggregatorThreadPrompt({
+      authorHandle: threadContext.authorHandle,
+      authorName: threadContext.authorName,
+      tweetCount: threadContext.tweetCount,
+      url: entry.url,
+      existingSummary: entry.quick_summary,
+      fullThreadText: threadContext.fullThreadText,
+    });
   } else {
     prompt = buildGrokPrompt()
       .replace('{existing_summary}', entry.quick_summary)
@@ -168,14 +186,25 @@ REQUIREMENTS:
     tokens_in: data.usage?.prompt_tokens, tokens_out: data.usage?.completion_tokens,
   });
 
-  return data.choices[0].message.content.trim();
+  const text = data.choices[0].message.content.trim();
+  return isSummarySkip(text) ? 'SKIP' : text;
 }
 
-// Default model for scan prompts — uses Responses API with x_search tool.
-// Chat defaults (glm-5.2, etc.) stay on the grok provider for classification;
-// search lanes must pin a Grok model or xAI rejects / no-ops the tool.
-export const GROK_SEARCH_MODEL = 'grok-4.20-beta-0309-non-reasoning';
-const DEFAULT_SCAN_MODEL = GROK_SEARCH_MODEL;
+// Default model for scan prompts — uses Responses API with x_search/web_search.
+// Chat defaults (the grok provider row) stay separate; search lanes must pin a
+// Grok model or xAI rejects the tool. GROK_SEARCH_MODEL overrides this default.
+// grok-4.7 is the current flagship id on https://docs.x.ai/developers/models
+// and is accepted with x_search / web_search.
+export const DEFAULT_GROK_SEARCH_MODEL = 'grok-4.7';
+
+export function grokSearchModel(): string {
+  const override = (process.env.GROK_SEARCH_MODEL || '').trim();
+  if (override && supportsGrokSearchTools(override)) return override;
+  return DEFAULT_GROK_SEARCH_MODEL;
+}
+
+/** Code default. grokSearchModel() applies GROK_SEARCH_MODEL when set. */
+export const GROK_SEARCH_MODEL = DEFAULT_GROK_SEARCH_MODEL;
 
 // Response format for the /v1/responses endpoint
 interface ResponsesAPIOutput {
@@ -201,7 +230,7 @@ export function supportsGrokSearchTools(model: string): boolean {
  */
 export function resolveGrokSearchModel(
   providerDefault?: string | null,
-  fallback: string = GROK_SEARCH_MODEL,
+  fallback: string = grokSearchModel(),
 ): string {
   const candidate = (providerDefault || '').trim();
   if (candidate && supportsGrokSearchTools(candidate)) return candidate;
@@ -213,7 +242,7 @@ export async function executeScanPrompt(
   options?: { model?: string; responseFormat?: string | null; toolType?: ToolType; usagePurpose?: ScanUsagePurpose }
 ): Promise<{ content: string; model: string; tokensUsed?: number }> {
   const provider = requireGrokProvider();
-  const model = options?.model || provider.default_model || DEFAULT_SCAN_MODEL;
+  const model = options?.model || provider.default_model || grokSearchModel();
   const usagePurpose = options?.usagePurpose || 'scan';
 
   if (!supportsGrokSearchTools(model)) {

@@ -6,7 +6,7 @@ const assert = require('node:assert/strict');
 // Unit tests for the source-feeds ingester — pure parse/extract logic, no network.
 // Live endpoint shapes are verified separately via src/scripts/source-feeds-dryrun.ts.
 
-const { parseFeed, SOURCE_REGISTRY, readJsonBody, FeedFetchError } = require('../src/services/source-feeds');
+const { parseFeed, SOURCE_REGISTRY, readJsonBody, FeedFetchError, inferTitleWireArea, stampFeedWireArea } = require('../src/services/source-feeds');
 
 const reg = (key) => SOURCE_REGISTRY.find(s => s.key === key);
 
@@ -109,6 +109,24 @@ test('registry: dead feeds are gone and the October 2026 replacements are wired'
   assert.equal(alpha.endpoint, 'https://alpha-omega.dev/feed/');
   assert.equal(alpha.titleAllow.test('Open call: security grants'), true);
   assert.equal(alpha.titleAllow.test('Securing Hex: How Alpha-Omega Helped Strengthen a Package Ecosystem'), false);
+  assert.equal(alpha.titleAllow.test('Alpha-Omega awarded security grant recipients'), true);
+
+  const nlnet = reg('nlnet-news');
+  assert.equal(nlnet.titleAllow.test('NLnet announces recipients of the 2026 call'), true);
+  assert.equal(nlnet.titleAllow.test('Office closed for the holiday'), false);
+  const otf = reg('otf-news');
+  assert.equal(otf.titleAllow.test('OTF round results and retro'), true);
+});
+
+test('RSS titles stamp result posts as wire_area 2 and framework posts as wire_area 1', () => {
+  assert.equal(inferTitleWireArea('NLnet announces recipients of the 2026 call'), '2');
+  assert.equal(inferTitleWireArea('Treasury allocation framework change'), '1');
+  assert.equal(inferTitleWireArea('Epoch 13 - The Privacy Round'), null);
+  const stamped = stampFeedWireArea({
+    name: 'Round results', description: 'Recipients', url: 'https://example.org/r',
+    amount: null, deadline: null, publishedAt: null,
+  });
+  assert.equal(stamped.metadata.wire_area, '2');
 });
 
 test('new RSS feeds parse an item and the title filter keeps the call', () => {

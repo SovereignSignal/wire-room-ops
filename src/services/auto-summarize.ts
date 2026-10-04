@@ -49,13 +49,15 @@ export function buildEnrichedSummaryPrompt(opts: SummarizeOpts, violations?: str
   const brand = getBrand();
   const wireLabel = opts.wire === 'ai' ? 'AI funding' : opts.wire === 'oss' ? 'open-source funding' : 'crypto grants';
   const lines = [
-    `You are writing a concise opportunity summary for a ${wireLabel} newsletter (${brand.name}).`,
+    `Summarize this funding item (open call, award, governance decision, incentive, research or tool) for a ${wireLabel} newsletter (${brand.name}).`,
     'Use only facts written in the fields below. If a detail is not there, leave it out.',
     'If the fields are thin, write one sentence. Never add filler.',
     'Keep the funder\'s own verb. Use opens, launches, new, or relaunch only when the fields say so.',
     'For a program that is already running, use neutral wording such as "is accepting applications".',
     'Say rolling or no deadline only when the fields state it.',
     'Copy amounts and other numbers exactly as written. Do not add, round, or combine them.',
+    'Do not compute or add up totals, averages, counts or percentages that the source does not state in exactly those words.',
+    'Attributed commentary must be quoted or framed as the named person\'s view (\'X argues…\'), never stated as fact.',
     'Do not add opinion or hype (rare, one of the, notable, signals, worth exploring, major, significant, largest, groundbreaking, exciting, or similar praise).',
     'When the fields include an apply path, a deadline, or eligibility, include it. Do not invent eligibility.',
     '',

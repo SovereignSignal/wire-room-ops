@@ -31,6 +31,8 @@ test('surfaceToScrapeSource builds a change-extraction scrape source', () => {
   assert.equal(src.key, 'ws-diff-7');
   assert.equal(src.method, 'scrape');
   assert.ok(src.scrapePrompt && src.scrapePrompt.length > 20);
+  assert.match(src.scrapePrompt, /wire_area 2/);
+  assert.match(src.scrapePrompt, /Registry proposals stay open-only/);
   assert.equal(src.usagePurpose, 'watchtower-registry-extract');
 });
 

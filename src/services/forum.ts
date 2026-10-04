@@ -101,10 +101,9 @@ const MAX_DISCUSSION_AGE_DAYS = 30;
  * when the LLM judge is unavailable (no key) or a batch errors — degrades to the
  * old keyword behavior rather than dropping or flooding candidates.
  */
-// Tightened relevance filter — must indicate ACTIVE funding opportunity.
-// Removed: proposal (catches GSoC proposals), governance/milestone/deliverable (catches discussions),
-// council/committee (catches governance), ecosystem (too broad).
-const RELEVANCE_KEYWORDS = [
+// Keyword fallback when the LLM judge is down. Open calls plus wire areas
+// 1–6 (results, treasury moves, incentives). The judge is the primary gate.
+export const RELEVANCE_KEYWORDS = [
   // Core funding signals
   'grant program', 'grants program', 'funding opportunity', 'funding round',
   'bounty program', 'bug bounty', 'hackathon', 'fellowship program',
@@ -118,6 +117,8 @@ const RELEVANCE_KEYWORDS = [
   'applications are open', 'deadline', 'apply here', 'accepting applications',
   'rolling applications', 'stipend', 'scholarship program', 'residency program',
   'accelerator program', 'incubator program', 'grant round',
+  'awarded', 'recipients', 'results', 'retro', 'treasury', 'allocation',
+  'incentive', 'rewards', 'credits',
 ];
 
 // Titles that indicate student proposals, project updates, or releases — not funding opportunities.
@@ -280,6 +281,12 @@ export function grantsFeedItemToRaw(item: GrantsFeedItem): RawScanResult {
   if (item.status?.trim()) parts.push(`Signal: ${item.status.trim()}`);
   parts.push(`Source: ${forumLabel} (discuss.watch grants feed, ${item.confidence ?? 0}% ${item.kind || 'grant'})`);
 
+  const status = (item.status || '').trim().toLowerCase();
+  const wireArea = status === 'awarded' ? '2' : status === 'voting' ? '1' : undefined;
+  const metadata: Record<string, unknown> = {};
+  if (program) metadata.program = program;
+  if (wireArea) metadata.wire_area = wireArea;
+
   return {
     name,
     description: parts.join(' — '),
@@ -287,9 +294,15 @@ export function grantsFeedItemToRaw(item: GrantsFeedItem): RawScanResult {
     amount: formatFeedAmount(item),
     deadline: item.deadline ? String(item.deadline).slice(0, 10) : null,
     sourcePublishedAt: item.topicCreatedAt || item.firstSeenAt || null,
-    metadata: program ? { program } : undefined,
+    metadata: Object.keys(metadata).length ? metadata : undefined,
   };
 }
+
+/** Second discuss.watch pull: award results and live capital votes, not open calls. */
+export const DISCUSS_WATCH_NEWS_QUERY = {
+  classification: 'NEWS',
+  status: 'awarded,voting',
+} as const;
 
 /**
  * Pull pre-classified GRANT items for one wire from discuss.watch.
@@ -300,6 +313,7 @@ export function grantsFeedItemToRaw(item: GrantsFeedItem): RawScanResult {
 export async function fetchGrantsFeedResults(
   wire: string,
   since: string,
+  extra: Record<string, string> = {},
 ): Promise<{ results: RawScanResult[]; urls: Set<string> }> {
   const empty = { results: [] as RawScanResult[], urls: new Set<string>() };
   const baseUrl = config.forum.discussWatchBaseUrl;
@@ -308,6 +322,7 @@ export async function fetchGrantsFeedResults(
     since,
     min_confidence: String(config.forum.grantsMinConfidence),
     limit: '100',
+    ...extra,
   });
   try {
     const response = await fetch(`${baseUrl}/grants?${params}`, {
@@ -520,23 +535,21 @@ interface ForumJudgment {
   summary?: string;
 }
 
-function buildForumJudgePrompt(batch: ForumCandidate[], wire: string): string {
+export function buildForumJudgePrompt(batch: ForumCandidate[], wire: string): string {
   const wireLabel = wire === 'crypto' ? 'crypto / web3' : wire === 'ai' ? 'AI / ML' : 'open-source software';
   const lines = batch.map((c, i) => `${i + 1}. [${c.forumName || 'forum'}] ${c.title}`).join('\n');
-  return `You are screening ${wireLabel} forum threads to find FUNDING OPPORTUNITIES for builders.
+  return `You are screening ${wireLabel} forum threads for the wire.
 
-An OPPORTUNITY is a thread that reveals a PROGRAM others can apply to for money: a grant program, ecosystem/treasury fund, RFP, bounty, retroactive public-goods round, fellowship, accelerator/incubator, or hackathon with prizes — OR a governance proposal to CREATE, RENEW, or EXTEND any such program. Governance proposals COUNT: they are the earliest signal a program exists. An individual project's application or request TO a clearly-named, currently-open program also counts (it evidences that the program is live).
+Find posts in wire areas 1–6: treasury/governance decisions that move capital or create/renew/change grant programs, grant round results and retros, open calls, incentive programs, and substantive analysis of funding mechanisms. NOT: delegate elections and comms, price/token talk, routine ops with no capital decision. Individual applications from a single team are not wire items unless the decision itself moves capital.
 
-NOT an opportunity (set is_opportunity=false):
-- A single project's pitch, launch, or progress post that merely HOPES FOR or is "open to" funding without naming a specific program that is currently accepting applications.
-- Delegate communications, voting-power / quorum / parameter changes, council or committee ELECTIONS, security-council rotations, treasury diversification or token swaps with no builder funding, protocol upgrades, partnership or listing announcements, market/price updates, meeting notes, milestone/transparency reports, and software releases.
+Set is_opportunity=true only for areas 1–6. Set is_opportunity=false for the NOT list and for anything outside those areas.
 
-When unsure BUT a concrete fundable program is named, lean is_opportunity=true — an operator reviews everything downstream. When the thread is just one project hoping to get funded, lean false.
+When unsure BUT the thread is a capital decision, a round result, or a named open program, lean is_opportunity=true — an operator reviews everything downstream.
 
 For EACH numbered thread, return one JSON object. Respond with ONLY a JSON array (no prose, no markdown fences):
-[{"n":1,"is_opportunity":true,"name":"<concise program name, not the raw thread title>","funder":"<org running it, or null>","amount":"<dollar figure or null>","deadline":"<date / Rolling / null>","signal_stage":"proposed|open|recurring|closing","summary":"<one sentence: what it funds and who can apply>"}]
+[{"n":1,"is_opportunity":true,"name":"<concise name, not the raw thread title>","funder":"<org or null>","amount":"<figure as written or null>","deadline":"<date / Rolling / null>","signal_stage":"proposed|open|awarded|voting|recurring","summary":"<one sentence of facts only: who, what, amount, date>"}]
 
-signal_stage: "proposed" = governance proposal to create/renew; "open" = currently accepting; "recurring" = established rolling program; "closing" = deadline near.
+signal_stage: "proposed" = governance proposal that moves capital or changes a grant framework; "open" = currently accepting; "awarded" = results, recipients, or a retro; "voting" = a live capital or framework vote; "recurring" = established rolling program.
 
 Threads:
 ${lines}`;
@@ -679,6 +692,14 @@ export async function runGovernanceForumScan(
     let feedUrls = new Set<string>();
     if (config.forum.grantsFeedEnabled) {
       ({ results: feedResults, urls: feedUrls } = await fetchGrantsFeedResults(wire, since));
+      await sleep(REQUEST_DELAY_MS);
+      const news = await fetchGrantsFeedResults(wire, since, { ...DISCUSS_WATCH_NEWS_QUERY });
+      for (const item of news.results) {
+        const key = normalizeUrl(item.sourceUrl);
+        if (feedUrls.has(key)) continue;
+        feedResults.push(item);
+        feedUrls.add(key);
+      }
       candidateCount += feedResults.length;
       await sleep(REQUEST_DELAY_MS);
     }

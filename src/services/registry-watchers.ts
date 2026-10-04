@@ -58,7 +58,7 @@ export async function getDueSurfaces(pool: Pool, types: string[], limit: number,
 }
 
 const GRANTS_EXTRACT_PROMPT =
-  'Extract each currently-open grant, RFP, fund, fellowship, or bounty round a builder could apply to on this page; use each opportunity\'s own application/details URL.';
+  'Extract each currently-open grant, RFP, fund, fellowship, or bounty round a builder could apply to on this page (wire_area 3; the only grants.watch-eligible items); use each opportunity\'s own application/details URL. Also extract, for the wire only, result announcements (wire_area 2) and program-framework changes (wire_area 1). Registry proposals stay open-only: skip closed, draft, or non-capital proposals.';
 
 export function surfaceToRssSource(s: WatchSurface): FeedSource {
   return {

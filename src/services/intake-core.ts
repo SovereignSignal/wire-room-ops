@@ -569,10 +569,13 @@ export function determinePostClassificationStatus(result: {
   classification: Classification;
   qualityScore: number;
   operatorRoute?: OperatorRoute;
+  wireArea?: string | null;
 }, scanSource = 'manual-intake'): 'queued' | 'archived' {
   // x-monitor is a high-volume discovery lane, not operator-authored intake.
+  // Areas 1–6 may publish or source-check. wire_area out never enters the queue.
   // Only settled publish/source-check candidates belong in the review queue.
   if (scanSource === 'x-monitor') {
+    if (result.wireArea === 'out') return 'archived';
     return result.operatorRoute === 'publish' || result.operatorRoute === 'source_check'
       ? 'queued'
       : 'archived';

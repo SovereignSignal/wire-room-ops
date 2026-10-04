@@ -183,6 +183,7 @@ function toRaw(it: FeedItem): RawScanResult {
     amount: it.amount,
     deadline: it.deadline,
     sourcePublishedAt: it.publishedAt,
+    metadata: it.metadata,
   };
 }
 

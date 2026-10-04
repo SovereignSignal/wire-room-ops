@@ -12,6 +12,7 @@ import { getCachedProvider, isProviderExplicitlyDisabled } from './api-provider'
 import { computeOperatorSignals, formatSignalsForPrompt } from './operator-signals';
 import { blockedSourceDomain, classifySourceLink } from './source-filter';
 import { chatCompletionExtras, DEFAULT_GROK_MODEL } from './grok';
+import { parseWireArea, type WireArea } from '../types/wire-area';
 
 export type Classification = 'GRANT' | 'EXPIRED' | 'NEWS' | 'NOISE' | 'UNCHECKED';
 export type OperatorRoute = 'publish' | 'source_check' | 'park' | 'decline' | 'relationship_signal';
@@ -30,6 +31,8 @@ export interface ClassificationResult {
   /** The wire the classifier judges correct from the content ('crypto'|'ai'|
    *  'oss'), or 'off_domain'. Used to correct a wrong intake wire-guess. */
   detectedWire?: 'crypto' | 'ai' | 'oss' | 'off_domain';
+  /** Wire eligibility. GRANT remains area 3 only; grants.watch reads that label. */
+  wireArea: WireArea;
   extracted: {
     amount?: string;
     deadline?: string;
@@ -71,7 +74,7 @@ function formatDateContext(value: string | Date | null | undefined): string {
 
 export function buildClassificationPrompt(entry: ClassificationEntry, operatorGuidance?: string): string {
   const intentGuidance = entry.intent === 'signal'
-    ? '\n## Prompt Intent: Signal\nThis entry came from a signal-detection prompt. Classify as NEWS unless it is clearly a direct grant application opportunity.'
+    ? '\n## Prompt Intent: Signal\nThis entry came from a signal-detection prompt. Still return wire_area. Classify as GRANT only when someone can apply right now. Items in areas 1–6 with a primary source stay eligible for operator_route publish or source_check.'
     : entry.intent === 'canonical'
     ? '\n## Prompt Intent: Canonical\nThis entry came from a canonical-program prompt. Penalize if the program is closed/expired. Reward complete information (amount, deadline, eligibility).'
     : entry.intent === 'discovery'
@@ -139,19 +142,30 @@ ${operatorGuidance ? '\n' + operatorGuidance + '\n' : ''}
 Return operator_route separately from classification. Allowed operator_route values: publish | source_check | park | decline | relationship_signal
 - publish: strong Wire item Sov is likely to approve for public distribution.
 - source_check: promising item that needs canonical URL, deadline, amount, duplicate, or status verification before publishing.
-- park: real but low-priority item, weak Wire fit, generic scholarship, local fellowship, academic job, or background signal.
+- park: real but low-priority item, weak Wire fit, generic scholarship, local fellowship, or academic job.
 - decline: stale, closed, duplicate, tiny hackathon, hype, spam, or wrong-lane item.
 - relationship_signal: useful BD, landscape, funder, or ecosystem signal, but not a direct Wire post.
 
 LOW-PRECISION FORMAT GATE: fellowships, accelerators, incubators, competitions, challenges, hackathons, buildathons, regional or local events, credit-only offers, and research program pages default to source_check. Use publish only when the evidence shows a current concrete applicant path or a material strategic capital/governance signal. Sponsor prestige and verified existence alone are insufficient.
 
-For Telegram/Grok batch intake, be strict: real academic positions, local scholarships, and generic fellowships are often GRANT by content type but park by operator_route unless they are unusually strategic for grants intelligence. Announcements about awarded funding are usually relationship_signal or park, not publish.
+For Telegram/Grok batch intake, be strict: real academic positions, local scholarships, and generic fellowships are often GRANT by content type but park by operator_route unless they are unusually strategic for grants intelligence. Award announcements and round results are wire_area 2 and publishable when sourced from the funder.
+
+## Wire area
+Also return \`wire_area\`: 1..6 or \`out\`.
+1. Governance and treasury decisions that move capital or change grant frameworks.
+2. Grant program results: awards, recipients, round outcomes, retros.
+3. Open funding opportunities someone can apply to now.
+4. Incentives: liquidity or performance rewards; for AI, compute or API credit programs.
+5. Research and analysis on funding mechanisms, including credible attributed commentary from a named funder or ecosystem figure (quoted as their view, never stated as fact).
+6. Tools and infrastructure for grants.
+out: VC/equity raises (including AI lab raises), product launches not tied to funding, price/listings/regulation news, job posts outside a program.
+Items in areas 1–6 with a primary source are eligible for operator_route publish or source_check. \`out\` → NOISE/decline. Keep GRANT strictly for open programs someone can apply to now; that label feeds grants.watch.
 Also extract if available: amount, deadline, eligibility, summary.
 
 Also extract entity tags: 1-5 short labels for the organizations, protocols, platforms, or projects specifically named in this entry. Use canonical names (e.g., "Ethereum Foundation" not "EF", "Gitcoin" not "Gitcoin Grants"). Only include entities directly relevant — not generic terms like "blockchain" or "web3". If a specific chain (Ethereum, Solana) is mentioned, include it.
 
 Respond in JSON only, no markdown:
-{"classification":"GRANT","in_scope":true,"wire":"oss","quality_score":72,"operator_route":"publish","score_reason":"Linux Foundation mentorship program — credible org, actionable for OSS contributors, clear structure","reason":"Open application for LFX Mentorship 2026","tags":["Linux Foundation","LFX Mentorship"],"extracted":{"amount":"$6,000 stipend","deadline":"April 15 2026","eligibility":"Open source contributors","summary":"One sentence."}}`;
+{"classification":"GRANT","in_scope":true,"wire":"oss","wire_area":"3","quality_score":72,"operator_route":"publish","score_reason":"Linux Foundation mentorship program — credible org, actionable for OSS contributors, clear structure","reason":"Open application for LFX Mentorship 2026","tags":["Linux Foundation","LFX Mentorship"],"extracted":{"amount":"$6,000 stipend","deadline":"April 15 2026","eligibility":"Open source contributors","summary":"One sentence."}}`;
 }
 
 function readRequiredString(value: unknown, field: string): string {
@@ -228,6 +242,11 @@ export function parseClassificationResponse(
     throw new ClassifierResponseError('missing or invalid operator_route');
   }
 
+  const wireArea = parseWireArea(record.wire_area);
+  if (!wireArea) {
+    throw new ClassifierResponseError('missing or invalid wire_area');
+  }
+
   let classification = classificationRaw as Classification;
   let operatorRoute = operatorRouteRaw as OperatorRoute;
   let detectedWire = wireRaw as NonNullable<ClassificationResult['detectedWire']>;
@@ -255,6 +274,18 @@ export function parseClassificationResponse(
     reason = `${reason} Deadline ${deadlineDate} predates current date ${currentDate}.`;
   }
 
+  // wire_area gates the wires. GRANT stays the open-program label (area 3)
+  // that feeds grants.watch. out is never a wire item.
+  let settledArea = wireArea;
+  if (settledArea === 'out') {
+    classification = 'NOISE';
+    operatorRoute = 'decline';
+    reason = `${reason} wire_area out.`;
+  } else if (classification === 'GRANT' && settledArea !== '3') {
+    classification = 'NEWS';
+    reason = `${reason} GRANT is only for open programs (wire_area 3).`;
+  }
+
   const rawTags = Array.isArray(record.tags) ? record.tags : [];
   const tags = rawTags
     .filter((tag: unknown): tag is string => typeof tag === 'string' && tag.trim().length > 0 && tag.trim().length <= 60)
@@ -274,6 +305,7 @@ export function parseClassificationResponse(
     tags,
     inScope,
     detectedWire,
+    wireArea: settledArea,
     extracted: {
       amount: readOptionalString(extractedRecord.amount),
       deadline: readOptionalString(extractedRecord.deadline),
@@ -335,6 +367,7 @@ export function applyKnownProgramCycleGuard(
     classification: 'GRANT',
     inScope: true,
     detectedWire,
+    wireArea: '3',
     operatorRoute: result.operatorRoute === 'decline' || !result.operatorRoute
       ? 'source_check'
       : result.operatorRoute,
@@ -470,7 +503,8 @@ export async function classifyBatch(
                quality_score = $3,
                quality_breakdown = $4,
                metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
-               tags = $6
+               tags = $6,
+               wire_area = $15
            WHERE id = $7
              AND status = 'queued'
              AND (classification IS NULL OR classification = 'UNCHECKED')
@@ -494,7 +528,7 @@ export async function classifyBatch(
             // Keep operator_route persistence in lockstep with process-raw —
             // this backfill path classifies dumb-pipe (telegram/manual) entries,
             // so without it those lanes never carry the BD/relationship signal.
-            JSON.stringify({ ...result.extracted, operator_route: result.operatorRoute || null }),
+            JSON.stringify({ ...result.extracted, operator_route: result.operatorRoute || null, wire_area: result.wireArea }),
             result.tags,
             entry.id,
             entry.name,
@@ -504,6 +538,7 @@ export async function classifyBatch(
             entry.amount ?? null,
             entry.deadlineParsed ?? null,
             entry.sourcePublishedAt ?? null,
+            result.wireArea,
           ]
         );
 

@@ -82,7 +82,7 @@ function buildPromptReviewRequest(params: {
   return `You are reviewing a ${brand.name} scan prompt used to discover high-signal ${brand.contentType}.
 
 Your job:
-1. Evaluate whether the prompt is likely to return actionable, current, high-quality opportunities.
+1. Evaluate whether the prompt is likely to return findings in the six wire areas, excluding the OUT list.
 2. Evaluate whether the output is easy to parse into structured entries with fields like name, description, amount, deadline, and source URL.
 3. If test output is provided, judge the actual yield, not just the prompt wording.
 4. Recommend a sharper version of the prompt and response format.

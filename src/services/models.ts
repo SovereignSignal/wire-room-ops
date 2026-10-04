@@ -113,6 +113,7 @@ function formatGrokModelName(id: string): string {
 
 function getDefaultGrokModels(): ModelInfo[] {
   return [
+    { id: 'grok-4.7', displayName: 'Grok 4.7', created: new Date(), provider: 'grok' },
     { id: 'grok-4.20-beta-0309-non-reasoning', displayName: 'Grok 4.20 Beta (Non-Reasoning)', created: new Date(), provider: 'grok' },
     { id: 'grok-4.20-beta-0309-reasoning', displayName: 'Grok 4.20 Beta (Reasoning)', created: new Date(), provider: 'grok' },
     { id: 'grok-4-1-fast-reasoning', displayName: 'Grok 4.1 Fast (Reasoning)', created: new Date(), provider: 'grok' },
