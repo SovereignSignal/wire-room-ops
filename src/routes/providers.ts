@@ -74,13 +74,12 @@ router.put('/providers/:provider', async (req: Request, res: Response) => {
   }
   const { api_key, base_url, default_model, enabled, display_name } = req.body;
 
-  // Skip masked values (user didn't change the key)
-  const cleanKey = api_key && typeof api_key === 'string' && api_key.startsWith('****') ? undefined : api_key;
-
   try {
     const previous = (await getAllProviders()).find(row => row.provider === provider) || null;
+    // Omitted base_url, default_model, and enabled stay on the stored row.
+    // A blank or masked api_key also keeps the stored key.
     const result = await upsertProvider(provider, {
-      api_key: cleanKey,
+      api_key,
       base_url,
       default_model,
       enabled,
@@ -89,7 +88,7 @@ router.put('/providers/:provider', async (req: Request, res: Response) => {
     noteCuratorChange(res, {
       subject: `PUT /api/providers/${provider}`,
       old: previous ? { provider: previous.provider, enabled: previous.enabled, base_url: previous.base_url, default_model: previous.default_model, api_key: previous.api_key } : null,
-      next: { provider, enabled, base_url, default_model, api_key: result.api_key },
+      next: { provider, enabled: result.enabled, base_url: result.base_url, default_model: result.default_model, api_key: result.api_key },
     });
     res.json({
       ...result,
