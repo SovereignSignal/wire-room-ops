@@ -3,6 +3,7 @@ import { PROMPT_VARIANTS, SCAN_SOURCES, SCAN_STATUSES, SCHEDULE_TYPES, SURFACE_T
 import { config } from '../config';
 import { DatabaseEntry } from '../types';
 import type { PromptVariant, ToolType, DistributionChannel, DistributionStatus, DistributionConfig, DistributionLog } from '../types/intake';
+import { applyAcknowledgedDistributionSchema } from './acknowledged-distribution';
 import { normalizeUrl } from '../utils/url';
 import { buildScanEntryFilterClauses, type ScanEntryQueryFilters } from './entry-query';
 
@@ -1569,7 +1570,7 @@ export async function ensureDistributionTables(): Promise<void> {
       entry_id INTEGER NOT NULL REFERENCES scan_entries(id),
       channel TEXT NOT NULL CHECK (channel IN ('telegram', 'discord', 'slack', 'x', 'newsletter')),
       wire TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'success', 'failed', 'skipped')),
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'success', 'failed', 'skipped', 'acknowledged')),
       post_text TEXT,
       external_id TEXT,
       error_message TEXT,
@@ -1604,6 +1605,7 @@ export async function ensureDistributionTables(): Promise<void> {
     await client.query(`ALTER TABLE distribution_logs ALTER COLUMN lease_expires_at SET DEFAULT (NOW() + INTERVAL '5 minutes')`);
     await client.query(`ALTER TABLE distribution_logs ADD COLUMN IF NOT EXISTS resolved_by TEXT`);
     await client.query(`ALTER TABLE distribution_logs ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ`);
+    await applyAcknowledgedDistributionSchema(client);
     await client.query(`CREATE TABLE IF NOT EXISTS publication_queue (
       entry_id INTEGER PRIMARY KEY REFERENCES scan_entries(id) ON DELETE CASCADE,
       status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'done', 'review')),
@@ -1667,6 +1669,9 @@ function parseDistributionLogRow(row: any): DistributionLog {
     externalId: row.external_id || null,
     errorMessage: row.error_message || null,
     createdAt: row.created_at,
+    acknowledgedAt: row.acknowledged_at || null,
+    acknowledgedBy: row.acknowledged_by || null,
+    acknowledgedReason: row.acknowledged_reason || null,
   };
 }
 
@@ -1720,12 +1725,15 @@ export async function getUndistributedEntries(
       AND (
         ($2::text = 'newsletter' AND NOT EXISTS (
           SELECT 1 FROM distribution_logs dl WHERE dl.entry_id = se.id AND dl.wire = $1
-            AND dl.channel = 'newsletter' AND dl.status IN ('pending','success')))
+            AND dl.channel = 'newsletter' AND dl.status IN ('pending','success','acknowledged')))
         OR ($2::text IS DISTINCT FROM 'newsletter' AND EXISTS (
           SELECT 1 FROM destinations d WHERE ($2::text IS NULL OR d.channel = $2)
           AND NOT EXISTS (SELECT 1 FROM distribution_logs dl WHERE dl.entry_id = se.id
-            AND dl.wire = $1 AND dl.channel = d.channel AND dl.channel_id IS NOT DISTINCT FROM d.channel_id
-            AND dl.status IN ('pending','success'))))
+            AND dl.wire = $1 AND dl.channel = d.channel
+            AND (
+              (dl.channel_id IS NOT DISTINCT FROM d.channel_id AND dl.status IN ('pending','success','acknowledged'))
+              OR (dl.status = 'acknowledged' AND dl.channel = 'telegram' AND dl.channel_id IS NULL AND d.channel = 'telegram')
+            ))))
       ) ORDER BY se.created_at DESC
   `, [wire, channel || null]);
   return result.rows;
@@ -1767,6 +1775,21 @@ export async function claimDistributionLog(params: {
   channelId?: string;
   postText?: string;
 }): Promise<DistributionLog | null> {
+  const pool = getPool();
+  // An acknowledged close does not hold the unique pending/success slot, so the
+  // insert has to refuse it here. A telegram close with no channel id covers
+  // every telegram destination on that entry and wire.
+  const covered = await pool.query(
+    `SELECT 1 FROM distribution_logs
+     WHERE entry_id = $1 AND wire = $2 AND channel = $3 AND status = 'acknowledged'
+       AND (
+         channel_id IS NOT DISTINCT FROM $4::uuid
+         OR (channel = 'telegram' AND channel_id IS NULL AND $3 = 'telegram')
+       )
+     LIMIT 1`,
+    [params.entryId, params.wire, params.channel, params.channelId || null],
+  );
+  if (covered.rows.length) return null;
   try {
     return await logDistribution({
       entryId: params.entryId,

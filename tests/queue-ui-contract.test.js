@@ -106,9 +106,12 @@ test('entry details sheet retries failed distribution sends', () => {
   assert.match(entrySheet, /redistributeEntry/);
   assert.match(entrySheet, /aria-label="Retry failed sends"/);
   assert.match(entrySheet, /RETRY FAILED SENDS/);
-  assert.match(entrySheet, /failedLogs/);
+  assert.match(entrySheet, /openFailedLogs/);
+  assert.match(entrySheet, /acknowledgeFailedSend/);
+  assert.match(entrySheet, /Acknowledge \$\{log\.channel\} failure/);
   const api = read('client/src/api/index.ts');
   assert.match(api, /\/redistribute/);
+  assert.match(api, /\/distribution\/logs\/\$\{logId\}\/acknowledge/);
 });
 
 test('approve publishes on click; only the approval guard stops for a dialog', () => {

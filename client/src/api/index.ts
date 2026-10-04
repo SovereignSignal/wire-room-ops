@@ -94,6 +94,21 @@ export async function fetchEntryDistribution(id: number | string): Promise<Entry
   return res.json();
 }
 
+export async function acknowledgeFailedSend(logId: number, reason: string): Promise<{ status: string }> {
+  const res = await authFetch(`${BASE}/distribution/logs/${logId}/acknowledge`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirm: true, reason }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const error = new Error(String(body.error || body.message || `Acknowledge failed: ${res.status}`)) as Error & { status?: number };
+    error.status = res.status;
+    throw error;
+  }
+  return body;
+}
+
 export async function redistributeEntry(id: number | string): Promise<{ success: boolean }> {
   const res = await authFetch(`${BASE}/scan/entries/${encodeURIComponent(id)}/redistribute`, {
     method: 'POST',

@@ -25,12 +25,12 @@
  */
 
 import { Router, Request, Response } from 'express';
-import { enqueuePacedPublication, EnqueueConflictError, listPublicationReview, resolvePublication, listQueuedPublicationReview, retryQueuedPublication } from '../services/publication-queue';
+import { acknowledgeFailedDistribution, AcknowledgeDistributionError, enqueuePacedPublication, EnqueueConflictError, listPublicationReview, resolvePublication, listQueuedPublicationReview, retryQueuedPublication } from '../services/publication-queue';
 import { overrideQueuedPost, PublicationPostError, readPublicationPost, regenerateQueuedPost } from '../services/publication-post';
 import { RepeatFunderHoldError, repeatFunderPayload, repeatFunderStatus } from '../services/repeat-funder';
 import { openCuratorIdempotency } from '../services/curator-idempotency';
 import { parseCuratorEvidence } from '../services/curator-evidence';
-import { curatorConfirmed } from '../services/curator-confirm';
+import { ACKNOWLEDGE_CONFIRM_MESSAGE, curatorConfirmed } from '../services/curator-confirm';
 import {
   getDistributionConfigs,
   upsertDistributionConfig,
@@ -360,6 +360,75 @@ router.post('/distribution/review/:id/resolve', async (req, res) => {
   }
 });
 
+function acknowledgeActor(req: Request): string {
+  const session = req as Request & {
+    agentSession?: { userId?: string };
+    authSession?: { userId?: string };
+  };
+  return session.agentSession?.userId || session.authSession?.userId || '';
+}
+
+function acknowledgeReason(body: unknown): { ok: true; reason: string } | { ok: false; error: string } {
+  const raw = body && typeof body === 'object' && !Array.isArray(body)
+    ? (body as { reason?: unknown }).reason
+    : undefined;
+  if (typeof raw !== 'string') return { ok: false, error: 'reason is required' };
+  const reason = raw.trim();
+  if (!reason) return { ok: false, error: 'reason is required' };
+  if (reason.length > 2000) return { ok: false, error: 'reason must be at most 2000 characters' };
+  return { ok: true, reason };
+}
+
+router.post('/distribution/logs/:id/acknowledge', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isSafeInteger(id) || id < 1) {
+    res.status(400).json({ error: 'Invalid distribution log ID' });
+    return;
+  }
+  if (!curatorConfirmed(req)) {
+    res.status(400).json({ error: 'confirm_required', message: ACKNOWLEDGE_CONFIRM_MESSAGE });
+    return;
+  }
+  const reason = acknowledgeReason(req.body);
+  if (!reason.ok) {
+    res.status(400).json({ error: reason.error });
+    return;
+  }
+  const actor = acknowledgeActor(req);
+  if (!actor) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+  const idem = await openCuratorIdempotency(req, res);
+  if (idem.sent) return;
+  try {
+    const closed = await acknowledgeFailedDistribution(id, actor, reason.reason);
+    noteCuratorChange(res, {
+      subject: `POST /api/distribution/logs/${id}/acknowledge`,
+      old: { id, status: 'failed' },
+      next: {
+        id,
+        status: closed.status,
+        acknowledgedBy: closed.acknowledgedBy,
+        acknowledgedReason: closed.acknowledgedReason,
+        enqueued: false,
+        sent: false,
+      },
+    });
+    await idem.finish(200, closed);
+    res.status(200).json(closed);
+  } catch (error) {
+    if (error instanceof AcknowledgeDistributionError) {
+      const payload = { error: error.message };
+      await idem.finish(error.statusCode, payload);
+      res.status(error.statusCode).json(payload);
+      return;
+    }
+    await idem.abort();
+    console.error('[Distribution] Acknowledge failed:', error);
+    res.status(500).json({ error: 'Could not acknowledge the failed send' });
+  }
+});
 
 // Concurrent execution guard for distribution runs (per wire)
 const distributionRunning = new Set<string>();

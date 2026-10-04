@@ -697,8 +697,9 @@ export const UNSENT_TELEGRAM_DESTINATION_SQL = `EXISTS (
         AND dl.wire = dc.wire
         AND dl.channel = 'telegram'
         AND (
-          (dl.channel_id = dc.id AND dl.status IN ('pending', 'success'))
+          (dl.channel_id = dc.id AND dl.status IN ('pending', 'success', 'acknowledged'))
           OR (dl.channel_id IS NULL AND dl.status = 'success')
+          OR (dl.channel_id IS NULL AND dl.status = 'acknowledged')
         )
     )
 )`;

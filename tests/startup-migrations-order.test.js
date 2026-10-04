@@ -27,7 +27,7 @@ test('a version 2 upgrade runs only newer contracts and retries failures', async
     assert.equal(getStartupMigrationHealth().failed,1);
     metrics.run=async()=>{ seen.push(metrics.name); };
     await runStartupMigrations({ fatal:true,fromVersion:2 });
-    assert.deepEqual(seen, ['program-metrics','program-decisions','paced-distribution','watch-surface-repairs','api-usage-job','publication-post-text']);
+    assert.deepEqual(seen, ['program-metrics','program-decisions','paced-distribution','watch-surface-repairs','api-usage-job','publication-post-text','acknowledged-distribution']);
     assert.equal(getStartupMigrationHealth().failed,0);
   } finally { STARTUP_MIGRATIONS.forEach((m,i)=>{m.run=originals[i];}); }
 });
