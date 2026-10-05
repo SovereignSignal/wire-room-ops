@@ -36,9 +36,14 @@ test('clean day: RUN CLEAN band, ledger lanes, state-carrying subject', () => {
   assert.match(r.html, /RUN CLEAN/);
   assert.match(r.html, /scans 41✓/);
   assert.match(r.html, /feeds 19\/19/);
-  assert.match(r.html, /41 in/); // totalIngested sum
+  assert.match(r.html, /intake 24h: 41/);
+  assert.match(r.html, /never-emailed: 2/);
+  assert.match(r.html, /waiting: 11/);
+  assert.ok(!r.html.includes('41 in'), 'intake count must not be labeled as the new-for-review count');
+  assert.match(r.text, /intake 24h: 41 · never-emailed: 2 · waiting: 11/);
   assert.match(r.html, /\$1\.20/);
   assert.equal(r.subject, 'Jul 9 — 2 new for review · run clean');
+  assert.ok(!r.subject.includes(' in'), 'subject must not reuse the old intake "in" label');
 });
 
 test('new-for-review cards: deep link into the queue, curator stamp, source as secondary link', () => {
@@ -54,7 +59,8 @@ test('new-for-review cards: deep link into the queue, curator stamp, source as s
 
 test('more-new line renders when eligible items exceed the shown cap', () => {
   const r = renderDailyDigest(DIGEST, 'https://app.example', { freshFinds: FINDS, totalNewEligible: 7, runLedger: LEDGER });
-  assert.match(r.html, /5 more new in the queue/);
+  assert.match(r.html, /5 more never-emailed/);
+  assert.ok(!r.html.includes('more new'), 'the overflow line uses the never-emailed count');
 });
 
 test('bad day: amber band, Production issues section, ⚠ subject leads with issues', () => {
@@ -152,6 +158,125 @@ test('cards render program history; new_round gets the round note', () => {
   }];
   const r = renderDailyDigest(DIGEST, 'https://app.example', { freshFinds: finds, totalNewEligible: 1, runLedger: LEDGER });
   assert.match(r.html, /New round of a known program/);
-  assert.match(r.html, /seen 61×/);
-  assert.match(r.text, /seen 61×/);
+  assert.match(r.html, /declined 12×/);
+  assert.ok(!r.html.includes('seen 61×'), 'seen counts do not change the decision');
+  assert.ok(!r.html.includes('approved 1×'), 'approved counts do not change the decision');
+  assert.match(r.text, /declined 12×/);
+  assert.ok(!r.text.includes('seen 61×'));
+});
+
+test('cards omit program history that is only seen and approved counts', () => {
+  const finds = [{
+    id: 302, name: 'Known Program Reprint', wire: 'oss', quality_score: 40,
+    amount: null, deadline: null, source_url: null, curator_route: null, curator_confidence: null,
+    summary: null, recheck_verdict: null, recheck_matched_name: null, recheck_matched_status: null,
+    program_verdict: null, program_history: 'seen 6× · approved 1× · last recorded 2026-07-01',
+  }];
+  const r = renderDailyDigest(DIGEST, 'https://app.example', { freshFinds: finds, totalNewEligible: 1, runLedger: LEDGER });
+  assert.ok(!r.html.includes('seen 6×'));
+  assert.ok(!r.html.includes('approved 1×'));
+  assert.ok(!r.text.includes('seen 6×'));
+});
+
+test('same-round repeats stay, without seen or approved counts', () => {
+  const finds = [{
+    id: 303, name: 'Repeat round', wire: 'crypto', quality_score: 50,
+    amount: null, deadline: null, source_url: null, curator_route: null, curator_confidence: null,
+    summary: null, recheck_verdict: null, recheck_matched_name: null, recheck_matched_status: null,
+    program_verdict: 'same_round', program_history: 'seen 6× · approved 1× · declined 2× · last recorded 2026-08-01',
+  }];
+  const r = renderDailyDigest(DIGEST, 'https://app.example', { freshFinds: finds, totalNewEligible: 1, runLedger: LEDGER });
+  assert.match(r.html, /Program repeat/);
+  assert.match(r.html, /declined 2×/);
+  assert.ok(!r.html.includes('seen 6×'));
+  assert.ok(!r.html.includes('approved 1×'));
+});
+
+test('a Hedwig action without a curator stamp is already in my lane', () => {
+  const finds = [{
+    id: 504, name: 'Edited in queue', wire: 'ai', quality_score: 60,
+    amount: null, deadline: null, source_url: null, curator_route: null, curator_confidence: null,
+    summary: null, recheck_verdict: null, recheck_matched_name: null, recheck_matched_status: null,
+    program_verdict: null, program_history: null,
+    scan_source: 'stringer', curator_by: null, actioned_by: 'agent:hedwig',
+    hold_hints: 'cross-wire hold', operator_notes: null,
+  }];
+  const r = renderDailyDigest(DIGEST, 'https://app.example', { freshFinds: finds, totalNewEligible: 1, runLedger: LEDGER });
+  assert.match(r.html, /Already in my lane \(1\)/);
+  assert.ok(!r.html.includes('Needs you'));
+  assert.match(r.html, /stringer/);
+  assert.match(r.html, /cross-wire hold/);
+  assert.match(r.html, /discuss\.watch and auto-approve are not marked/);
+});
+
+test('watermark fallback does not label the 24h window as never-emailed', () => {
+  const r = renderDailyDigest(DIGEST, 'https://app.example', {
+    freshFinds: FINDS, totalNewEligible: 2, neverEmailedKnown: false, runLedger: LEDGER,
+  });
+  assert.match(r.html, /never-emailed: \?/);
+  assert.ok(!r.html.includes('never-emailed: 2'));
+  assert.match(r.text, /never-emailed: \?/);
+});
+
+test('review cards carry wire, id, age, lane, area, and stored hold hints', () => {
+  const finds = [{
+    id: 401, name: 'Uniswap Security Fund', wire: 'crypto', quality_score: 80,
+    amount: '$100k', deadline: 'Oct 12', source_url: 'https://uniswap.org/fund',
+    curator_route: 'publish', curator_confidence: 'high',
+    summary: 'Open security grants for Uniswap.',
+    recheck_verdict: null, recheck_matched_name: null, recheck_matched_status: null,
+    program_verdict: 'new_round', program_history: null,
+    scan_source: 'feed', wire_area: '3', first_seen_age_days: 4,
+    curator_by: null, actioned_by: null,
+    hold_hints: 'repeat-funder',
+    operator_notes: 'New cycle of #88: "Uniswap Grants" (prior declined)\nPossible alternate source: ignore',
+  }];
+  const r = renderDailyDigest(DIGEST, 'https://app.example', { freshFinds: finds, totalNewEligible: 1, runLedger: LEDGER });
+  assert.match(r.html, /Needs you \(1\)/);
+  assert.ok(!r.html.includes('Already in my lane'));
+  assert.match(r.html, /CRYPTO/);
+  assert.match(r.html, /#401/);
+  assert.match(r.html, /first seen 4d &middot; feed &middot; area 3/);
+  assert.match(r.html, /repeat-funder/);
+  assert.match(r.html, /New cycle of #88/);
+  assert.match(r.html, /New round of a known program/);
+  assert.ok(!r.html.includes('Possible alternate source'), 'only decision-changing notes are shown');
+  assert.ok(!r.html.includes('scam'), 'no scam label without a stored flag');
+  assert.ok(!/\bVC\b/.test(r.html), 'no VC label without a stored flag');
+  assert.match(r.text, /#401/);
+  assert.match(r.text, /first seen 4d · feed · area 3/);
+  assert.match(r.text, /repeat-funder/);
+  assert.match(r.html, /https:\/\/app\.example\/queue\?entry=401/);
+});
+
+test('QC-stamped queued rows split into already in my lane', () => {
+  const fresh = {
+    id: 501, name: 'Needs a look', wire: 'ai', quality_score: 70,
+    amount: null, deadline: null, source_url: null, curator_route: null, curator_confidence: null,
+    summary: null, recheck_verdict: null, recheck_matched_name: null, recheck_matched_status: null,
+    program_verdict: null, program_history: null,
+    scan_source: 'forum', wire_area: null, first_seen_age_days: 0,
+    curator_by: null, actioned_by: null, hold_hints: null, operator_notes: null,
+  };
+  const stamped = {
+    ...fresh,
+    id: 502, name: 'Already stamped', wire: 'oss',
+    curator_route: 'source_check', curator_confidence: 'med', curator_by: 'agent:hedwig',
+    scan_source: 'claude-code', first_seen_age_days: 1,
+    operator_notes: 'Re-surfaced after premature decline of #12: "not found"',
+  };
+  const r = renderDailyDigest(DIGEST, 'https://app.example', {
+    freshFinds: [fresh, stamped], totalNewEligible: 2, runLedger: LEDGER,
+  });
+  assert.match(r.html, /Needs you \(1\)/);
+  assert.match(r.html, /Already in my lane \(1\)/);
+  assert.match(r.html, /first seen today &middot; discuss/);
+  assert.match(r.html, /first seen 1d &middot; scout/);
+  assert.match(r.html, /premature decline of #12/);
+  const needsAt = r.html.indexOf('Needs a look');
+  const laneAt = r.html.indexOf('Already in my lane');
+  const stampedAt = r.html.indexOf('Already stamped');
+  assert.ok(needsAt > -1 && laneAt > needsAt && stampedAt > laneAt);
+  assert.match(r.text, /ALREADY IN MY LANE \(1\)/);
+  assert.match(r.text, /NEEDS YOU \(1\)/);
 });

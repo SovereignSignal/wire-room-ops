@@ -254,6 +254,20 @@ export interface TopFindEntry {
   recheck_matched_status: string | null;
   program_verdict: string | null;
   program_history: string | null;
+  /** scan_entries.scan_source — rendered as a short lane badge */
+  scan_source?: string | null;
+  /** scan_entries.wire_area (schema v10). Shown only when it is 1–6 or out. */
+  wire_area?: string | null;
+  /** Whole days since scan_entries.created_at. 0 renders as "first seen today". */
+  first_seen_age_days?: number | string | null;
+  /** metadata.curator.by. agent:hedwig means QC already stamped this queued row. */
+  curator_by?: string | null;
+  /** scan_entries.actioned_by. agent:hedwig means Hedwig already wrote on this row. */
+  actioned_by?: string | null;
+  /** Structured holds already stored on the row. Empty when none exist. */
+  hold_hints?: string | null;
+  /** Used only for decision-changing stamps already written by dedup. */
+  operator_notes?: string | null;
 }
 
 export type LaneState = 'ok' | 'warn' | 'fail';
@@ -302,8 +316,13 @@ export interface ClosingSoonRow {
 export interface DigestEmailExtras {
   /** Never-before-emailed queue items (watermarked) — the "New for review" cards */
   freshFinds?: TopFindEntry[];
-  /** Total eligible new items behind freshFinds (drives the "+N more new" line) */
+  /** Total eligible new items behind freshFinds (drives the "+N more never-emailed" line) */
   totalNewEligible?: number;
+  /**
+   * False when the watermark could not be read and totalNewEligible is only a
+   * 24h window. The band then prints never-emailed: ? instead of that count.
+   */
+  neverEmailedKnown?: boolean;
   /** Evidence the machine ran — rendered inside the status band */
   runLedger?: RunLedger;
   /** Approved entries closing within 7 days (folds the retired deadline email) */
@@ -316,13 +335,98 @@ export interface DigestEmailExtras {
   anomalies?: string[];
 }
 
+const DIGEST_SOURCE_LANE: Record<string, string> = {
+  'x-scan': 'x-scan',
+  'grok-scout': 'grok-scout',
+  'web-search': 'web',
+  'perplexity': 'perplexity',
+  'community': 'community',
+  telegram: 'telegram',
+  'telegram-intake': 'telegram',
+  'manual-intake': 'manual',
+  email: 'email',
+  forum: 'discuss',
+  'x-monitor': 'x-monitor',
+  'x-list': 'x-list',
+  feed: 'feed',
+  'claude-code': 'scout',
+  'claude-cohort-notion': 'cohort',
+  'known-org-watch': 'org-watch',
+  stringer: 'stringer',
+};
+
+function digestSourceLane(scanSource: string | null | undefined): string | null {
+  const key = scanSource?.trim();
+  if (!key) return null;
+  return DIGEST_SOURCE_LANE[key] ?? key;
+}
+
+function digestAreaTag(area: string | null | undefined): string | null {
+  if (area == null) return null;
+  const text = String(area).trim().toLowerCase();
+  if (text === 'out') return 'area out';
+  if (/^[1-6]$/.test(text)) return `area ${text}`;
+  return null;
+}
+
+function digestFirstSeen(days: number | string | null | undefined): string | null {
+  if (days == null || days === '') return null;
+  const n = typeof days === 'number' ? days : Number(days);
+  if (!Number.isFinite(n) || n < 0) return null;
+  const whole = Math.floor(n);
+  if (whole === 0) return 'first seen today';
+  if (whole === 1) return 'first seen 1d';
+  return `first seen ${whole}d`;
+}
+
+/** QC already wrote on this still-queued row. discuss.watch and auto-approve do not. */
+function hedwigAlreadyTouched(entry: TopFindEntry): boolean {
+  const by = (entry.curator_by || '').trim().toLowerCase();
+  const actor = (entry.actioned_by || '').trim().toLowerCase();
+  return by === 'agent:hedwig' || actor === 'agent:hedwig';
+}
+
+const DECISION_NOTE_LINE = /^(?:New cycle of #\d+\b.*|Re-surfaced after premature decline of #\d+\b.*)$/i;
+
+function digestDecisionNotes(notes: string | null | undefined): string[] {
+  if (!notes) return [];
+  return notes
+    .split(/\n+/)
+    .map(line => line.trim())
+    .filter(line => DECISION_NOTE_LINE.test(line))
+    .map(line => (line.length > 180 ? `${line.slice(0, 179)}…` : line));
+}
+
+/**
+ * Keep a program line only when it changes the decision: a new round, a
+ * same-round repeat, or a prior decline. Seen and approved counts are noise.
+ */
+function digestProgramNote(entry: TopFindEntry): string | null {
+  const parts = (entry.program_history || '')
+    .split(/\s*·\s*/)
+    .map(part => part.trim())
+    .filter(part => part && !/^seen\s+\d+/i.test(part) && !/^approved\s+\d+/i.test(part));
+  const declined = parts.some(part => /^declined\s+\d+/i.test(part));
+  const isNew = entry.program_verdict === 'new_round';
+  const isRepeat = entry.program_verdict === 'same_round';
+  if (!isNew && !isRepeat && !declined) return null;
+  const prefix = isNew
+    ? 'New round of a known program'
+    : isRepeat
+      ? 'Program repeat'
+      : 'Prior decline';
+  const rest = parts.join(' · ');
+  return rest ? `${prefix} · ${rest}` : prefix;
+}
+
 /**
  * Render the daily digest email (2026-07-09 "Run Ledger" redesign).
  *
  * The operator's cockpit — three jobs, in order:
  *   1. Status band: prove the machine ran (RUN CLEAN / ⚠ N ISSUES + lane ledger).
  *   2. New for review: never-before-emailed queue items, curator-stamped,
- *      deep-linked into the dashboard queue (?entry=<id>).
+ *      deep-linked into the dashboard queue (?entry=<id>). The band's
+ *      "never-emailed" count is this watermark, not 24h intake.
  *   3. Closing soon: approved entries with deadlines ≤7d.
  * Backlog appears only on the queue button. Quiet day = short email.
  */
@@ -334,7 +438,7 @@ export function renderDailyDigest(
   const brand = getBrand();
   const base = dashboardUrl.replace(/\/$/, '');
   const queueUrl = `${base}/queue`;
-  const { freshFinds, totalNewEligible, runLedger, closingSoon, costRecap, bdLeads, bdLeadsUrl, anomalies } = extras;
+  const { freshFinds, totalNewEligible, neverEmailedKnown, runLedger, closingSoon, costRecap, bdLeads, bdLeadsUrl, anomalies } = extras;
 
   const finds = freshFinds ?? [];
   const freshCount = finds.length;
@@ -342,6 +446,7 @@ export function renderDailyDigest(
   const issueCount = anomalies?.length ?? 0;
   const totalIn = digest.wires.reduce((n, w) => n + w.totalIngested, 0);
   const waiting = digest.totalPendingReview;
+  const neverEmailedLabel = neverEmailedKnown === false ? '?' : String(totalNew);
 
   const day = new Date(`${digest.date}T00:00:00Z`);
   const subjDate = day.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
@@ -350,7 +455,7 @@ export function renderDailyDigest(
   // ── 1. Status band ───────────────────────────────────────────────────
   const ledgerParts = [
     ...(runLedger?.lanes ?? []).map(l => l.detail),
-    `${totalIn} in`,
+    `intake 24h: ${totalIn} · never-emailed: ${neverEmailedLabel} · waiting: ${waiting}`,
     costRecap ? `$${costRecap.total.toFixed(2)}` : null,
   ].filter((p): p is string => Boolean(p));
   const clean = issueCount === 0;
@@ -389,55 +494,106 @@ export function renderDailyDigest(
     const cleanDeadline = (d: string | null) => d ? (d.replace(/^(?:deadline|due|closes)[:\s]+/i, '').trim() || null) : null;
     const cleanAmount = (a: string | null) => a && !/^\d+(?:\.\d+)?\s*m(?:o|os|onths?)?$/i.test(a.trim()) ? a : null;
 
-    const cards = finds.map(e => {
-      const entryUrl = `${queueUrl}?entry=${e.id}`;
-      const route = e.curator_route ? routeLabel[e.curator_route] ?? null : null;
-      const stamp = route ? `${route}${e.curator_confidence ? `·${e.curator_confidence.toUpperCase()}` : ''}` : null;
-      const isPublish = e.curator_route === 'publish';
-      const amount = cleanAmount(e.amount);
-      const deadline = cleanDeadline(e.deadline);
-      const metaParts = [
-        escapeHtml(e.wire.toUpperCase()),
-        stamp ? `<span style="color:${isPublish ? '#116b45' : '#8a6d1f'};font-weight:700;">${escapeHtml(stamp)}</span>` : null,
-        amount ? escapeHtml(amount) : null,
-        deadline ? `due ${escapeHtml(deadline)}` : null,
-        e.source_url ? `<a href="${escapeHtml(e.source_url)}" style="color:#93a2ac;text-decoration:none;">source &#8599;</a>` : null,
-      ].filter(Boolean);
-      const summaryHtml = e.summary
-        ? `<p style="margin:5px 0 0;font-size:12px;color:#4a565f;line-height:1.45;">${escapeHtml(e.summary.slice(0, 220))}</p>`
-        : '';
-      const updateHtml = e.recheck_verdict === 'update' && e.recheck_matched_name
-        ? `<p style="margin:5px 0 0;font-size:10.5px;color:#8a6d1f;${MONO}">&#8635; Update of a prior entry: &ldquo;${escapeHtml(e.recheck_matched_name)}&rdquo; (${escapeHtml(e.recheck_matched_status || 'seen')})</p>`
-        : '';
-      const programHtml = e.program_history
-        ? `<p style="margin:5px 0 0;font-size:10.5px;color:#8a6d1f;${MONO}">${e.program_verdict === 'new_round' ? '&#8635; New round of a known program &middot; ' : ''}${escapeHtml(e.program_history)}</p>`
-        : '';
-      return `<div style="border:1px solid #e2e8ed;border-left:3px solid ${isPublish ? '#1a8a5a' : '#d0d9df'};padding:10px 12px;margin:0 0 8px;">
+    const renderCards = (rows: TopFindEntry[]): { html: string; text: string } => {
+      const html = rows.map(e => {
+        const entryUrl = `${queueUrl}?entry=${e.id}`;
+        const route = e.curator_route ? routeLabel[e.curator_route] ?? null : null;
+        const stamp = route ? `${route}${e.curator_confidence ? `·${e.curator_confidence.toUpperCase()}` : ''}` : null;
+        const isPublish = e.curator_route === 'publish';
+        const amount = cleanAmount(e.amount);
+        const deadline = cleanDeadline(e.deadline);
+        const firstSeen = digestFirstSeen(e.first_seen_age_days);
+        const lane = digestSourceLane(e.scan_source);
+        const area = digestAreaTag(e.wire_area);
+        const hints = (e.hold_hints || '').trim();
+        const program = digestProgramNote(e);
+        const decisionNotes = digestDecisionNotes(e.operator_notes);
+        const metaParts = [
+          escapeHtml(e.wire.toUpperCase()),
+          `#${e.id}`,
+          firstSeen ? escapeHtml(firstSeen) : null,
+          lane ? escapeHtml(lane) : null,
+          area ? escapeHtml(area) : null,
+          stamp ? `<span style="color:${isPublish ? '#116b45' : '#8a6d1f'};font-weight:700;">${escapeHtml(stamp)}</span>` : null,
+          amount ? escapeHtml(amount) : null,
+          deadline ? `due ${escapeHtml(deadline)}` : null,
+          e.source_url ? `<a href="${escapeHtml(e.source_url)}" style="color:#93a2ac;text-decoration:none;">source &#8599;</a>` : null,
+        ].filter(Boolean);
+        const summaryHtml = e.summary
+          ? `<p style="margin:5px 0 0;font-size:12px;color:#4a565f;line-height:1.45;">${escapeHtml(e.summary.slice(0, 220))}</p>`
+          : '';
+        const updateHtml = e.recheck_verdict === 'update' && e.recheck_matched_name
+          ? `<p style="margin:5px 0 0;font-size:10.5px;color:#8a6d1f;${MONO}">&#8635; Update of a prior entry: &ldquo;${escapeHtml(e.recheck_matched_name)}&rdquo; (${escapeHtml(e.recheck_matched_status || 'seen')})</p>`
+          : '';
+        const holdHtml = hints
+          ? `<p style="margin:5px 0 0;font-size:10.5px;color:#8a6d1f;${MONO}">${escapeHtml(hints)}</p>`
+          : '';
+        const noteHtml = decisionNotes.map(note =>
+          `<p style="margin:5px 0 0;font-size:10.5px;color:#8a6d1f;${MONO}">&#8635; ${escapeHtml(note)}</p>`
+        ).join('');
+        const programHtml = program
+          ? `<p style="margin:5px 0 0;font-size:10.5px;color:#8a6d1f;${MONO}">&#8635; ${escapeHtml(program)}</p>`
+          : '';
+        return `<div style="border:1px solid #e2e8ed;border-left:3px solid ${isPublish ? '#1a8a5a' : '#d0d9df'};padding:10px 12px;margin:0 0 8px;">
         <p style="margin:0;font-size:13px;line-height:1.4;"><a href="${escapeHtml(entryUrl)}" style="color:#14181c;font-weight:700;text-decoration:none;border-bottom:1px solid #9fd4f5;">${escapeHtml(e.name)}</a></p>
         ${summaryHtml}
         <p style="margin:5px 0 0;font-size:10.5px;color:#64717b;${MONO}">${metaParts.join(' &middot; ')}</p>
+        ${holdHtml}
+        ${noteHtml}
         ${updateHtml}
         ${programHtml}
       </div>`;
-    }).join('');
+      }).join('');
+
+      const text = rows.map(e => {
+        const route = e.curator_route ? routeLabel[e.curator_route] ?? '' : '';
+        const stamp = route ? ` [${route}${e.curator_confidence ? `·${e.curator_confidence.toUpperCase()}` : ''}]` : '';
+        const amount = cleanAmount(e.amount);
+        const deadline = cleanDeadline(e.deadline);
+        const identity = [
+          e.wire.toUpperCase(),
+          `#${e.id}`,
+          digestFirstSeen(e.first_seen_age_days),
+          digestSourceLane(e.scan_source),
+          digestAreaTag(e.wire_area),
+        ].filter(Boolean).join(' · ');
+        const summaryLine = e.summary ? `\n    ${e.summary.slice(0, 220)}` : '';
+        const hints = (e.hold_hints || '').trim();
+        const holdLine = hints ? `\n    ${hints}` : '';
+        const noteLine = digestDecisionNotes(e.operator_notes).map(note => `\n    ↻ ${note}`).join('');
+        const updateLine = e.recheck_verdict === 'update' && e.recheck_matched_name
+          ? `\n    ↻ Update of a prior entry: "${e.recheck_matched_name}" (${e.recheck_matched_status || 'seen'})` : '';
+        const program = digestProgramNote(e);
+        const programLine = program ? `\n    ↻ ${program}` : '';
+        return `  [${identity}]${stamp} ${e.name}${amount ? ` | ${amount}` : ''}${deadline ? ` | due ${deadline}` : ''}${summaryLine}${holdLine}${noteLine}${updateLine}${programLine}\n    ${queueUrl}?entry=${e.id}`;
+      }).join('\n');
+      return { html, text };
+    };
+
+    const needsYou = finds.filter(e => !hedwigAlreadyTouched(e));
+    const inLane = finds.filter(e => hedwigAlreadyTouched(e));
+    const laneNote = 'Hedwig already wrote on these queued rows. discuss.watch and auto-approve are not marked.';
+    const groupLabel = (label: string) =>
+      `<p style="margin:12px 0 6px;font-size:12px;font-weight:700;color:#14181c;">${escapeHtml(label)}</p>`;
+    let groupsHtml = '';
+    let groupsText = '';
+    if (needsYou.length > 0) {
+      const rendered = renderCards(needsYou);
+      groupsHtml += `${groupLabel(`Needs you (${needsYou.length})`)}${rendered.html}`;
+      groupsText += `NEEDS YOU (${needsYou.length})\n${rendered.text}\n`;
+    }
+    if (inLane.length > 0) {
+      const rendered = renderCards(inLane);
+      groupsHtml += `${groupLabel(`Already in my lane (${inLane.length})`)}<p style="margin:0 0 8px;font-size:11px;color:#64717b;">${escapeHtml(laneNote)}</p>${rendered.html}`;
+      groupsText += `ALREADY IN MY LANE (${inLane.length})\n  ${laneNote}\n${rendered.text}\n`;
+    }
     const more = totalNew - freshCount;
     reviewHtml = `
       ${sectionLabel(`New for review (${freshCount})`)}
-      ${cards}
-      ${more > 0 ? `<p style="margin:4px 0 0;font-size:12px;color:#64717b;">${more} more new in the queue</p>` : ''}
+      ${groupsHtml}
+      ${more > 0 ? `<p style="margin:4px 0 0;font-size:12px;color:#64717b;">${more} more never-emailed</p>` : ''}
       ${queueBtn}`;
-    reviewText = `\nNEW FOR REVIEW (${freshCount})\n` + finds.map(e => {
-      const route = e.curator_route ? routeLabel[e.curator_route] ?? '' : '';
-      const stamp = route ? ` [${route}${e.curator_confidence ? `·${e.curator_confidence.toUpperCase()}` : ''}]` : '';
-      const amount = cleanAmount(e.amount);
-      const deadline = cleanDeadline(e.deadline);
-      const summaryLine = e.summary ? `\n    ${e.summary.slice(0, 220)}` : '';
-      const updateLine = e.recheck_verdict === 'update' && e.recheck_matched_name
-        ? `\n    ↻ Update of a prior entry: "${e.recheck_matched_name}" (${e.recheck_matched_status || 'seen'})` : '';
-      const programLine = e.program_history
-        ? `\n    ${e.program_verdict === 'new_round' ? '↻ New round of a known program · ' : ''}${e.program_history}` : '';
-      return `  [${e.wire}]${stamp} ${e.name}${amount ? ` | ${amount}` : ''}${deadline ? ` | due ${deadline}` : ''}${summaryLine}${updateLine}${programLine}\n    ${queueUrl}?entry=${e.id}`;
-    }).join('\n') + (more > 0 ? `\n  ${more} more new in the queue` : '') + `\n  Open queue (${waiting} waiting): ${queueUrl}\n`;
+    reviewText = `\nNEW FOR REVIEW (${freshCount})\n${groupsText}` + (more > 0 ? `  ${more} more never-emailed\n` : '') + `  Open queue (${waiting} waiting): ${queueUrl}\n`;
   } else {
     reviewHtml = `
       <p style="margin:18px 0 0;font-size:13px;color:#444;">Nothing new for review. Everything ingested overnight was duplicate or off-scope &mdash; the machine ran, filtered, and left you alone.</p>

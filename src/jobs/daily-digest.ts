@@ -403,18 +403,38 @@ export interface FreshFindsResult {
 
 const FRESH_FINDS_SELECT = `
   SELECT q.id, q.name, q.wire, q.quality_score, q.amount, q.deadline, q.source_url,
+         q.scan_source,
+         q.wire_area,
+         FLOOR(EXTRACT(EPOCH FROM (NOW() - q.created_at)) / 86400)::int AS first_seen_age_days,
+         q.actioned_by,
+         q.operator_notes,
          q.metadata->'curator'->>'route' AS curator_route,
          q.metadata->'curator'->>'confidence' AS curator_confidence,
+         q.metadata->'curator'->>'by' AS curator_by,
          COALESCE(NULLIF(q.metadata->>'summary', ''), LEFT(q.description, 220)) AS summary,
          q.metadata->'decided_recheck'->>'verdict' AS recheck_verdict,
          m.name AS recheck_matched_name,
          m.status AS recheck_matched_status,
+         NULLIF(concat_ws(' · ',
+           CASE WHEN q.metadata->'decided_recheck'->>'cross_wire_blocked' = 'true' THEN 'cross-wire hold' END,
+           CASE WHEN q.metadata->'decided_recheck'->>'canonical_parent_blocked' = 'true' THEN 'canonical hold' END,
+           CASE WHEN jsonb_typeof(q.metadata->'duplicate_chain_error') = 'object' THEN 'chain hold' END,
+           CASE WHEN jsonb_typeof(q.metadata->'repeat_funder_overrides') = 'array'
+                THEN CASE WHEN jsonb_array_length(q.metadata->'repeat_funder_overrides') > 0
+                          THEN 'repeat-funder' END
+           END
+         ), '') AS hold_hints,
          q.metadata->'program'->>'verdict' AS program_verdict,
-         CASE WHEN p.id IS NULL THEN NULL ELSE
-           'seen ' || p.entry_count || '×'
-           || CASE WHEN p.approved_count > 0 THEN ' · approved ' || p.approved_count || '×' ELSE '' END
-           || CASE WHEN p.declined_count > 0 THEN ' · declined ' || p.declined_count || '×' ELSE '' END
-           || CASE WHEN p.last_decision IS NOT NULL THEN ' · last recorded ' || p.last_decision ELSE '' END
+         CASE
+           WHEN p.id IS NULL THEN NULL
+           WHEN COALESCE(q.metadata->'program'->>'verdict', '') IN ('new_round', 'same_round')
+             OR COALESCE(p.declined_count, 0) > 0
+           THEN NULLIF(concat_ws(' · ',
+             CASE WHEN COALESCE(p.declined_count, 0) > 0 THEN 'declined ' || p.declined_count || '×' END,
+             CASE WHEN COALESCE(p.declined_count, 0) > 0 AND p.last_decision IS NOT NULL
+                  THEN 'last recorded ' || p.last_decision END
+           ), '')
+           ELSE NULL
          END AS program_history
   FROM scan_entries q
   LEFT JOIN scan_entries m
@@ -794,6 +814,7 @@ export async function assembleAndSendDailyDigest(
   await deps.send(digest, config.app.url, opts.recipients, {
     freshFinds: freshRes.finds,
     totalNewEligible: freshRes.totalNew,
+    neverEmailedKnown: !freshRes.fallback,
     runLedger: ledger,
     closingSoon,
     costRecap,

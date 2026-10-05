@@ -258,6 +258,7 @@ test('assembleAndSendDailyDigest: sends one email and advances the watermark wit
   const extras = sent[0][3];
   assert.equal(extras.freshFinds.length, 1);
   assert.equal(extras.totalNewEligible, 4);
+  assert.equal(extras.neverEmailedKnown, true);
   assert.equal(extras.closingSoon.length, 1);
   assert.equal(extras.closingSoon[0].daysUntil, 3);
   assert.deepEqual(advanced, [[7]]);
@@ -290,6 +291,15 @@ test('assembleAndSendDailyDigest: human and chat intake lanes stay out of produc
   assert.ok(!anomalies.some(a => a.includes('Lane telegram-intake')));
   assert.ok(!anomalies.some(a => a.includes('Lane telegram')));
   assert.ok(!anomalies.some(a => a.includes('Lane manual-intake')));
+});
+
+test('assembleAndSendDailyDigest: watermark fallback does not claim a never-emailed count', async () => {
+  const { deps, sent } = assemblyDeps({
+    fresh: async () => ({ finds: [], totalNew: 3, seeded: false, fallback: true }),
+  });
+  await assembleAndSendDailyDigest({}, {}, deps);
+  assert.equal(sent[0][3].neverEmailedKnown, false);
+  assert.equal(sent[0][3].totalNewEligible, 3);
 });
 
 test('assembleAndSendDailyDigest: a failed send never advances the watermark', async () => {
@@ -362,6 +372,14 @@ test('getFreshFinds selects program history via the programs join', async () => 
   assert.match(pool.calls[0].sql, /LEFT JOIN programs/);
   assert.match(pool.calls[0].sql, /program_history/);
   assert.match(pool.calls[0].sql, /program_verdict/);
+  assert.match(pool.calls[0].sql, /scan_source/);
+  assert.match(pool.calls[0].sql, /wire_area/);
+  assert.match(pool.calls[0].sql, /first_seen_age_days/);
+  assert.match(pool.calls[0].sql, /curator_by/);
+  assert.match(pool.calls[0].sql, /hold_hints/);
+  assert.match(pool.calls[0].sql, /repeat_funder_overrides/);
+  assert.match(pool.calls[0].sql, /operator_notes/);
+  assert.doesNotMatch(pool.calls[0].sql, /'seen '/, 'program history must not select seen counts');
 });
 
 test('buildRunLedger: a provider with failures and zero successes flags an account-level outage', async () => {
