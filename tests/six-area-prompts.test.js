@@ -96,7 +96,7 @@ test('forum, parallel, source-feed, and registry prompts cover areas 1-6 and kee
     assert.ok(RELEVANCE_KEYWORDS.includes(word), word);
   }
   assert.equal(DISCUSS_WATCH_NEWS_QUERY.classification, 'NEWS');
-  assert.equal(DISCUSS_WATCH_NEWS_QUERY.status, 'awarded,voting');
+  assert.deepEqual(DISCUSS_WATCH_NEWS_QUERY.status.split(','), ['awarded', 'voting']);
 
   const forum = require('fs').readFileSync(require('path').join(__dirname, '../src/services/forum.ts'), 'utf8');
   assert.match(forum, /uniswap/i);

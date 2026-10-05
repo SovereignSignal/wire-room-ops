@@ -227,6 +227,7 @@ const JUDGE_BATCH_SIZE = 12;
 // not re-spend Grok. Kill switch: FORUM_GRANTS_FEED_ENABLED=false.
 
 interface GrantsFeedItem {
+  id?: string | number;
   name?: string;
   title?: string;
   url?: string;
@@ -298,17 +299,73 @@ export function grantsFeedItemToRaw(item: GrantsFeedItem): RawScanResult {
   };
 }
 
-/** Second discuss.watch pull: award results and live capital votes, not open calls. */
+/** Second discuss.watch pull: award results and live capital votes, not open calls.
+ *  Statuses are exact-match filters. discuss.watch does not treat a comma as OR,
+ *  so fetchGrantsFeedResults requests each value on its own and merges the pages. */
 export const DISCUSS_WATCH_NEWS_QUERY = {
   classification: 'NEWS',
   status: 'awarded,voting',
 } as const;
 
+/** discuss.watch matches `status` exactly, so each comma-separated value is its own request. */
+function grantsFeedStatusValues(status: string | undefined): Array<string | undefined> {
+  if (status == null) return [undefined];
+  const values = status.split(',').map(part => part.trim()).filter(Boolean);
+  return values.length > 0 ? values : [undefined];
+}
+
+/** True when this item's id or URL was not already kept. Records it when new. */
+function rememberGrantsFeedItem(
+  seenIds: Set<string>,
+  seenUrls: Set<string>,
+  item: GrantsFeedItem,
+): boolean {
+  const id = item.id == null ? '' : String(item.id).trim();
+  const url = item.url ? normalizeUrl(item.url) : '';
+  if ((id !== '' && seenIds.has(id)) || (url !== '' && seenUrls.has(url))) return false;
+  if (id !== '') seenIds.add(id);
+  if (url !== '') seenUrls.add(url);
+  return true;
+}
+
 /**
- * Pull pre-classified GRANT items for one wire from discuss.watch.
+ * One /grants GET. Null on HTTP, API, or network failure (the caller fails soft).
+ * An empty `items` array is a successful page.
+ */
+async function fetchGrantsFeedItems(
+  baseUrl: string,
+  params: URLSearchParams,
+): Promise<GrantsFeedItem[] | null> {
+  try {
+    const response = await fetch(`${baseUrl}/grants?${params}`, {
+      headers: { 'Accept': 'application/json' },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok) {
+      console.warn(`[Forum] /grants returned ${response.status} (${params.toString()})`);
+      return null;
+    }
+    const data = await response.json() as GrantsFeedResponse;
+    if (data.error || !Array.isArray(data.items)) {
+      if (data.error) console.warn(`[Forum] /grants API error: ${data.error}`);
+      return null;
+    }
+    return data.items;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[Forum] /grants fetch failed: ${msg}`);
+    return null;
+  }
+}
+
+/**
+ * Pull pre-classified feed items for one wire from discuss.watch.
+ * A comma-separated `extra.status` is one request per exact status;
+ * pages are merged and rows that share an item id or URL collapse.
  * Age-gated on topicCreatedAt (the feed's `since` filters firstSeenAt, and
  * its first sweeps surface old threads from dedicated grants categories).
- * Fails soft: returns empty on any error — the judge path still runs.
+ * Fails soft: a failed request contributes nothing, and every request failing
+ * returns empty — the judge path still runs.
  */
 export async function fetchGrantsFeedResults(
   wire: string,
@@ -317,51 +374,50 @@ export async function fetchGrantsFeedResults(
 ): Promise<{ results: RawScanResult[]; urls: Set<string> }> {
   const empty = { results: [] as RawScanResult[], urls: new Set<string>() };
   const baseUrl = config.forum.discussWatchBaseUrl;
-  const params = new URLSearchParams({
-    wire,
-    since,
-    min_confidence: String(config.forum.grantsMinConfidence),
-    limit: '100',
-    ...extra,
-  });
-  try {
-    const response = await fetch(`${baseUrl}/grants?${params}`, {
-      headers: { 'Accept': 'application/json' },
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!response.ok) {
-      console.warn(`[Forum] /grants returned ${response.status} (${params.toString()})`);
-      return empty;
-    }
-    const data = await response.json() as GrantsFeedResponse;
-    if (data.error || !Array.isArray(data.items)) {
-      if (data.error) console.warn(`[Forum] /grants API error: ${data.error}`);
-      return empty;
-    }
+  const { status: statusParam, ...rest } = extra;
+  const statuses = grantsFeedStatusValues(statusParam);
 
-    const ageCutoff = Date.now() - MAX_DISCUSSION_AGE_DAYS * 86400000;
-    const results: RawScanResult[] = [];
-    const urls = new Set<string>();
-    for (const item of data.items) {
-      if (!item.url || !(item.title || item.name)) continue;
-      // Same operator-conflict skip as the judge path (matches protocol AND url)
-      const skipHaystack = `${item.protocol || ''} ${item.url}`;
-      if (FORUM_SKIP_PATTERNS.some(p => p.test(skipHaystack))) continue;
-      // Age gate on the thread's original post date
-      const created = item.topicCreatedAt ? new Date(item.topicCreatedAt).getTime() : NaN;
-      if (!Number.isNaN(created) && created < ageCutoff) continue;
-      const raw = grantsFeedItemToRaw(item);
-      if (!raw.sourceUrl) continue;
-      results.push(raw);
-      urls.add(normalizeUrl(raw.sourceUrl));
-    }
-    console.log(`[Forum] ${wire} grants feed: ${results.length} pre-classified items (of ${data.items.length} returned)`);
-    return { results, urls };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[Forum] /grants fetch failed: ${msg}`);
-    return empty;
+  const items: GrantsFeedItem[] = [];
+  let anySuccess = false;
+  for (let i = 0; i < statuses.length; i++) {
+    if (i > 0) await sleep(REQUEST_DELAY_MS);
+    const params = new URLSearchParams({
+      wire,
+      since,
+      min_confidence: String(config.forum.grantsMinConfidence),
+      limit: '100',
+      ...rest,
+    });
+    const status = statuses[i];
+    if (status) params.set('status', status);
+    const page = await fetchGrantsFeedItems(baseUrl, params);
+    if (page == null) continue;
+    anySuccess = true;
+    items.push(...page);
   }
+  if (!anySuccess) return empty;
+
+  const ageCutoff = Date.now() - MAX_DISCUSSION_AGE_DAYS * 86400000;
+  const seenIds = new Set<string>();
+  const seenUrls = new Set<string>();
+  const results: RawScanResult[] = [];
+  const urls = new Set<string>();
+  for (const item of items) {
+    if (!item.url || !(item.title || item.name)) continue;
+    // Same operator-conflict skip as the judge path (matches protocol AND url)
+    const skipHaystack = `${item.protocol || ''} ${item.url}`;
+    if (FORUM_SKIP_PATTERNS.some(p => p.test(skipHaystack))) continue;
+    // Age gate on the thread's original post date
+    const created = item.topicCreatedAt ? new Date(item.topicCreatedAt).getTime() : NaN;
+    if (!Number.isNaN(created) && created < ageCutoff) continue;
+    if (!rememberGrantsFeedItem(seenIds, seenUrls, item)) continue;
+    const raw = grantsFeedItemToRaw(item);
+    if (!raw.sourceUrl) continue;
+    results.push(raw);
+    urls.add(normalizeUrl(raw.sourceUrl));
+  }
+  console.log(`[Forum] ${wire} grants feed: ${results.length} pre-classified items (of ${items.length} returned)`);
+  return { results, urls };
 }
 
 export interface ForumCandidate {
