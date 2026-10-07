@@ -87,6 +87,8 @@ function extractAmount(text: string): string | null {
   return null;
 }
 
+// Lowercase and strip a trailing slash only. Keep the fragment: Snapshot
+// proposal links are hash routes, and dropping it would merge distinct proposals.
 function normalizeUrl(url: string): string {
   return url.toLowerCase().replace(/\/+$/, '');
 }

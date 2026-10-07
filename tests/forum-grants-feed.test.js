@@ -221,6 +221,24 @@ test('fetchGrantsFeedResults request behavior', async (t) => {
     assert.equal(bothFailed.results.length, 0);
   });
 
+  await t.test('keeps distinct Snapshot proposal hashes and collapses only the same proposal', async () => {
+    const fresh = new Date().toISOString();
+    const aave = 'https://snapshot.org/#/aavedao.eth/proposal/0x2d6af8b127e816dd15046979a27e5b5de2e9e0ecd2207c6425ff5db8270970ea';
+    const aaveDup = 'https://snapshot.org/#/aavedao.eth/proposal/0x2D6AF8B127E816DD15046979A27E5B5DE2E9E0ECD2207C6425FF5DB8270970EA/';
+    const gitcoin = 'https://snapshot.org/#/gitcoindao.eth/proposal/0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    stubFetch({
+      items: [
+        { id: 1, title: 'Aave service provider proposal', url: aave, protocol: 'Aave', confidence: 90, kind: 'proposal', topicCreatedAt: fresh },
+        { id: 2, title: 'Aave service provider proposal again', url: aaveDup, protocol: 'Aave', confidence: 90, kind: 'proposal', topicCreatedAt: fresh },
+        { id: 3, title: 'Gitcoin matching proposal', url: gitcoin, protocol: 'Gitcoin', confidence: 91, kind: 'proposal', topicCreatedAt: fresh },
+      ],
+    });
+    const { results, urls } = await fetchGrantsFeedResults('crypto', '2026-10-01');
+    assert.deepEqual(results.map(item => item.sourceUrl), [aave, gitcoin]);
+    assert.equal(urls.size, 2);
+    assert.ok([...urls].every(url => url.includes('#/')));
+  });
+
   await t.test('fails soft on HTTP errors and API errors', async () => {
     stubFetch({}, 500);
     const errRes = await fetchGrantsFeedResults('ai', '2026-07-04');

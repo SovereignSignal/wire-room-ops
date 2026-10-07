@@ -121,6 +121,7 @@ src/
 │   ├── source-feeds-dryrun.ts / source-feeds-run-once.ts               # Feed lane testing
 │   ├── program-backfill.ts # Program-identity backfill: one-off corpus canonicalization (--dry-run mode)
 │   ├── backfill-summary-leaks.ts # Regenerate enriched_summary rows holding leaked reasoning (dry run by default, --apply to write)
+│   ├── reprocess-no-source-url.ts # Return archived no_source_url rows to raw once the URL is useful (dry run by default; does not approve or send)
 │   └── cleanup-lane-noise.ts / lane-quality-report.ts / queue-dedup-review.ts  # June-2026 one-off audits
 ├── jobs/
 │   ├── account-monitor.ts  # Poll monitored X accounts (orgs + people) for new URLs -> intake

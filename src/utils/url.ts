@@ -1,6 +1,10 @@
 /**
  * Shared URL normalization for deduplication.
  * Handles twitter/x.com normalization and tracking param removal.
+ *
+ * The fragment is part of the key. Snapshot and other hash-routed apps put
+ * the proposal id in `#/<space>/proposal/<id>`; dropping the fragment would
+ * collapse every proposal on that host into one URL.
  */
 export function normalizeUrl(url: string): string {
   if (!url) return '';
