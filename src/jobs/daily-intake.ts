@@ -34,7 +34,7 @@ import {
 
   normalizeName,
   extractNameTokens,
-  isUsefulUrl,
+  hasUsefulSourceUrl,
 } from '../services/intake';
 import { findRelatedOpportunity, finalizeExistingEntryDedup, annotateAlternateSource } from '../services/dedup';
 // quality-scorer.ts replaced by LLM scoring in classifier.ts
@@ -304,7 +304,7 @@ export async function runDailyIntake(
     const entryId = insertedIds[i];
     const url = item.result.sourceUrl;
 
-    if (!url || url.trim() === '' || !isUsefulUrl(url)) {
+    if (!hasUsefulSourceUrl(url)) {
       await pool.query(
         `UPDATE scan_entries
          SET status = 'archived',
