@@ -202,6 +202,14 @@ router.post('/digest/send-now', async (req: Request, res: Response) => {
       : undefined;
 
     const summary = await assembleAndSendDailyDigest(pool, { recipients });
+    if (summary.emailSkipped) {
+      res.json({
+        success: true,
+        skipped: true,
+        message: 'Digest email skipped (DIGEST_EMAIL_ENABLED=false)',
+      });
+      return;
+    }
     noteCuratorChange(res, {
       subject: 'POST /api/digest/send-now',
       old: null,

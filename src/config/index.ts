@@ -11,6 +11,15 @@ function normalizeAppUrl(url: string): string {
   return withProtocol.replace(/\/+$/, '');
 }
 
+/**
+ * Daily WireOps digest email. Unset sends, same as today.
+ * Only the string "false" (any case, surrounding space ignored) turns it off.
+ */
+export function isDigestEmailEnabled(raw: string | undefined = process.env.DIGEST_EMAIL_ENABLED): boolean {
+  if (raw == null || raw.trim() === '') return true;
+  return raw.trim().toLowerCase() !== 'false';
+}
+
 export const config = {
   database: {
     url: process.env.DATABASE_URL || '',
@@ -61,6 +70,10 @@ export const config = {
     resendApiKey: process.env.RESEND_API_KEY || '',
     notificationEmail: process.env.NOTIFICATION_EMAIL || '',
     fromEmail: process.env.FROM_EMAIL || 'noreply@resend.sovereignsignal.com',
+    // Live read so a skipped send follows the env var at send time.
+    get digestEnabled() {
+      return isDigestEmailEnabled();
+    },
   },
   
   privy: {

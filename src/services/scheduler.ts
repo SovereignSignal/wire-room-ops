@@ -509,7 +509,11 @@ function createJobExecutor(schedule: ScheduleConfig) {
             bdLeads: bdLeadsForEmail,
             bdLeadsUrl: 'https://app.notion.com/p/8b84ca08e4dd4396b49535936f823afd',
           });
-          console.log(`[Scheduler] Daily digest email sent (${summary.freshCount} new of ${summary.totalNew}, ${summary.issueCount} issues${summary.seeded ? ', watermark seeded' : ''})`);
+          // A skip returns normally. Do not mark the run failed and do not
+          // send a failure alert — that path is only the catch below.
+          if (!summary.emailSkipped) {
+            console.log(`[Scheduler] Daily digest email sent (${summary.freshCount} new of ${summary.totalNew}, ${summary.issueCount} issues${summary.seeded ? ', watermark seeded' : ''})`);
+          }
         } catch (emailErr) {
           console.error(`[Scheduler] Failed to send daily digest email:`, emailErr);
           digestEmailError = emailErr instanceof Error ? emailErr.message : String(emailErr);

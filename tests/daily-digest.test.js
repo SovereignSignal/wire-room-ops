@@ -264,6 +264,74 @@ test('assembleAndSendDailyDigest: sends one email and advances the watermark wit
   assert.deepEqual(advanced, [[7]]);
   assert.equal(summary.freshCount, 1);
   assert.equal(summary.totalNew, 4);
+  assert.equal(summary.emailSkipped, false);
+});
+
+test('isDigestEmailEnabled stays on unless the value is false', () => {
+  const { config, isDigestEmailEnabled } = require('../src/config');
+  assert.equal(isDigestEmailEnabled(undefined), true);
+  assert.equal(isDigestEmailEnabled(''), true);
+  assert.equal(isDigestEmailEnabled('true'), true);
+  assert.equal(isDigestEmailEnabled('false'), false);
+  assert.equal(isDigestEmailEnabled('FALSE'), false);
+  assert.equal(isDigestEmailEnabled(' false '), false);
+  assert.equal(isDigestEmailEnabled('no'), true);
+
+  const prev = process.env.DIGEST_EMAIL_ENABLED;
+  try {
+    delete process.env.DIGEST_EMAIL_ENABLED;
+    assert.equal(config.email.digestEnabled, true);
+    process.env.DIGEST_EMAIL_ENABLED = 'false';
+    assert.equal(config.email.digestEnabled, false);
+    process.env.DIGEST_EMAIL_ENABLED = 'true';
+    assert.equal(config.email.digestEnabled, true);
+  } finally {
+    if (prev === undefined) delete process.env.DIGEST_EMAIL_ENABLED;
+    else process.env.DIGEST_EMAIL_ENABLED = prev;
+  }
+});
+
+test('other outbound emails do not consult the digest email switch', () => {
+  const fs = require('fs');
+  const path = require('path');
+  for (const file of ['src/services/email.ts', 'src/jobs/csv-export.ts', 'src/routes/export.ts']) {
+    const src = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+    assert.equal(src.includes('DIGEST_EMAIL_ENABLED'), false, file);
+    assert.equal(src.includes('digestEnabled'), false, file);
+  }
+});
+
+test('assembleAndSendDailyDigest: DIGEST_EMAIL_ENABLED=false skips the send and watermark', async () => {
+  const prev = process.env.DIGEST_EMAIL_ENABLED;
+  const logs = [];
+  const errors = [];
+  const origLog = console.log;
+  const origErr = console.error;
+  console.log = (...args) => { logs.push(args.map(String).join(' ')); };
+  console.error = (...args) => { errors.push(args.map(String).join(' ')); };
+  process.env.DIGEST_EMAIL_ENABLED = 'false';
+  try {
+    const { deps, sent, advanced } = assemblyDeps({
+      digest: async () => { throw new Error('must not assemble'); },
+      fresh: async () => { throw new Error('must not read finds'); },
+    });
+    // The flag is read before the first await, so restore env before yielding.
+    const pending = assembleAndSendDailyDigest({}, { laneAnomalies: ['Forum lane failed: x'] }, deps);
+    if (prev === undefined) delete process.env.DIGEST_EMAIL_ENABLED;
+    else process.env.DIGEST_EMAIL_ENABLED = prev;
+    const summary = await pending;
+
+    assert.equal(summary.emailSkipped, true);
+    assert.equal(sent.length, 0);
+    assert.deepEqual(advanced, []);
+    assert.deepEqual(errors, []);
+    assert.deepEqual(logs, ['[DailyDigest] Digest email skipped (DIGEST_EMAIL_ENABLED=false)']);
+  } finally {
+    console.log = origLog;
+    console.error = origErr;
+    if (prev === undefined) delete process.env.DIGEST_EMAIL_ENABLED;
+    else process.env.DIGEST_EMAIL_ENABLED = prev;
+  }
 });
 
 test('assembleAndSendDailyDigest: derives a zero-yield lane anomaly and merges lane anomalies', async () => {

@@ -729,6 +729,8 @@ export interface DigestSendSummary {
   totalNew: number;
   issueCount: number;
   seeded: boolean;
+  /** True when DIGEST_EMAIL_ENABLED=false. Nothing was sent or watermarked. */
+  emailSkipped: boolean;
 }
 
 export interface AssembleDigestDeps {
@@ -741,6 +743,8 @@ export interface AssembleDigestDeps {
   producers: typeof getProducerActivity;
   send: typeof sendDailyDigestEmail;
   advance: (ids: number[]) => Promise<void>;
+  /** Test seam. Production reads DIGEST_EMAIL_ENABLED. */
+  digestEmailEnabled?: () => boolean;
 }
 
 const defaultAssembleDeps: AssembleDigestDeps = {
@@ -759,12 +763,28 @@ const defaultAssembleDeps: AssembleDigestDeps = {
  * ONE code path for the digest email — used by both the scheduler's daily
  * fold and the dashboard send-now button, so the two can never diverge.
  * The watermark advances only after the send succeeds.
+ * DIGEST_EMAIL_ENABLED=false returns before any read, send, or watermark
+ * write. It does not throw, so the rest of the daily fold keeps running
+ * and the skip is not a failed send.
  */
 export async function assembleAndSendDailyDigest(
   pool: Pool,
   opts: AssembleDigestOptions = {},
   deps: AssembleDigestDeps = defaultAssembleDeps,
 ): Promise<DigestSendSummary> {
+  const emailEnabled = deps.digestEmailEnabled ? deps.digestEmailEnabled() : config.email.digestEnabled;
+  if (!emailEnabled) {
+    console.log('[DailyDigest] Digest email skipped (DIGEST_EMAIL_ENABLED=false)');
+    return {
+      date: new Date().toISOString().slice(0, 10),
+      freshCount: 0,
+      totalNew: 0,
+      issueCount: 0,
+      seeded: false,
+      emailSkipped: true,
+    };
+  }
+
   const digest = await deps.digest(pool);
   const freshRes = await deps.fresh(pool, 8);
 
@@ -834,5 +854,6 @@ export async function assembleAndSendDailyDigest(
     totalNew: freshRes.totalNew,
     issueCount: anomalies.length,
     seeded: freshRes.seeded,
+    emailSkipped: false,
   };
 }

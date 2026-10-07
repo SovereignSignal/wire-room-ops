@@ -291,6 +291,7 @@ Optional:
 - `PORT`
 - `STARTUP_LLM_RESCORE_ENABLED` -- opt in to queue-only LLM score repair at startup (default false; may spend API credits)
 - `FROM_EMAIL`
+- `DIGEST_EMAIL_ENABLED` -- daily WireOps digest email (default on). Set to `false` to skip only that send. The daily-digest schedule still runs scans, feeds, the cohort bridge, CSV export, the CRM cycle, and failure alerts. Unset or any other value keeps the email. A skip is not a failed run and does not send a failure alert.
 - `ALLOWED_EMAILS`
 - `GROK_SEARCH_MODEL` -- x_search/web_search fallback when the provider model is not a Grok id (default `grok-4.7`). Stored scan-prompt models are unchanged
 - `OLLAMA_DEFAULT_MODEL` -- summary primary model (default `deepseek-v4.1-flash`). Used instead of the Ollama provider row's `default_model`
