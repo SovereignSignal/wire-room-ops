@@ -565,6 +565,8 @@ curl -s -X DELETE "$WIREOPS_SERVER_URL/api/schedules/$SCHEDULE_ID?confirm=true" 
 curl -s -X POST "$WIREOPS_SERVER_URL/api/digest/send-now?confirm=true" \
   -H "Authorization: Bearer $HEDWIG_TOKEN"
 
+`DIGEST_EMAIL_ENABLED=false` skips this send and the scheduled digest email. The response is `{ "success": true, "skipped": true }` and is not a failure.
+
 curl -s -X POST "$WIREOPS_SERVER_URL/api/test-alert?confirm=true" \
   -H "Authorization: Bearer $HEDWIG_TOKEN"
 

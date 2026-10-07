@@ -103,9 +103,12 @@ export function DailyDigestCard() {
     setSendingDigest(true);
     try {
       const res = await fetch('/api/digest/send-now', { method: 'POST', credentials: 'include' });
-      const data = await res.json() as { success: boolean; message?: string; error?: string; stats?: { pendingReview: number } };
+      const data = await res.json() as { success: boolean; skipped?: boolean; message?: string; error?: string; stats?: { pendingReview: number } };
       if (res.ok && data.success) {
-        toast({ title: 'Digest sent', description: data.message || `${data.stats?.pendingReview ?? 0} pending items included` });
+        toast({
+          title: data.skipped ? 'Digest email skipped' : 'Digest sent',
+          description: data.message || `${data.stats?.pendingReview ?? 0} pending items included`,
+        });
       } else {
         toast({ title: 'Send failed', description: data.error || 'Unknown error' });
       }
