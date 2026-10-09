@@ -18,7 +18,7 @@ async function main() {
 
   console.log(`\n=== Cohort bridge ${dryRun ? 'DRY RUN' : 'REAL RUN'} ===`);
   if (!dryRun) {
-    console.log('(writes source_runs + observations; net-new Verified/Top of Digest rows enter the queue)\n');
+    console.log('(writes source_runs + observations; eligible rows, including Deferred/Needs review: candidates, enter normal intake)\n');
   }
 
   const result = await runCohortBridge(pool, {

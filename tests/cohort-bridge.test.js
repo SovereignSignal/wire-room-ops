@@ -78,7 +78,7 @@ test('parseNotionScanPage drops untitled pages', () => {
   assert.equal(parseNotionScanPage(page({ properties: { Name: { title: [] } } })), null);
 });
 
-test('shouldPromoteRow skips Deferred and URL-less rows', () => {
+test('shouldPromoteRow skips unmarked Deferred and URL-less rows', () => {
   const ok = parseNotionScanPage(page());
   assert.equal(shouldPromoteRow(ok), true);
   const deferred = parseNotionScanPage(page({ properties: { Section: { select: { name: 'Deferred' } } } }));
@@ -87,11 +87,72 @@ test('shouldPromoteRow skips Deferred and URL-less rows', () => {
   assert.equal(shouldPromoteRow(noUrl), false);
 });
 
-test('routingForRow keeps Deferred on the landscape lane', () => {
+test('shouldPromoteRow admits explicit review candidates while retaining source checks', () => {
+  const candidate = parseNotionScanPage(page({ properties: {
+    Section: { select: { name: ' Deferred ' } },
+    Summary: { rich_text: [{ plain_text: '  NEEDS REVIEW: Eligibility and deadline unresolved.' }] },
+  } }));
+  assert.equal(shouldPromoteRow(candidate), true);
+  assert.equal(shouldPromoteRow({ ...candidate, summary: 'Maybe this needs review: parked.' }), false);
+  assert.equal(shouldPromoteRow({ ...candidate, url: '' }), false);
+  assert.equal(shouldPromoteRow({ ...candidate, url: 'not-a-url' }), false);
+  assert.equal(shouldPromoteRow({ ...candidate, wire: null }), false);
+  assert.equal(shouldPromoteRow({ ...candidate, name: ' ' }), false);
+});
+
+test('routingForRow keeps unpromoted Deferred on the landscape lane', () => {
   const deferred = parseNotionScanPage(page({ properties: { Section: { select: { name: 'Deferred' } } } }));
   assert.equal(routingForRow(deferred, false), 'raw_only');
+  assert.equal(routingForRow({ ...deferred, summary: 'Needs review: Check eligibility.' }, true), 'wire_queue_candidate');
   const verified = parseNotionScanPage(page());
   assert.equal(routingForRow(verified, true), 'wire_queue_candidate');
+});
+
+test('runCohortBridge sends review candidates through normal intake once with caveats intact', async () => {
+  const now = new Date('2026-08-20T14:15:30Z');
+  const pool = fakePool();
+  const state = fakeState();
+  const summary = 'Needs review: Funding proposal; approval and applicant route unresolved.';
+  const candidate = page({
+    id: 'page-review',
+    created_time: '2026-08-20T12:00:00Z',
+    properties: {
+      Section: { select: { name: 'Deferred' } },
+      Summary: { rich_text: [{ plain_text: summary }] },
+      Deadline: { date: null },
+    },
+  });
+  const submissions = [];
+  const deps = {
+    getAppState: state.getAppState,
+    setAppState: state.setAppState,
+    async getCredentials() { return { token: 'ntn', databaseId: 'db' }; },
+    async queryPages() { return [candidate, { ...candidate, id: 'same-source' }]; },
+    isEnabled: () => true,
+    async runIntake(p, input) {
+      submissions.push(input);
+      return { runDate: '2026-08-20', wire: 'oss', totalIngested: 1, duplicatesFound: 0,
+        newUnique: 1, averageQualityScore: 0, highQualityCount: 0, byPrompt: {}, topFinds: [] };
+    },
+  };
+
+  const first = await runCohortBridge(pool, { now }, deps);
+  assert.equal(first.promoted, 1);
+  assert.equal(first.observations, 1);
+  const raw = submissions[0][0].results[0];
+  assert.equal(raw.description, summary);
+  assert.equal(raw.deadline, null);
+  assert.equal(raw.metadata.cohort_bridge.section, 'Deferred');
+  assert.equal(raw.metadata.cohort_bridge.notion_page_id, 'page-review');
+  const observation = pool.calls.find(c => /INSERT INTO opportunity_observations/i.test(c.sql));
+  assert.equal(observation.params[7], summary);
+  assert.equal(observation.params[11], 'Deferred');
+  assert.equal(observation.params[12], 'wire_queue_candidate');
+
+  const again = await runCohortBridge(pool, { now: new Date('2026-08-20T14:16:30Z') }, deps);
+  assert.equal(again.promoted, 0);
+  assert.equal(again.observations, 0);
+  assert.equal(submissions.length, 1);
 });
 
 test('dedupeKeyForRow prefers the normalized URL', () => {
@@ -232,6 +293,8 @@ test('runCohortBridge dry-run does not write source_runs or intake', async () =>
       return [page({
         properties: {
           'Date Found': { date: { start: '2026-08-20' } },
+          Section: { select: { name: 'Deferred' } },
+          Summary: { rich_text: [{ plain_text: 'Needs review: Check applicant route.' }] },
         },
         created_time: '2026-08-20T12:00:00.000Z',
       })];
