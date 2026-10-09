@@ -13,7 +13,8 @@
  *   1. Reads the Notion table from the pending cursor (or last heartbeat)
  *   2. Writes a durable source_run heartbeat (always, even on a quiet day)
  *   3. Persists opportunity_observations for every fetched row
- *   4. Promotes Verified / Top of Digest rows with a usable URL through intake
+ *   4. Promotes rows with a usable URL through intake, including Deferred rows
+ *      explicitly marked "Needs review:" by broad-capture producers
  *
  * A pending replay cursor forces the run_id to contain "backfill" so
  * checkCohortHealth clears it on the same digest.
@@ -175,13 +176,14 @@ export function parseNotionScanPage(page: {
 export function shouldPromoteRow(row: CohortScanRow): boolean {
   if (!row.wire) return false;
   if (!row.name.trim()) return false;
-  if ((row.section || '').trim().toLowerCase() === 'deferred') return false;
+  if ((row.section || '').trim().toLowerCase() === 'deferred'
+    && !/^needs review:/i.test(row.summary.trim())) return false;
   return isUsefulUrl(row.url);
 }
 
 export function routingForRow(row: CohortScanRow, promoted: boolean): string {
-  if ((row.section || '').trim().toLowerCase() === 'deferred') return 'raw_only';
   if (promoted) return 'wire_queue_candidate';
+  if ((row.section || '').trim().toLowerCase() === 'deferred') return 'raw_only';
   return 'daily_brief';
 }
 
