@@ -5,12 +5,13 @@
  * Processes raw scan submissions through the full pipeline:
  *
  * 1. Parse structured text into RawScanResult[]
- * 2. Insert as scan_entries with status='raw'
- * 3. Run dedup against seen_urls and seen_names
- * 4. Score unique entries for quality
- * 5. Update status based on score (queued vs archived)
- * 6. Register new entries in seen tables
- * 7. Generate summary report
+ * 2. For forum submissions only, skip topic URLs already stored on scan_entries
+ * 3. Insert the rest as scan_entries with status='raw'
+ * 4. Run dedup against seen_urls and seen_names
+ * 5. Score unique entries for quality
+ * 6. Update status based on score (queued vs archived)
+ * 7. Register new entries in seen tables
+ * 8. Generate summary report
  *
  * Can be triggered manually from the dashboard or run on schedule.
  */
@@ -37,6 +38,7 @@ import {
   hasUsefulSourceUrl,
 } from '../services/intake';
 import { findRelatedOpportunity, finalizeExistingEntryDedup, annotateAlternateSource } from '../services/dedup';
+import { findForumSourceUrlsByHost, forumResultIndexesToSkip } from '../services/forum-seen';
 // quality-scorer.ts replaced by LLM scoring in classifier.ts
 import { seedSeenUrlsFromMessages } from '../db';
 import { finalizeProgramForEntry } from '../services/program-identity';
@@ -233,6 +235,36 @@ export async function runDailyIntake(
 
   progress(`Parsed ${allResults.length} total results from ${submissions.length} scans`, 5);
 
+  // Forum rows are the only submissions that re-fetch the same Discourse topic
+  // under a slightly different URL. Drop those before insert. Every other
+  // source still inserts first and lets the existing dedup pass decide.
+  let skippedAlreadySeen = 0;
+  const forumPositions: number[] = [];
+  for (let i = 0; i < allResults.length; i++) {
+    if (allResults[i].scanSource === 'forum') forumPositions.push(i);
+  }
+  if (forumPositions.length > 0) {
+    const forumUrls = forumPositions.map(i => allResults[i].result.sourceUrl);
+    try {
+      const existing = await findForumSourceUrlsByHost(pool, forumUrls);
+      const skip = forumResultIndexesToSkip(forumUrls, existing);
+      if (skip.size > 0) {
+        skippedAlreadySeen = skip.size;
+        const drop = new Set<number>();
+        for (const localIndex of skip) drop.add(forumPositions[localIndex]);
+        for (let i = allResults.length - 1; i >= 0; i--) {
+          if (drop.has(i)) allResults.splice(i, 1);
+        }
+        console.log(`[DailyIntake] Skipped ${skippedAlreadySeen} forum URL(s) already present in scan_entries`);
+      }
+    } catch (err) {
+      console.warn(
+        '[DailyIntake] Forum already-seen lookup failed; inserting forum rows unfiltered:',
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
   // ---- Phase 1: Insert raw entries (batched) ----
   progress('Inserting raw entries...', 10);
   const insertedIds: number[] = [];
@@ -332,6 +364,7 @@ export async function runDailyIntake(
       wire: submissions.length === 1 ? submissions[0].wire : 'all',
       totalIngested: allResults.length,
       duplicatesFound: 0,
+      skippedAlreadySeen,
       newUnique: validIndices.length,
       averageQualityScore: 0,
       highQualityCount: 0,
@@ -702,6 +735,7 @@ export async function runDailyIntake(
     wire,
     totalIngested: allResults.length,
     duplicatesFound,
+    skippedAlreadySeen,
     newUnique: uniqueEntryIds.length,
     averageQualityScore: Math.round(avgScore),
     highQualityCount,

@@ -33,6 +33,7 @@ async function main() {
   console.log(`ingested            : ${s.totalIngested}`);
   console.log(`new unique          : ${s.newUnique}`);
   console.log(`duplicates          : ${s.duplicatesFound}`);
+  console.log(`already-seen skipped: ${s.skippedAlreadySeen ?? 0}`);
   console.log(`high quality (>=60) : ${s.highQualityCount}`);
   console.log(`avg score           : ${s.averageQualityScore}`);
   console.log(`duration            : ${(result.durationMs / 1000).toFixed(1)}s`);

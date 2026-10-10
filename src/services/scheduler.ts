@@ -365,7 +365,7 @@ function createJobExecutor(schedule: ScheduleConfig) {
 
         status.status = 'success';
         status.error = null;
-        console.log(`[Scheduler] Forum scan "${currentScheduleData.name}" completed: ${forumResult.opportunityCount} opportunities from ${forumResult.candidateCount} candidates, ${forumResult.intakeSummary.newUnique} unique`);
+        console.log(`[Scheduler] Forum scan "${currentScheduleData.name}" completed: ${forumResult.opportunityCount} opportunities from ${forumResult.candidateCount} candidates, ${forumResult.intakeSummary.newUnique} unique, ${forumResult.intakeSummary.skippedAlreadySeen ?? 0} already-seen skipped`);
 
       } else if (currentScheduleData.scheduleType === 'source-feeds') {
         // ---- Source Feeds Job ----
@@ -427,7 +427,7 @@ function createJobExecutor(schedule: ScheduleConfig) {
         try {
           if (config.forum.enabled) {
             const fr = await runForumScan(pool, {});
-            console.log(`[Scheduler] Daily forum scan: ${fr.opportunityCount} opps from ${fr.candidateCount} candidates, ${fr.intakeSummary.newUnique} unique`);
+            console.log(`[Scheduler] Daily forum scan: ${fr.opportunityCount} opps from ${fr.candidateCount} candidates, ${fr.intakeSummary.newUnique} unique, ${fr.intakeSummary.skippedAlreadySeen ?? 0} already-seen skipped`);
             forumLane = 'ok';
           }
         } catch (e) {

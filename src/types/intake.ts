@@ -185,6 +185,8 @@ export interface IntakeRunSummary {
   wire: string | 'all';
   totalIngested: number;
   duplicatesFound: number;
+  /** Forum rows not inserted because the topic URL already exists on scan_entries. */
+  skippedAlreadySeen?: number;
   newUnique: number;
   averageQualityScore: number;
   highQualityCount: number;         // Score >= 60
