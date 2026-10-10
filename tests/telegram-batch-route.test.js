@@ -104,6 +104,7 @@ test('POST /api/scan/telegram-batch uses processBatchMessage (telegram source, a
   assert.equal(json.success, true);
   assert.equal(json.inserted, 1);
   assert.equal(json.duplicates, 1);
+  assert.equal(json.skippedAlreadySeen, 0);
   assert.equal(json.entries[1].isDuplicate, true);
   assert.equal(seen.scanSource, 'telegram');
   assert.equal(seen.senderId, 'agent:stringer');
@@ -129,6 +130,8 @@ test('POST /api/scan/telegram-batch returns 503 on retryable persistence errors'
   const res = await call('/api/scan/telegram-batch', { key: KEY, body: { text: BATCH_TEXT } });
   assert.equal(res.status, 503);
   assert.equal(res.headers.get('retry-after'), '5');
+  const json = await res.json();
+  assert.equal(json.skippedAlreadySeen, 0);
 });
 
 test('POST /api/scan/telegram-batch falls through to processIntakeMessage for a single item', async () => {
@@ -148,4 +151,24 @@ test('POST /api/scan/telegram-batch falls through to processIntakeMessage for a 
   const json = await res.json();
   assert.equal(json.success, false);
   assert.equal(json.result.status, 'rejected');
+  assert.equal(json.skippedAlreadySeen, undefined);
+});
+
+test('POST /api/scan/telegram-batch counts a skipped X post on a single item', async () => {
+  intake.isBatchMessage = () => false;
+  intake.processIntakeMessage = async () => ({
+    status: 'rejected',
+    errorMessage: 'Skipped: this X post is already in scan_entries',
+    skippedAlreadySeen: true,
+  });
+
+  const res = await call('/api/scan/telegram-batch', {
+    key: KEY,
+    body: { text: 'https://x.com/base/status/2090466387579781370' },
+  });
+  assert.equal(res.status, 200);
+  const json = await res.json();
+  assert.equal(json.inserted, 0);
+  assert.equal(json.duplicates, 0);
+  assert.equal(json.skippedAlreadySeen, 1);
 });

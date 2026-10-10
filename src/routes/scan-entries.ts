@@ -335,6 +335,7 @@ async function handleTextIntake(
           error: 'Retryable persistence errors',
           inserted: batch.inserted,
           duplicates: batch.duplicates,
+          skippedAlreadySeen: batch.skippedAlreadySeen ?? 0,
           errors: batch.errors,
           retryableErrors: batch.retryableErrors,
           entries: batch.entries,
@@ -356,12 +357,18 @@ async function handleTextIntake(
       noteCuratorChange(res, {
         subject: `${req.method} ${req.path}`,
         old: null,
-        next: { inserted: batch.inserted, duplicates: batch.duplicates, errors: batch.errors },
+        next: {
+          inserted: batch.inserted,
+          duplicates: batch.duplicates,
+          skippedAlreadySeen: batch.skippedAlreadySeen ?? 0,
+          errors: batch.errors,
+        },
       });
       res.json({
         success: true,
         inserted: batch.inserted,
         duplicates: batch.duplicates,
+        skippedAlreadySeen: batch.skippedAlreadySeen ?? 0,
         errors: batch.errors,
         retryableErrors: batch.retryableErrors,
         entries: batch.entries,
@@ -381,7 +388,12 @@ async function handleTextIntake(
       old: null,
       next: { status: result.status, entryId: result.entryId || null },
     });
-    res.json({ success: result.status === 'inserted', result, ...(result.status === 'inserted' ? backgroundNote : {}) });
+    res.json({
+      success: result.status === 'inserted',
+      ...(result.skippedAlreadySeen ? { inserted: 0, duplicates: 0, skippedAlreadySeen: 1 } : {}),
+      result,
+      ...(result.status === 'inserted' ? backgroundNote : {}),
+    });
   } catch (error) {
     console.error(`${opts.logLabel} intake failed:`, error);
     res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });

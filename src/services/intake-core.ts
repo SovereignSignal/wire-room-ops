@@ -16,6 +16,7 @@ import { type Classification, type OperatorRoute } from '../services/classifier'
 import { scrapeUrl, isScrapableUrl, truncateContent } from './scraper';
 import { normalizeUrl } from '../utils/url';
 import { blockedSourceDomain, classifySourceLink } from '../services/source-filter';
+import { findXStatusSourceUrls, grokBatchTracksXStatus, xStatusIndexesToSkip } from './x-status-seen';
 import { safePublicFetch } from '../utils/ssrf';
 import { demoteEntryToDuplicateInTransaction, lockDuplicateGraph } from './duplicate-chain';
 
@@ -185,6 +186,8 @@ export interface IntakeResult {
   detectedWire?: string;
   confirmText?: string;      // human-readable summary of what was captured
   errorMessage?: string;
+  /** Set when an agent telegram-batch X post was not inserted because that status ID is already stored. */
+  skippedAlreadySeen?: boolean;
 }
 
 export type IntakeOrigin = 'operator' | 'agent';
@@ -595,6 +598,29 @@ export function determineInitialIntakeStatus(scanSource = 'manual-intake', origi
   return scanSource === 'x-monitor' || origin === 'agent' ? 'raw' : 'queued';
 }
 
+/**
+ * Grok Telegram Batch posts land on the telegram door with an agent key.
+ * An X status ID already stored on any scan_entries row is not inserted again.
+ * Lookup failures stay open so a database blip does not drop the batch.
+ */
+async function xStatusAlreadyStored(
+  sourceUrl: string,
+  scanSource: string,
+  origin: IntakeOrigin | undefined,
+): Promise<boolean> {
+  if (!grokBatchTracksXStatus(scanSource, origin)) return false;
+  try {
+    const existing = await findXStatusSourceUrls(getPool(), [sourceUrl]);
+    return xStatusIndexesToSkip([sourceUrl], existing).has(0);
+  } catch (err) {
+    console.warn(
+      '[IntakeCore] X status already-seen lookup failed; inserting unfiltered:',
+      err instanceof Error ? err.message : err,
+    );
+    return false;
+  }
+}
+
 export function normalizeDeadlineForDb(value?: string | null, referenceDate = new Date().toISOString().slice(0, 10)): string | null {
   if (!value) return null;
   const cleaned = value
@@ -680,6 +706,14 @@ export async function processIntakeMessage(
   const blockedDomain = blockedSourceDomain(primaryUrl);
   if (blockedDomain) {
     return { status: 'rejected', errorMessage: `Blocked aggregator source: ${blockedDomain}` };
+  }
+
+  if (await xStatusAlreadyStored(primaryUrl, scanSource, options.origin)) {
+    return {
+      status: 'rejected',
+      errorMessage: 'Skipped: this X post is already in scan_entries',
+      skippedAlreadySeen: true,
+    };
   }
 
   let name = buildName(text, allUrls[0] || null);
@@ -864,6 +898,8 @@ export interface BatchIntakeResult {
   retryableErrors: number;
   /** @deprecated use duplicates + errors instead */
   failed: number;
+  /** X posts not inserted because that status ID is already on scan_entries. Grok batch only. */
+  skippedAlreadySeen?: number;
   entries: Array<{
     name: string;
     wire: string;
@@ -871,6 +907,7 @@ export interface BatchIntakeResult {
     error?: string;
     isDuplicate?: boolean;
     retryable?: boolean;
+    skippedAlreadySeen?: boolean;
   }>;
 }
 
@@ -1336,11 +1373,30 @@ export async function processBatchMessage(
     errors: 0,
     retryableErrors: 0,
     failed: 0,
+    skippedAlreadySeen: 0,
     entries: [],
   };
+
+  // Same pre-insert rule as the forum check, for this door only: an X status
+  // ID already stored under any status is not inserted again. twitter.com and
+  // x.com, query strings, and fragments are the same post.
+  let skipXStatus = new Set<number>();
+  if (grokBatchTracksXStatus(scanSource, options.origin)) {
+    try {
+      const existing = await findXStatusSourceUrls(getPool(), entries.map(entry => entry.sourceUrl));
+      skipXStatus = xStatusIndexesToSkip(entries.map(entry => entry.sourceUrl), existing);
+    } catch (err) {
+      console.warn(
+        '[BatchIntake] X status already-seen lookup failed; inserting unfiltered:',
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
   const seenInBatch = new Map<string, string[]>(); // normalized URL -> accepted names
 
-  for (const entry of entries) {
+  for (let index = 0; index < entries.length; index++) {
+    const entry = entries[index];
     const semanticKey = semanticBatchKey(entry.name) || entry.name.toLowerCase();
     const channelItemKey = msg.channelUpdateId ? `batch:${semanticKey}` : undefined;
     if (msg.channelUpdateId && classifySourceLink(entry.sourceUrl) === 'placeholder') {
@@ -1398,6 +1454,17 @@ export async function processBatchMessage(
       result.errors++;
       result.failed++;
       result.entries.push({ name: entry.name, wire: resolvedWire, error: `Blocked aggregator source: ${batchBlocked}` });
+      continue;
+    }
+
+    if (skipXStatus.has(index)) {
+      result.skippedAlreadySeen = (result.skippedAlreadySeen ?? 0) + 1;
+      result.entries.push({
+        name: entry.name,
+        wire: resolvedWire,
+        skippedAlreadySeen: true,
+        error: 'Already in scan_entries',
+      });
       continue;
     }
 
