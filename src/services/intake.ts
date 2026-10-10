@@ -17,37 +17,10 @@ import type {
 } from '../types/intake';
 import { classifySourceLink } from './source-filter';
 
-const GENERIC_PATH_SEGMENTS = new Set([
-  'en', 'es', 'fr', 'de', 'ja', 'ko', 'zh', 'about', 'blog', 'home', 'index',
-]);
-
-function meaningfulPathSegments(path: string): string[] {
-  return path.split('/').filter(segment => (
-    segment.length > 0 && !GENERIC_PATH_SEGMENTS.has(segment.toLowerCase())
-  ));
-}
-
 /**
- * `#/space/proposal/id` and `#!/space/proposal/id` are app routes.
- * `#section` is an in-page anchor, not a route. A query stuck inside the
- * fragment (`#/?id=1`) is not a path segment.
- */
-function hashRoutePath(hash: string): string | null {
-  let route: string | null = null;
-  if (hash.startsWith('#/')) route = hash.slice(1);
-  else if (hash.startsWith('#!/')) route = hash.slice(2);
-  if (route == null) return null;
-  const queryAt = route.indexOf('?');
-  return queryAt === -1 ? route : route.slice(0, queryAt);
-}
-
-/**
- * Validate that a URL is "useful" — not just a bare domain homepage.
- * X/Twitter URLs are always trusted (Grok has direct access).
- * Web URLs need at least one meaningful path segment (not just /en/ or /about/).
- * Hash-routed apps such as Snapshot put that path in the fragment
- * (`https://snapshot.org/#/<space>/proposal/<id>`). A bare `#`, `#/`, or
- * in-page anchor is still a homepage.
+ * Accept valid public source URLs, including programme homepages. URL path
+ * depth does not establish relevance; classification and review handle that.
+ * Keep source syntax, placeholder, public-host and truncated-X-link checks.
  */
 export function isUsefulUrl(url: string): boolean {
   const sourceClass = classifySourceLink(url);
@@ -68,12 +41,7 @@ export function isUsefulUrl(url: string): boolean {
       if (u.pathname.startsWith('/i/') && !u.pathname.startsWith('/i/status/')) return false;
       return true;
     }
-    // t.co short links: trust (they redirect to the real URL)
-    if (host === 't.co') return true;
-    if (meaningfulPathSegments(u.pathname).length >= 1) return true;
-    const route = hashRoutePath(u.hash);
-    if (!route) return false;
-    return meaningfulPathSegments(route).length >= 1;
+    return true;
   } catch {
     return false;
   }

@@ -239,7 +239,7 @@ function sourceDomain(url: string): string | null {
   }
 }
 
-function toRaw(row: CohortScanRow, runId: string): RawScanResult {
+export function toRaw(row: CohortScanRow, runId: string): RawScanResult {
   return {
     name: row.name,
     description: row.summary || row.name,

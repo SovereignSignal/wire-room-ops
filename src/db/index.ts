@@ -1115,8 +1115,7 @@ Rules:
  *
  * @returns Number of newly seeded URLs (0 on subsequent runs)
  */
-export async function seedSeenUrlsFromMessages(): Promise<number> {
-  const pool = getPool();
+export async function seedSeenUrlsFromMessages(pool: Pick<Pool, 'query'> = getPool()): Promise<number> {
 
   // Skip if seen_urls already has data — this is a one-time bootstrap
   const { rows: existing } = await pool.query('SELECT 1 FROM seen_urls LIMIT 1');

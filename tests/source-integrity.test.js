@@ -76,6 +76,8 @@ test('source classifier rejects malformed and non-public HTTP host syntax', () =
   for (const value of invalid) {
     const sourceClass = classifySourceLink(value);
     assert.equal(sourceClass, 'invalid', value);
+    assert.equal(isUsefulUrl(value), false, value);
+    assert.equal(isCompletionSufficient(complete(value)).passes, false, value);
     assert.equal(validateForApproval(complete(value)).valid, false, value);
   }
   const publicSource = classifySourceLink('https://example.com/program');
@@ -94,4 +96,28 @@ test('single-message intake rejects caller-supplied malformed URLs before databa
     assert.equal(result.status, 'rejected', sourceUrl);
     assert.match(result.errorMessage, /invalid source url/i, sourceUrl);
   }
+});
+
+for (const url of [
+  'https://prometheus-september-ai-2.devpost.com/',
+  'https://www.programaleonardo.com/',
+  'https://glow.xrpl-commons.org/',
+  'https://arkiv.devfolio.co/',
+  'https://hefty-hacks.devfolio.co/',
+  'https://hacker-house-goa-2026.devfolio.co/',
+]) {
+  test(`programme homepage reaches cohort intake and raw processing: ${url}`, () => {
+    const { shouldPromoteRow } = require('../src/jobs/cohort-bridge');
+    assert.equal(isUsefulUrl(url), true);
+    assert.equal(isCompletionSufficient(complete(url)).passes, true);
+    assert.equal(shouldPromoteRow({
+      name: complete(url).name, wire: 'crypto', section: 'Deferred', url,
+      summary: 'Needs review: Funding terms and eligibility remain unresolved.',
+    }), true);
+  });
+}
+
+test('truncated X status links remain blocked', () => {
+  assert.equal(isUsefulUrl('https://x.com/program/status/12345'), false);
+  assert.equal(isUsefulUrl('https://x.com/i/statu/1234567890123456789'), false);
 });

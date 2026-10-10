@@ -189,7 +189,7 @@ export async function runDailyIntake(
 
   // Seed seen_urls with URLs already in the wire (non-fatal)
   try {
-    const seeded = await seedSeenUrlsFromMessages();
+    const seeded = await seedSeenUrlsFromMessages(pool);
     if (seeded > 0) {
       console.log(`[Intake] Seeded ${seeded} URLs from existing wire content`);
     }
