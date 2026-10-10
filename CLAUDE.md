@@ -36,6 +36,10 @@ A partial index `idx_scan_entries_approved` on `(wire, created_at DESC) WHERE st
 - All AI prompts (Grok, Ollama, Perplexity), quality scorer keywords, and email templates use `getBrand()` instead of hardcoded values
 - Override per deployment via `BRAND_AUDIENCE`, `BRAND_CONTENT_TYPE`, `BRAND_CONTENT_VERB`, etc.
 
+### Source URL intake
+
+Valid public HTTP(S) programme homepages can enter scan intake and the cohort bridge, including `Deferred` rows marked `Needs review:`. Path depth is not a relevance test. Source syntax, public-host, placeholder and truncated-X checks still apply; normal dedup, classification and bot review decide what advances. `reprocess-cohort-observations.ts --ids <ids>` plans a bounded replay of held `raw_only` observations. After reviewing the dry run, `--apply` atomically inserts raw entries and links the observations; reruns skip linked or previously submitted pages without resetting the bridge cursor.
+
 ### Multi-Provider AI Processing
 - **Grok API** handles X.com/Twitter URL enrichment (native access to tweet content), Gate-2 classification, and scan execution (x_search, web_search tools)
 - **Ollama Cloud** (`src/services/ollama.ts`, `https://ollama.com/api`) handles summaries, non-X enrichment, prompt review, and distribution post generation. Primary model is `OLLAMA_DEFAULT_MODEL` (default `deepseek-v4.1-flash`); fallback is `OLLAMA_FALLBACK_MODEL` (default `glm-5.3-flash`). Those env vars win over a stale `api_providers.default_model`. Every summary passes `summary-guard.ts`
@@ -121,6 +125,7 @@ src/
 │   ├── source-feeds-dryrun.ts / source-feeds-run-once.ts               # Feed lane testing
 │   ├── program-backfill.ts # Program-identity backfill: one-off corpus canonicalization (--dry-run mode)
 │   ├── backfill-summary-leaks.ts # Regenerate enriched_summary rows holding leaked reasoning (dry run by default, --apply to write)
+│   ├── reprocess-cohort-observations.ts # Replay explicit held observation IDs through raw intake; dry run by default, atomic links, no approval/send
 │   ├── reprocess-no-source-url.ts # Return archived no_source_url rows to raw once the URL is useful (dry run by default; does not approve or send)
 │   └── cleanup-lane-noise.ts / lane-quality-report.ts / queue-dedup-review.ts  # June-2026 one-off audits
 ├── jobs/

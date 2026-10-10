@@ -30,8 +30,8 @@ test('Snapshot proposal hash routes are useful sources', () => {
   assert.equal(isUsefulUrl('https://snapshot.org/#/aavedao.eth'), true);
 });
 
-test('bare homepages and in-page anchors stay rejected', () => {
-  const rejected = [
+test('valid public homepages and in-page anchors can reach review', () => {
+  const accepted = [
     'https://snapshot.org',
     'https://snapshot.org/',
     'https://snapshot.org/#',
@@ -48,9 +48,9 @@ test('bare homepages and in-page anchors stay rejected', () => {
     'https://example.com/#/?id=1',
     'https://example.com/#!/about',
   ];
-  for (const url of rejected) {
-    assert.equal(isUsefulUrl(url), false, url);
-    assert.equal(hasUsefulSourceUrl(url), false, url);
+  for (const url of accepted) {
+    assert.equal(isUsefulUrl(url), true, url);
+    assert.equal(hasUsefulSourceUrl(url), true, url);
   }
   assert.equal(hasUsefulSourceUrl(''), false);
   assert.equal(hasUsefulSourceUrl('   '), false);
@@ -81,7 +81,7 @@ test('normalization keeps the fragment so distinct Snapshot proposals do not col
   assert.equal(normalizeUrl(cased), aave);
 });
 
-test('structured intake keeps Snapshot proposal links and drops a bare homepage', () => {
+test('structured intake keeps Snapshot proposal links and a homepage for review', () => {
   const parsed = parseStructuredOutput([
     '1. **Aave DAO service provider proposal** - Fund a grants operations review for the next cycle',
     `Link: ${AAVE}`,
@@ -92,14 +92,14 @@ test('structured intake keeps Snapshot proposal links and drops a bare homepage'
   assert.deepEqual(parsed.results.map(row => row.sourceUrl), [AAVE, GITCOIN]);
 
   const home = parseStructuredOutput([
-    '1. **Snapshot** - The governance homepage is not a proposal source',
+    '1. **Snapshot** - The source specificity still needs review',
     'Link: https://snapshot.org/',
   ].join('\n'));
   assert.equal(home.results.length, 1);
-  assert.equal(home.results[0].sourceUrl, '');
+  assert.equal(home.results[0].sourceUrl, 'https://snapshot.org/');
 });
 
-test('JSON intake keeps a hash-routed proposal and clears a homepage', () => {
+test('JSON intake keeps a hash-routed proposal and a homepage for review', () => {
   const parsed = parseStructuredOutput(JSON.stringify([
     {
       name: 'Aave proposal',
@@ -108,13 +108,13 @@ test('JSON intake keeps a hash-routed proposal and clears a homepage', () => {
     },
     {
       name: 'Snapshot home',
-      description: 'This is only the Snapshot homepage and should not count',
+      description: 'Needs review: source specificity and programme evidence',
       url: 'https://snapshot.org/',
     },
   ]), 'json');
   assert.equal(parsed.strategy, 'json');
   assert.equal(parsed.results[0].sourceUrl, AAVE);
-  assert.equal(parsed.results[1].sourceUrl, '');
+  assert.equal(parsed.results[1].sourceUrl, 'https://snapshot.org/');
 });
 
 test('reprocess args default to a dry run', () => {
@@ -139,8 +139,8 @@ test('reprocess args default to a dry run', () => {
 test('only archived rows whose URL is now useful are reprocessable', () => {
   const rows = [
     { id: 18876, source_url: AAVE, wire: 'crypto', name: 'Aave proposal' },
-    { id: 2, source_url: 'https://snapshot.org/', wire: 'crypto', name: 'home' },
-    { id: 3, source_url: 'https://snapshot.org/#/', wire: 'crypto', name: 'hash home' },
+    { id: 2, source_url: 'https://localhost/', wire: 'crypto', name: 'private host' },
+    { id: 3, source_url: 'https://manual/needs-source/123', wire: 'crypto', name: 'placeholder' },
     { id: 4, source_url: 'https://foundation.example.org/programs/fellowship', wire: 'oss', name: 'path' },
     { id: 5, source_url: '   ', wire: 'ai', name: 'blank' },
   ];
@@ -171,9 +171,9 @@ function fakeDb(rows, updatedIds) {
 
 const ARCHIVED = [
   { id: 18876, source_url: AAVE, wire: 'crypto', name: 'Aave proposal' },
-  { id: 18877, source_url: 'https://snapshot.org/', wire: 'crypto', name: 'Snapshot home' },
+  { id: 18877, source_url: 'https://localhost/', wire: 'crypto', name: 'private host' },
   { id: 18878, source_url: GITCOIN, wire: 'crypto', name: 'Gitcoin proposal' },
-  { id: 18879, source_url: 'https://snapshot.org/#about', wire: 'crypto', name: 'anchor' },
+  { id: 18879, source_url: 'https://manual/needs-source/123', wire: 'crypto', name: 'placeholder' },
 ];
 
 test('dry run plans both Snapshot proposals and does not write', async () => {
