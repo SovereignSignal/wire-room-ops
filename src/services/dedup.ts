@@ -1334,6 +1334,30 @@ async function surfaceUnresolvableDuplicate(
 }
 
 /**
+ * Remember the URL of a name-matched duplicate so the next search skips it.
+ * ON CONFLICT leaves an existing owner (including a seed-only null) in place.
+ */
+async function rememberNameMatchUrl(
+  db: Queryable,
+  entry: ExistingEntryDedupInput,
+  canonicalParentId: number,
+): Promise<void> {
+  const url = (entry.sourceUrl || '').trim();
+  if (!url) return;
+  const normalized = normalizeUrl(url);
+  if (!normalized) return;
+  const scanDate = entry.scanDate instanceof Date
+    ? entry.scanDate.toISOString().split('T')[0]
+    : String(entry.scanDate).slice(0, 10);
+  await db.query(
+    `INSERT INTO seen_urls (url, normalized_url, first_seen_entry_id, first_seen_date, wire)
+     VALUES ($1, $2, $3, $4::date, $5)
+     ON CONFLICT (normalized_url, wire) DO NOTHING`,
+    [url, normalized, canonicalParentId, scanDate, entry.wire],
+  );
+}
+
+/**
  * Recheck, URL-claim, and finalize an already-visible entry in one transaction.
  * This is the shared path for daily intake and the raw-entry worker.
  */
@@ -1414,6 +1438,12 @@ export async function finalizeExistingEntryDedup(
       if (linked.outcome !== 'linked') {
         await client.query('ROLLBACK');
         return { outcome: 'stale', canonicalParentId: null };
+      }
+      // A name match leaves the child's URL out of seen_urls, so the next
+      // Parallel search buys the same page again. Record it under the live
+      // parent after demotion, which already moved any URL this row owned.
+      if (dedupResult.matchType === 'name_exact' && linked.canonicalParentId != null) {
+        await rememberNameMatchUrl(client, entry, linked.canonicalParentId);
       }
       await client.query('COMMIT');
       return { outcome: 'duplicate', canonicalParentId: linked.canonicalParentId };

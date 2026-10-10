@@ -8,6 +8,7 @@
  */
 
 import type { Pool } from 'pg';
+import { reviewedApprovalRate } from '../services/approval-rate';
 import { getAppState, setAppState } from '../db';
 import { SNAPSHOT_STATE_KEY } from './public-snapshot';
 import { config } from '../config';
@@ -136,6 +137,9 @@ export interface SourceBreakdownRow {
   duplicates: number;
   parked: number;
   signals: number;
+  declined: number;
+  /** approved / (approved + declined). Null when the window has no decision. */
+  reviewedApprovalRate: number | null;
 }
 
 export interface CostRow {
@@ -177,6 +181,7 @@ export async function getSourceBreakdown(pool: Pool): Promise<SourceBreakdownRow
       COUNT(*)::int AS total,
       COUNT(*) FILTER (WHERE status = 'queued')::int AS queued,
       COUNT(*) FILTER (WHERE status = 'approved')::int AS approved,
+      COUNT(*) FILTER (WHERE status = 'declined')::int AS declined,
       COUNT(*) FILTER (WHERE status = 'archived')::int AS archived,
       COUNT(*) FILTER (WHERE status = 'duplicate')::int AS duplicates,
       COUNT(*) FILTER (WHERE metadata->>'operator_route' = 'park')::int AS parked,
@@ -186,7 +191,11 @@ export async function getSourceBreakdown(pool: Pool): Promise<SourceBreakdownRow
     GROUP BY wire, COALESCE(scan_source, 'unknown')
     ORDER BY wire, total DESC
   `);
-  return rows;
+  return rows.map(row => ({
+    ...row,
+    declined: row.declined ?? 0,
+    reviewedApprovalRate: reviewedApprovalRate(row.approved, row.declined ?? 0),
+  }));
 }
 
 export interface LaneYieldRow {
@@ -200,6 +209,14 @@ const YIELD_MIN_VOLUME = 10;
 
 /** Human and chat intake re-submit known listings by nature; their yield is not lane health. */
 const NON_AUTOMATED_SOURCES = new Set(['telegram', 'telegram-intake', 'manual-intake']);
+
+/**
+ * Feed rows are only the URLs the watermark had not seen. A quiet day means
+ * the fetch succeeded and everything was already known, which is not a miss.
+ */
+function isWatermarkedFeedLane(source: string): boolean {
+  return source === 'feed' || source.startsWith('feed /') || source.startsWith('feed:');
+}
 
 /** Net-new (non-duplicate) entries per ingestion lane over a trailing window. */
 export async function getLaneYield(pool: Pool, days: number = 3): Promise<LaneYieldRow[]> {
@@ -229,7 +246,7 @@ export async function getLaneYield(pool: Pool, days: number = 3): Promise<LaneYi
  */
 export function formatYieldAnomalies(rows: LaneYieldRow[], days: number = 3): string[] {
   return rows
-    .filter(r => !NON_AUTOMATED_SOURCES.has(r.source))
+    .filter(r => !NON_AUTOMATED_SOURCES.has(r.source) && !isWatermarkedFeedLane(r.source))
     .filter(r => r.total >= YIELD_MIN_VOLUME && r.netNew === 0)
     .map(r => `Lane ${r.source}: 0 net-new in ${days} days (${r.total} fetched)`);
 }
@@ -298,7 +315,7 @@ export function isSilentProducer(row: ProducerActivityRow): boolean {
 
 export function formatSilentProducerAnomalies(rows: ProducerActivityRow[]): string[] {
   return rows
-    .filter(r => !NON_AUTOMATED_SOURCES.has(r.producer))
+    .filter(r => !NON_AUTOMATED_SOURCES.has(r.producer) && !isWatermarkedFeedLane(r.producer))
     .filter(isSilentProducer)
     .map(r => `Producer ${r.producer}: 0 rows in 24h after ${r.activeDays7d} active days this week (${r.rows7d} rows), ${r.rowsSameWindowLastWeek} in this window last week — did its schedule fire?`);
 }
@@ -326,7 +343,7 @@ export function nextEmptyScrapeStreak(method: string, fetched: number, previous?
 export function formatEmptyScrapeAnomalies(perSource: Array<{ key: string; emptyStreak?: number }>): string[] {
   return perSource
     .filter(source => (source.emptyStreak || 0) >= EMPTY_SCRAPE_DAYS)
-    .map(source => `Source feeds: ${source.key} fetched 0 items ${source.emptyStreak} days running`);
+    .map(source => `Source feeds: ${source.key} fetch returned 0 items ${source.emptyStreak} days running`);
 }
 
 /**
@@ -346,14 +363,16 @@ export function formatStaleSourceAnomalies(perSource: StaleSourceInput[], now: n
   const rows = perSource
     .filter(s => s.error)
     .map(s => {
+      const error = (s.error || 'fetch failed').replace(/\s+/g, ' ').trim().slice(0, 180);
       const parsed = s.lastOk ? Date.parse(s.lastOk) : NaN;
-      if (Number.isNaN(parsed)) return { key: s.key, days: null, date: null };
+      if (Number.isNaN(parsed)) return { key: s.key, days: null, date: null, error };
       return {
         key: s.key,
         days: Math.floor((now - parsed) / 86400000),
         // Format the recorded timestamp itself, never a value recomputed from the
         // floored day count — those disagree whenever the fetch time of day drifts.
         date: new Date(parsed).toISOString().split('T')[0],
+        error,
       };
     });
 
@@ -361,8 +380,8 @@ export function formatStaleSourceAnomalies(perSource: StaleSourceInput[], now: n
     .filter(r => r.days === null || r.days >= STALE_SOURCE_DAYS)
     .sort((a, b) => (b.days ?? Infinity) - (a.days ?? Infinity))
     .map(r => r.days === null
-      ? `Source feeds: ${r.key} failing (never succeeded)`
-      : `Source feeds: ${r.key} failing ${r.days} days (last OK ${r.date})`);
+      ? `Source feeds: ${r.key} fetch failed: ${r.error} (never succeeded)`
+      : `Source feeds: ${r.key} fetch failed: ${r.error}; last OK ${r.date} (${r.days} days)`);
 }
 
 // ── Digest email watermark ─────────────────────────────────────────────────

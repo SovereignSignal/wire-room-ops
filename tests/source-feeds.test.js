@@ -63,10 +63,17 @@ test('Karma GAP extractor: builds funding-map fallback URL + parses budget, skip
 
 test('Giveth extractor: constructs qf URL and drops already-ended rounds', () => {
   const extract = reg('giveth-qf').extract;
-  const open = extract({ name: 'GG25', slug: 'gg25', description: 'round', allocatedFundUSD: 50000, endDate: '2099-01-01T00:00:00Z' });
+  const open = extract({ name: 'GG25', slug: 'gg25', description: 'round', allocatedFundUSD: 50000, beginDate: '2098-12-01', endDate: '2099-01-01T00:00:00Z' });
   assert.equal(open.url, 'https://giveth.io/qf/gg25');
   assert.equal(open.amount, '50000');
+  assert.equal(open.deadline, null);
+  assert.match(open.description, /Donation\/matching period 2098-12-01–2099-01-01T00:00:00Z/);
   assert.equal(extract({ name: 'Old', slug: 'old', endDate: '2020-01-01T00:00:00Z' }), null); // ended → dropped
+  assert.equal(extract({ name: 'Stellar Test Round', slug: 'gg25', endDate: '2099-01-01T00:00:00Z' }), null);
+  assert.equal(extract({ name: 'GG25', slug: 'testStellar', endDate: '2099-01-01T00:00:00Z' }), null);
+  assert.equal(extract({ name: 'This is a test-only.', slug: 'gg25', endDate: '2099-01-01T00:00:00Z' }), null);
+  const contest = extract({ name: 'Attestation Round', slug: 'attest', description: 'A contest of grants', endDate: '2099-01-01T00:00:00Z' });
+  assert.equal(contest.url, 'https://giveth.io/qf/attest');
 });
 
 test('registry: dead feeds are gone and the October 2026 replacements are wired', () => {
@@ -191,7 +198,11 @@ test('Grants.gov factory: builds per-keyword source, raises rows to 100, shared 
   const ai = reg('grants-gov-ai');
   assert.equal(JSON.parse(ai.body).rows, 100);
   assert.equal(JSON.parse(ai.body).keyword, 'artificial intelligence');
-  assert.ok(reg('grants-gov-ml'), 'machine-learning keyword source exists');
+  assert.equal(reg('grants-gov-ai').enabled, true);
+  assert.equal(reg('grants-gov-ml').enabled, false, 'machine-learning keyword feed is off');
+  assert.equal(reg('grants-gov-fm').enabled, false, 'foundation-models keyword feed is off');
+  assert.equal(reg('giveth-qf').enabled, true);
+  assert.equal(reg('coefficient-giving').enabled, true);
   // shared extract: keeps an AI research opp, drops a medical one
   const keep = ai.extract({ title: 'NSF Trailblazer Engineering Impact Award', id: '358001', agencyName: 'National Science Foundation', number: 'NSF 26-502', oppStatus: 'posted' });
   assert.equal(keep.url, 'https://www.grants.gov/search-results-detail/358001');

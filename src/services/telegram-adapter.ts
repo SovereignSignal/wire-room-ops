@@ -283,10 +283,12 @@ export function formatSettledBatchReport(batch: BatchIntakeResult, settledEntrie
     return status && status !== 'queued' && status !== 'duplicate';
   }).length;
   const errors = batch.errors + unavailable;
+  const alreadySeen = batch.skippedAlreadySeen ?? 0;
 
   const summaryParts: string[] = [];
   if (queued > 0) summaryParts.push(`✅ ${queued} queued`);
   if (duplicates > 0) summaryParts.push(`🔄 ${duplicates} duplicate${duplicates === 1 ? '' : 's'}`);
+  if (alreadySeen > 0) summaryParts.push(`↺ ${alreadySeen} already seen`);
   if (needsCheck.length > 0) {
     summaryParts.push(`⚠️ ${needsCheck.length} need${needsCheck.length === 1 ? 's' : ''} check${needsCheck.length === 1 ? '' : 's'}`);
   }
@@ -303,6 +305,10 @@ export function formatSettledBatchReport(batch: BatchIntakeResult, settledEntrie
     const safeWire = escapedField(entry.wire, 60);
     if (entry.isDuplicate) {
       lines.push(`• 🔄 ${safeName} — ${escapedField(entry.error || 'duplicate', 500)}`);
+      continue;
+    }
+    if (entry.skippedAlreadySeen) {
+      lines.push(`• ↺ ${safeName} — already in scan_entries`);
       continue;
     }
     if (!entry.id) {

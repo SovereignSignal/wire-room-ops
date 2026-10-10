@@ -7,6 +7,7 @@ const { SOURCE_REGISTRY } = require('../src/services/source-feeds');
 const {
   applySourceFeedConfig,
   describeSources,
+  interpretFeedRunState,
   normalizeSourceFeedConfig,
   validateAddedBody,
   validatePatchBody,
@@ -55,6 +56,28 @@ test('added feeds must be https rss or scrape, and cannot reuse a built-in key',
   assert.equal(good.ok, true);
   assert.equal(validatePatchBody({}).ok, false);
   assert.equal(validatePatchBody({ enabled: false }).ok, true);
+});
+
+test('feed health reads the last fetch, not how many rows were inserted', () => {
+  assert.deepEqual(interpretFeedRunState(null), {
+    lastRun: null, lastError: null, fetchStatus: 'never', emptyStreak: 0, lastFetched: null,
+  });
+  assert.equal(interpretFeedRunState({
+    urls: ['https://example.org/a'],
+    lastRun: '2026-10-10T06:00:00.000Z',
+    lastError: null,
+    emptyStreak: 0,
+    lastFetched: 4,
+  }).fetchStatus, 'ok');
+  const failed = interpretFeedRunState({
+    urls: ['https://example.org/a'],
+    lastRun: '2026-10-09T06:00:00.000Z',
+    lastError: 'HTTP 500',
+    lastFetched: 4,
+  });
+  assert.equal(failed.fetchStatus, 'failed');
+  assert.equal(failed.lastError, 'HTTP 500');
+  assert.equal(failed.lastRun, '2026-10-09T06:00:00.000Z');
 });
 
 test('a garbage overlay falls back to the built-in registry', () => {

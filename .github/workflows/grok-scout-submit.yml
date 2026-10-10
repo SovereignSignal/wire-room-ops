@@ -47,10 +47,15 @@ jobs:
                   data = resp.read().decode()
                   print("HTTP", resp.status)
                   parsed = json.loads(data)
-                  keys = ("success", "inserted", "duplicates", "errors", "retryableErrors", "error")
+                  keys = ("success", "inserted", "duplicates", "skippedAlreadySeen", "errors", "retryableErrors", "error")
                   print({k: parsed.get(k) for k in keys if k in parsed})
                   for entry in (parsed.get("entries") or [])[:12]:
-                      flag = "dup" if entry.get("isDuplicate") else ("id=" + str(entry.get("id")))
+                      if entry.get("skippedAlreadySeen"):
+                          flag = "skipped"
+                      elif entry.get("isDuplicate"):
+                          flag = "dup"
+                      else:
+                          flag = "id=" + str(entry.get("id"))
                       print("-", entry.get("name"), flag)
           except urllib.error.HTTPError as e:
               print("HTTP", e.code)

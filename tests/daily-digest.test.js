@@ -487,7 +487,7 @@ test('a source failing its first day produces no anomaly', () => {
 test('a source failing 2+ days is named with its day count and last-OK date', () => {
   const out = formatStaleSourceAnomalies([{ key: 'karma-gap', error: 'timeout after 45s', lastOk: daysAgo(3) }], NOW);
   assert.equal(out.length, 1);
-  assert.match(out[0], /^Source feeds: karma-gap failing 3 days \(last OK 2026-07-27\)$/);
+  assert.match(out[0], /^Source feeds: karma-gap fetch failed: timeout after 45s; last OK 2026-07-27 \(3 days\)$/);
 });
 
 test('healthy sources produce nothing', () => {
@@ -498,7 +498,7 @@ test('healthy sources produce nothing', () => {
 test('a source that has never succeeded is reported without a date', () => {
   const out = formatStaleSourceAnomalies([{ key: 'new-src', error: 'HTTP 404', lastOk: null }], NOW);
   assert.equal(out.length, 1);
-  assert.match(out[0], /^Source feeds: new-src failing \(never succeeded\)$/);
+  assert.match(out[0], /^Source feeds: new-src fetch failed: HTTP 404 \(never succeeded\)$/);
 });
 
 test('a scraper at 0 items warns only after three days', () => {
@@ -510,7 +510,7 @@ test('a scraper at 0 items warns only after three days', () => {
   assert.deepEqual(formatEmptyScrapeAnomalies([{ key: 'longview', emptyStreak: 2 }]), []);
   assert.deepEqual(
     formatEmptyScrapeAnomalies([{ key: 'longview', emptyStreak: 3 }]),
-    ['Source feeds: longview fetched 0 items 3 days running'],
+    ['Source feeds: longview fetch returned 0 items 3 days running'],
   );
 });
 
@@ -520,8 +520,8 @@ test('multiple stale sources each get their own line, worst first', () => {
     { key: 'b', error: 'x', lastOk: daysAgo(5) },
   ], NOW);
   assert.equal(out.length, 2);
-  assert.match(out[0], /^Source feeds: b failing 5 days/);
-  assert.match(out[1], /^Source feeds: a failing 2 days/);
+  assert.match(out[0], /^Source feeds: b fetch failed: x; last OK 2026-07-25 \(5 days\)$/);
+  assert.match(out[1], /^Source feeds: a fetch failed: x; last OK 2026-07-28 \(2 days\)$/);
 });
 
 const { formatYieldAnomalies, getLaneYield } = require('../src/jobs/daily-digest');
@@ -538,6 +538,14 @@ test('a lane producing anything is not an issue', () => {
 
 test('low-volume lanes are ignored — 0 of 3 is not evidence', () => {
   assert.deepEqual(formatYieldAnomalies([{ source: 'forum', total: 3, netNew: 0 }], 3), []);
+});
+
+test('a watermarked feed lane with zero net-new is not a fetch failure', () => {
+  const rows = [
+    { source: 'feed', total: 40, netNew: 0 },
+    { source: 'feed:octant', total: 12, netNew: 0 },
+  ];
+  assert.deepEqual(formatYieldAnomalies(rows, 3), []);
 });
 
 test('human intake lanes never produce a yield anomaly', () => {
@@ -668,6 +676,13 @@ test('a lane on a three-day-a-week cadence never trips the daily rule', () => {
 test('the active-days floor is inclusive — 5 of 7 is a daily cadence', () => {
   assert.equal(isSilentProducer({ producer: 'claude-cohort-notion', activeDays7d: 5, rows24h: 0, rows7d: 42, rowsSameWindowLastWeek: 8 }), true);
   assert.equal(isSilentProducer({ producer: 'claude-cohort-notion', activeDays7d: 4, rows24h: 0, rows7d: 42, rowsSameWindowLastWeek: 8 }), false);
+});
+
+test('a quiet feed day is not a missed schedule', () => {
+  assert.deepEqual(formatSilentProducerAnomalies([
+    { producer: 'feed', activeDays7d: 7, rows24h: 0, rows7d: 80, rowsSameWindowLastWeek: 12 },
+    { producer: 'feed / agent:grok-batch', activeDays7d: 6, rows24h: 0, rows7d: 20, rowsSameWindowLastWeek: 4 },
+  ]), []);
 });
 
 test('a human pasting into the bot is not a schedule', () => {

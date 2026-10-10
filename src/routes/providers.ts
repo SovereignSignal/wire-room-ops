@@ -17,6 +17,7 @@ import { Router, Request, Response } from 'express';
 import { getAllProviders, upsertProvider, testProviderConnection } from '../services/api-provider';
 import { noteCuratorChange } from '../services/curator-audit';
 import { getUsageSummary, getUsageTimeline, getRecentUsage, getModelPricing, upsertModelPricing, parseUsageJobQuery } from '../services/api-usage';
+import { reviewedApprovalRate } from '../services/approval-rate';
 
 const router = Router();
 
@@ -31,6 +32,7 @@ router.get('/usage/outcomes', async (_req, res) => {
     const { rows } = await getPool().query(`SELECT se.scan_source AS source,
       COUNT(*)::int AS entries, COUNT(DISTINCT se.program_id)::int AS linked_programs,
       COUNT(*) FILTER (WHERE se.status = 'approved')::int AS approvals,
+      COUNT(*) FILTER (WHERE se.status = 'declined')::int AS declined,
       COUNT(*) FILTER (WHERE se.actioned_by LIKE 'user:%' AND se.status IN ('approved','declined'))::int AS human_decisions,
       COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM distribution_logs dl
         WHERE dl.entry_id = se.id AND dl.status = 'success'))::int AS published_entries,
@@ -43,7 +45,10 @@ router.get('/usage/outcomes', async (_req, res) => {
       ) cost ON true
       WHERE se.created_at >= NOW() - INTERVAL '30 days'
       GROUP BY se.scan_source ORDER BY published_entries DESC, approvals DESC`);
-    res.json(rows);
+    res.json(rows.map(row => ({
+      ...row,
+      reviewed_approval_rate: reviewedApprovalRate(Number(row.approvals) || 0, Number(row.declined) || 0),
+    })));
   } catch { res.status(500).json({ error: 'Could not load source outcomes' }); }
 });
 
