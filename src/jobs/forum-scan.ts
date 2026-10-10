@@ -75,6 +75,7 @@ export async function runForumScan(
         wire: options.wire || 'all',
         totalIngested: 0,
         duplicatesFound: 0,
+        skippedAlreadySeen: 0,
         newUnique: 0,
         averageQualityScore: 0,
         highQualityCount: 0,
@@ -110,7 +111,7 @@ export async function runForumScan(
   const durationMs = Date.now() - startTime;
 
   progress(
-    `Forum scan complete: ${totalResults} opportunities, ${intakeSummary.newUnique} unique, ${intakeSummary.highQualityCount} high quality`,
+    `Forum scan complete: ${totalResults} opportunities, ${intakeSummary.newUnique} unique, ${intakeSummary.skippedAlreadySeen ?? 0} already-seen skipped, ${intakeSummary.highQualityCount} high quality`,
     100
   );
 
