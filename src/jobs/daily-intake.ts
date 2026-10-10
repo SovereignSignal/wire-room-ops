@@ -43,7 +43,8 @@ import { findForumSourceUrlsByHost, forumResultIndexesToSkip } from '../services
 import { seedSeenUrlsFromMessages } from '../db';
 import { finalizeProgramForEntry } from '../services/program-identity';
 import type { ProgramResolutionStamp } from '../services/program-identity';
-import { applyKnownProgramCycleGuard, type Classification } from '../services/classifier';
+import { applyKnownProgramCycleGuard, hasNewCycleStamp, type Classification, type ClassificationResult } from '../services/classifier';
+import { applyEvergreenRegistryRoute } from '../services/evergreen-route';
 
 // ============================================================
 // Default Configuration
@@ -148,6 +149,49 @@ export function applySourceFreshnessGate(
         reason: 'Grants.gov listing is older than 30 days and not deadline-urgent; keep it out of the fresh review queue.',
       },
     },
+  };
+}
+
+interface ClassifiedEntryRow {
+  scan_source?: string | null;
+  prompt_variant?: string | null;
+  deadline?: string | Date | null;
+  deadline_parsed?: string | Date | null;
+  name?: string | null;
+  description?: string | null;
+  operator_notes?: string | null;
+}
+
+/** Freshness gate, then the Parallel evergreen registry route. */
+function classifyDisposition(
+  entry: ClassifiedEntryRow,
+  classResult: ClassificationResult,
+  freshness: SourceFreshnessGateDecision,
+  hasNewCycle: boolean,
+): { status: EntryStatusAfterFreshnessGate; metadata: Record<string, unknown>; reason: string } {
+  const evergreen = applyEvergreenRegistryRoute({
+    scanSource: entry.scan_source,
+    promptVariant: entry.prompt_variant,
+    classification: classResult.classification,
+    wireArea: classResult.wireArea,
+    status: freshness.status,
+    deadline: entry.deadline,
+    deadlineParsed: entry.deadline_parsed,
+    name: entry.name,
+    description: entry.description,
+    operatorNotes: entry.operator_notes,
+    hasNewCycle,
+  });
+  return {
+    status: evergreen?.status ?? freshness.status,
+    metadata: {
+      ...classResult.extracted,
+      operator_route: classResult.operatorRoute,
+      wire_area: classResult.wireArea,
+      ...freshness.metadata,
+      ...(evergreen?.metadata ?? {}),
+    },
+    reason: evergreen ? `${classResult.reason} ${evergreen.reasonSuffix}`.trim() : classResult.reason,
   };
 }
 
@@ -450,6 +494,7 @@ export async function runDailyIntake(
     const entryRes = await pool.query(
       `SELECT se.name, se.description, se.amount, se.deadline, se.deadline_parsed, se.scan_date,
               se.source_url, se.source_published_at, se.wire, se.operator_notes,
+              se.scan_source, se.prompt_variant,
               sp.intent AS prompt_intent
        FROM scan_entries se
        LEFT JOIN scan_prompts sp ON se.prompt_id = sp.id
@@ -485,13 +530,12 @@ export async function runDailyIntake(
         deadlineParsed: entry.deadline_parsed,
         classification: classResult.classification,
       });
-      const classStatus = freshnessDecision.status;
-      const mergedMetadata = {
-        ...classResult.extracted,
-        operator_route: classResult.operatorRoute,
-        wire_area: classResult.wireArea,
-        ...freshnessDecision.metadata,
-      };
+      const disposition = classifyDisposition(entry, classResult, freshnessDecision, hasNewCycleStamp({
+        priorCycle: priorCycles.get(entryId),
+        operatorNotes: entry.operator_notes,
+      }));
+      const classStatus = disposition.status;
+      const mergedMetadata = disposition.metadata;
 
       const classified = await pool.query(
         `UPDATE scan_entries
@@ -519,7 +563,7 @@ export async function runDailyIntake(
             ...(cycleGuarded ? { cycle_guard: 'known_program_new_cycle' } : {}),
           }),
           classResult.classification,
-          classResult.reason,
+          disposition.reason,
           JSON.stringify(mergedMetadata),
           classResult.tags,
           entryId,
@@ -580,8 +624,9 @@ export async function runDailyIntake(
         await new Promise(resolve => setTimeout(resolve, 2000));
 
         const entryRes = await pool.query(
-          `SELECT se.name, se.description, se.amount, se.source_url, se.source_published_at,
-                  se.deadline_parsed, se.wire, se.operator_notes, sp.intent AS prompt_intent
+          `SELECT se.name, se.description, se.amount, se.deadline, se.source_url, se.source_published_at,
+                  se.deadline_parsed, se.wire, se.operator_notes, se.scan_source, se.prompt_variant,
+                  sp.intent AS prompt_intent
            FROM scan_entries se
            LEFT JOIN scan_prompts sp ON se.prompt_id = sp.id
            WHERE se.id = $1 AND se.status = 'queued'`,
@@ -614,13 +659,12 @@ export async function runDailyIntake(
           deadlineParsed: entry.deadline_parsed,
           classification: classResult.classification,
         });
-        const retryStatus = freshnessDecision.status;
-        const mergedMetadata = {
-          ...classResult.extracted,
-          operator_route: classResult.operatorRoute,
-          wire_area: classResult.wireArea,
-          ...freshnessDecision.metadata,
-        };
+        const disposition = classifyDisposition(entry, classResult, freshnessDecision, hasNewCycleStamp({
+          priorCycle: priorCycles.get(entryId),
+          operatorNotes: entry.operator_notes,
+        }));
+        const retryStatus = disposition.status;
+        const mergedMetadata = disposition.metadata;
 
         const retried = await pool.query(
           `UPDATE scan_entries
@@ -648,7 +692,7 @@ export async function runDailyIntake(
               ...(cycleGuarded ? { cycle_guard: 'known_program_new_cycle' } : {}),
             }),
             classResult.classification,
-            classResult.reason,
+            disposition.reason,
             JSON.stringify(mergedMetadata),
             classResult.tags,
             entryId,

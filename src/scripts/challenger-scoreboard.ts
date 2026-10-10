@@ -9,16 +9,20 @@
  */
 import { getPool } from '../db';
 import { checkBudget } from '../services/budget-guard';
+import { reviewedApprovalRate } from '../services/approval-rate';
 
-export interface ScoreRow { scan_source: string; total: number; queued: number; approved: number }
+export interface ScoreRow { scan_source: string; total: number; queued: number; approved: number; declined: number }
 
 export function formatScoreboard(rows: ScoreRow[]): string {
   if (!rows.length) return 'Scoreboard: no entries in window.';
-  const pct = (n: number, d: number) => (d > 0 ? `${Math.round((n / d) * 100)}%` : '-');
-  const lines = ['source            total  queued  approved  appr-rate'];
+  const pct = (approved: number, declined: number) => {
+    const rate = reviewedApprovalRate(approved, declined);
+    return rate == null ? '-' : `${Math.round(rate * 100)}%`;
+  };
+  const lines = ['source            total  queued  approved  reviewed'];
   for (const r of rows) {
     lines.push(
-      `${r.scan_source.padEnd(17)} ${String(r.total).padStart(5)} ${String(r.queued).padStart(7)} ${String(r.approved).padStart(9)} ${pct(r.approved, r.total).padStart(10)}`,
+      `${r.scan_source.padEnd(17)} ${String(r.total).padStart(5)} ${String(r.queued).padStart(7)} ${String(r.approved).padStart(9)} ${pct(r.approved, r.declined).padStart(10)}`,
     );
   }
   return lines.join('\n');
@@ -32,7 +36,8 @@ async function main(): Promise<void> {
     `SELECT scan_source,
             COUNT(*)::int AS total,
             COUNT(*) FILTER (WHERE status IN ('queued', 'enriched'))::int AS queued,
-            COUNT(*) FILTER (WHERE status IN ('approved', 'published'))::int AS approved
+            COUNT(*) FILTER (WHERE status IN ('approved', 'published'))::int AS approved,
+            COUNT(*) FILTER (WHERE status = 'declined')::int AS declined
        FROM scan_entries
       WHERE created_at >= NOW() - ($1 || ' days')::interval
       GROUP BY scan_source

@@ -543,6 +543,8 @@ curl -s -H "Authorization: Bearer $HEDWIG_TOKEN" \
   "$WIREOPS_SERVER_URL/api/scan/stats"
 ```
 
+`cost-stats` `byPrompt[].approvalRate` is approved rows divided by every row, as a percent. `byPrompt[].reviewedApprovalRate` is approved / (approved + declined), from 0 to 1, or null when that prompt has no decision. `declinedEntries` is the decline count. `GET /api/usage/outcomes` adds `declined` and `reviewed_approval_rate` on the same scale.
+
 ### Schedules, feeds, overview
 
 ```bash
@@ -662,6 +664,8 @@ The built-in list in `SOURCE_REGISTRY` is the default. This API stores an overla
 | DELETE | `/api/source-feeds/:key` | yes |
 
 `DELETE` on a built-in key disables it. `DELETE` on an added key removes it.
+
+Each source on `GET /api/source-feeds` includes `health`: `lastRun` (ISO time of the last successful fetch, or null), `lastError` (the last fetch error, or null), `fetchStatus` (`ok`, `failed`, or `never`), `emptyStreak`, and `lastFetched`. A feed that inserts nothing because every URL was already seen is `ok` when the fetch itself succeeded.
 
 ```bash
 curl -s -H "Authorization: Bearer $HEDWIG_TOKEN" \

@@ -31,6 +31,7 @@ import { isValidUuid, isValidFeedKey } from '../utils/validation';
 import { buildSubmission, buildBatchSubmission } from '../services/intake';
 import { runDailyIntake, getDailyQueue, getIntakeStats, resolveQueueMinScore } from '../jobs/daily-intake';
 import { getPromptEffectivenessStats } from '../services/scan-stats';
+import { reviewedApprovalRate } from '../services/approval-rate';
 import { singleEntryAction, bulkEntryAction, ApprovalBlockedError, BulkApprovalBlockedError, EntryActionConflictError } from '../services/entry-actions';
 import { RepeatFunderHoldError, repeatFunderPayload } from '../services/repeat-funder';
 import { rewriteEntrySource, rewriteEntryWires, linkEntryDuplicate, EntryMaintenanceError } from '../services/entry-maintenance';
@@ -1215,6 +1216,7 @@ router.get('/cost-stats', async (_req: Request, res: Response) => {
           prompt_id,
           COUNT(*) AS total_entries,
           COUNT(*) FILTER (WHERE status = 'approved') AS approved_entries,
+          COUNT(*) FILTER (WHERE status = 'declined') AS declined_entries,
           SUM(COUNT(*)) OVER () AS grand_total
         FROM scan_entries
         WHERE created_at > NOW() - INTERVAL '30 days'
@@ -1230,6 +1232,7 @@ router.get('/cost-stats', async (_req: Request, res: Response) => {
         sp.id, sp.wire, sp.variant, sp.label, sp.tool_type, sp.is_active,
         COALESCE(ec.total_entries, 0) AS total_entries,
         COALESCE(ec.approved_entries, 0) AS approved_entries,
+        COALESCE(ec.declined_entries, 0) AS declined_entries,
         sc.total_scan_cost,
         sc.total_classify_cost,
         sc.total_cost,
@@ -1258,8 +1261,12 @@ router.get('/cost-stats', async (_req: Request, res: Response) => {
     const byPrompt = result.rows.map((row) => {
       const totalEntries = parseInt(row.total_entries) || 0;
       const approvedEntries = parseInt(row.approved_entries) || 0;
+      const declinedEntries = parseInt(row.declined_entries) || 0;
       const estimatedCost = parseFloat(row.estimated_cost) || 0;
+      // approvalRate stays approved / every row (duplicates included), as a percent.
+      // reviewedApprovalRate is approved / (approved + declined), 0–1.
       const approvalRate = totalEntries > 0 ? Math.round((approvedEntries / totalEntries) * 1000) / 10 : 0;
+      const reviewedRate = reviewedApprovalRate(approvedEntries, declinedEntries);
       const costPerApproved = approvedEntries > 0 ? Math.round((estimatedCost / approvedEntries) * 10000) / 10000 : null;
 
       return {
@@ -1271,7 +1278,9 @@ router.get('/cost-stats', async (_req: Request, res: Response) => {
         isActive: row.is_active,
         totalEntries,
         approvedEntries,
+        declinedEntries,
         approvalRate,
+        reviewedApprovalRate: reviewedRate,
         estimatedCost,
         costPerApproved,
       };

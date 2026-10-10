@@ -45,9 +45,10 @@ import { ensureWatchSurfaceRepairs } from './watch-surface-repairs';
 import { ensurePublicationPostColumns } from './publication-post';
 import { ensureAcknowledgedDistribution } from './acknowledged-distribution';
 import { ensureWireAreaColumn } from './wire-area';
+import { refreshOssParallelDiscoveryPrompt } from './oss-parallel-prompt';
 
 // Increment whenever the schema contract changes, including enum constants.
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 export const STARTUP_MIGRATIONS: ReadonlyArray<{ name: string; version?: number; run: () => Promise<void> }> = [
   { name: 'sessions', run: ensureSessionsTable },
@@ -82,6 +83,7 @@ export const STARTUP_MIGRATIONS: ReadonlyArray<{ name: string; version?: number;
   { name: 'publication-post-text', version: 8, run: ensurePublicationPostColumns },
   { name: 'acknowledged-distribution', version: 9, run: ensureAcknowledgedDistribution },
   { name: 'wire-area', version: 10, run: ensureWireAreaColumn },
+  { name: 'oss-parallel-prompt', version: 11, run: refreshOssParallelDiscoveryPrompt },
 ];
 
 export interface StartupMigrationHealth {

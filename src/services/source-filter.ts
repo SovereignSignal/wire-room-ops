@@ -50,6 +50,54 @@ export function blockedDomains(): string[] {
   return [...DEFAULT_BLOCKED_DOMAINS, ...extraBlocked()];
 }
 
+/**
+ * Hosts Parallel search should not retrieve. Kept off the Gate 1 list on
+ * purpose: a human paste or another lane can still submit these, but Parallel
+ * was buying the same aggregator and social pages every day.
+ *
+ * Ordered by how often they showed up in the 2026-10-10 feed review. Extend
+ * this constant; do not fold it into SOURCE_BLOCKLIST_EXTRA.
+ */
+export const PARALLEL_EXCLUDE_DOMAINS = [
+  'facebook.com',
+  'instagram.com',
+  'web3grant.com',
+  'web3grants.com',
+  'fundsforngos.org',
+  'profellow.com',
+  'opportunityforafrica.org',
+  'careerflora.com',
+  'msmeafricaonline.com',
+  'gate.com',
+  'tradingview.com',
+  'investing.com',
+  'cryptonomist.ch',
+  'binance.com',
+  'webproxy.freebrowser.org',
+  'giving.columbia.edu',
+  'grants.watch',
+];
+
+/** Scholarship block list plus the Parallel-only hosts, de-duplicated. */
+export function parallelExcludeDomains(): string[] {
+  return [...new Set([...blockedDomains(), ...PARALLEL_EXCLUDE_DOMAINS])];
+}
+
+function hostMatchesList(host: string, list: string[]): boolean {
+  return list.some(blocked => host === blocked || host.endsWith('.' + blocked));
+}
+
+/**
+ * Aggregator or social host for Parallel extraction. Matches this list and the
+ * global scholarship list, including subdomains (m.facebook.com).
+ */
+export function isParallelAggregatorHost(url: string | null | undefined): boolean {
+  if (!url) return false;
+  const host = hostOf(url);
+  if (!host) return false;
+  return hostMatchesList(host, [...PARALLEL_EXCLUDE_DOMAINS, ...blockedDomains()]);
+}
+
 /** Normalize a URL to its registrable host (lowercased, no www). */
 export function hostOf(url: string): string | null {
   try {

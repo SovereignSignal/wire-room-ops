@@ -14,7 +14,7 @@
 import { getBrand } from '../config/brand';
 import { logApiUsage } from './api-usage';
 import { getCachedProvider, isProviderExplicitlyDisabled } from './api-provider';
-import { blockedDomains } from './source-filter';
+import { blockedSourceDomain, classifySourceLink, hostOf, isParallelAggregatorHost, parallelExcludeDomains } from './source-filter';
 import type { ScanUsagePurpose } from '../types/intake';
 import { DEFAULT_GROK_MODEL, chatCompletionExtras } from './grok';
 import { WIRE_AREA_LIST, WIRE_OUT_LIST } from '../types/wire-area';
@@ -83,6 +83,47 @@ export function parallelAreaGuide(): string {
   return `Wire areas: ${WIRE_AREA_LIST}. OUT (skip): ${WIRE_OUT_LIST}.`;
 }
 
+/** Backstop for aggregators the domain list missed, plus evergreen extraction. */
+export const PARALLEL_EXTRACT_RULES = 'If a result is an aggregator, listing, social repost, or press-release mirror, output the funder\'s own URL only when the excerpt contains it; otherwise skip that result. A long-running open program with no new window or round still qualifies: set Deadline to Rolling.';
+
+const EXCERPT_URL = /https?:\/\/[^\s<>"'`)\]]+/gi;
+
+export interface ParallelHit {
+  url: string;
+  title?: string | null;
+  excerpts?: string[];
+}
+
+function cleanExcerptUrl(raw: string): string {
+  return raw.replace(/[.,;:]+$/, '');
+}
+
+/** A funder's own page: public http(s), not a shortener, social post, or aggregator. */
+function isOfficialParallelSource(candidate: string, aggregatorUrl: string): boolean {
+  if (classifySourceLink(candidate) !== 'ok') return false;
+  if (isParallelAggregatorHost(candidate) || blockedSourceDomain(candidate)) return false;
+  const host = hostOf(candidate);
+  const aggregatorHost = hostOf(aggregatorUrl);
+  return Boolean(host && aggregatorHost && host !== aggregatorHost);
+}
+
+/**
+ * Drop an aggregator hit unless the excerpt cites the funder's own URL.
+ * When it does, that official URL becomes the source before early dedup.
+ */
+export function settleParallelHit<T extends ParallelHit>(hit: T): T | null {
+  if (!isParallelAggregatorHost(hit.url)) return hit;
+  const blob = `${hit.title || ''}\n${(hit.excerpts || []).join('\n')}`;
+  const candidates = blob.match(EXCERPT_URL) || [];
+  for (const raw of candidates) {
+    const official = cleanExcerptUrl(raw);
+    if (isOfficialParallelSource(official, hit.url)) {
+      return { ...hit, url: official };
+    }
+  }
+  return null;
+}
+
 /** Plan 2-3 short keyword queries (3-6 words each) for the Parallel search. */
 async function planQueries(objective: string, wire?: string, usagePurpose: ScanUsagePurpose = 'scan'): Promise<string[]> {
   const wireHint = wire ? `The vertical is "${wire}". ` : '';
@@ -148,7 +189,7 @@ export async function executeParallelScan(
         // Block known aggregators at the API; on discovery prompts, the caller passes
         // afterDate so stale/expired pages are filtered server-side before Grok sees them.
         source_policy: {
-          exclude_domains: blockedDomains(),
+          exclude_domains: parallelExcludeDomains(),
           ...(options?.afterDate ? { after_date: options.afterDate } : {}),
         },
       },
@@ -164,7 +205,9 @@ export async function executeParallelScan(
   const searchData = await searchResp.json() as ParallelSearchResponse;
   logApiUsage({ provider: 'parallel', model: 'search', purpose: usagePurpose, wire, duration_ms: Date.now() - searchStart, success: true });
 
-  let results = searchData.results || [];
+  let results = (searchData.results || [])
+    .map(hit => settleParallelHit(hit))
+    .filter((hit): hit is ParallelSearchResult => hit !== null);
 
   // Early dedup: the lane re-searches a rolling window daily, so most results are
   // already ingested. Dropping them here saves the Grok extraction AND the
@@ -195,7 +238,7 @@ export async function executeParallelScan(
   const format = options?.responseFormat ||
     `1. **Program Name** — Description including funding amount and who runs it\nDeadline: [date, "Rolling", or "None listed"]\nPublished: [date]\nSource URL: [direct canonical link from the results above]`;
 
-  const extractPrompt = `You are extracting wire items from web search results. ${parallelAreaGuide()} From the results below, list every distinct item in areas 1-6. Use ONLY the canonical Source URL shown for each result — never invent URLs. Skip duplicates, the OUT list, and pure marketing. Closed programs stay skipped when they would be area 3, but their result announcements are area 2 and should be included. If nothing qualifies, return "No results."\n\nFormat each entry exactly:\n${format}\n\nSEARCH RESULTS:\n${resultsBlock}`;
+  const extractPrompt = `You are extracting wire items from web search results. ${parallelAreaGuide()} From the results below, list every distinct item in areas 1-6. Use ONLY the canonical Source URL shown for each result — never invent URLs. Skip duplicates, the OUT list, and pure marketing. ${PARALLEL_EXTRACT_RULES} Closed programs stay skipped when they would be area 3, but their result announcements are area 2 and should be included. If nothing qualifies, return "No results."\n\nFormat each entry exactly:\n${format}\n\nSEARCH RESULTS:\n${resultsBlock}`;
 
   const extracted = await grokChat(
     extractPrompt,

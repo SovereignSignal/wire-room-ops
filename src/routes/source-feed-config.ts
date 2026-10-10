@@ -14,6 +14,8 @@ import { SOURCE_REGISTRY } from '../services/source-feeds';
 import {
   SOURCE_FEED_CONFIG_KEY,
   describeSources,
+  feedSeenKey,
+  interpretFeedRunState,
   normalizeSourceFeedConfig,
   validateAddedBody,
   validateFeedKey,
@@ -30,7 +32,14 @@ async function loadConfig(): Promise<SourceFeedConfig> {
 router.get('/', async (_req: Request, res: Response) => {
   try {
     const config = await loadConfig();
-    res.json({ sources: describeSources(config) });
+    const sources = await Promise.all(describeSources(config).map(async source => {
+      let health = interpretFeedRunState(null);
+      try {
+        health = interpretFeedRunState(await getAppState(feedSeenKey(source.key)));
+      } catch { /* a missing watermark is "never" */ }
+      return { ...source, health };
+    }));
+    res.json({ sources });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
   }

@@ -207,6 +207,29 @@ export interface PublicSourceFeed {
   scrapePrompt: string | null;
 }
 
+export function feedSeenKey(key: string): string {
+  return `feed:seen:${key}`;
+}
+
+export interface FeedRunHealth {
+  lastRun: string | null;
+  lastError: string | null;
+  fetchStatus: 'ok' | 'failed' | 'never';
+  emptyStreak: number;
+  lastFetched: number | null;
+}
+
+/** Read the per-feed watermark into a fetch-health signal. */
+export function interpretFeedRunState(raw: unknown): FeedRunHealth {
+  const state = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+  const lastRun = typeof state.lastRun === 'string' && state.lastRun ? state.lastRun : null;
+  const lastError = typeof state.lastError === 'string' && state.lastError ? state.lastError : null;
+  const emptyStreak = typeof state.emptyStreak === 'number' && Number.isFinite(state.emptyStreak) ? state.emptyStreak : 0;
+  const lastFetched = typeof state.lastFetched === 'number' && Number.isFinite(state.lastFetched) ? state.lastFetched : null;
+  const fetchStatus = lastError ? 'failed' : lastRun ? 'ok' : 'never';
+  return { lastRun, lastError, fetchStatus, emptyStreak, lastFetched };
+}
+
 export function describeSources(config: SourceFeedConfig): PublicSourceFeed[] {
   const addedKeys = new Set(config.added.map(feed => feed.key));
   return applySourceFeedConfig(SOURCE_REGISTRY, config).map(source => ({

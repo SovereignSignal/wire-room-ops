@@ -69,6 +69,30 @@ export interface FeedSource {
   usagePurpose?: string;
 }
 
+/** A feed's first successful run ignores items published longer ago than this. */
+export const FIRST_RUN_MAX_AGE_DAYS = 45;
+
+/**
+ * True when a first-run item has a parseable publish time older than the
+ * cutoff. Missing or unparseable dates stay (scrapes often have none).
+ */
+export function isStaleFirstRunItem(publishedAt: string | null | undefined, now = Date.now()): boolean {
+  if (!publishedAt) return false;
+  const published = Date.parse(publishedAt);
+  if (Number.isNaN(published)) return false;
+  return (now - published) / (24 * 60 * 60 * 1000) > FIRST_RUN_MAX_AGE_DAYS;
+}
+
+/** On a first run, drop old published items before the submission cap. */
+export function dropStaleFirstRunItems<T extends { publishedAt: string | null }>(
+  items: T[],
+  firstRun: boolean,
+  now = Date.now(),
+): T[] {
+  if (!firstRun) return items;
+  return items.filter(item => !isStaleFirstRunItem(item.publishedAt, now));
+}
+
 export interface FeedItem {
   name: string;
   description: string;
@@ -880,14 +904,20 @@ export const SOURCE_REGISTRY: FeedSource[] = [
       const name = pick(it, 'name', 'title');
       const slug = pick(it, 'slug');
       if (!name || !slug) return null;
+      // testStellar / "Stellar Test Round" / "test-only". Word boundary keeps
+      // "contest" and "attestation".
+      if (/\btest/i.test(name) || /\btest/i.test(slug)) return null;
       const endDate = pick(it, 'endDate');
+      const beginDate = pick(it, 'beginDate');
       if (endDate && Date.parse(endDate) && Date.parse(endDate) < Date.now()) return null; // skip ended rounds
+      const period = [beginDate, endDate].filter(Boolean).join('–');
+      const base = pick(it, 'description') || name;
       return {
         name: name.slice(0, 200),
-        description: clip(pick(it, 'description') || name),
+        description: clip(period ? `${base} Donation/matching period ${period}.` : base),
         url: `https://giveth.io/qf/${slug}`,
         amount: pick(it, 'allocatedFundUSD'),
-        deadline: endDate,
+        deadline: null,
         publishedAt: null,
       };
     },
@@ -939,11 +969,12 @@ export const SOURCE_REGISTRY: FeedSource[] = [
     enabled: true,
   },
   // =================== AI ===================
-  // US federal grants, AI-scoped. Three keyword variants share the same extract logic via
-  // the grantsGovSource factory; intake-level URL dedup collapses cross-keyword repeats.
+  // US federal grants, AI-scoped. The machine-learning and foundation-models
+  // keywords produced no approvals across 90 days, so they stay registered
+  // but off. grants-gov-ai is unchanged.
   grantsGovSource('grants-gov-ai', 'artificial intelligence'),
-  grantsGovSource('grants-gov-ml', 'machine learning'),
-  grantsGovSource('grants-gov-fm', 'foundation models'),
+  { ...grantsGovSource('grants-gov-ml', 'machine learning'), enabled: false },
+  { ...grantsGovSource('grants-gov-fm', 'foundation models'), enabled: false },
   // EA Forum and LessWrong: three Forum-Magnum GraphQL sources via the forumMagnumSource factory.
   // Two EA Forum tags + one LessWrong tag broaden coverage beyond the single funding tag.
   forumMagnumSource('ea-forum-funding', 'EA Forum — Funding Opportunities', 'https://forum.effectivealtruism.org', 'be4pBryMKxLhkmgvE'),

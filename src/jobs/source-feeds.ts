@@ -19,10 +19,11 @@ import {
   fetchSource,
   classifyFetchError,
   DEFAULT_TIMEOUT_MS,
+  dropStaleFirstRunItems,
   type FeedSource,
   type FeedItem,
 } from '../services/source-feeds';
-import { applySourceFeedConfig, normalizeSourceFeedConfig, SOURCE_FEED_CONFIG_KEY } from '../services/source-feed-config';
+import { applySourceFeedConfig, feedSeenKey, normalizeSourceFeedConfig, SOURCE_FEED_CONFIG_KEY } from '../services/source-feed-config';
 import { EMPTY_SCRAPE_DAYS, nextEmptyScrapeStreak } from './daily-digest';
 
 export interface SourceFeedsOptions {
@@ -42,7 +43,13 @@ export interface SourceFeedsResult {
 const SEEN_CAP = 800;             // rolling per-source seen-URL memory
 const FIRST_RUN_LIMIT = 12;       // baseline items to submit when a source is first seen
 
-interface SeenState { urls: string[]; lastRun?: string; emptyStreak?: number }
+interface SeenState {
+  urls: string[];
+  lastRun?: string;
+  emptyStreak?: number;
+  lastError?: string | null;
+  lastFetched?: number;
+}
 
 function toRaw(it: FeedItem): RawScanResult {
   return {
@@ -125,17 +132,20 @@ export async function runSourceFeeds(
     const pct = Math.round((i / Math.max(sources.length, 1)) * 55);
     progress(`Fetching ${source.name}`, pct);
 
-    const stateKey = `feed:seen:${source.key}`;
+    const stateKey = feedSeenKey(source.key);
     let state: SeenState | null = null;
     try { state = await getAppState<SeenState>(stateKey); } catch { /* treat as first run */ }
-    const firstRun = !state || !Array.isArray(state.urls);
+    // A failed attempt records lastError and must not count as the first run.
+    const firstRun = !state?.lastRun;
     const seen = new Set((state?.urls || []).map(normalizeUrl));
 
     try {
       const items = await fetchSourceWithTransientRetry(source);
 
-      // net-new (unseen URL) + within-run dedup. No publish-age filter: an opportunity
-      // posted months ago can still be open (its deadline gates relevance, not its post date).
+      // net-new (unseen URL) + within-run dedup. Steady state has no publish-age
+      // filter: an opportunity posted months ago can still be open. A first
+      // successful run drops items older than ~45 days so the cap is not
+      // filled with archive posts; those URLs are still marked seen below.
       const batch = new Set<string>();
       let fresh: FeedItem[] = [];
       for (const it of items) {
@@ -144,6 +154,7 @@ export async function runSourceFeeds(
         batch.add(nu);
         fresh.push(it);
       }
+      fresh = dropStaleFirstRunItems(fresh, firstRun);
 
       // First-run baseline: a source's whole backlog is "new". Submit only a capped slice,
       // preferring still-open items (no deadline or a future one), so activation doesn't
@@ -191,7 +202,10 @@ export async function runSourceFeeds(
       const s = new Set<string>();
       for (const u of mergedUrls) { if (!s.has(u)) { s.add(u); dedupedUrls.push(u); } if (dedupedUrls.length >= SEEN_CAP) break; }
       const emptyStreak = nextEmptyScrapeStreak(source.method, items.length, state?.emptyStreak);
-      pendingSeenStates.push({ stateKey, state: { urls: dedupedUrls, lastRun: nowIso, emptyStreak } });
+      pendingSeenStates.push({
+        stateKey,
+        state: { urls: dedupedUrls, lastRun: nowIso, emptyStreak, lastError: null, lastFetched: items.length },
+      });
 
       perSource.push({ key: source.key, name: source.name, fetched: items.length, fresh: fresh.length, firstRun, emptyStreak });
       if (emptyStreak >= EMPTY_SCRAPE_DAYS) {
@@ -206,6 +220,17 @@ export async function runSourceFeeds(
         lastOk: state?.lastRun ?? null,
       });
       console.warn(`[Feeds] ${source.key} failed: ${msg}`);
+      try {
+        await setAppState(stateKey, {
+          urls: Array.isArray(state?.urls) ? state.urls : [],
+          ...(state?.lastRun ? { lastRun: state.lastRun } : {}),
+          ...(typeof state?.emptyStreak === 'number' ? { emptyStreak: state.emptyStreak } : {}),
+          ...(typeof state?.lastFetched === 'number' ? { lastFetched: state.lastFetched } : {}),
+          lastError: msg.slice(0, 500),
+        });
+      } catch (persistErr) {
+        console.warn(`[Feeds] Failed to persist fetch error for ${source.key}:`, persistErr instanceof Error ? persistErr.message : persistErr);
+      }
     }
   }
 
