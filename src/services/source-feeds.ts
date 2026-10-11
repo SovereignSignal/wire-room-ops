@@ -946,7 +946,9 @@ export const SOURCE_REGISTRY: FeedSource[] = [
     titleAllow: /epoch|grant|apply|deadline|\bround\b|funding|\brfp\b|awarded|recipients|\bresults\b|retro|treasury|allocation|incentive/i,
   },
   {
-    // Open RFPs page verified 200 on 2026-10-03.
+    // Same URL as 2026-10-03. Checked 2026-10-11: HTTP 200, server-rendered,
+    // pageProps.rfpItems is []. The page says there are no active RFPs.
+    // Wishlist and open rounds were empty the same day.
     key: 'ef-esp-rfp',
     name: 'Ethereum Foundation ESP — Open RFPs',
     wire: 'crypto',
@@ -1023,6 +1025,8 @@ export const SOURCE_REGISTRY: FeedSource[] = [
   },
   // =================== OWN-SITE FUNDERS ===================
   {
+    // Cloudflare 403s the plain fetch from this host (confirmed 2026-10-11).
+    // loadScrapePage then makes one Firecrawl call; that path still returns items.
     key: 'coefficient-giving', name: 'Coefficient Giving — Grants', wire: 'ai',
     method: 'scrape', endpoint: 'https://coefficientgiving.org/apply-for-funding/', urlPrefix: 'https://coefficientgiving.org',
     scrapePrompt: 'Extract each currently-open grant/fund/fellowship/RFP a builder can apply to; use the program\'s own application/details URL.',

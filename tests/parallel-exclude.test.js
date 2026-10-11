@@ -11,7 +11,10 @@ const {
 const { settleParallelHit, PARALLEL_EXTRACT_RULES } = require('../src/services/parallel');
 
 test('Parallel exclude list is separate from the Gate 1 block list', () => {
-  for (const host of ['facebook.com', 'fundsforngos.org', 'web3grant.com', 'web3grants.com', 'gate.com', 'grants.watch']) {
+  for (const host of [
+    'facebook.com', 'fundsforngos.org', 'web3grant.com', 'web3grants.com', 'gate.com', 'grants.watch',
+    'blockchainacademics.com', 'grantedai.com', 'inventya.com', 'casrai.org',
+  ]) {
     assert.ok(PARALLEL_EXCLUDE_DOMAINS.includes(host), host);
     assert.equal(blockedSourceDomain(`https://${host}/some/post`), null, `${host} stays off the global list`);
   }
@@ -25,6 +28,10 @@ test('Parallel aggregator match includes subdomains', () => {
   assert.equal(isParallelAggregatorHost('https://m.facebook.com/story.php?id=1'), true);
   assert.equal(isParallelAggregatorHost('https://www.fundsforngos.org/listing'), true);
   assert.equal(isParallelAggregatorHost('https://cn.investing.com/news/1'), true);
+  assert.equal(isParallelAggregatorHost('https://grants.grantedai.com/sui-awards'), true);
+  assert.equal(isParallelAggregatorHost('https://www.blockchainacademics.com/grants'), true);
+  assert.equal(isParallelAggregatorHost('https://www.inventya.com/calls/ngi-zero-commons-fund'), true);
+  assert.equal(isParallelAggregatorHost('https://dictionary.casrai.org/entry'), true);
   assert.equal(isParallelAggregatorHost('https://nlnet.nl/news/2026-call'), false);
 });
 
@@ -47,6 +54,17 @@ test('aggregator hits are dropped unless the excerpt cites an official URL', () 
     title: 'OpenSats',
     excerpts: ['Listed on https://grants.watch/opensats and https://t.co/abc'],
   }), null, 'grants.watch and shorteners are not the funder URL');
+
+  assert.equal(settleParallelHit({
+    url: 'https://www.blockchainacademics.com/grants',
+    title: 'Crypto grants database',
+    excerpts: ['A directory of active Web3 grants.'],
+  }), null);
+  assert.equal(settleParallelHit({
+    url: 'https://blog.inventya.com/calls/example',
+    title: 'NGI Zero',
+    excerpts: ['Apply at https://nlnet.nl/commonsfund/ before February.'],
+  }).url, 'https://nlnet.nl/commonsfund/');
 
   const direct = settleParallelHit({
     url: 'https://opensats.org/apply',
