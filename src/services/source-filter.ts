@@ -76,6 +76,11 @@ export const PARALLEL_EXCLUDE_DOMAINS = [
   'webproxy.freebrowser.org',
   'giving.columbia.edu',
   'grants.watch',
+  // 2026-10-11 live run: grant directories, plus a research-admin dictionary.
+  'blockchainacademics.com',
+  'grantedai.com',
+  'inventya.com',
+  'casrai.org',
 ];
 
 /** Scholarship block list plus the Parallel-only hosts, de-duplicated. */
