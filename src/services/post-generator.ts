@@ -222,7 +222,10 @@ export function buildPostPrompt(entry: ReturnType<typeof cleanEntry>, wire: stri
   parts.push('- Then a blank line');
   parts.push(thin
     ? '- Do not add a summary sentence. The headline and the link are enough.'
-    : '- Then one sentence, only when the description contains facts that are not already in the headline. Otherwise omit it.');
+    : '- Then one sentence that says what the funding is for, copied from the description, before eligibility or how to apply. Then eligibility and the apply path when the description states them.');
+  if (!thin) {
+    parts.push('- Do not stop after eligibility or how to apply when the description also says what the money is for. Keep a partner, research topic, or publication type that belongs to that purpose sentence.');
+  }
   parts.push('- Then a blank line');
   parts.push('- Then 🔗 <a href="URL">Source</a> using the link above');
   parts.push('- Use <b> for the headline only, and <a href="..."> for the link');
@@ -230,42 +233,140 @@ export function buildPostPrompt(entry: ReturnType<typeof cleanEntry>, wire: stri
   return parts.join('\n');
 }
 
+// --- Body selection ---
+//
+// The October 2026 wires dropped the "what it's for" line because the prompt
+// allowed one body sentence and this fallback kept whichever sentence came
+// first. Eligibility and the apply path were what survived. Nothing here
+// removes a sentence for naming a partner or for reading like a summary.
+
+const APPLY_CUE = /\b(expression of interest|\bEOI\b|how to apply|submitted through|submit(?:s|ted|ting)?|applications? (?:are|open|close)|grants portal|apply (?:at|via|through|by|with))\b/i;
+const ELIGIBILITY_CUE = /\b(only for|open to|eligible|eligibility|applicants?\b|based in|restricted to|must be|residents|anyone can)\b/i;
+const PURPOSE_CUE = /\b(funds?|funding|supports?|supporting|covers?|covering|builds?|building|develops?|developing|creates?|creating|publishes?|publishing|improves?|improving|enables?|enabling|produces?|producing|research(?:es|ing)|research\s+(?:on|into)|topics?|multimedia|publications?)\b/i;
+
+const BODY_CHAR_BUDGET = 900;
+
+function splitSentences(text: string): string[] {
+  return text
+    .split(/(?<=[.!?])\s+/)
+    .map(sentence => sentence.trim())
+    .filter(sentence => sentence.length > 0);
+}
+
+function sentenceKind(sentence: string): 'purpose' | 'eligibility' | 'apply' | 'other' {
+  if (PURPOSE_CUE.test(sentence)) return 'purpose';
+  if (ELIGIBILITY_CUE.test(sentence)) return 'eligibility';
+  if (APPLY_CUE.test(sentence)) return 'apply';
+  return 'other';
+}
+
+function purposeRank(sentence: string): number {
+  let score = 0;
+  if (/\bresearch(?:es|ing)?\s+(?:on|into)\b|\btopics?\b/i.test(sentence)) score += 4;
+  if (/\b(funds?|funding|supports?|supporting)\b/i.test(sentence)) score += 3;
+  if (/\b(builds?|develops?|creates?|publishes?|multimedia|publications?)\b/i.test(sentence)) score += 3;
+  if (/\bcovers?\b/i.test(sentence)) score += 1;
+  if (ELIGIBILITY_CUE.test(sentence) || APPLY_CUE.test(sentence)) score -= 2;
+  return score;
+}
+
+function clipSentence(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const truncated = text.substring(0, max);
+  const lastSpace = truncated.lastIndexOf(' ');
+  return (lastSpace > max * 0.5 ? truncated.substring(0, lastSpace) : truncated) + '…';
+}
+
+/**
+ * Sentences the wire body must keep, in post order: what the funding is for,
+ * one supporting fact, then eligibility and the apply path.
+ */
+export function wireBodySentences(description: string): string[] {
+  const tagged = splitSentences(description).map((sentence, index) => ({
+    sentence,
+    index,
+    kind: sentenceKind(sentence),
+  }));
+  const purposes = tagged
+    .filter(item => item.kind === 'purpose')
+    .sort((a, b) => purposeRank(b.sentence) - purposeRank(a.sentence) || a.index - b.index)
+    .map(item => item.sentence);
+  const others = tagged.filter(item => item.kind === 'other').map(item => item.sentence);
+  const eligibility = tagged.find(item => item.kind === 'eligibility')?.sentence ?? null;
+  const apply = tagged.find(item => item.kind === 'apply')?.sentence ?? null;
+  const lead = purposes[0] ?? others[0] ?? null;
+  const extra = purposes.find(sentence => sentence !== lead) ?? null;
+  const substantive = [lead, extra].filter((sentence): sentence is string => !!sentence);
+  const process = [eligibility, apply].filter((sentence): sentence is string => !!sentence);
+  let lines = [...substantive, ...process];
+  const seen = new Set<string>();
+  lines = lines.filter(sentence => {
+    const key = sentence.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  if (extra && lines.join(' ').length > BODY_CHAR_BUDGET) {
+    lines = lines.filter(sentence => sentence !== extra);
+  }
+  if (lines[0] && lines[0].length > 700) lines[0] = clipSentence(lines[0], 700);
+  return lines;
+}
+
+function plainPost(value: string): string {
+  return value
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&#0*39;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/[’]/g, "'")
+    .toLowerCase();
+}
+
+const COVERAGE_STOP = new Set([
+  'which', 'their', 'there', 'about', 'through', 'these', 'those', 'where', 'while',
+  'after', 'before', 'under', 'other', 'would', 'could', 'should', 'being', 'using',
+  'based', 'with', 'from', 'that', 'this', 'into', 'only', 'open', 'than', 'then',
+]);
+
+/** A draft keeps a required sentence when half of its distinctive words are present. */
+export function coversSentence(draft: string, sentence: string): boolean {
+  const words = plainPost(sentence).match(/\b[a-z0-9][a-z0-9'+-]{3,}\b/g) ?? [];
+  const distinctive = [...new Set(words.filter(word => !COVERAGE_STOP.has(word) && !/^\d+$/.test(word)))];
+  if (!distinctive.length) return true;
+  const hay = plainPost(draft);
+  const hits = distinctive.filter(word => hay.includes(word));
+  const need = distinctive.length <= 2 ? distinctive.length : Math.ceil(distinctive.length * 0.5);
+  return hits.length >= need;
+}
+
 // --- Fallback generation ---
 
-function buildFallbackPosts(entry: ReturnType<typeof cleanEntry>): GeneratedPosts {
-  // Truncate description to one sentence (first period/excl/question, or 120 chars)
-  let shortDesc = entry.description;
-  const sentenceEnd = shortDesc.search(/[.!?]\s/);
-  if (sentenceEnd > 0 && sentenceEnd < 200) {
-    shortDesc = shortDesc.substring(0, sentenceEnd + 1);
-  } else if (shortDesc.length > 120) {
-    // Truncate at word boundary to avoid mid-word cuts
-    const truncated = shortDesc.substring(0, 120);
-    const lastSpace = truncated.lastIndexOf(' ');
-    shortDesc = (lastSpace > 60 ? truncated.substring(0, lastSpace) : truncated) + '…';
-  }
+function headline(entry: ReturnType<typeof cleanEntry>): string {
+  let title = escapeHtml(entry.name);
+  if (entry.amount) title += ` — ${escapeHtml(entry.amount)}`;
+  if (entry.deadline) title += entry.amount ? `, deadline ${escapeHtml(entry.deadline)}` : ` — deadline ${escapeHtml(entry.deadline)}`;
+  return `<b>${title}</b>`;
+}
 
-  // Tweet
+function buildFallbackPosts(entry: ReturnType<typeof cleanEntry>): GeneratedPosts {
+  const body = wireBodySentences(entry.description).filter(sentence => sentence !== entry.name);
+  const lead = body[0] ?? '';
+  const shortLead = lead ? clipSentence(lead, 120) : '';
+
   const amount = entry.amount ? ` (${entry.amount})` : '';
   const deadline = entry.deadline ? ` — deadline ${entry.deadline}` : '';
-  const tweet = `${entry.name}${amount}${deadline}: ${shortDesc} ${entry.bestLink}`.substring(0, 280);
+  const tweet = `${entry.name}${amount}${deadline}: ${shortLead} ${entry.bestLink}`.replace(/\s+/g, ' ').trim().substring(0, 280);
 
-  // Telegram — clean 3-line format: headline, summary, source link
-  const tgParts: string[] = [];
-  // Build headline: fold amount/deadline into the name
-  const headlineBits: string[] = [escapeHtml(entry.name)];
-  if (entry.amount) headlineBits.push(`— ${escapeHtml(entry.amount)}`);
-  if (entry.deadline) headlineBits.push(entry.amount ? `, deadline ${escapeHtml(entry.deadline)}` : `— deadline ${escapeHtml(entry.deadline)}`);
-  tgParts.push(`<b>${headlineBits.join(' ')}</b>`);
-  tgParts.push('');
-  if (shortDesc && shortDesc !== entry.name) {
-    tgParts.push(escapeHtml(shortDesc));
+  const tgParts: string[] = [headline(entry), ''];
+  if (body.length) {
+    tgParts.push(escapeHtml(body.join(' ')));
     tgParts.push('');
   }
   tgParts.push(`🔗 <a href="${escapeHtml(entry.bestLink)}">Source</a>`);
-  const telegram = tgParts.join('\n');
-
-  return { tweet, telegram };
+  return { tweet, telegram: tgParts.join('\n') };
 }
 
 export function templatePosts(entry: EntryInput): GeneratedPosts {
@@ -411,6 +512,18 @@ export async function verifyPostClaims(input: string, draft: string, wire: strin
   }
 }
 
+function retryPrompt(basePrompt: string, rejected: string[]): string {
+  const omitted = rejected.filter(item => item.startsWith('omitted: ')).map(item => item.slice('omitted: '.length));
+  const problems = rejected.filter(item => !item.startsWith('omitted: '));
+  if (!omitted.length) {
+    return `${basePrompt}\n\nThe previous draft was rejected. Rewrite it so none of these remain:\n${problems.map(item => `- ${item}`).join('\n')}`;
+  }
+  const lines = ['The previous draft was rejected.'];
+  if (problems.length) lines.push('Rewrite it so none of these remain:', ...problems.map(item => `- ${item}`));
+  lines.push('Include these sentences from the description:', ...omitted.map(item => `- ${item}`));
+  return `${basePrompt}\n\n${lines.join('\n')}`;
+}
+
 function gateViolations(input: string, telegram: string, verifier: VerifierResult): string[] {
   const violations = [...checkFaithfulness(input, telegram, { html: true }).violations];
   if (!verifier.ok) {
@@ -433,9 +546,7 @@ export async function generatePosts(entry: EntryInput, wire: string): Promise<Ge
   let lastVerifier: VerifierResult | null = null;
 
   for (let attempt = 0; attempt < 2; attempt++) {
-    const prompt = attempt === 0
-      ? basePrompt
-      : `${basePrompt}\n\nThe previous draft was rejected. Rewrite it so none of these remain:\n${rejected.map(item => `- ${item}`).join('\n')}`;
+    const prompt = attempt === 0 ? basePrompt : retryPrompt(basePrompt, rejected);
     let drafted: { tweet: string; telegram: string; model: string };
     try {
       const completed = await completeWith(prompt, 'post-gen', postGenerationModel(), wire, 0.1, 4096);
@@ -449,6 +560,11 @@ export async function generatePosts(entry: EntryInput, wire: string): Promise<Ge
     const verifier = await verifyPostClaims(facts, drafted.telegram, wire);
     lastVerifier = verifier;
     const violations = gateViolations(facts, drafted.telegram, verifier);
+    const omitted = wireBodySentences(cleaned.description)
+      .filter(sentence => !coversSentence(drafted.telegram, sentence))
+      .slice(0, 4)
+      .map(sentence => `omitted: ${sentence.slice(0, 180)}`);
+    if (omitted.length) violations.unshift(...omitted);
     if (violations.length === 0) {
       const tweetCheck = checkFaithfulness(facts, drafted.tweet, { html: false });
       const telegramCheck = checkFaithfulness(facts, drafted.telegram, { html: true });
