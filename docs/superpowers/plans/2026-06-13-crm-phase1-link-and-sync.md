@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-06-13-crm-org-contact-enrichment-design.md`.
 
-**Repo mechanics:** wire-room-ops IS a git repo at `/Users/home/Documents/Sovereign Signal/repos/wire-room-ops`; work in place, commit to `main`, push deploys it (Railway project `17165452-…`). Run tests with `npm test` (node:test) and `npm run typecheck`. Shared DB URL: `cat /tmp/telesum_dburl.txt` (gondola.proxy.rlwy.net — same instance wire-room-ops uses). The SimpleCRM integration is row `provider='notion', name='SimpleCRM - Notion'` in `integration_config` (verified token valid 2026-06-13, integration "Wire Room Ops", access to both CRM DBs).
+**Repo mechanics:** wire-room-ops IS a git repo at `~/Documents/Sovereign Signal/repos/wire-room-ops`; work in place, commit to `main`, push deploys it (Railway project `17165452-…`). Run tests with `npm test` (node:test) and `npm run typecheck`. Shared DB URL: `cat /tmp/telesum_dburl.txt` (<railway-db-proxy> — same instance wire-room-ops uses). The SimpleCRM integration is row `provider='notion', name='SimpleCRM - Notion'` in `integration_config` (verified token valid 2026-06-13, integration "Wire Room Ops", access to both CRM DBs).
 
 **Verified facts (do not re-litigate):**
 - `upsertOrgProfile(orgName: string, wire: string, date?: string): Promise<number>` — INSERTs into `org_profiles (name, slug, wires, first_seen, last_seen, entry_count)` with ON CONFLICT update; returns the org id. Reusable for digest orgs (pass the digest wire).
@@ -27,7 +27,7 @@
 - [ ] **Step 1: Create a feature branch**
 
 ```bash
-cd "/Users/home/Documents/Sovereign Signal/repos/wire-room-ops" && git checkout main && git pull --ff-only && git checkout -b crm-phase1-digest-orgs
+cd "$HOME/Documents/Sovereign Signal/repos/wire-room-ops" && git checkout main && git pull --ff-only && git checkout -b crm-phase1-digest-orgs
 ```
 
 - [ ] **Step 2: Baseline green**
@@ -458,12 +458,12 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 1: Merge + push (deploys)**
 
 ```bash
-cd "/Users/home/Documents/Sovereign Signal/repos/wire-room-ops" && git checkout main && git merge --no-ff crm-phase1-digest-orgs -m "CRM Phase 1: digest-org sourcing + revived CRM sync" && git push origin main
+cd "$HOME/Documents/Sovereign Signal/repos/wire-room-ops" && git checkout main && git merge --no-ff crm-phase1-digest-orgs -m "CRM Phase 1: digest-org sourcing + revived CRM sync" && git push origin main
 ```
 
 - [ ] **Step 2: Watch deploy to SUCCESS + health**
 
-Run (background): `/Users/home/.claude/skills/railway-ops/scripts/watch-deploy.sh 17165452-9a41-4abf-b350-a3c0cf492623 5cc01564-4e3d-4e57-8423-949e9544c595 d0d4c7f4-dea9-4cab-ba8c-ec7363f0470e`
+Run (background): `~/.claude/skills/railway-ops/scripts/watch-deploy.sh 17165452-9a41-4abf-b350-a3c0cf492623 5cc01564-4e3d-4e57-8423-949e9544c595 d0d4c7f4-dea9-4cab-ba8c-ec7363f0470e`
 Expected: `FINAL=SUCCESS`, then `curl -s -o /dev/null -w "%{http_code}" https://wire-room-ops-production.up.railway.app/health` → `200`.
 
 - [ ] **Step 3: Backfill — source digest orgs from the already-ingested 103 items**
