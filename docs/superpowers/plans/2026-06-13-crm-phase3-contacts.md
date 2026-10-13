@@ -21,7 +21,7 @@
 ---
 
 ### Task 0: Branch + baseline
-- [ ] `cd "/Users/home/Documents/Sovereign Signal/repos/wire-room-ops" && git checkout main && git pull --ff-only && git checkout -b crm-phase3-contacts`
+- [ ] `cd "$HOME/Documents/Sovereign Signal/repos/wire-room-ops" && git checkout main && git pull --ff-only && git checkout -b crm-phase3-contacts`
 - [ ] `npm run typecheck && npm test 2>&1 | grep -E "ℹ (tests|pass|fail)"` → typecheck clean, fail 0. Record pass count.
 
 ---

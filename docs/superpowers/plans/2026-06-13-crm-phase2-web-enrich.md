@@ -22,7 +22,7 @@
 
 ### Task 0: Branch + baseline
 
-- [ ] **Step 1:** `cd "/Users/home/Documents/Sovereign Signal/repos/wire-room-ops" && git checkout main && git pull --ff-only && git checkout -b crm-phase2-web-enrich`
+- [ ] **Step 1:** `cd "$HOME/Documents/Sovereign Signal/repos/wire-room-ops" && git checkout main && git pull --ff-only && git checkout -b crm-phase2-web-enrich`
 - [ ] **Step 2:** `npm run typecheck && npm test 2>&1 | grep -E "ℹ (tests|pass|fail)"` → typecheck clean, fail 0. Record pass count.
 
 ---
