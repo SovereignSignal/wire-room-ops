@@ -21,7 +21,9 @@ jobs:
           WRO_INTERNAL_API_KEY: ${{ secrets.WRO_INTERNAL_API_KEY }}
           INTERNAL_API_KEY: ${{ secrets.INTERNAL_API_KEY }}
           TEXT: ${{ inputs.text }}
-          WRO_URL: https://wire-room-ops-production.up.railway.app/api/scan/telegram-batch
+          # Repo variable WRO_BASE_URL lets the service move (e.g. into wire-room-db for
+          # private Postgres networking) without editing this file.
+          WRO_URL: ${{ vars.WRO_BASE_URL || 'https://wire-room-ops-production.up.railway.app' }}/api/scan/telegram-batch
         run: |
           set -euo pipefail
           KEY="${WRO_INTERNAL_API_KEY:-${INTERNAL_API_KEY:-}}"
