@@ -32,6 +32,7 @@ import { EntryMaintenanceError, rewriteEntrySource } from '../services/entry-mai
 import { normalizeUrl } from '../services/intake';
 import { config } from '../config';
 import { chatCompletionExtras, DEFAULT_GROK_MODEL } from '../services/grok';
+import { storedForumObservation } from '../services/forum-seen';
 
 let isRunning = false;
 
@@ -196,6 +197,9 @@ function dateKey(value: unknown): string | null {
 
 function targetSnapshotMatches(row: any, target: RecheckTarget): boolean {
   return !!row
+    // Source changes need operator verification. Even a stale in-flight model
+    // verdict cannot demote the collector's persisted review candidate.
+    && !storedForumObservation(row)?.priorEntryId
     && row.status === 'queued'
     && row.name === target.name
     && row.description === target.description
@@ -251,7 +255,7 @@ async function applyWithFreshVerdictSnapshots(
     await client.query('BEGIN');
     const ids = matched ? [target.id, matched.id] : [target.id];
     const locked = await client.query(
-      `SELECT id, status, duplicate_of_id, name, description, amount, deadline, source_url, wire
+      `SELECT id, status, duplicate_of_id, name, description, amount, deadline, source_url, wire, scan_source, submitted_by, metadata
        FROM scan_entries
        WHERE id = ANY($1::bigint[])
        ORDER BY id
@@ -299,7 +303,7 @@ export async function applyVerdict(pool: Pool, target: RecheckTarget, candidates
       await client.query('BEGIN');
       await lockDuplicateGraph(client);
       const locked = await client.query(
-        `SELECT id, status, duplicate_of_id, name, description, amount, deadline, source_url, wire
+        `SELECT id, status, duplicate_of_id, name, description, amount, deadline, source_url, wire, scan_source, submitted_by, metadata
          FROM scan_entries
          WHERE id = ANY($1::bigint[])
          ORDER BY id

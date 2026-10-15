@@ -6,8 +6,7 @@ const assert = require('node:assert/strict');
 const { normalizeUrl } = require('../src/utils/url');
 const {
   forumTopicKey,
-  forumResultIndexesToSkip,
-  findForumSourceUrlsByHost,
+  findForumHistoryByHost,
 } = require('../src/services/forum-seen');
 const { runDailyIntake } = require('../src/jobs/daily-intake');
 
@@ -84,15 +83,15 @@ test('forum topic key reuses normalizeUrl and adds forum-only rules', () => {
   // become the global dedup key.
   const snapshot = 'https://snapshot.org/#/aavedao.eth/proposal/0xabc';
   assert.ok(normalizeUrl(snapshot).includes('#/aavedao.eth/proposal/0xabc'));
-  assert.equal(forumTopicKey(snapshot).includes('#'), false);
+  assert.equal(forumTopicKey(snapshot).includes('#'), true);
+  assert.notEqual(forumTopicKey(snapshot), forumTopicKey(snapshot.replace('0xabc', '0xdef')));
 });
 
-test('a later equivalent URL in the same batch is skipped', () => {
-  const skip = forumResultIndexesToSkip(
-    [STORED_NORMALIZED, EQUIVALENT, FRESH],
-    [],
-  );
-  assert.deepEqual([...skip], [1]);
+test('a later equivalent URL in the same batch is skipped', async () => {
+  const pool = intakePool([]);
+  const summary = await runDailyIntake(pool, [forumSubmission(STORED_NORMALIZED, 'First'), forumSubmission(EQUIVALENT, 'Repeat'), forumSubmission(FRESH, 'Fresh')], { insertOnly: true });
+  assert.equal(summary.skippedAlreadySeen, 1);
+  assert.deepEqual(pool.insertedUrls, [STORED_NORMALIZED, FRESH]);
 });
 
 test('exact repeat URL is skipped before insert', async () => {
@@ -132,7 +131,7 @@ test('URL previously seen only on a declined entry is still skipped', async () =
   assert.equal(summary.totalIngested, 0);
   assert.deepEqual(pool.insertedUrls, []);
   const sql = lookupSql(pool).sql;
-  assert.equal(/status/i.test(sql), false);
+  assert.equal(/WHERE[\s\S]*status/i.test(sql), false);
   assert.equal(sql.includes('declined'), false);
 });
 
@@ -148,9 +147,9 @@ test('non-forum submissions do not use the forum already-seen check', async () =
   assert.equal(lookupSql(pool), undefined);
 });
 
-test('findForumSourceUrlsByHost queries every host and skips an empty list', async () => {
+test('findForumHistoryByHost queries every host and skips an empty list', async () => {
   let called = false;
-  const empty = await findForumSourceUrlsByHost({
+  const empty = await findForumHistoryByHost({
     query: async () => { called = true; return { rows: [] }; },
   }, ['', 'not a url']);
   assert.deepEqual(empty, []);
@@ -158,11 +157,11 @@ test('findForumSourceUrlsByHost queries every host and skips an empty list', asy
 
   const pool = {
     async query(sql, params) {
-      assert.equal(/status/i.test(sql), false);
+      assert.equal(/WHERE[\s\S]*status/i.test(sql), false);
       assert.deepEqual(params[0], ['forum.example.org']);
-      return { rows: [{ source_url: DECLINED }, { source_url: null }] };
+      return { rows: [{ id: 7, source_url: DECLINED, status: 'declined' }] };
     },
   };
-  const rows = await findForumSourceUrlsByHost(pool, [EQUIVALENT]);
-  assert.deepEqual(rows, [DECLINED]);
+  const rows = await findForumHistoryByHost(pool, [EQUIVALENT]);
+  assert.deepEqual(rows, [{ id: 7, source_url: DECLINED, status: 'declined' }]);
 });

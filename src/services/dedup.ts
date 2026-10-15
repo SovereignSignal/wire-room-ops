@@ -19,6 +19,7 @@ import { normalizeUrl, normalizeName, extractNameTokens } from './intake';
 import { demoteEntryToDuplicateInTransaction, lockDuplicateGraph } from './duplicate-chain';
 import { resolveProgram, assessRound, historyLine, ProgramResolutionStamp } from './program-identity';
 import { blockedSourceDomain, classifySourceLink } from './source-filter';
+import { findForumHistoryByHost, forumTopicKey, storedForumObservation, forumObservationAlreadySeen, forumObservationMayBeNew, forumUpdateNote } from './forum-seen';
 
 /**
  * "Semi-generic" tokens: these pass the main stopword filter in intake.ts
@@ -1306,7 +1307,7 @@ export interface ExistingEntryDedupInput {
   deadline?: string | Date | null;
 }
 
-export type ExistingEntryDedupOutcome = 'unique' | 'duplicate' | 'seed-conflict' | 'stale' | 'unresolved-parent';
+export type ExistingEntryDedupOutcome = 'unique' | 'duplicate' | 'seed-conflict' | 'stale' | 'unresolved-parent' | 'forum-update';
 
 /**
  * Move a raw row forward when its URL matches an entry that can never be a
@@ -1378,7 +1379,7 @@ export async function finalizeExistingEntryDedup(
     // Duplicate graph before URL registry is the global mutation lock order.
     await lockDuplicateGraph(client);
     const currentResult = await client.query(
-      `SELECT id, status, source_url, name, wire, created_at
+      `SELECT id, status, source_url, name, wire, created_at, scan_source, submitted_by, metadata
        FROM scan_entries
        WHERE id = $1
        FOR UPDATE`,
@@ -1392,6 +1393,38 @@ export async function finalizeExistingEntryDedup(
         || current.wire !== entry.wire) {
       await client.query('ROLLBACK');
       return { outcome: 'stale', canonicalParentId: null };
+    }
+
+    // The forum collector's persisted source snapshot survives crash/resume.
+    // Revalidate it under the same graph lock as URL/name claims. Public intake
+    // cannot create this reserved stamp; title variations never authorize it.
+    const observation = storedForumObservation(current);
+    if (observation) {
+      const history = (await findForumHistoryByHost(client, [entry.sourceUrl]))
+        .filter(row => row.id < entry.id && forumTopicKey(row.source_url) === observation.topicKey);
+      if (forumObservationAlreadySeen(observation, history)) {
+        await client.query(
+          `UPDATE scan_entries SET status = 'archived', distributable = false,
+             metadata = COALESCE(metadata, '{}'::jsonb) || '{"archived_reason":"unchanged_forum_observation"}'::jsonb
+           WHERE id = $1 AND status = $2`, [entry.id, entry.expectedStatus]);
+        await client.query('COMMIT');
+        return { outcome: 'duplicate', canonicalParentId: null };
+      }
+      const prior = history.find(row => row.id === observation.priorEntryId);
+      if (prior && forumObservationMayBeNew(observation, prior)) {
+        const note = forumUpdateNote(observation);
+        await client.query(
+          `UPDATE scan_entries SET status = 'queued', classification = 'UNCHECKED', quality_score = NULL,
+             duplicate_of_id = NULL, duplicate_reason = NULL, distributable = false,
+             operator_notes = CONCAT_WS(E'\n', NULLIF(operator_notes, ''), $2::text),
+             metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
+               'operator_route', 'source_check', 'related_decided', $3::int,
+               'decided_recheck', jsonb_build_object('verdict', 'update', 'reason', $2::text, 'source', 'forum_observation')),
+             updated_at = NOW()
+           WHERE id = $1 AND status = $4`, [entry.id, note, prior.id, entry.expectedStatus]);
+        await client.query('COMMIT');
+        return { outcome: 'forum-update', canonicalParentId: null };
+      }
     }
 
     // Repeat the semantic check after locking. Results obtained before this

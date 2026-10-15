@@ -317,6 +317,11 @@ export async function processRawEntries(pool?: Pool): Promise<{
             deadline: row.deadline_parsed ?? row.deadline ?? null,
           }, DEFAULT_DEDUPE_WINDOW_DAYS, { programGate: true });
           if (dedupOutcome.outcome === 'stale') continue;
+          if (dedupOutcome.outcome === 'forum-update') {
+            stats.queued++;
+            stats.processed++;
+            continue;
+          }
           if (dedupOutcome.outcome === 'duplicate' || dedupOutcome.outcome === 'seed-conflict') {
             stats.duplicates++;
             stats.processed++;

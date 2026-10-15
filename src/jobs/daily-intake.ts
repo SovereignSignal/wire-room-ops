@@ -5,7 +5,7 @@
  * Processes raw scan submissions through the full pipeline:
  *
  * 1. Parse structured text into RawScanResult[]
- * 2. For forum submissions only, skip topic URLs already stored on scan_entries
+ * 2. For forums, skip repeated observations; retain trusted source changes
  * 3. Insert the rest as scan_entries with status='raw'
  * 4. Run dedup against seen_urls and seen_names
  * 5. Score unique entries for quality
@@ -38,7 +38,7 @@ import {
   hasUsefulSourceUrl,
 } from '../services/intake';
 import { findRelatedOpportunity, finalizeExistingEntryDedup, annotateAlternateSource } from '../services/dedup';
-import { findForumSourceUrlsByHost, forumResultIndexesToSkip } from '../services/forum-seen';
+import { findForumHistoryByHost, forumTopicKey, forumObservationAlreadySeen, forumObservationMayBeNew, trustedForumObservation, forumIntakeMetadata } from '../services/forum-seen';
 // quality-scorer.ts replaced by LLM scoring in classifier.ts
 import { seedSeenUrlsFromMessages } from '../db';
 import { finalizeProgramForEntry } from '../services/program-identity';
@@ -279,8 +279,8 @@ export async function runDailyIntake(
 
   progress(`Parsed ${allResults.length} total results from ${submissions.length} scans`, 5);
 
-  // Forum rows are the only submissions that re-fetch the same Discourse topic
-  // under a slightly different URL. Drop those before insert. Every other
+  // Forum rows re-fetch the same topic under slightly different URLs. Drop
+  // repeats before insert, preserving collector-attested source changes. Every other
   // source still inserts first and lets the existing dedup pass decide.
   let skippedAlreadySeen = 0;
   const forumPositions: number[] = [];
@@ -290,8 +290,21 @@ export async function runDailyIntake(
   if (forumPositions.length > 0) {
     const forumUrls = forumPositions.map(i => allResults[i].result.sourceUrl);
     try {
-      const existing = await findForumSourceUrlsByHost(pool, forumUrls);
-      const skip = forumResultIndexesToSkip(forumUrls, existing);
+      const existing = await findForumHistoryByHost(pool, forumUrls);
+      const skip = new Set<number>();
+      const claimed = new Set<string>();
+      forumPositions.forEach((position, localIndex) => {
+        const item = allResults[position];
+        const key = forumTopicKey(item.result.sourceUrl);
+        const history = existing.filter(row => forumTopicKey(row.source_url) === key);
+        const observation = item.submittedBy === 'forum:discuss.watch' ? trustedForumObservation(item.result) : undefined;
+        const claimKey = observation ? `${key}:${observation.fingerprint}` : key;
+        const prior = observation?.priorEntryId ? history.find(row => row.id === observation.priorEntryId) : undefined;
+        const changed = observation && prior && forumObservationMayBeNew(observation, prior)
+          && !forumObservationAlreadySeen(observation, history);
+        if (claimed.has(claimKey) || (history.length > 0 && !changed)) skip.add(localIndex);
+        else claimed.add(claimKey);
+      });
       if (skip.size > 0) {
         skippedAlreadySeen = skip.size;
         const drop = new Set<number>();
@@ -325,6 +338,7 @@ export async function runDailyIntake(
     for (let i = 0; i < batch.length; i++) {
       const item = batch[i];
       const parsed = parseAmount(item.result.amount);
+      const metadata = forumIntakeMetadata(item.result, item.scanSource, item.submittedBy);
       const deadlineParsed = parseDeadline(item.result.deadline);
       const offset = i * COLS_PER_ROW;
 
@@ -349,7 +363,7 @@ export async function runDailyIntake(
         item.result.sourcePublishedAt || null,
         item.rawOutput || null,
         item.parseStrategy || null,
-        item.result.metadata ? JSON.stringify(item.result.metadata) : null,
+        metadata ? JSON.stringify(metadata) : null,
         parseWireArea(item.result.metadata?.wire_area),
       );
     }
