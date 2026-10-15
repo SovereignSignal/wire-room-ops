@@ -3,7 +3,7 @@
  *
  * Governance-forum discovery lane. Per wire:
  *   1. Pull candidate threads from a curated governance/grants forum allowlist
- *      (plus a `hot` catch-all), age-gated on original post date.
+ *      (plus a `hot` catch-all); known older topics can surface source changes.
  *   2. LLM-judge each thread (opportunity / not) and extract structured fields.
  *
  * Opportunities are mapped to RawScanResult[] for the intake pipeline.
@@ -12,7 +12,9 @@
  */
 
 import { config } from '../config';
+import type { Pool } from 'pg';
 import type { RawScanResult } from '../types/intake';
+import { findForumHistoryByHost, forumFingerprint, forumTopicKey, forumObservationAlreadySeen, forumObservationMayBeNew, stampForumObservation, storedForumObservation, trustedForumObservation, forumUpdateNote, type ForumObservation, type ForumHistoryEntry } from './forum-seen';
 import { sleep } from '../utils/async';
 import { getCachedProvider } from './api-provider';
 import { logApiUsage } from './api-usage';
@@ -36,6 +38,8 @@ export interface ForumScanOptions {
   wire?: string;
   since?: string;
   onProgress?: (message: string, pct: number) => void;
+  /** Supplied only by the in-process forum job, never by an intake request. */
+  pool?: Pool;
 }
 
 // Retained name for the orchestrator's options (was the dual-scan option shape).
@@ -247,6 +251,8 @@ interface GrantsFeedItem {
   excerpt?: string | null;
   topicCreatedAt?: string | null;
   firstSeenAt?: string;
+  lastActivityAt?: string | null;
+  engagement?: { replies?: number };
 }
 
 interface GrantsFeedResponse {
@@ -290,7 +296,7 @@ export function grantsFeedItemToRaw(item: GrantsFeedItem): RawScanResult {
   if (program) metadata.program = program;
   if (wireArea) metadata.wire_area = wireArea;
 
-  return {
+  const raw: RawScanResult = {
     name,
     description: parts.join(' — '),
     sourceUrl: item.url || '',
@@ -299,6 +305,14 @@ export function grantsFeedItemToRaw(item: GrantsFeedItem): RawScanResult {
     sourcePublishedAt: item.topicCreatedAt || item.firstSeenAt || null,
     metadata: Object.keys(metadata).length ? metadata : undefined,
   };
+  return stampForumObservation(raw, {
+    version: 1, topicKey: forumTopicKey(raw.sourceUrl),
+    revision: forumFingerprint([title, item.lastActivityAt || item.topicCreatedAt || null, item.engagement?.replies ?? 0]),
+    fingerprint: forumFingerprint([title, item.excerpt || '', program, item.status || null, item.amountMin ?? null, item.amountMax ?? null, item.currency || null, item.deadline || null]),
+    originalPublishedAt: item.topicCreatedAt || null,
+    lastActivityAt: item.lastActivityAt || item.topicCreatedAt || null,
+    evidence: 'grants_feed', complete: false, excerpt: (item.excerpt || title).slice(0, 6000),
+  });
 }
 
 /** Second discuss.watch pull: award results and live capital votes, not open calls.
@@ -373,6 +387,7 @@ export async function fetchGrantsFeedResults(
   wire: string,
   since: string,
   extra: Record<string, string> = {},
+  includeRecentlyActive = false,
 ): Promise<{ results: RawScanResult[]; urls: Set<string> }> {
   const empty = { results: [] as RawScanResult[], urls: new Set<string>() };
   const baseUrl = config.forum.discussWatchBaseUrl;
@@ -411,7 +426,8 @@ export async function fetchGrantsFeedResults(
     if (FORUM_SKIP_PATTERNS.some(p => p.test(skipHaystack))) continue;
     // Age gate on the thread's original post date
     const created = item.topicCreatedAt ? new Date(item.topicCreatedAt).getTime() : NaN;
-    if (!Number.isNaN(created) && created < ageCutoff) continue;
+      if (!Number.isNaN(created) && created < ageCutoff
+          && !(includeRecentlyActive && item.lastActivityAt && Date.parse(item.lastActivityAt) >= Date.parse(since))) continue;
     if (!rememberGrantsFeedItem(seenIds, seenUrls, item)) continue;
     const raw = grantsFeedItemToRaw(item);
     if (!raw.sourceUrl) continue;
@@ -427,6 +443,7 @@ export interface ForumCandidate {
   url: string;
   forumName: string;
   createdAt: string | null;
+  lastActivityAt?: string | null;
   replies: number;
   views: number;
   source: 'allowlist' | 'hot';
@@ -490,6 +507,7 @@ export async function fetchGovernanceForumCandidates(
   wire: string,
   since: string,
   onProgress?: (msg: string, pct: number) => void,
+  includeRecentlyActive = false,
 ): Promise<ForumCandidate[]> {
   const baseUrl = config.forum.discussWatchBaseUrl;
   const category = WIRE_CATEGORY_MAP[wire] || wire;
@@ -503,7 +521,8 @@ export async function fetchGovernanceForumCandidates(
     for (const item of items || []) {
       if (!item.url || !item.title) continue;
       // Age gate on original post date (since= filters lastActivityAt, not createdAt)
-      if (item.createdAt && new Date(item.createdAt).getTime() < ageCutoff) continue;
+      if (item.createdAt && new Date(item.createdAt).getTime() < ageCutoff
+          && !(includeRecentlyActive && item.lastActivityAt && Date.parse(item.lastActivityAt) >= Date.parse(since))) continue;
       const forumName = item.forum?.name || item.forum?.token || '';
       if (FORUM_SKIP_PATTERNS.some(p => p.test(forumName))) continue;
       const key = normalizeUrl(item.url);
@@ -512,7 +531,8 @@ export async function fetchGovernanceForumCandidates(
         title: item.title,
         url: item.url,
         forumName,
-        createdAt: item.createdAt || item.lastActivityAt || null,
+        createdAt: item.createdAt || null,
+        lastActivityAt: item.lastActivityAt || item.createdAt || null,
         replies: item.replies ?? 0,
         views: item.views ?? 0,
         source: src,
@@ -581,6 +601,130 @@ function candidateToRaw(c: ForumCandidate, judged: ForumJudgment | null): RawSca
     sourcePublishedAt: c.createdAt,
   };
 }
+
+export function forumCandidateRevision(c: ForumCandidate): string {
+  return forumFingerprint([c.title.trim(), c.lastActivityAt || c.createdAt, c.replies]);
+}
+
+function sourceText(html: string): string {
+  return html.replace(/<br\s*\/?\s*>/gi, '\n').replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/\s+/g, ' ').trim();
+}
+
+/** Read only the existing discuss.watch detail adapter, at most 20 times per scan.
+ * It can expose only part of a long thread; that limitation is retained in review. */
+export async function captureForumObservation(c: ForumCandidate, budget: { remaining: number }): Promise<ForumObservation> {
+  const observation: ForumObservation = {
+    version: 1, topicKey: forumTopicKey(c.url), revision: forumCandidateRevision(c),
+    fingerprint: forumFingerprint([c.title, c.lastActivityAt || c.createdAt, c.replies]),
+    originalPublishedAt: c.createdAt, lastActivityAt: c.lastActivityAt || c.createdAt,
+    evidence: 'activity_only', complete: false, excerpt: c.title,
+  };
+  let key: URL;
+  try { key = new URL(observation.topicKey); } catch { return observation; }
+  const topicId = key.pathname.match(/^\/t\/(\d+)$/)?.[1];
+  if (!topicId || budget.remaining <= 0) return observation;
+  budget.remaining--;
+  const endpoint = new URL('../discourse/topic', config.forum.discussWatchBaseUrl.replace(/\/$/, '') + '/');
+  endpoint.searchParams.set('forumUrl', key.origin);
+  endpoint.searchParams.set('topicId', topicId);
+  try {
+    const response = await fetch(endpoint, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(15000) });
+    if (!response.ok) return observation;
+    const data = await response.json() as { topic?: { id?: number; title?: string; postsCount?: number; posts?: Array<{ id?: number; postNumber?: number; content?: string }> } };
+    const topic = data.topic;
+    if (String(topic?.id) !== topicId || !Array.isArray(topic?.posts) || !topic.posts.length) return observation;
+    const posts = topic.posts.filter(p => typeof p.content === 'string').map(p => ({
+      id: p.id, number: p.postNumber, text: sourceText(p.content!),
+      links: [...p.content!.matchAll(/href=["']([^"']+)["']/g)].map(match => match[1]),
+    })).sort((a, b) => (a.number || 0) - (b.number || 0));
+    if (!posts.length) return observation;
+    const complete = Number.isInteger(topic.postsCount) && topic.postsCount === posts.length;
+    return {
+      ...observation, evidence: 'topic_detail', complete,
+      // Engagement and timestamps cannot change a complete content fingerprint.
+      // With partial detail, newer activity may be in the unreturned posts.
+      fingerprint: forumFingerprint([topic.title || c.title, posts, complete ? null : observation.revision]),
+      excerpt: posts.slice(-3).map(p => `Post ${p.number ?? p.id}: ${p.text.slice(0, 1800)}`).join('\n').slice(0, 6000),
+    };
+  } catch {
+    return observation;
+  }
+}
+
+function sameTopicHistory(url: string, history: ForumHistoryEntry[]): ForumHistoryEntry[] {
+  const key = forumTopicKey(url);
+  return history.filter(row => forumTopicKey(row.source_url) === key);
+}
+
+/** Legacy rows have no body snapshot: only a later authoritative source activity
+ * can reopen them. A model's changed paraphrase or a newer scan date cannot. */
+function updatedForumResult(raw: RawScanResult, observation: ForumObservation, prior: ForumHistoryEntry): RawScanResult {
+  const old = storedForumObservation(prior);
+  const contentChanged = old?.evidence === observation.evidence
+    && ((old.complete && observation.complete) || observation.evidence === 'grants_feed');
+  const update: ForumObservation = { ...observation, priorEntryId: prior.id, changeEvidence: contentChanged ? 'content' : 'activity' };
+  const result = {
+    ...raw,
+    description: `${forumUpdateNote(update)}\n\nCurrent source evidence:\n${observation.excerpt}`,
+    // Never turn latest activity into the thread's original publication date.
+    sourcePublishedAt: observation.originalPublishedAt,
+  };
+  return stampForumObservation(result, update);
+}
+
+/** Reuse the daily scan: known changed topics go to source-check review; only
+ * genuinely new topics spend the existing opportunity-judge call. */
+export async function prepareForumObservations(
+  pool: Pool, candidates: ForumCandidate[], feeds: RawScanResult[], budget: { remaining: number },
+): Promise<{ candidates: ForumCandidate[]; feeds: RawScanResult[]; updates: RawScanResult[] }> {
+  const history = await findForumHistoryByHost(pool, [...candidates.map(c => c.url), ...feeds.map(r => r.sourceUrl)]);
+  const out = { candidates: [] as ForumCandidate[], feeds: [] as RawScanResult[], updates: [] as RawScanResult[] };
+  const ageCutoff = Date.now() - MAX_DISCUSSION_AGE_DAYS * 86400000;
+  for (const raw of feeds) {
+    const priorRows = sameTopicHistory(raw.sourceUrl, history);
+    const observation = trustedForumObservation(raw);
+    if (!priorRows.length) {
+      if (!raw.sourcePublishedAt || Date.parse(raw.sourcePublishedAt) >= ageCutoff) out.feeds.push(raw);
+    } else if (observation && !forumObservationAlreadySeen(observation, priorRows)
+        && forumObservationMayBeNew(observation, priorRows[0])) {
+      out.updates.push(updatedForumResult(raw, observation, priorRows[0]));
+    }
+  }
+  for (const c of candidates) {
+    const priorRows = sameTopicHistory(c.url, history);
+    const prior = priorRows[0];
+    if (!prior) {
+      if (!c.createdAt || Date.parse(c.createdAt) >= ageCutoff) out.candidates.push(c);
+      continue;
+    }
+    const old = storedForumObservation(prior);
+    // A first-post edit need not bump Discourse activity. Re-read a bounded
+    // number of known detail snapshots even when the list revision is stable.
+    // Without a prior detail baseline, an unchanged revision is not evidence
+    // of a new event and must not trigger a historical replay.
+    if (old?.revision === forumCandidateRevision(c)
+        && (old.evidence !== 'topic_detail' || budget.remaining <= 0)) continue;
+    if (old?.evidence === 'grants_feed' && old.lastActivityAt && c.lastActivityAt
+        && Date.parse(c.lastActivityAt) <= Date.parse(old.lastActivityAt)) continue;
+    if (!old && !forumObservationMayBeNew({
+      version: 1, topicKey: forumTopicKey(c.url), revision: '', fingerprint: '',
+      originalPublishedAt: c.createdAt, lastActivityAt: c.lastActivityAt || c.createdAt,
+      evidence: 'activity_only', complete: false, excerpt: c.title,
+    }, prior)) continue;
+    const observation = await captureForumObservation(c, budget);
+    if (old?.revision === observation.revision
+        && (old.evidence !== observation.evidence || old.complete !== observation.complete)) continue;
+    if (forumObservationAlreadySeen(observation, priorRows) || !forumObservationMayBeNew(observation, prior)) continue;
+    // If both adapters observed the change, retain one source-check candidate
+    // with the thread detail, rather than one feed row plus one topic row.
+    out.updates = out.updates.filter(raw => forumTopicKey(raw.sourceUrl) !== observation.topicKey);
+    out.updates.push(updatedForumResult(candidateToRaw(c, null), observation, prior));
+  }
+  return out;
+}
+
 
 interface ForumJudgment {
   n?: number;
@@ -735,6 +879,7 @@ export async function runGovernanceForumScan(
   const byWire: WireResults[] = [];
   let candidateCount = 0;
   let opportunityCount = 0;
+  const detailBudget = { remaining: 20 };
 
   for (let wi = 0; wi < wires.length; wi++) {
     const wire = wires[wi];
@@ -749,9 +894,9 @@ export async function runGovernanceForumScan(
     let feedResults: RawScanResult[] = [];
     let feedUrls = new Set<string>();
     if (config.forum.grantsFeedEnabled) {
-      ({ results: feedResults, urls: feedUrls } = await fetchGrantsFeedResults(wire, since));
+      ({ results: feedResults, urls: feedUrls } = await fetchGrantsFeedResults(wire, since, {}, Boolean(options.pool)));
       await sleep(REQUEST_DELAY_MS);
-      const news = await fetchGrantsFeedResults(wire, since, { ...DISCUSS_WATCH_NEWS_QUERY });
+      const news = await fetchGrantsFeedResults(wire, since, { ...DISCUSS_WATCH_NEWS_QUERY }, Boolean(options.pool));
       for (const item of news.results) {
         const key = normalizeUrl(item.sourceUrl);
         if (feedUrls.has(key)) continue;
@@ -762,16 +907,32 @@ export async function runGovernanceForumScan(
       await sleep(REQUEST_DELAY_MS);
     }
 
-    const fetched = await fetchGovernanceForumCandidates(wire, since, (_m, p) => wp(10 + p * 0.25));
+    const fetched = await fetchGovernanceForumCandidates(wire, since, (_m, p) => wp(10 + p * 0.25), Boolean(options.pool));
     // Items the grants feed already judged should not re-spend the Grok judge.
-    const candidates = fetched.filter(c => !feedUrls.has(normalizeUrl(c.url)));
-    candidateCount += candidates.length;
+    let candidates = fetched;
+    candidateCount += candidates.filter(c => !feedUrls.has(normalizeUrl(c.url))).length;
+    let updates: RawScanResult[] = [];
+    if (options.pool) {
+      const prepared = await prepareForumObservations(options.pool, candidates, feedResults, detailBudget);
+      candidates = prepared.candidates;
+      feedResults = prepared.feeds;
+      updates = prepared.updates;
+    }
+    // A feed copy avoids another opportunity judge, but must not hide a new
+    // reply on that topic from the source-change inspection above.
+    candidates = candidates.filter(c => !feedUrls.has(normalizeUrl(c.url)));
 
     const judged = candidates.length > 0
       ? await judgeForumCandidates(candidates, wire, (_m, p) => wp(35 + p * 0.6))
       : [];
+    if (options.pool) {
+      for (const raw of judged) {
+        const candidate = candidates.find(c => forumTopicKey(c.url) === forumTopicKey(raw.sourceUrl));
+        if (candidate) stampForumObservation(raw, await captureForumObservation(candidate, detailBudget));
+      }
+    }
 
-    const opportunities = [...feedResults, ...judged];
+    const opportunities = [...feedResults, ...judged, ...updates];
     if (opportunities.length > 0) {
       byWire.push({ wire, results: opportunities });
       opportunityCount += opportunities.length;

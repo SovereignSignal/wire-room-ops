@@ -3,7 +3,7 @@
  *
  * Governance-forum discovery via discuss.watch:
  * 1. Pull candidates from a curated per-wire governance/grants forum allowlist
- *    (plus a `hot` catch-all), age-gated on original post date.
+ *    (plus a `hot` catch-all), retaining recent changes to known older topics.
  * 2. LLM judge each thread: opportunity / not + structured extraction.
  * 3. Feed opportunities into the intake pipeline (dedup -> classify -> queue).
  *
@@ -53,6 +53,7 @@ export async function runForumScan(
 
   // 1. Pull governance-forum candidates and LLM-judge them into opportunities
   const scanResult = await runGovernanceForumScan({
+    pool,
     wire: options.wire,
     since,
     onProgress: (msg, pct) => {
