@@ -22,8 +22,9 @@ jobs:
           INTERNAL_API_KEY: ${{ secrets.INTERNAL_API_KEY }}
           TEXT: ${{ inputs.text }}
           # Repo variable WRO_BASE_URL lets the service move (e.g. into wire-room-db for
-          # private Postgres networking) without editing this file.
-          WRO_URL: ${{ vars.WRO_BASE_URL || 'https://wire-room-ops-production.up.railway.app' }}/api/scan/telegram-batch
+          # private Postgres networking) without editing this file. Fallback is the live
+          # public app. The previous wire-room-ops-production host returns Railway 404.
+          WRO_URL: ${{ vars.WRO_BASE_URL || 'https://wire-room-ops-production-0daf.up.railway.app' }}/api/scan/telegram-batch
         run: |
           set -euo pipefail
           KEY="${WRO_INTERNAL_API_KEY:-${INTERNAL_API_KEY:-}}"
