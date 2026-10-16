@@ -5,8 +5,6 @@ import { config } from '../config';
 import { logApiUsage } from './api-usage';
 import { resolveGrokSearchModel } from './grok';
 
-const DEFAULT_CONTACTS_DB_ID = '66190528a1194cdc85797763d67c5a71';
-const DEFAULT_ORGS_DB_ID = '301000c0-d590-81c4-8435-c6db7782db12';
 
 // ============================================================
 // Responses API types (mirrors org-enricher.ts)
@@ -150,8 +148,8 @@ export async function createNotionContact(
   orgName?: string,
 ): Promise<{ created: boolean; pageId?: string; reason?: string }> {
   const { pool, token } = deps;
-  const contactsDbId = deps.contactsDbId ?? DEFAULT_CONTACTS_DB_ID;
-  const orgsDbId = deps.orgsDbId ?? DEFAULT_ORGS_DB_ID;
+  const contactsDbId = deps.contactsDbId ?? config.notionDatabases.contacts;
+  const orgsDbId = deps.orgsDbId ?? config.notionDatabases.orgs;
 
   // --- Dedup: check Notion Contacts DB ---
   // Use pre-loaded pages if provided (batch mode); otherwise query Notion (back-compat)
@@ -489,8 +487,8 @@ export async function runContactDiscovery(
   }
 
   const token = crm.config.notion_token;
-  const contactsDbId = crm.config.contacts_database_id || DEFAULT_CONTACTS_DB_ID;
-  const orgsDbId = crm.config.database_id || DEFAULT_ORGS_DB_ID;
+  const contactsDbId = crm.config.contacts_database_id || config.notionDatabases.contacts;
+  const orgsDbId = crm.config.database_id || config.notionDatabases.orgs;
 
   if (!token) {
     console.warn('[ContactDiscovery] No notion_token in SimpleCRM config — skipping');

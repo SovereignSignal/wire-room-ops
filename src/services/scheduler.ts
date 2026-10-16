@@ -519,7 +519,7 @@ function createJobExecutor(schedule: ScheduleConfig) {
             feeds: feedsLane,
             forum: forumLane,
             bdLeads: bdLeadsForEmail,
-            bdLeadsUrl: 'https://app.notion.com/p/8b84ca08e4dd4396b49535936f823afd',
+            bdLeadsUrl: config.bdLeads.digestUrl || undefined,
           });
           // A skip returns normally. Do not mark the run failed and do not
           // send a failure alert — that path is only the catch below.

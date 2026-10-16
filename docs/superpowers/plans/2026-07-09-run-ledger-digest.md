@@ -1057,7 +1057,7 @@ Then REPLACE everything from `const digest = await runDailyDigest(pool);` down t
             feeds: feedsLane,
             forum: forumLane,
             bdLeads: bdLeadsForEmail,
-            bdLeadsUrl: 'https://app.notion.com/p/8b84ca08e4dd4396b49535936f823afd',
+            bdLeadsUrl: '<BD_LEADS_DIGEST_URL>',
           });
           console.log(`[Scheduler] Daily digest email sent (${summary.freshCount} new of ${summary.totalNew}, ${summary.issueCount} issues${summary.seeded ? ', watermark seeded' : ''})`);
         } catch (emailErr) {

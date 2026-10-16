@@ -109,6 +109,17 @@ export const config = {
     grantsMinConfidence: parseInt(process.env.FORUM_GRANTS_MIN_CONFIDENCE || '60', 10) || 60,
   },
 
+  // Notion database ids the CRM jobs read. Empty means the job skips with a reason.
+  notionDatabases: {
+    contacts: process.env.CONTACTS_NOTION_DATABASE_ID || '',
+    orgs: process.env.ORGS_NOTION_DATABASE_ID || '',
+  },
+
+  bdLeads: {
+    // Link under the BD leads block of the daily digest email; omitted when unset.
+    digestUrl: process.env.BD_LEADS_DIGEST_URL || '',
+  },
+
   crm: {
     // Org enrichment uses Grok Responses + web_search (same path as scans).
     // The grok provider's default_model may be a cheap chat model (glm-5.2);

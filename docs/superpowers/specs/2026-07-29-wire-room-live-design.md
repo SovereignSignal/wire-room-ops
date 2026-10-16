@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-29
 **Status:** Design complete. Blocked on owner decisions (see Open Questions).
-**Review surface:** [Notion page](https://app.notion.com/p/3ad000c0d59081a09f2ce5ac10efab30) under 📡 Grant Wires → Operations
+**Review surface:** a private Notion page in the operator's workspace
 **Nothing is built yet.**
 
 ---

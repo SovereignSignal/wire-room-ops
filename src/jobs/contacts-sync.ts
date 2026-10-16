@@ -17,9 +17,8 @@
 
 import type { Pool } from 'pg';
 import { getIntegrationConfigs, queryAllNotionPages } from '../services/notion-sync';
+import { config } from '../config';
 
-// Falls back to the Contacts DB id if not set on the integration config.
-const CONTACTS_DB_ID_FALLBACK = '66190528a1194cdc85797763d67c5a71';
 
 export interface ContactsSyncResult {
   ok: boolean;
@@ -54,7 +53,8 @@ export async function runContactsSync(pool: Pool): Promise<ContactsSyncResult> {
     return { ok: false, message: 'No enabled Notion integration configured' };
   }
   const token = integration.config.notion_token as string;
-  const dbId = (integration.config.contacts_database_id as string) || CONTACTS_DB_ID_FALLBACK;
+  const dbId = (integration.config.contacts_database_id as string) || config.notionDatabases.contacts;
+  if (!dbId) return { ok: false, message: 'No Contacts database id configured (integration config or CONTACTS_NOTION_DATABASE_ID)' };
 
   let pages;
   try {

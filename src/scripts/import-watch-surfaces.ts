@@ -7,10 +7,11 @@
  */
 import { getPool } from '../db';
 import { getIntegrationConfigs, queryAllNotionPages } from '../services/notion-sync';
+import { config } from '../config';
 import type { SurfaceType } from '../types/intake';
 
-// Sov's Orgs database (page 301000c0d590815b826dd1ac087df53f wraps this db).
-const ORGS_DATABASE_ID = '301000c0d59081c48435c6db7782db12';
+// The Orgs database, from ORGS_NOTION_DATABASE_ID.
+const ORGS_DATABASE_ID = config.notionDatabases.orgs;
 
 export interface SurfaceRow {
   org_name: string;
@@ -181,7 +182,8 @@ async function main(): Promise<void> {
   const integration = integrations.find(i => i.enabled);
   const token = integration?.config?.notion_token;
   if (!token) throw new Error('No Notion integration configured (integration_config table)');
-  console.log(`[Import] Querying Sov's Orgs (${ORGS_DATABASE_ID})...`);
+  if (!ORGS_DATABASE_ID) throw new Error('ORGS_NOTION_DATABASE_ID is not set');
+  console.log('[Import] Querying the Orgs database...');
   const pages = await queryAllNotionPages(token, ORGS_DATABASE_ID);
   const rows = pages.flatMap(p => mapOrgToSurfaces(p as NotionPage)).concat(SCOUT_SEED_SURFACES);
   const { byType } = await upsertSurfaces(rows, write);

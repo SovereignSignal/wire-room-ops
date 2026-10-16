@@ -88,7 +88,7 @@ This means the distribution config for X credentials only needs one set of creds
 
 ## The 9 Grok Prompts (Ready to Load)
 
-All 9 prompts are documented in Notion under "Daily Scans: Approach and Tools" (https://www.notion.so/2b9000c0d59080d8965af97109ef20b4). Three wires, three variants each (A/B/C). All are v3.0 from Feb 16, 2026.
+All 9 prompts are documented in Notion under "Daily Scans: Approach and Tools" (private Notion page). Three wires, three variants each (A/B/C). All are v3.0 from Feb 16, 2026.
 
 ### Prompt Strategy
 
@@ -101,19 +101,19 @@ All 9 prompts are documented in Notion under "Daily Scans: Approach and Tools" (
 ### Prompt Pages in Notion
 
 **Crypto:**
-- Crypto A (Action Scan): https://www.notion.so/309000c0d59081a59b21dc94da540bc6
-- Crypto B (Landscape Scan): https://www.notion.so/309000c0d59081b190c2f4e615046199
-- Crypto C (Open Sweep): https://www.notion.so/309000c0d59081e89903f1ddba8ad53b
+- Crypto A (Action Scan): private Notion page
+- Crypto B (Landscape Scan): private Notion page
+- Crypto C (Open Sweep): private Notion page
 
 **AI:**
-- AI A (Action Scan): https://www.notion.so/309000c0d590815989aaf297c996329a
-- AI B (Landscape Scan): https://www.notion.so/309000c0d5908146b101df00589b48e6
-- AI C (Open Sweep): https://www.notion.so/309000c0d59081c3a601ee8cb423ea36
+- AI A (Action Scan): private Notion page
+- AI B (Landscape Scan): private Notion page
+- AI C (Open Sweep): private Notion page
 
 **OSS:**
-- OSS A (Action Scan): https://www.notion.so/309000c0d59081799254c5056d746bec
-- OSS B (Landscape Scan): https://www.notion.so/309000c0d5908115bd59cf3d7583d300
-- OSS C (Open Sweep): https://www.notion.so/309000c0d59081f5ab84db03a49bf1dd
+- OSS A (Action Scan): private Notion page
+- OSS B (Landscape Scan): private Notion page
+- OSS C (Open Sweep): private Notion page
 
 ### Prompt Output Format
 
