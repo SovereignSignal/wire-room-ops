@@ -1,4 +1,5 @@
 import cron, { ScheduledTask } from 'node-cron';
+import { acquireScheduledJobLock, type ScheduledJobLock } from './scheduled-job-lock';
 import { ScheduleType } from '../types/intake';
 import { runScanExecution } from '../jobs/scan-execution';
 import { runForumScan } from '../jobs/forum-scan';
@@ -285,20 +286,14 @@ function buildCronExpression(schedule: ScheduleConfig): string {
 }
 
 function createJobExecutor(schedule: ScheduleConfig) {
-  const executor = async function executeScheduledJob(attempt = 0): Promise<void> {
+  const executor = async function executeScheduledJob(attempt: 0 | 1 = 0, occurrence = new Date()): Promise<void> {
     // Prevent overlapping execution
     if (executingJobs.has(schedule.id)) {
       console.log(`[Scheduler] Job "${schedule.name}" is already running, skipping overlapping execution`);
       return;
     }
 
-    if (attempt === 0) {
-      const pending = pendingRetryTimers.get(schedule.id);
-      if (pending) clearTimeout(pending);
-      pendingRetryTimers.delete(schedule.id);
-    }
     const jobStartTime = new Date();
-    console.log(`[Scheduler] Starting job for "${schedule.name}" at ${jobStartTime.toISOString()}`);
 
     // Get fresh schedule data in case it was updated
     const currentScheduleData = schedules.get(schedule.id);
@@ -308,19 +303,36 @@ function createJobExecutor(schedule: ScheduleConfig) {
     }
 
     executingJobs.add(schedule.id);
-    // Re-check DB enabled flag — ensures disabling in DB takes effect without restart
+    let jobLock: ScheduledJobLock | null = null;
     try {
-      const pool = getPool();
-      const freshCheck = await pool.query('SELECT enabled FROM schedules WHERE id = $1', [schedule.id]);
-      if (!freshCheck.rows[0]?.enabled) {
-        console.log(`[Scheduler] Schedule "${schedule.name}" disabled in DB, skipping`);
+      jobLock = await acquireScheduledJobLock(getPool(), schedule.id, occurrence, attempt);
+      if (!jobLock) {
+        console.log(`[Scheduler] Job "${schedule.name}" is running elsewhere or this occurrence was already claimed, skipping`);
         executingJobs.delete(schedule.id);
         return;
       }
-    } catch (err) {
-      console.warn(`[Scheduler] Could not verify enabled flag for "${schedule.name}", proceeding`);
+      // Fail closed before any discovery/spend if ownership or enabled state cannot be checked.
+      const freshCheck = await jobLock.client.query('SELECT enabled FROM schedules WHERE id = $1', [schedule.id]);
+      if (!freshCheck.rows[0]?.enabled) {
+        console.log(`[Scheduler] Schedule "${schedule.name}" disabled in DB, skipping`);
+        await jobLock.release();
+        executingJobs.delete(schedule.id);
+        return;
+      }
+    } catch (error) {
+      await jobLock?.release().catch(releaseError => console.error('[Scheduler] Lock cleanup failed:', releaseError));
+      executingJobs.delete(schedule.id);
+      console.error(`[Scheduler] Could not claim "${schedule.name}" safely, skipping:`, error);
+      return;
     }
 
+    if (attempt === 0) {
+      const pending = pendingRetryTimers.get(schedule.id);
+      if (pending) clearTimeout(pending);
+      pendingRetryTimers.delete(schedule.id);
+    }
+
+    console.log(`[Scheduler] Starting job for "${schedule.name}" at ${jobStartTime.toISOString()}`);
     const status: JobStatus = { lastRun: jobStartTime, status: null, error: null, retried: attempt > 0 };
     jobStatuses.set(schedule.id, status);
 
@@ -657,7 +669,7 @@ function createJobExecutor(schedule: ScheduleConfig) {
               return;
             }
             console.log(`[Scheduler] Retrying "${schedule.name}"...`);
-            void executor(1);
+            void executor(1, occurrence);
           }, 5 * 60 * 1000);
           retryTimer.unref();
           pendingRetryTimers.set(scheduleId, retryTimer);
@@ -669,7 +681,13 @@ function createJobExecutor(schedule: ScheduleConfig) {
       status.durationMs = Date.now() - jobStartTime.getTime();
       await setAppState(`scheduler:last:${schedule.id}`, status).catch(error =>
         console.error('[Scheduler] Failed to persist run health:', error));
-      executingJobs.delete(schedule.id);
+      try {
+        await jobLock.release();
+      } catch (error) {
+        console.error('[Scheduler] Failed to release job lock:', error);
+      } finally {
+        executingJobs.delete(schedule.id);
+      }
     }
   };
   return executor;
@@ -685,7 +703,7 @@ function startScheduleTask(schedule: ScheduleConfig): void {
   console.log(`[Scheduler] Starting task for "${schedule.name}" with cron: ${cronExpression}`);
 
   const executor = createJobExecutor(schedule);
-  const task = cron.schedule(cronExpression, () => executor(), {
+  const task = cron.schedule(cronExpression, context => executor(0, context.date), {
     timezone: schedule.timezone,
   });
 
