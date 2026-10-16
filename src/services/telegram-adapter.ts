@@ -405,8 +405,8 @@ export async function handleTelegramUpdate(
   const userId = message.from.id;
   const allowedUserId = config.telegramIntake.allowedUserId;
 
-  // Verify sender
-  if (allowedUserId && String(userId) !== allowedUserId) {
+  // Verify sender. No allowlist configured means nobody may submit.
+  if (!allowedUserId || String(userId) !== allowedUserId) {
     console.log(`[TelegramAdapter] Rejected message from unauthorized user ${userId}`);
     await sendMessage(message.chat.id, 'You are not authorized to submit entries.');
     return;

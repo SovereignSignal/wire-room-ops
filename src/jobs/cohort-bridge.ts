@@ -37,7 +37,6 @@ import {
 export const COHORT_SEEN_STATE_KEY = 'cohort-bridge:seen-v1';
 export const COHORT_TRACK = 'COHORT';
 export const COHORT_PROMOTE_LIMIT = 100;
-export const DEFAULT_COHORT_DATABASE_ID = '366000c0d590805ba2abdd2957ee86a7';
 
 const SEEN_CAP = 800;
 const FALLBACK_WINDOW_MS = 36 * 60 * 60 * 1000;
@@ -259,15 +258,16 @@ export function toRaw(row: CohortScanRow, runId: string): RawScanResult {
 }
 
 async function defaultGetCredentials(): Promise<NotionCredentials | null> {
-  const databaseId = config.cohort.databaseId || DEFAULT_COHORT_DATABASE_ID;
-  if (config.cohort.token) return { token: config.cohort.token, databaseId };
+  const envDatabaseId = config.cohort.databaseId;
+  if (config.cohort.token) {
+    return envDatabaseId ? { token: config.cohort.token, databaseId: envDatabaseId } : null;
+  }
   const configs = await getIntegrationConfigs('notion');
   const integration = configs.find(c => c.enabled && c.config?.notion_token);
   if (!integration?.config?.notion_token) return null;
-  return {
-    token: String(integration.config.notion_token),
-    databaseId: String(integration.config.cohort_database_id || databaseId),
-  };
+  const databaseId = String(integration.config.cohort_database_id || envDatabaseId || '');
+  if (!databaseId) return null;
+  return { token: String(integration.config.notion_token), databaseId };
 }
 
 async function defaultQueryPages(token: string, databaseId: string, sinceIso: string): Promise<unknown[]> {
@@ -410,9 +410,9 @@ export async function runCohortBridge(
   const creds = await deps.getCredentials();
   if (!creds) {
     return {
-      skipped: true, reason: 'no notion token', ok: false, runId: null, isBackfill: false,
+      skipped: true, reason: 'no notion credentials', ok: false, runId: null, isBackfill: false,
       since: null, fetched: 0, observations: 0, promoted: 0, intakeSummary: empty,
-      error: 'No Notion token configured for the cohort bridge', durationMs: Date.now() - startedAt.getTime(),
+      error: 'No Notion token or cohort database id configured for the cohort bridge', durationMs: Date.now() - startedAt.getTime(),
     };
   }
 

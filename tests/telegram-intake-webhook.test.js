@@ -4,6 +4,7 @@ process.env.NOTIFICATION_EMAIL = process.env.NOTIFICATION_EMAIL || 'ops@example.
 process.env.PRIVY_APP_ID = process.env.PRIVY_APP_ID || 'test-app-id';
 process.env.PRIVY_APP_SECRET = process.env.PRIVY_APP_SECRET || 'test-app-secret';
 process.env.TELEGRAM_INTAKE_WEBHOOK_SECRET = 'test-telegram-secret';
+process.env.TELEGRAM_INTAKE_ALLOWED_USER_ID = '100000001';
 
 require('ts-node/register/transpile-only');
 
@@ -21,8 +22,8 @@ const update = {
   message: {
     message_id: 77,
     text: 'https://example.org/grant',
-    chat: { id: 394395765 },
-    from: { id: 394395765 },
+    chat: { id: 100000001 },
+    from: { id: 100000001 },
   },
 };
 

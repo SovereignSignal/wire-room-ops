@@ -1,3 +1,5 @@
+process.env.TELEGRAM_INTAKE_ALLOWED_USER_ID = '100000001';
+
 require('ts-node/register/transpile-only');
 
 const test = require('node:test');
@@ -59,8 +61,8 @@ function update(updateId = 501) {
     update_id: updateId,
     message: {
       message_id: 77,
-      chat: { id: 394395765 },
-      from: { id: 394395765 },
+      chat: { id: 100000001 },
+      from: { id: 100000001 },
     },
   };
 }
@@ -229,7 +231,7 @@ test('batch replay reports the persisted wire instead of a placeholder', async t
 
   const result = await processBatchMessage({
     text: '1. **Fresh Grant** — Funding for maintainers.\nDeadline: Rolling\nLink: https://example.org/grant',
-    senderId: 'telegram:394395765',
+    senderId: 'telegram:100000001',
     channelUpdateId: '501',
   });
 
@@ -244,7 +246,7 @@ test('intake metadata carries Telegram update and message lineage', () => {
     sourceUrl: 'https://example.org/grant',
     wire: 'oss',
     scanDate: '2026-07-11',
-    submittedBy: 'telegram:394395765',
+    submittedBy: 'telegram:100000001',
     scanSource: 'telegram',
     sourceNeedsVerification: false,
     operatorRoute: 'publish',

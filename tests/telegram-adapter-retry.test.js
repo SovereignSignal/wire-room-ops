@@ -3,7 +3,7 @@ process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgresql://x:***@127.0
 process.env.NOTIFICATION_EMAIL = process.env.NOTIFICATION_EMAIL || 'ops@example.com';
 process.env.PRIVY_APP_ID = process.env.PRIVY_APP_ID || 'test-app-id';
 process.env.PRIVY_APP_SECRET = process.env.PRIVY_APP_SECRET || 'test-app-secret';
-process.env.TELEGRAM_INTAKE_ALLOWED_USER_ID = process.env.TELEGRAM_INTAKE_ALLOWED_USER_ID || '394395765';
+process.env.TELEGRAM_INTAKE_ALLOWED_USER_ID = process.env.TELEGRAM_INTAKE_ALLOWED_USER_ID || '100000001';
 
 require('ts-node/register/transpile-only');
 
@@ -22,8 +22,8 @@ const baseUpdate = {
   message: {
     message_id: 77,
     text: 'https://example.org/grant',
-    chat: { id: 394395765 },
-    from: { id: 394395765 },
+    chat: { id: 100000001 },
+    from: { id: 100000001 },
   },
 };
 
@@ -316,7 +316,7 @@ test('Telegram send classification rejects unknown, transient, and contradictory
     await t.test(name, async () => {
       global.fetch = async () => makeResponse();
       await assert.rejects(
-        sendMessage(394395765, 'test'),
+        sendMessage(100000001, 'test'),
         TelegramIntakeRetryableError,
       );
     });
@@ -325,7 +325,7 @@ test('Telegram send classification rejects unknown, transient, and contradictory
   await t.test('network rejection', async () => {
     global.fetch = async () => { throw new Error('network down'); };
     await assert.rejects(
-      sendMessage(394395765, 'test'),
+      sendMessage(100000001, 'test'),
       TelegramIntakeRetryableError,
     );
   });
@@ -343,7 +343,7 @@ test('Telegram send classification accepts only aligned success and confirmed pe
       status: 200,
       json: async () => ({ ok: true }),
     });
-    await assert.doesNotReject(sendMessage(394395765, 'test'));
+    await assert.doesNotReject(sendMessage(100000001, 'test'));
   });
 
   await t.test('aligned permanent API failure', async () => {
@@ -352,7 +352,7 @@ test('Telegram send classification accepts only aligned success and confirmed pe
       status: 400,
       json: async () => ({ ok: false, error_code: 400, description: 'bad request' }),
     });
-    await assert.doesNotReject(sendMessage(394395765, 'test'));
+    await assert.doesNotReject(sendMessage(100000001, 'test'));
   });
 
   await t.test('non JSON permanent HTTP failure', async () => {
@@ -361,7 +361,7 @@ test('Telegram send classification accepts only aligned success and confirmed pe
       status: 400,
       json: async () => { throw new SyntaxError('invalid JSON'); },
     });
-    await assert.doesNotReject(sendMessage(394395765, 'test'));
+    await assert.doesNotReject(sendMessage(100000001, 'test'));
   });
 });
 

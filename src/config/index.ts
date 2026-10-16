@@ -124,7 +124,8 @@ export const config = {
     // source_runs heartbeat + queue). Default ON so a missed Stringer VM
     // window cannot stay silent; set COHORT_BRIDGE_ENABLED=false to disable.
     enabled: process.env.COHORT_BRIDGE_ENABLED !== 'false',
-    databaseId: process.env.COHORT_NOTION_DATABASE_ID || '366000c0d590805ba2abdd2957ee86a7',
+    // Required unless the enabled Notion integration carries cohort_database_id.
+    databaseId: process.env.COHORT_NOTION_DATABASE_ID || '',
     token: process.env.COHORT_NOTION_TOKEN || process.env.NOTION_TOKEN || '',
   },
 
@@ -135,7 +136,8 @@ export const config = {
   telegramIntake: {
     botToken: process.env.TELEGRAM_INTAKE_BOT_TOKEN || '',
     webhookSecret: process.env.TELEGRAM_INTAKE_WEBHOOK_SECRET || '',
-    allowedUserId: process.env.TELEGRAM_INTAKE_ALLOWED_USER_ID || '394395765',
+    // Empty means nobody may submit; the adapter fails closed.
+    allowedUserId: process.env.TELEGRAM_INTAKE_ALLOWED_USER_ID || '',
   },
 
   publicSnapshot: {
