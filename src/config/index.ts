@@ -20,6 +20,12 @@ export function isDigestEmailEnabled(raw: string | undefined = process.env.DIGES
   return raw.trim().toLowerCase() !== 'false';
 }
 
+/** Default-on flag: only "false" (any case, trimmed) disables it. */
+export function isFlagEnabled(raw: string | undefined): boolean {
+  if (raw == null || raw.trim() === '') return true;
+  return raw.trim().toLowerCase() !== 'false';
+}
+
 export const config = {
   database: {
     url: process.env.DATABASE_URL || '',
@@ -61,6 +67,12 @@ export const config = {
   },
 
   startup: {
+    // Default true. Set SCHEDULER_ENABLED=false on a secondary/rollback runtime
+    // so only one process runs the scheduler and background loops.
+    schedulerEnabled: isFlagEnabled(process.env.SCHEDULER_ENABLED),
+    // Default true. Set TELEGRAM_INTAKE_WEBHOOK_REGISTER=false so this runtime
+    // does not (re)point the Telegram intake webhook at itself on boot.
+    telegramIntakeWebhookRegister: isFlagEnabled(process.env.TELEGRAM_INTAKE_WEBHOOK_REGISTER),
     // Explicit opt-in. Startup must not spend on LLM calls or rewrite queue
     // intelligence merely because a process was redeployed.
     llmRescoreEnabled: process.env.STARTUP_LLM_RESCORE_ENABLED === 'true',

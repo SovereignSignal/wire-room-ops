@@ -72,14 +72,21 @@ app.get('/ready', async (_req: Request, res: Response) => {
     console.error('[Ready] DB connectivity check failed:', error);
   }
 
-  const schedulerStatus = getSchedulerStatus();
-  checks.schedulerInitialized = schedulerStatus.totalSchedules > 0;
+  const schedulerDisabled = !config.startup.schedulerEnabled;
+  if (schedulerDisabled) {
+    // Deliberately disabled (SCHEDULER_ENABLED=false): report healthy.
+    checks.schedulerInitialized = true;
+  } else {
+    const schedulerStatus = getSchedulerStatus();
+    checks.schedulerInitialized = schedulerStatus.totalSchedules > 0;
+  }
 
   const ready = checks.db && checks.startupMigrations;
   const payload = {
     status: ready ? 'ready' : 'not_ready',
     timestamp: new Date().toISOString(),
     checks,
+    ...(schedulerDisabled ? { schedulerDisabled: true } : {}),
     ...(migrations.failed > 0 ? { migrationErrors: migrations.errors } : {}),
   };
 
@@ -219,9 +226,14 @@ export async function startServer(): Promise<void> {
     console.error('Pricing cache init failed (non-fatal):', error);
   }
 
+  const schedulerEnabled = config.startup.schedulerEnabled;
+  if (!schedulerEnabled) {
+    console.log('[Scheduler] Disabled via SCHEDULER_ENABLED=false');
+  }
+
   // Initialize the scheduler (loads config from database)
   // Wrapped in try-catch so scheduler issues don't prevent server from starting
-  try {
+  if (schedulerEnabled) try {
     await initScheduler();
     console.log('Scheduler initialized');
 
@@ -287,7 +299,7 @@ export async function startServer(): Promise<void> {
   }
 
   // Start the summary sync bridge (tele-sum summaries → approved scan_entries)
-  try {
+  if (schedulerEnabled) try {
     startSummarySync(getPool(), 15);
   } catch (error) {
     console.error('Summary sync startup failed (non-fatal):', error);
@@ -295,7 +307,9 @@ export async function startServer(): Promise<void> {
 
   // Register Telegram intake webhook if configured
   const intakeToken = getCachedProvider('telegram-intake')?.api_key;
-  if (intakeToken) {
+  if (intakeToken && !config.startup.telegramIntakeWebhookRegister) {
+    console.log('[Telegram] Intake webhook registration skipped via TELEGRAM_INTAKE_WEBHOOK_REGISTER=false');
+  } else if (intakeToken) {
     try {
       await registerIntakeWebhook();
     } catch (error) {
@@ -329,11 +343,14 @@ export async function startServer(): Promise<void> {
     }
   };
 
-  const processRawTimer = setInterval(runPipelineCycle, 5 * 60 * 1000);
-  processRawTimer.unref();
+  let processRawTimer: NodeJS.Timeout | undefined;
+  if (schedulerEnabled) {
+    processRawTimer = setInterval(runPipelineCycle, 5 * 60 * 1000);
+    processRawTimer.unref();
 
-  // Run once at startup (after a short delay to let DB settle)
-  setTimeout(runPipelineCycle, 10_000);
+    // Run once at startup (after a short delay to let DB settle)
+    setTimeout(runPipelineCycle, 10_000);
+  }
 
   // Contacts sync every 30 min: Notion Contacts DB → people-monitor control surface
   const contactsSync = async () => {
@@ -372,7 +389,7 @@ export async function startServer(): Promise<void> {
     stopSummarySync();
     stopAuthCleanup();
     jobQueue.stopPeriodicCleanup();
-    clearInterval(processRawTimer);
+    if (processRawTimer) clearInterval(processRawTimer);
     clearInterval(contactsSyncTimer);
     clearInterval(publicationTimer);
     server.close(async () => {
