@@ -60,7 +60,7 @@ Valid public HTTP(S) programme homepages can enter scan intake and the cohort br
 - **Sessions** are DB-backed (`sessions` table, 7-day expiry, survive deploys; in-memory read-through cache)
 - **Magic link tokens, download tokens, and job queues** are in-memory (reset on restart)
 - **Small job state** (summary-sync watermark, agent daily-scan briefs) lives in the `app_state` KV table (`getAppState`/`setAppState` in `src/db/index.ts`)
-- Single-instance deployment only
+- Background workers still assume a single active runtime. Scheduled jobs additionally use a pinned PostgreSQL advisory lock and a durable cron-occurrence claim in `app_state` so overlapping deployments cannot run the same daily fold twice.
 
 ### Railway run settings
 `railway.json` is read on each deploy and overrides the same build and deploy keys from the dashboard. It is in the repo again so every release runs the schema migration before the new process starts. Keys the file does not set stay on the service. Railway stops reading Config as Code on 2026-12-01; before that date, copy `deploy.preDeployCommand` and the other values below onto the service (Settings → Deploy) so the migration keeps running after the file is ignored. Steps in `docs/railway-deploy.md`.
@@ -381,7 +381,7 @@ All providers support DB-backed credentials (`api_providers` table) with env var
 ## Error Handling & Security
 
 - **Retry**: `withRetry()` in `processor.ts` (3 attempts newsletter, 2 for scans). Batch concurrency: 3 at a time.
-- **Concurrent job guard**: Duplicate manual jobs return 409. Scheduler skips overlapping cron runs.
+- **Concurrent job guard**: Duplicate manual jobs return 409. Scheduler claims each cron occurrence in PostgreSQL before discovery or spending. A pinned advisory lock prevents overlap across runtimes, and `scheduler:claim:<id>` prevents a later copy of the same tick. The existing one-time retry keeps the original tick and is claimable once. Claim or enablement-check failures skip work before discovery; schedule timing and retry cadence are unchanged. All runtimes sharing the database must deploy this guard. A process lost mid-run leaves the occurrence claimed; it is not automatically replayed.
 - **Scrape fallback**: If Firecrawl fails, Ollama summarizes from the cached summary.
 - **Security**: CSRF origin checking, HttpOnly session cookies, `escapeHtml()` XSS prevention, open redirect protection, SSE keepalive (30s).
 - **Memory**: Cleanup timers (15-min) for the job queue, one-time tokens, and the rate-limit store. Sessions are DB-backed with an in-memory read-through cache. Timers use `.unref()` and graceful shutdown hooks.
