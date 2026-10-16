@@ -59,7 +59,7 @@ Telegram Intake Bot (optional — gracefully disabled if not set):
 
 - `TELEGRAM_INTAKE_BOT_TOKEN` — bot token
 - `TELEGRAM_INTAKE_WEBHOOK_SECRET` — random string for webhook validation
-- `TELEGRAM_INTAKE_ALLOWED_USER_ID` — Telegram user ID of allowed sender (default: 394395765)
+- `TELEGRAM_INTAKE_ALLOWED_USER_ID` — Telegram user ID of allowed sender (no default)
 
 Brand / Deployment Config (all optional, defaults to Wire Room values):
 
@@ -199,7 +199,7 @@ The Telegram intake bot lets an authorized user submit URLs and articles to the 
 2. Set env vars:
    - `TELEGRAM_INTAKE_BOT_TOKEN` — the bot token
    - `TELEGRAM_INTAKE_WEBHOOK_SECRET` — any random string (used to validate incoming webhooks)
-   - `TELEGRAM_INTAKE_ALLOWED_USER_ID` — your Telegram user ID (default: 394395765)
+   - `TELEGRAM_INTAKE_ALLOWED_USER_ID` — your Telegram user ID (no default)
 3. Deploy. On startup, the bot auto-registers its webhook at `{APP_URL}/api/telegram/intake-webhook`.
 4. Send a URL or text to the bot. If the wire is auto-detected, it's inserted immediately. If ambiguous, the bot presents inline keyboard buttons for wire selection.
 

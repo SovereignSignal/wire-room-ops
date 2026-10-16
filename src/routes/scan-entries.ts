@@ -5,7 +5,7 @@
  * GET    /entries/:id            — single entry (dashboard deep link from digest email)
  * POST   /submit                — single entry submission
  * POST   /submit-batch          — batch submission (Prompt A/B/C x-scan sections)
- * POST   /telegram-batch        — same processBatchMessage path as @GrantWireSummarizer_bot
+ * POST   /telegram-batch        — same processBatchMessage path as the Telegram intake bot
  * POST   /manual-intake         — dashboard paste (scan_source=manual-intake)
  * GET    /queue                  — list queued entries
  * GET    /stats                  — scan pipeline statistics
@@ -403,7 +403,7 @@ async function handleTextIntake(
 /**
  * POST /telegram-batch — HTTP door into the Grant Wire summarizer intake.
  * Same parseBatchEntries + URL/name dedupe + queued insert as the Telegram bot.
- * Body: { text: string }  (the markdown Sov pastes into @GrantWireSummarizer_bot)
+ * Body: { text: string }  (the markdown Sov pastes into the Telegram intake bot)
  * Auth: session or INTERNAL_API_KEY (this router is already behind requireAuthOrInternalKey).
  */
 router.post('/telegram-batch', async (req: Request, res: Response) => {

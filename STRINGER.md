@@ -108,7 +108,7 @@ Governance allowlist + `hot=true` catch-all, 30-day createdAt gate, then an LLM 
 
 ### Telegram Intake
 
-Manual operator intake via @GrantWireSummarizer_bot. Source: `telegram`, variant: `N`. Wide net by design — editorial filter happens in the queue.
+Manual operator intake via the Telegram intake bot. Source: `telegram`, variant: `N`. Wide net by design — editorial filter happens in the queue.
 
 ### X Account Monitor
 

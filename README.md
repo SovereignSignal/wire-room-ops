@@ -306,16 +306,16 @@ Optional:
 - `FORUM_GRANTS_MIN_CONFIDENCE` -- min classifier confidence for grants-feed items (default 60)
 - `BD_LEADS_DATABASE_ID` -- Notion Paid Work Leads db for the Wednesday BD loop
 - `COHORT_BRIDGE_ENABLED` -- in-process Notion cohort bridge in the daily-digest fold (default true; set false to disable)
-- `COHORT_NOTION_DATABASE_ID` -- Cowork + Codex Daily Grant Scans table id (default `366000c0d590805ba2abdd2957ee86a7`)
+- `COHORT_NOTION_DATABASE_ID` -- Notion database id of the Cowork + Codex Daily Grant Scans table
 - `COHORT_NOTION_TOKEN` -- optional Notion token override; otherwise uses the enabled Notion integration token. That integration must be granted access to the scans table.
 - `DISCUSS_WATCH_API_URL`
 - `PERPLEXITY_API_KEY` -- for deep web research scans (variant P prompts)
 
 Telegram Intake Bot:
 
-- `TELEGRAM_INTAKE_BOT_TOKEN` -- bot token for intake bot (@GrantWireSummarizer_bot)
+- `TELEGRAM_INTAKE_BOT_TOKEN` -- bot token for the intake bot
 - `TELEGRAM_INTAKE_WEBHOOK_SECRET` -- random string for webhook validation
-- `TELEGRAM_INTAKE_ALLOWED_USER_ID` -- Telegram user ID of allowed sender (default: 394395765)
+- `TELEGRAM_INTAKE_ALLOWED_USER_ID` -- Telegram user ID of the one sender allowed to submit
 
 Ingestion / Wire Detection:
 
@@ -372,7 +372,7 @@ The budget meter covers Grok discovery purposes and X reads; Firecrawl and Perpl
 
 Entries can be submitted through multiple channels using the adapter pattern:
 
-- **Telegram bot** (`@GrantWireSummarizer_bot`): Send a URL or text to the bot. Wire is auto-detected from keywords (defaults to crypto if ambiguous). Supports single URLs and batch messages. Requires `TELEGRAM_INTAKE_BOT_TOKEN`. Only the allowed user ID can submit.
+- **Telegram bot**: Send a URL or text to the intake bot. Wire is auto-detected from keywords (defaults to crypto if ambiguous). Supports single URLs and batch messages. Requires `TELEGRAM_INTAKE_BOT_TOKEN`. Only the allowed user ID can submit.
 
   Setup: (1) create a bot via @BotFather, (2) set `TELEGRAM_INTAKE_BOT_TOKEN`, `TELEGRAM_INTAKE_WEBHOOK_SECRET` (any random string), and `TELEGRAM_INTAKE_ALLOWED_USER_ID`, (3) deploy — the bot auto-registers its webhook at `{APP_URL}/api/telegram/intake-webhook` on startup. Optional: if the token is not set, the webhook route is a no-op.
 - **Manual paste**: Submit via the dashboard (existing `/api/scan/submit` and `/api/scan/submit-batch` endpoints).
