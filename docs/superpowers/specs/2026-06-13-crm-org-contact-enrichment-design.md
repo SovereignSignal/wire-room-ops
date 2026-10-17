@@ -6,20 +6,20 @@
 
 ## Goal
 
-Tie tele-sum's content (grant wires + the new digest wires repos/models/claw) to Sov's Notion CRM (`Sov's Orgs` + `Contacts`), and keep those records enriched and current. Delivered as a phased program: **(1) link + revive sync → (2) web-enrich orgs → (3) contacts**, designed as one arc, built phase by phase.
+Tie tele-sum's content (grant wires + the new digest wires repos/models/claw) to the operator's Notion CRM (`Orgs` + `Contacts`), and keep those records enriched and current. Delivered as a phased program: **(1) link + revive sync → (2) web-enrich orgs → (3) contacts**, designed as one arc, built phase by phase.
 
 ## What already exists (the rails we extend)
 
 - **`org_profiles`** (210 rows) — rich org store: `name, slug, description, website, twitter, wires[], tags[], aliases[], entry_count, total_funding, first_seen, last_seen, org_type, source_type, tier, avg_quality_score, propensity_score, enriched_at, parent_org_id, landscape_status, primary_domain, relationship_context, watch_priority, current_wedge, recommended_action, last_signal, last_landscape_review`. (No `github_url` column yet — Phase 2 adds one.)
 - **`scan_entries.org_id`** — grant content is already linked to `org_profiles`. **`org_weekly_snapshots`** — per-org activity time-series.
 - **`org-extractor.ts` / `org-enricher.ts` / `org-merge.ts`** — extraction, enrichment, dedup/alias/merge logic; admin endpoints `/api/admin/{enrich-orgs,dedup-orgs,clean-orgs}`.
-- **`notion-sync.ts` + `integration_config`** — a configured sync `provider='notion', name='SimpleCRM - Notion', enabled=true`, targeting `database_id=301000c0-d590-81c4-8435-c6db7782db12` (`Sov's Orgs`) and `contacts_database_id=66190528-a119-4cdc-8579-7763d67c5a71` (`Contacts`), with its own `notion_token`. **Last synced 2026-05-13** — effectively stopped, and grant-only.
+- **`notion-sync.ts` + `integration_config`** — a configured sync `provider='notion', name='SimpleCRM - Notion', enabled=true`, targeting `database_id=<ORGS_DATABASE_ID>` (`Orgs`) and `contacts_database_id=<CONTACTS_DATABASE_ID>` (`Contacts`), with its own `notion_token`. **Last synced 2026-05-13** — effectively stopped, and grant-only.
 
 **The gaps:** digest content (repos/models/claw) is intentionally excluded from `scan_entries` (the summary-sync guardrail), so its orgs are never extracted, linked, or synced; the CRM sync is stale; enrichment is shallow.
 
 ### CRM schemas (sync targets)
 
-- **`Sov's Orgs`**: `Name`(title), `Type`(select), `Website`/`Twitter`/`GitHub URL`/`Forum URL`/`Blog URL`/`Grants Program URL`/`Application URL`/`Career Page URL`/`RSS Feed URL`(url), `Relationship`/`Tier`/`Status`(select), `Source Type`/`Tags`/`Wire`(multi_select), `Propensity Score`/`Quality Score`/`Items Sourced`(number), `Last Checked`(date), `Action(s)`(rich_text), `Contacts`(relation), `🔮 Associated Opps`(relation).
+- **`Orgs`**: `Name`(title), `Type`(select), `Website`/`Twitter`/`GitHub URL`/`Forum URL`/`Blog URL`/`Grants Program URL`/`Application URL`/`Career Page URL`/`RSS Feed URL`(url), `Relationship`/`Tier`/`Status`(select), `Source Type`/`Tags`/`Wire`(multi_select), `Propensity Score`/`Quality Score`/`Items Sourced`(number), `Last Checked`(date), `Action(s)`(rich_text), `Contacts`(relation), `🔮 Associated Opps`(relation).
 - **`Contacts`**: `Name`(title), `X`(url), `Source`/`Status`/`Wire`(select), `Evidence`/`Role`/`Program`(rich_text), `Org`(relation → Orgs).
 
 ## Architecture
@@ -33,7 +33,7 @@ tele-sum summaries ─┬─ grant orgs (entities.orgs)  ──► [existing] sc
                                               org_profiles  ──► [Phase 2] web enrichment
                                                      │                  │
                                                      ▼                  ▼
-                                          SimpleCRM Notion sync ──► Sov's Orgs + Contacts
+                                          SimpleCRM Notion sync ──► Orgs + Contacts
 ```
 
 ---
@@ -50,9 +50,9 @@ tele-sum summaries ─┬─ grant orgs (entities.orgs)  ──► [existing] sc
 
 **1c. Link + counts.** New table **`digest_item_orgs`** (`summary_id int`, `item_index int`, `org_id int → org_profiles.id`, unique on `(summary_id, item_index, org_id)`) records which digest item mentions which org — the digest analogue of `scan_entries.org_id`. `org_profiles.entry_count` / `last_seen` / `wires[]` are kept current from both grant and digest links. These drive the CRM's `Items Sourced` and `Last Checked`.
 
-**1d. Revive the sync.** Re-enable `SimpleCRM - Notion`, run it on the scheduler (alongside the existing jobs), and push all orgs (grant + digest) to `Sov's Orgs`. Intended `org_profiles → Sov's Orgs` mapping (finalized against `notion-sync.ts` in planning):
+**1d. Revive the sync.** Re-enable `SimpleCRM - Notion`, run it on the scheduler (alongside the existing jobs), and push all orgs (grant + digest) to `Orgs`. Intended `org_profiles → Orgs` mapping (finalized against `notion-sync.ts` in planning):
 
-| org_profiles | Sov's Orgs |
+| org_profiles | Orgs |
 |---|---|
 | name | Name |
 | website / primary_domain | Website |
@@ -69,7 +69,7 @@ tele-sum summaries ─┬─ grant orgs (entities.orgs)  ──► [existing] sc
 | landscape_status / recommended_action | Status / Action(s) |
 | relationship_context | Action(s) (appended, with provenance) |
 
-**Rollout:** backfill orgs from the already-ingested digest summaries (the 103 backfilled items), revive + schedule the sync, verify orgs appear in `Sov's Orgs` with correct Wire / Items Sourced / Last Checked. Idempotent re-runs.
+**Rollout:** backfill orgs from the already-ingested digest summaries (the 103 backfilled items), revive + schedule the sync, verify orgs appear in `Orgs` with correct Wire / Items Sourced / Last Checked. Idempotent re-runs.
 
 ---
 

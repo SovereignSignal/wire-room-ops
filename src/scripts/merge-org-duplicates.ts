@@ -1,5 +1,5 @@
 /**
- * Merge reviewed CRM org duplicates (+ optional matching Sov's Orgs pages).
+ * Merge reviewed CRM org duplicates (+ optional matching Orgs pages).
  *
  *   npx ts-node --transpile-only src/scripts/merge-org-duplicates.ts --dry-run
  *   npx ts-node --transpile-only src/scripts/merge-org-duplicates.ts

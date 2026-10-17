@@ -40,7 +40,7 @@ Only the renderer is missing.
 | 3 | The world | **The Wire Room — one interior** | Smallest art surface; name-native. Beat a Factorio-style refinery and an isometric watch-city. |
 | 4 | Art direction | **Night Shift, 32-bit pixel art** | Existing brand as a room: `#05070d` deep space, `#00eaff` cyan glow, one amber lamp at the human desk. *Revised 2026-07-30* — a painted-cinematic pass read as generic concept art; the retro-game aesthetic reads as a **game**, which is the whole reference point, while the palette keeps it clearly not Price's. |
 | 5 | Liveness | **Ambient loop + live break-in** | The desk fires a few times a day; strictly-live is a still photograph most of every afternoon. |
-| 6 | Image production | **RESOLVED — OpenAI `gpt-image-2`** | Key stored at `~/.claude/skills/openai-images/key.env`; the `openai-images` skill holds models, generate/inpaint patterns, and troubleshooting. Ten renders ≈ $2.50. |
+| 6 | Image production | **RESOLVED — OpenAI `gpt-image-2`** | Key stored in a local key file outside the repo; a local helper holds models, generate/inpaint patterns, and troubleshooting. Ten renders ≈ $2.50. |
 | 7 | The cast | **3 screen-bank stations + 1 human** | *Revised 2026-07-30* — machinery and a conveyor read as a factory, which misrepresents a software system. Now a monitoring room: screen banks as stations, a glowing floor data-channel carrying packets, glass back wall onto a night city, and a multi-monitor desk for the one human. No faces to drift. |
 | 8 | Architecture | **One-way snapshot pipe** | Settled by the brain law: one-way pipes into a lane; trust flows from location. |
 
@@ -240,7 +240,7 @@ suffices.
 
 ### Image model assessment
 
-No image generation is reachable from this machine — nothing in `~/.claude/skills`, no ImageMagick, no local
+No image generation is reachable from this machine — no local image tooling, no ImageMagick, no local
 Ollama. Only Perplexity, Parallel, Sakana keys are wired.
 
 | Option | Assessment |
@@ -264,7 +264,7 @@ Ollama. Only Perplexity, Parallel, Sakana keys are wired.
 
 ## Needed from the owner
 
-- ~~Image-gen key~~ — **done.** `~/.claude/skills/openai-images/key.env`, chmod 600. Key was pasted into
+- ~~Image-gen key~~ — **done.** Stored in a local key file outside the repo, chmod 600. Key was pasted into
   a transcript when handed over, so treat as exposed and rotate when convenient; only the value in
   `key.env` changes.
 - **Sovereign Signal mark as SVG** for the wall sign; confirm `#00eaff` + Orbitron is still the identity.

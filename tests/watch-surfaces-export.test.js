@@ -14,7 +14,7 @@ Tier: Tier 3 - Monitor
 Action(s): Created via Daily Crypto Grant Wire 2026-05-28 after a proposal surfaced on http://gov.1inch.network during the governance-vote scan.
 Website: https://1inch.io/
 Twitter: https://x.com/1inch
-Created by: Sov
+Created by: Operator
 Forum URL: https://gov.1inch.network/
 Grants Program URL: https://1inch.network/foundation
 Last Checked: May 29, 2026

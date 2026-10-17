@@ -1,7 +1,7 @@
 # Program Identity Layer — Design
 
 **Date:** 2026-07-10
-**Status:** Approved by Sov (scope: "Both: patch now, then build" 2026-07-09; gate gear: **act and report** from day one).
+**Status:** Approved by the operator (scope: "Both: patch now, then build" 2026-07-09; gate gear: **act and report** from day one).
 **Prior art:** the 2026-07-09 dupe-introspection patch (PR #72) fixed the decided-recheck chain bug and backfill-demoted 15 stalled dupes. This layer attacks the root: the pipeline has URL identity and exact-name identity but no *program* identity, so the same program re-enters under every new name variant and URL (Anthropic Fellows: ~60 entries, 15+ name variants, 8+ URLs; corpus-wide, a crude 12-char name fingerprint clusters 57.5% of 10,722 entries into 799 groups).
 
 ## Goal

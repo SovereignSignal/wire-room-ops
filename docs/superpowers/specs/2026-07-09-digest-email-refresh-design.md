@@ -10,7 +10,7 @@ The current email reads like a queue dump. It includes all-time pending review c
 
 ## Product Contract
 
-- The email answers two questions: what should Sov open first, and did anything break.
+- The email answers two questions: what should the operator open first, and did anything break.
 - Fresh items mean queued entries created in the last 24 hours that are not past deadline.
 - Backlog pressure stays out of the subject and body unless it becomes a separate thresholded anomaly later.
 - Duplicate-rate warnings remain only when they are operationally abnormal. Routine duplicate suppression is dashboard telemetry.

@@ -340,7 +340,7 @@ export async function archiveNotionPagesByTitle(
 }
 
 /**
- * Archive matching Sov's Orgs pages via the enabled SimpleCRM integration.
+ * Archive matching Orgs pages via the enabled SimpleCRM integration.
  * No-ops (with a warning) when the integration is missing credentials.
  */
 export async function archiveSimpleCrmOrgPages(
@@ -363,9 +363,9 @@ export async function archiveSimpleCrmOrgPages(
 
 /**
  * Build Notion properties object for an org profile.
- * Mapped to match the actual "Sov's Orgs" Notion database properties.
+ * Mapped to match the actual "Orgs" Notion database properties.
  *
- * PRUNED 2026-07-03 (CRM simplification, Sov: "no more than 8-10 fields"):
+ * PRUNED 2026-07-03 (CRM simplification, the operator: "no more than 8-10 fields"):
  * Notion carries only the 10-field human view (Name, Type, Wire, Relationship,
  * Website, Action(s), Quality Score, Tier, Contacts, Last Checked). Twitter,
  * GitHub, Tags, Source Type and Items Sourced live ONLY in Postgres

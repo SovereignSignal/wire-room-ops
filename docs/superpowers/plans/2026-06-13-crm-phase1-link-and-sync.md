@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Source orgs from tele-sum digest content (repos/models/claw) into `org_profiles` behind an auto-create quality bar, link each digest item to its org, and revive + schedule the dormant SimpleCRM Notion sync so all orgs (grant + digest) stay current in `Sov's Orgs`.
+**Goal:** Source orgs from tele-sum digest content (repos/models/claw) into `org_profiles` behind an auto-create quality bar, link each digest item to its org, and revive + schedule the dormant SimpleCRM Notion sync so all orgs (grant + digest) stay current in `Orgs`.
 
 **Architecture:** All in wire-room-ops (TypeScript/Express/pg, tests via `node:test` + `ts-node/register/transpile-only`, tables created via `CREATE TABLE IF NOT EXISTS` ensure-functions — NOT alembic). Reuse existing functions: `upsertOrgProfile`/`findSimilarOrg`/`linkEntryToOrg` (`src/services/org-extractor.ts`), `syncOrgsToNotion`/`getIntegrationConfigs` (`src/services/notion-sync.ts`). Add a digest-org sourcing path that reads tele-sum's `summaries` (the same shared Postgres, same read pattern as `summary-sync.ts`), plus cron + admin-endpoint triggers mirroring the existing pattern.
 
@@ -10,12 +10,12 @@
 
 **Spec:** `docs/superpowers/specs/2026-06-13-crm-org-contact-enrichment-design.md`.
 
-**Repo mechanics:** wire-room-ops IS a git repo at `~/Documents/Sovereign Signal/repos/wire-room-ops`; work in place, commit to `main`, push deploys it (Railway project `17165452-…`). Run tests with `npm test` (node:test) and `npm run typecheck`. Shared DB URL: `cat /tmp/telesum_dburl.txt` (<railway-db-proxy> — same instance wire-room-ops uses). The SimpleCRM integration is row `provider='notion', name='SimpleCRM - Notion'` in `integration_config` (verified token valid 2026-06-13, integration "Wire Room Ops", access to both CRM DBs).
+**Repo mechanics:** wire-room-ops is a git repo; work in place, commit to `main`, push deploys it (Railway project `17165452-…`). Run tests with `npm test` (node:test) and `npm run typecheck`. Shared DB URL: `cat /tmp/telesum_dburl.txt` (<railway-db-proxy> — same instance wire-room-ops uses). The SimpleCRM integration is row `provider='notion', name='SimpleCRM - Notion'` in `integration_config` (verified token valid 2026-06-13, integration "Wire Room Ops", access to both CRM DBs).
 
 **Verified facts (do not re-litigate):**
 - `upsertOrgProfile(orgName: string, wire: string, date?: string): Promise<number>` — INSERTs into `org_profiles (name, slug, wires, first_seen, last_seen, entry_count)` with ON CONFLICT update; returns the org id. Reusable for digest orgs (pass the digest wire).
 - `findSimilarOrg(candidateName: string): Promise<{ id: number; name: string } | null>` — normalized-exact + alias + fuzzy match against existing `org_profiles`.
-- `syncOrgsToNotion(integrationId: number)` — reads ALL `org_profiles`, upserts to `Sov's Orgs` by Name; `buildOrgProperties` already maps `Wire`/`Items Sourced`(=entry_count)/`Last Checked`(=last_seen)/etc. Digest orgs flow automatically once in `org_profiles`.
+- `syncOrgsToNotion(integrationId: number)` — reads ALL `org_profiles`, upserts to `Orgs` by Name; `buildOrgProperties` already maps `Wire`/`Items Sourced`(=entry_count)/`Last Checked`(=last_seen)/etc. Digest orgs flow automatically once in `org_profiles`.
 - tele-sum digest summaries: `summaries.entities->>'profile' = 'digest'`, items at `summaries.entities->'items'` (each `{title,url,note,category,tags,org}`), wire on `messages.wire IN ('repos','models','claw')`.
 
 ---
@@ -27,7 +27,7 @@
 - [ ] **Step 1: Create a feature branch**
 
 ```bash
-cd "$HOME/Documents/Sovereign Signal/repos/wire-room-ops" && git checkout main && git pull --ff-only && git checkout -b crm-phase1-digest-orgs
+cd "wire-room-ops" && git checkout main && git pull --ff-only && git checkout -b crm-phase1-digest-orgs
 ```
 
 - [ ] **Step 2: Baseline green**
@@ -125,7 +125,7 @@ Expected: 6 pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/services/digest-orgs.ts tests/digest-orgs.test.js && git -c user.name="SovereignSignal" -c user.email="sov@sovereignsignal.com" commit -m "digest-orgs: auto-create quality bar (pure)
+git add src/services/digest-orgs.ts tests/digest-orgs.test.js && git commit -m "digest-orgs: auto-create quality bar (pure)
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
@@ -216,7 +216,7 @@ Expected: 2 pass; typecheck clean.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/services/digest-orgs.ts tests/digest-orgs-link.test.js && git -c user.name="SovereignSignal" -c user.email="sov@sovereignsignal.com" commit -m "digest-orgs: digest_item_orgs link table + idempotent link
+git add src/services/digest-orgs.ts tests/digest-orgs-link.test.js && git commit -m "digest-orgs: digest_item_orgs link table + idempotent link
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
@@ -362,7 +362,7 @@ Expected: 1 pass; typecheck clean. (The pure `aggregateDigestOrgMentions` is uni
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/services/digest-orgs.ts tests/digest-orgs-source.test.js && git -c user.name="SovereignSignal" -c user.email="sov@sovereignsignal.com" commit -m "digest-orgs: aggregate mentions + sourceDigestOrgs runner
+git add src/services/digest-orgs.ts tests/digest-orgs-source.test.js && git commit -m "digest-orgs: aggregate mentions + sourceDigestOrgs runner
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
@@ -443,7 +443,7 @@ Expected: typecheck clean; all tests pass (baseline + 9 new across Tasks 1–3),
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/routes/admin.ts src/server.ts && git -c user.name="SovereignSignal" -c user.email="sov@sovereignsignal.com" commit -m "crm: admin triggers + cron for digest-org sourcing and CRM sync
+git add src/routes/admin.ts src/server.ts && git commit -m "crm: admin triggers + cron for digest-org sourcing and CRM sync
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
@@ -458,18 +458,18 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 1: Merge + push (deploys)**
 
 ```bash
-cd "$HOME/Documents/Sovereign Signal/repos/wire-room-ops" && git checkout main && git merge --no-ff crm-phase1-digest-orgs -m "CRM Phase 1: digest-org sourcing + revived CRM sync" && git push origin main
+cd "wire-room-ops" && git checkout main && git merge --no-ff crm-phase1-digest-orgs -m "CRM Phase 1: digest-org sourcing + revived CRM sync" && git push origin main
 ```
 
 - [ ] **Step 2: Watch deploy to SUCCESS + health**
 
-Run (background): `~/.claude/skills/railway-ops/scripts/watch-deploy.sh 17165452-9a41-4abf-b350-a3c0cf492623 5cc01564-4e3d-4e57-8423-949e9544c595 d0d4c7f4-dea9-4cab-ba8c-ec7363f0470e`
-Expected: `FINAL=SUCCESS`, then `curl -s -o /dev/null -w "%{http_code}" https://wire-room-ops-production.up.railway.app/health` → `200`.
+Run (background): `watch-deploy.sh <RAILWAY_PROJECT_ID> <RAILWAY_ENV_ID> <RAILWAY_SERVICE_ID>`
+Expected: `FINAL=SUCCESS`, then `curl -s -o /dev/null -w "%{http_code}" $APP_URL/health` → `200`.
 
 - [ ] **Step 3: Backfill — source digest orgs from the already-ingested 103 items**
 
 ```bash
-curl -s -X POST https://wire-room-ops-production.up.railway.app/api/admin/source-digest-orgs | jq .
+curl -s -X POST $APP_URL/api/admin/source-digest-orgs | jq .
 ```
 Expected: `{success:true, orgsTouched:N, itemsLinked:M, skipped:K}` with N≥10 (Anthropic, Google, NVIDIA, MiniMax, DeepSeek, OpenAI, …). Verify in DB:
 ```bash
@@ -479,12 +479,12 @@ DBURL=$(cat /tmp/telesum_dburl.txt); psql "$DBURL" -c "SELECT count(*) FROM dige
 - [ ] **Step 4: Revive the CRM sync**
 
 ```bash
-curl -s -X POST https://wire-room-ops-production.up.railway.app/api/admin/sync-crm | jq .
+curl -s -X POST $APP_URL/api/admin/sync-crm | jq .
 ```
-Expected: `{success:true, created:>0, updated:>=0, errors:0}`. Then confirm digest orgs now appear in `Sov's Orgs`:
+Expected: `{success:true, created:>0, updated:>=0, errors:0}`. Then confirm digest orgs now appear in `Orgs`:
 ```bash
 DBURL=$(cat /tmp/telesum_dburl.txt); TK=$(psql "$DBURL" -tA -c "SELECT config->>'notion_token' FROM integration_config WHERE name='SimpleCRM - Notion';")
-curl -s -X POST "https://api.notion.com/v1/databases/301000c0-d590-81c4-8435-c6db7782db12/query" -H "Authorization: Bearer $TK" -H "Notion-Version: 2022-06-28" -H "Content-Type: application/json" -d '{"filter":{"property":"Wire","multi_select":{"contains":"Models"}},"page_size":5}' | jq -r '.results[].properties.Name.title[0].plain_text'
+curl -s -X POST "https://api.notion.com/v1/databases/<ORGS_DATABASE_ID>/query" -H "Authorization: Bearer $TK" -H "Notion-Version: 2022-06-28" -H "Content-Type: application/json" -d '{"filter":{"property":"Wire","multi_select":{"contains":"Models"}},"page_size":5}' | jq -r '.results[].properties.Name.title[0].plain_text'
 ```
 Expected: AI-lab org names (Anthropic, Google, …) with the Models wire.
 
@@ -493,7 +493,7 @@ Expected: AI-lab org names (Anthropic, Google, …) with the Models wire.
 ```bash
 DBURL=$(cat /tmp/telesum_dburl.txt); psql "$DBURL" -c "SELECT last_sync_at, last_sync_status, last_sync_message FROM integration_config WHERE name='SimpleCRM - Notion';"
 ```
-Expected: `last_sync_at` is now (today), status success. Spot-check that an existing grant org (e.g. one created earlier) still has its grant data intact in `Sov's Orgs` (no overwrite of curated fields beyond the mapped ones).
+Expected: `last_sync_at` is now (today), status success. Spot-check that an existing grant org (e.g. one created earlier) still has its grant data intact in `Orgs` (no overwrite of curated fields beyond the mapped ones).
 
 ---
 

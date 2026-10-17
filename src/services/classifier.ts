@@ -140,7 +140,7 @@ Calibration guardrails (apply AFTER picking a band):
 ${operatorGuidance ? '\n' + operatorGuidance + '\n' : ''}
 ## Operator Route
 Return operator_route separately from classification. Allowed operator_route values: publish | source_check | park | decline | relationship_signal
-- publish: strong Wire item Sov is likely to approve for public distribution.
+- publish: strong Wire item the operator is likely to approve for public distribution.
 - source_check: promising item that needs canonical URL, deadline, amount, duplicate, or status verification before publishing.
 - park: real but low-priority item, weak Wire fit, generic scholarship, local fellowship, or academic job.
 - decline: stale, closed, duplicate, tiny hackathon, hype, spam, or wrong-lane item.

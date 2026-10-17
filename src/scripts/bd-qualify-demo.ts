@@ -1,6 +1,6 @@
 /**
  * DEMO: two-stage BD pipeline on the live relationship_signal backlog.
- *   Stage 1  shape-screen (Grok)      — does it fit Sov's lines + ICP?
+ *   Stage 1  shape-screen (Grok)      — does it fit the operator's lines + ICP?
  *   Stage 2  verify (Parallel Task)   — is it REAL and CURRENT, per sources?
  *   Final    qualify on VERIFIED facts; why-now comes from sources, not titles.
  * Prints confabulated (title-claim) vs verified (sourced) side by side.
@@ -35,7 +35,7 @@ async function main() {
   }));
 
   // Stage 1 — shape-screen
-  console.log(`STAGE 1 — shape-screen ${candidates.length} signals against Sov's lines + ICP...`);
+  console.log(`STAGE 1 — shape-screen ${candidates.length} signals against the operator's lines + ICP...`);
   const shape = await qualifyOpportunities(candidates);
   const shapeById = new Map<number, QualifiedOpportunity>(shape.map(r => [r.id, r]));
   const shapePass = candidates.filter(c => shapeById.get(c.id)?.qualified);

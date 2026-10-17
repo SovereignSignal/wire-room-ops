@@ -14,14 +14,14 @@
 
 **Verified existing state:**
 - `src/jobs/contacts-sync.ts`: `runContactsSync(pool)` reads Notion Contacts (via `getIntegrationConfigs('notion')` + `queryAllNotionPages`), upserts each into `monitored_accounts (handle, wire, kind='person', person_name, role, linked_program, source, enabled)`; **`Status != 'Skip'` → enabled (watched)**, `'Skip'` → disabled; a kind='person' handle no longer in Notion → disabled. Helpers exported: `handleFromXUrl(url)`. Falls back to Contacts DB id `<contacts database id>`. Wired in server.ts (30-min timer + 25s-after-startup).
-- Notion **Contacts** DB props: `Name`(title), `X`(url), `Source`(select), `Status`(select), `Evidence`(rich_text), `Role`(rich_text), `Program`(rich_text), `Wire`(select), `Org`(relation → Orgs DB `301000c0-d590-81c4-8435-c6db7782db12`).
-- Orgs DB id `301000c0-d590-81c4-8435-c6db7782db12`; `org_profiles` (~215 rows) has id/name/website/wires/twitter/description.
+- Notion **Contacts** DB props: `Name`(title), `X`(url), `Source`(select), `Status`(select), `Evidence`(rich_text), `Role`(rich_text), `Program`(rich_text), `Wire`(select), `Org`(relation → Orgs DB `<ORGS_DATABASE_ID>`).
+- Orgs DB id `<ORGS_DATABASE_ID>`; `org_profiles` (~215 rows) has id/name/website/wires/twitter/description.
 - No `contacts` table exists (people live in Notion + `monitored_accounts`).
 
 ---
 
 ### Task 0: Branch + baseline
-- [ ] `cd "$HOME/Documents/Sovereign Signal/repos/wire-room-ops" && git checkout main && git pull --ff-only && git checkout -b crm-phase3-contacts`
+- [ ] `cd "wire-room-ops" && git checkout main && git pull --ff-only && git checkout -b crm-phase3-contacts`
 - [ ] `npm run typecheck && npm test 2>&1 | grep -E "ℹ (tests|pass|fail)"` → typecheck clean, fail 0. Record pass count.
 
 ---
@@ -85,7 +85,7 @@ export async function recordDiscoveredContact(
 }
 ```
 - [ ] **Step 4:** `node --test tests/contact-discovery.test.js` → 2 pass. `npm run typecheck` clean.
-- [ ] **Step 5: commit** `git add src/services/contact-discovery.ts tests/contact-discovery.test.js && git -c user.name="SovereignSignal" -c user.email="sov@sovereignsignal.com" commit -m "contacts: discovered_contacts table + idempotent record\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>"`
+- [ ] **Step 5: commit** `git add src/services/contact-discovery.ts tests/contact-discovery.test.js && git commit -m "contacts: discovered_contacts table + idempotent record\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>"`
 
 ---
 
@@ -105,7 +105,7 @@ test('accepts a pseudonym/handle as the identity', () => {
   assert.equal(passesContactBar({ name:'orhun', role:'OSS maintainer (ratatui)', x_handle:'orhundev', profile_url:'https://github.com/orhun', source:'https://github.com/orhun' }), true);
 });
 test('accepts an independent individual with no org affiliation', () => {
-  assert.equal(passesContactBar({ name:'Sov', role:'independent researcher / builder', x_handle:'sovsignal', profile_url:null, source:'https://x.com/sovsignal' }), true);
+  assert.equal(passesContactBar({ name:'Alex Example', role:'independent researcher / builder', x_handle:'alexexample', profile_url:null, source:'https://x.com/alexexample' }), true);
 });
 test('accepts profile_url with no X handle', () => {
   assert.equal(passesContactBar({ name:'Jane Doe', role:'Founder', x_handle:null, profile_url:'https://linkedin.com/in/janedoe', source:'https://org.com' }), true);

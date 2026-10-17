@@ -3,7 +3,7 @@
  *
  * Unlike forum-dryrun.ts, this runs the full pipeline: candidates -> LLM judge ->
  * intake (dedup -> classify -> queue). Entries land in the review queue. Nothing
- * is approved or published — Sov reviews everything.
+ * is approved or published — the operator reviews everything.
  *
  * Run:  railway run npx ts-node src/scripts/forum-run-once.ts [wire] [lookbackDays]
  *   e.g. railway run npx ts-node src/scripts/forum-run-once.ts        # all wires, 30d

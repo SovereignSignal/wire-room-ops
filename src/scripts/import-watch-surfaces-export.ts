@@ -1,5 +1,5 @@
 /**
- * Backfill watch_surfaces from a Notion full-workspace export of Sov's Orgs
+ * Backfill watch_surfaces from a Notion full-workspace export of Orgs
  * (the vault mirror), recovering the URL columns pruned from live Notion on
  * 2026-07-03 (PR #59). Export pages are markdown: "# Title" then "Key: value"
  * lines. Default DRY RUN; pass --write to persist.

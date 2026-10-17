@@ -2,7 +2,7 @@
  * Org-profile CRM cleanup
  *
  * Archives junk/person/event/unenriched-program rows from org_profiles,
- * then archives matching Sov's Orgs Notion pages so the daily sync cannot
+ * then archives matching Notion Orgs pages so the daily sync cannot
  * recreate them. Also keeps the original name-hygiene passes (brackets,
  * embedded @handles, slug repair).
  *

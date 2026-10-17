@@ -195,8 +195,6 @@ const GOVERNANCE_ALLOWLIST: Record<string, string[]> = {
     // ran ON discuss.ens.domains (ratified via Snapshot 2026-05-10, $2.89M cohort)
     // and the lane missed it. ENS carries real on-forum program signal.
     'ens',
-    // NOTE: 'uniswap governance' is deliberately EXCLUDED — operator works for the
-    // Uniswap Foundation, so UF opportunities are never surfaced (see skip below).
   ],
   ai: [
     // The one funding-signal forum in the AI category; the rest is dev tooling.
@@ -207,10 +205,8 @@ const GOVERNANCE_ALLOWLIST: Record<string, string[]> = {
   ],
 };
 
-// Forum names we never surface, regardless of allowlist or hot catch-all.
-const FORUM_SKIP_PATTERNS: RegExp[] = [
-  /uniswap/i, // operator works for the Uniswap Foundation
-];
+// Orgs we never surface, regardless of allowlist or hot catch-all (EXCLUDED_ORGS).
+const FORUM_SKIP_PATTERNS: RegExp[] = config.forum.excludedOrgs;
 
 const JUDGE_BATCH_SIZE = 12;
 
@@ -421,7 +417,7 @@ export async function fetchGrantsFeedResults(
   const urls = new Set<string>();
   for (const item of items) {
     if (!item.url || !(item.title || item.name)) continue;
-    // Same operator-conflict skip as the judge path (matches protocol AND url)
+    // Same exclusion-list skip as the judge path (matches protocol AND url)
     const skipHaystack = `${item.protocol || ''} ${item.url}`;
     if (FORUM_SKIP_PATTERNS.some(p => p.test(skipHaystack))) continue;
     // Age gate on the thread's original post date

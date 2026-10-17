@@ -1,5 +1,5 @@
 /**
- * Archive junk org_profiles (+ matching Sov's Orgs Notion pages).
+ * Archive junk org_profiles (+ matching Notion Orgs pages).
  *
  *   npx ts-node --transpile-only src/scripts/clean-org-profiles.ts --dry-run
  *   npx ts-node --transpile-only src/scripts/clean-org-profiles.ts

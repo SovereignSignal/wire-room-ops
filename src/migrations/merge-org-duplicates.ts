@@ -14,7 +14,7 @@ import { archiveSimpleCrmOrgPages } from '../services/notion-sync';
 export interface KnownOrgMerge {
   sourceName: string;
   targetName: string;
-  /** Archive the source-named Sov's Orgs page. Default true. */
+  /** Archive the source-named Orgs page. Default true. */
   archiveNotionSource?: boolean;
 }
 

@@ -1167,7 +1167,7 @@ Expect a small number, and strictly fewer than the 1,008 baseline.
 
 - [ ] **6. Re-run the integrity dry run.** `src/scripts/program-integrity-repair.ts` should now propose far fewer than 1,262 rows, and the `canonical: id -> null` share should be a fraction of the 1,008 baseline. Only then decide whether to apply it.
 
-- [ ] **7. Take the `review` tier (199 rows) to Sov** as a list. Do not auto-apply it. It holds three different things that each want a different answer: forum-noise rows (bug reports that were given program identities — delete), genuine merges the heuristic could not score (merge), and **upstream dedup false positives** like `Coreum Grants -> RockNBlock listicle` (leave the programs alone; the wrong call was the entry-level duplicate link, which is a separate fix).
+- [ ] **7. Take the `review` tier (199 rows) to the operator** as a list. Do not auto-apply it. It holds three different things that each want a different answer: forum-noise rows (bug reports that were given program identities — delete), genuine merges the heuristic could not score (merge), and **upstream dedup false positives** like `Coreum Grants -> RockNBlock listicle` (leave the programs alone; the wrong call was the entry-level duplicate link, which is a separate fix).
 
 ---
 

@@ -24,7 +24,7 @@ test('accepts a pseudonym/handle as the identity', () => {
   assert.equal(passesContactBar({ name:'orhun', role:'OSS maintainer (ratatui)', x_handle:'orhundev', profile_url:'https://github.com/orhun', source:'https://github.com/orhun' }), true);
 });
 test('accepts an independent individual with no org affiliation', () => {
-  assert.equal(passesContactBar({ name:'Sov', role:'independent researcher / builder', x_handle:'sovsignal', profile_url:null, source:'https://x.com/sovsignal' }), true);
+  assert.equal(passesContactBar({ name:'Alex Example', role:'independent researcher / builder', x_handle:'alexexample', profile_url:null, source:'https://x.com/alexexample' }), true);
 });
 test('accepts profile_url with no X handle', () => {
   assert.equal(passesContactBar({ name:'Jane Doe', role:'Founder', x_handle:null, profile_url:'https://linkedin.com/in/janedoe', source:'https://org.com' }), true);

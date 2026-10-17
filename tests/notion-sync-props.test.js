@@ -1,5 +1,5 @@
 // Pins the pruned Notion org-property contract (CRM simplification 2026-07-03,
-// Sov: "no more than 8-10 fields"). Notion carries only the 10-field human view;
+// the operator: "no more than 8-10 fields"). Notion carries only the 10-field human view;
 // Twitter/GitHub/Tags/Source Type/Items Sourced live ONLY in Postgres. If the
 // sync ever writes a pruned field again, Notion would silently re-create it as
 // a new property — these tests make that a loud failure instead.

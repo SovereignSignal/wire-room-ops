@@ -1,5 +1,5 @@
 /**
- * One-off Watchtower registry import: Notion Sov's Orgs -> watch_surfaces.
+ * One-off Watchtower registry import: Notion Orgs -> watch_surfaces.
  * Default is DRY RUN (prints counts). Pass --write to persist.
  * Re-runnable: upserts on (surface_type, url).
  *

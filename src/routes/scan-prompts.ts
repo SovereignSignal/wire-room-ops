@@ -64,7 +64,7 @@ async function executePromptLabTest(input: {
   outputFormat?: 'text' | 'json';
   wire?: string;
 }) {
-  // Cost brake (Sov's hard rule): the grok x_search path spends xAI and is what
+  // Cost brake (the operator's hard rule): the grok x_search path spends xAI and is what
   // this budget tracks. Consult BEFORE spending; fail closed at the monthly cap.
   if (input.toolType !== 'perplexity' && input.toolType !== 'parallel') {
     const budget = await checkBudget(getPool());
@@ -406,7 +406,7 @@ router.post('/:id/run', async (req: Request, res: Response) => {
       return;
     }
 
-    // Cost brake (Sov's hard rule): consult the discovery budget BEFORE spending
+    // Cost brake (the operator's hard rule): consult the discovery budget BEFORE spending
     // on the grok x_search path; fail closed at the monthly cap.
     if (prompt.toolType !== 'perplexity' && prompt.toolType !== 'parallel') {
       const budget = await checkBudget(getPool());

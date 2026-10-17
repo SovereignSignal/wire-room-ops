@@ -3,6 +3,9 @@ require('ts-node/register/transpile-only');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
+// Exclusion list is read from env at config load, so set it before requiring.
+process.env.EXCLUDED_ORGS = 'example dao';
+
 const { grantsFeedItemToRaw, fetchGrantsFeedResults, DISCUSS_WATCH_NEWS_QUERY } = require('../src/services/forum');
 
 // --- grantsFeedItemToRaw mapping ---
@@ -89,13 +92,13 @@ test('fetchGrantsFeedResults request behavior', async (t) => {
   const originalFetch = global.fetch;
   t.after(() => { global.fetch = originalFetch; });
 
-  await t.test('maps items, skips uniswap (operator conflict) and stale threads', async () => {
+  await t.test('maps items, skips excluded orgs and stale threads', async () => {
     const fresh = new Date().toISOString();
     const stale = new Date(Date.now() - 90 * 86400000).toISOString();
     const calls = stubFetch({
       items: [
         { title: 'CoW Grants: batch 12', url: 'https://forum.cow.fi/t/batch-12/900', protocol: 'CoW Protocol', confidence: 90, kind: 'application', topicCreatedAt: fresh },
-        { title: 'Uniswap CFM round', url: 'https://gov.uniswap.org/t/cfm/800', protocol: 'Uniswap Governance', confidence: 95, kind: 'rfp', topicCreatedAt: fresh },
+        { title: 'Example DAO CFM round', url: 'https://gov.exampledao.org/t/cfm/800', protocol: 'Example DAO Governance', confidence: 95, kind: 'rfp', topicCreatedAt: fresh },
         { title: 'Ancient grants thread', url: 'https://forum.celo.org/t/old/1', protocol: 'Celo', confidence: 80, kind: 'rfp', topicCreatedAt: stale },
         { title: 'No URL item', confidence: 80 },
       ],
@@ -116,12 +119,12 @@ test('fetchGrantsFeedResults request behavior', async (t) => {
     assert.equal(params.get('status'), null);
   });
 
-  await t.test('NEWS pull requests awarded and voting separately and still skips Uniswap', async () => {
+  await t.test('NEWS pull requests awarded and voting separately and still skips excluded orgs', async () => {
     const fresh = new Date().toISOString();
     const calls = stubFetch({
       items: [
         { id: 10, title: 'Season results', url: 'https://gov.optimism.io/t/results/1', protocol: 'Optimism', confidence: 90, status: 'awarded', topicCreatedAt: fresh },
-        { id: 11, title: 'Uniswap vote', url: 'https://gov.uniswap.org/t/vote/2', protocol: 'Uniswap', confidence: 99, status: 'voting', topicCreatedAt: fresh },
+        { id: 11, title: 'Example DAO vote', url: 'https://gov.example-dao.org/t/vote/2', protocol: 'Example DAO', confidence: 99, status: 'voting', topicCreatedAt: fresh },
       ],
     });
     const { results } = await fetchGrantsFeedResults('crypto', '2026-10-01', { ...DISCUSS_WATCH_NEWS_QUERY });
@@ -140,7 +143,7 @@ test('fetchGrantsFeedResults request behavior', async (t) => {
     assert.equal(results.length, 1);
     assert.equal(results[0].name, 'Season results');
     assert.equal(results[0].metadata.wire_area, '2');
-    assert.doesNotMatch(results.map(item => item.sourceUrl).join('\n'), /uniswap/i);
+    assert.doesNotMatch(results.map(item => item.sourceUrl).join('\n'), /example-?dao/i);
   });
 
   await t.test('NEWS pull dedupes merged pages by item id or url', async () => {

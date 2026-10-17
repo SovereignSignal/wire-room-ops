@@ -15,14 +15,14 @@
 **Verified existing state:**
 - `org-enricher.ts`: `enrichOrgs(orgs)` [Grok LLM, knowledge-only, returns id/org_type/source_type/website/twitter], `enrichBatch({force,limit})` [SELECT WHERE `$1::boolean OR enriched_at IS NULL`; per-org `UPDATE org_profiles SET org_type=COALESCE(...), source_type=COALESCE(...), website=COALESCE(...), twitter=COALESCE(...), enriched_at=NOW(), updated_at=NOW()`], `enrichSingleOrg(orgId)`, `computeDerivedFields()`. `POST /api/admin/enrich-orgs` (force, limit), rate-limited.
 - `org_profiles` HAS: `description, tags[], website, twitter, org_type, source_type, last_signal, current_wedge, recommended_action, primary_domain, enriched_at, relationship_context`. MISSING: `github_url`.
-- CRM `Sov's Orgs` properties include `GitHub URL`(url), `Website`, `Twitter`, `Type`, `Tags`, `Action(s)`(rich_text). NO `Description` property → description/last_signal fold into `Action(s)`.
+- CRM `Orgs` properties include `GitHub URL`(url), `Website`, `Twitter`, `Type`, `Tags`, `Action(s)`(rich_text). NO `Description` property → description/last_signal fold into `Action(s)`.
 - `buildOrgProperties` (notion-sync.ts) maps Name/Website/Twitter/Wire/Tags/Items Sourced/Quality Score/Last Checked/Type/Source Type/Tier. MISSING: GitHub URL, Action(s).
 
 ---
 
 ### Task 0: Branch + baseline
 
-- [ ] **Step 1:** `cd "$HOME/Documents/Sovereign Signal/repos/wire-room-ops" && git checkout main && git pull --ff-only && git checkout -b crm-phase2-web-enrich`
+- [ ] **Step 1:** `cd "wire-room-ops" && git checkout main && git pull --ff-only && git checkout -b crm-phase2-web-enrich`
 - [ ] **Step 2:** `npm run typecheck && npm test 2>&1 | grep -E "ℹ (tests|pass|fail)"` → typecheck clean, fail 0. Record pass count.
 
 ---
@@ -61,7 +61,7 @@ Place it where the other `ADD COLUMN IF NOT EXISTS` statements for org_profiles 
 ```
 
 - [ ] **Step 4:** `node --test tests/notion-sync-props.test.js` → all pass. `npm run typecheck` clean.
-- [ ] **Step 5: Commit** `git add src/services/org-extractor.ts src/services/notion-sync.ts tests/notion-sync-props.test.js && git -c user.name="SovereignSignal" -c user.email="sov@sovereignsignal.com" commit -m "enrich: github_url column + CRM GitHub URL mapping\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>"`
+- [ ] **Step 5: Commit** `git add src/services/org-extractor.ts src/services/notion-sync.ts tests/notion-sync-props.test.js && git commit -m "enrich: github_url column + CRM GitHub URL mapping\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>"`
 
 ---
 
@@ -194,7 +194,7 @@ Add `clearInterval(enrichTimer)` to the graceful-shutdown block with the other t
 - [ ] **Step 2:** `npm run typecheck && npm test 2>&1 | grep -E "ℹ (pass|fail)"` → fail 0.
 - [ ] **Step 3: Commit, merge, push (deploys)**
 ```bash
-git add src/server.ts && git -c user.name="SovereignSignal" -c user.email="sov@sovereignsignal.com" commit -m "enrich: schedule org enrichment every 6h\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+git add src/server.ts && git commit -m "enrich: schedule org enrichment every 6h\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 git checkout main && git merge --no-ff crm-phase2-web-enrich -m "CRM Phase 2: web-augmented org enrichment" && git push origin main
 ```
 - [ ] **Step 4: Watch deploy + health** — `watch-deploy.sh 17165452-… 5cc01564-… d0d4c7f4-…` → FINAL=SUCCESS; health 200.

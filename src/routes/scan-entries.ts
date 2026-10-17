@@ -403,7 +403,7 @@ async function handleTextIntake(
 /**
  * POST /telegram-batch — HTTP door into the Grant Wire summarizer intake.
  * Same parseBatchEntries + URL/name dedupe + queued insert as the Telegram bot.
- * Body: { text: string }  (the markdown Sov pastes into the Telegram intake bot)
+ * Body: { text: string }  (the markdown the operator pastes into the Telegram intake bot)
  * Auth: session or INTERNAL_API_KEY (this router is already behind requireAuthOrInternalKey).
  */
 router.post('/telegram-batch', async (req: Request, res: Response) => {

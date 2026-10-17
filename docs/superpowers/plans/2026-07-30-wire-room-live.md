@@ -122,7 +122,7 @@ const { buildPublicSnapshot } = require('../src/services/public-snapshot');
 // the projection leaked a field it was never allowed to emit.
 const POISON = {
   email: 'canary-person@example.com',
-  operatorRead: 'CANARY they have no grants lead, Sov could run it',
+  operatorRead: 'CANARY they have no grants lead, the operator could run it',
   declineReason: 'CANARY declined, funder is hostile',
   description: 'CANARY long internal description',
   actor: 'CANARY agent:stringer',
@@ -956,8 +956,8 @@ git commit -m "feat(public-snapshot): output assertion, column-contract test, di
 - [ ] **Step 1: Create the repo and scaffold**
 
 ```bash
-mkdir -p "$HOME/Documents/Sovereign Signal/repos/wire-room-live"
-cd "$HOME/Documents/Sovereign Signal/repos/wire-room-live"
+mkdir -p "wire-room-live"
+cd "wire-room-live"
 git init
 mkdir -p src tests public worker scripts
 ```
@@ -1856,9 +1856,9 @@ The chosen backplate is committed in the producer repo at
 generated it.
 
 ```bash
-cd "$HOME/Documents/Sovereign Signal/repos/wire-room-live"
+cd "wire-room-live"
 mkdir -p art public
-ASSETS="$HOME/Documents/Sovereign Signal/repos/wire-room-ops/docs/superpowers/assets/wire-room-live"
+ASSETS="path/to/wire-room-ops/docs/superpowers/assets/wire-room-live"
 cp "$ASSETS/room.png"        art/room.png
 cp "$ASSETS/room-prompt.txt" art/room-prompt.txt
 cp "$ASSETS/room.png"        public/room.png

@@ -60,7 +60,7 @@ flowchart TD
         NL["Weekly Newsletter\nCross-vertical synthesis\nSubstack"]
     end
 
-    subgraph OPS["Layer 5 — Consensus Consulting: Revenue"]
+    subgraph OPS["Layer 5 — Consulting: Revenue"]
         CONSULT["Grant Programs · Operations · BD"]
         FLYWHEEL["Intelligence from operating programs\nfeeds back into Layer 1"]
     end
@@ -194,7 +194,7 @@ The Operator's job:
 
 ---
 
-## Current Deployment (Sov's Grant Wire)
+## Current Deployment (the operator's Grant Wire)
 
 - **Verticals:** crypto, ai, oss
 - **Telegram:** @cryptograntwire, @aigrantwire, @ossgrantwire (via @GrantWireBot)
@@ -208,4 +208,4 @@ The Operator's job:
 
 ## Next Deployment (Claw Consulting)
 
-Same stack. Different config. The Operator learns what a good consulting lead looks like from Sov + Nick's approval decisions over the first month.
+Same stack. Different config. The Operator learns what a good consulting lead looks like from the operators' approval decisions over the first month.

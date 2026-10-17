@@ -11,7 +11,7 @@
  * - Sources are org ATS JSON APIs (Greenhouse/Ashby, no auth) and clean RSS
  *   boards — fresh BY CONSTRUCTION, so role leads skip the Parallel verify
  *   stage (that stage exists to kill stale headlines; a posting present in
- *   today's API response cannot be stale). They still pass the SOV_SHAPE
+ *   today's API response cannot be stale). They still pass the OPERATOR_PROFILE
  *   qualifier before surfacing.
  * - Net-new gating via an app_state URL watermark per source
  *   (`bd:roles:seen:<key>`), same pattern as source-feeds; the caller flushes
@@ -78,7 +78,7 @@ export const ROLES_REGISTRY: RoleSource[] = [
 ];
 
 // ── Role taxonomy filter ─────────────────────────────────────────────────
-// Cheap title gate BEFORE the LLM qualifier: Sov's lane is senior
+// Cheap title gate BEFORE the LLM qualifier: the operator's lane is senior
 // BD/partnerships/ecosystem/grants/governance/ops/CoS/revenue — not
 // engineering, not junior, not sales-floor.
 const ROLE_KEYWORDS = /(business development|\bbd\b|partnerships?\b|alliances|ecosystem|grants?\b|grant.?making|governance|operations|\bops\b|chief of staff|revenue|program (officer|manager|director|lead)|go.?to.?market|\bgtm\b|corp(orate)? dev|foundation (director|lead|manager))/i;

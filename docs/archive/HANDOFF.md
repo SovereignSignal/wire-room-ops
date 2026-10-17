@@ -43,9 +43,9 @@ This was a working session on the `wire-room-ops` repo (deployed on Railway) foc
 
 ## Current State of the System
 
-The app is live at `wire-room-ops-production.up.railway.app`. It has a Privy-authenticated dashboard, a scheduler that shows 6 schedules, and all the pipeline code wired up. But zero scan prompts are loaded, zero automated scans have run, and zero entries have gone through the intake pipeline. Everything happens manually right now: Sov finds grant opportunities, posts them to t.me/cryptograntwire, TeleSum picks them up and writes to the Railway Postgres database.
+The app is live at the Railway app URL. It has a Privy-authenticated dashboard, a scheduler that shows 6 schedules, and all the pipeline code wired up. But zero scan prompts are loaded, zero automated scans have run, and zero entries have gone through the intake pipeline. Everything happens manually right now: the operator finds grant opportunities, posts them to t.me/cryptograntwire, TeleSum picks them up and writes to the Railway Postgres database.
 
-The goal is to flip this so the system discovers, deduplicates, scores, and queues entries automatically, and Sov just reviews and approves daily.
+The goal is to flip this so the system discovers, deduplicates, scores, and queues entries automatically, and the operator just reviews and approves daily.
 
 ---
 

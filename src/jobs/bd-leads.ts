@@ -3,7 +3,7 @@
  *
  * Finds + qualifies + verifies BD opportunities from the last N days of
  * relationship_signal entries, dedups by org, and writes the verified ones into
- * the Notion "Leads" list in Sov's CRM as Status=Lead. FIND + QUALIFY ONLY:
+ * the Notion "Leads" list in the operator's CRM as Status=Lead. FIND + QUALIFY ONLY:
  * never contacts anyone, never creates Opps. Folded into the daily-digest run
  * and gated to Wednesday by the scheduler — no new cron.
  */
@@ -41,7 +41,7 @@ const ROLES_WEEKLY_CAP = 10;
 
 /**
  * Roles lane: fetch the ATS/RSS registry, taxonomy-filter titles, take
- * net-new per source (app_state watermark), qualify against SOV_SHAPE, and
+ * net-new per source (app_state watermark), qualify against OPERATOR_PROFILE, and
  * return LeadRecords. ATS data is fresh by construction, so roles skip the
  * Parallel verify stage. Watermarks are RETURNED, not written — the caller
  * persists them only after the Notion write succeeds (Phase-3 lesson).
@@ -83,7 +83,7 @@ async function collectRoleLeads(): Promise<{
 
   if (freshAll.length === 0) return { fetched, fresh: 0, qualified: 0, leads: [], pendingSeen, sourceErrors };
 
-  // Qualify roles with the same SOV_SHAPE screen (synthetic ids local to this batch)
+  // Qualify roles with the same OPERATOR_PROFILE screen (synthetic ids local to this batch)
   const candidates: BdCandidate[] = freshAll.map((p, idx) => ({
     id: idx + 1,
     name: `ROLE OPENING: ${p.title} @ ${p.org}`,

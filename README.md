@@ -15,7 +15,7 @@ Deployed as the Sovereign Signal Grant Wires (crypto/AI/OSS grants) but designed
 - React dashboard (Lovable design) + server-rendered login
 - DB-backed API key management with env var fallback
 - Org/contacts CRM layer (extraction, BD-lens enrichment with per-org `operator_read`, merge, Notion sync, people monitor)
-- BD leads loop (Wednesdays): relationship signals + a 17-source senior-roles registry -> SOV_SHAPE qualifier -> Parallel verification -> Notion Paid Work Leads (find + qualify only, never contacts)
+- BD leads loop (Wednesdays): relationship signals + a 17-source senior-roles registry -> OPERATOR_PROFILE qualifier -> Parallel verification -> Notion Paid Work Leads (find + qualify only, never contacts)
 - Schedule management, tele-sum summary-sync bridge, model listing, decisions-first daily digest email
 - Deployment-agnostic brand/audience configuration
 
@@ -304,7 +304,9 @@ Optional:
 - `FORUM_SCAN_ENABLED`
 - `FORUM_GRANTS_FEED_ENABLED` -- pre-classified discuss.watch /grants pull in the forum lane (default true)
 - `FORUM_GRANTS_MIN_CONFIDENCE` -- min classifier confidence for grants-feed items (default 60)
+- `EXCLUDED_ORGS` -- comma-separated org names or case-insensitive regexes the forum lane never surfaces (default: none)
 - `BD_LEADS_DATABASE_ID` -- Notion Paid Work Leads db for the Wednesday BD loop
+- `BD_PROFILE` -- operator profile the BD qualifier scores against (placeholder: `"The operator is a senior operator for funding ecosystems: ..."`). Unset reads the untracked `config/bd-profile.local.md`, then a generic default
 - `COHORT_BRIDGE_ENABLED` -- in-process Notion cohort bridge in the daily-digest fold (default true; set false to disable)
 - `COHORT_NOTION_DATABASE_ID` -- Notion database id of the Cowork + Codex Daily Grant Scans table
 - `COHORT_NOTION_TOKEN` -- optional Notion token override; otherwise uses the enabled Notion integration token. That integration must be granted access to the scans table.

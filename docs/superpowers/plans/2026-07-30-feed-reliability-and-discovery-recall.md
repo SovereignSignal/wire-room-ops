@@ -1348,7 +1348,7 @@ This task changes production configuration. **Do not perform any step without th
 
 Confirm the running Railway commit includes the tier-scope change before enabling anything. Merged is not live — production uses staged deploys and merged PRs can sit in `NEEDS_APPROVAL`.
 
-Use the `railway-ops` skill flow. Service `wire-room-ops` is `d0d4c7f4-dea9-4cab-ba8c-ec7363f0470e`, project `17165452-9a41-4abf-b350-a3c0cf492623`, env `5cc01564-4e3d-4e57-8423-949e9544c595`.
+Use the `railway-ops` skill flow. Service `wire-room-ops` is `<RAILWAY_SERVICE_ID>`, project `<RAILWAY_PROJECT_ID>`, env `<RAILWAY_ENV_ID>`.
 
 - [ ] **Step 2: Enable the lane in dry-run**
 
@@ -1369,7 +1369,7 @@ The lane runs inside the daily fold — no separate cron. Do not trigger it manu
 - [ ] **Step 4: Read what it would have submitted**
 
 ```bash
-railway logs --service d0d4c7f4-dea9-4cab-ba8c-ec7363f0470e --lines 2000 | grep -i "RegistryWatch"
+railway logs --service <RAILWAY_SERVICE_ID> --lines 2000 | grep -i "RegistryWatch"
 ```
 
 Check: surfaces polled is in the expected range (≤65 minus any not yet due), no Tier 2 org names appear, budget was not blocked, and the items it would submit look like real opportunities.

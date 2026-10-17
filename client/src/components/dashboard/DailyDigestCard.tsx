@@ -217,7 +217,7 @@ export function DailyDigestCard() {
           <Input
             value={recipients}
             onChange={(e) => { setRecipients(e.target.value); markDirty(); }}
-            placeholder="sov@sovereignsignal.com, ops@example.com"
+            placeholder="you@example.com, ops@example.com"
             className="bg-background text-sm font-mono"
           />
           <p className="text-[10px] text-muted-foreground">Comma-separated email addresses</p>

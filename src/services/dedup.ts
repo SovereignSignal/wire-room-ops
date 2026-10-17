@@ -1615,7 +1615,7 @@ export async function annotateAlternateSource(
 /**
  * Find a likely prior appearance of the same opportunity without blocking the
  * current row. This is the review-intelligence layer: it annotates alternate
- * source links and sibling-ish replays so Sov can make the call in queue.
+ * source links and sibling-ish replays so the operator can make the call in queue.
  */
 export async function findRelatedOpportunity(
   pool: Pool,

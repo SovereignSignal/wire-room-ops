@@ -1,11 +1,13 @@
 /**
  * BD Opportunity Qualifier (P1 + P3 core).
  *
- * Scores BD/funder/ecosystem signals against Sov's consulting shape (three
+ * Scores BD/funder/ecosystem signals against the operator profile (three
  * service lines + ICP) and returns only the qualified ones. FIND + QUALIFY
  * ONLY — this module never contacts anyone and imports no send/distribution
  * path by construction.
  */
+import fs from 'fs';
+import path from 'path';
 import { config } from '../config';
 import { logApiUsage } from './api-usage';
 import { getCachedProvider } from './api-provider';
@@ -41,23 +43,27 @@ export interface QualifiedOpportunity {
 
 const FIT_LINES = new Set(['grant_program_ops', 'ops_sales_bd', 'governance_ops', 'none']);
 
-/** Sov's consulting shape — the rubric the qualifier reasons against (P1). */
-export const SOV_SHAPE = `SOV is a senior operator-for-hire for funding ecosystems (vehicle: Consensus Consulting). He sells three service lines, each as a project, a fractional engagement, or a full-time role:
-1. grant_program_ops — design, run, fix, or stand up grant programs. Proof: ran Gitcoin's grants program ($64M+ across 3,500+ projects), Uniswap Foundation Grants Manager, CoW grants committee, Cardano funding architecture, Optimism RetroPGF.
-2. ops_sales_bd — operations, revenue, partnerships, GTM, ecosystem revenue models, P&L, professional-services offerings. Proof: ex-COO of a $50M company, secured $1M+ new revenue for Gitcoin, built partner programs across Optimism/Arbitrum/Base.
-3. governance_ops — council/delegate systems, proposal process, governance-to-partnership. Proof: Optimism govNERDs Lead + Foundation liaison, ENS Public Goods Steward, delegate across Optimism/ENS/Scroll/Arbitrum, Sky/Maker.
+/** Generic rubric used when no operator profile is configured. */
+const DEFAULT_OPERATOR_PROFILE = 'The operator is a senior operator for funding ecosystems: grant program ops, ops/sales/BD, governance ops.';
 
-IDEAL CLIENT (ICP): crypto, OSS, and AI foundations, DAOs, protocols, labs, and funders, treated EQUALLY with no ecosystem preference. He works WITH the orgs that RUN funding, programs, and governance (the funder/operator side). He is NOT for individual grant applicants, university professors' personal awards, generic scholarships, or off-domain orgs.
+const PROFILE_FILE = path.join(process.cwd(), 'config', 'bd-profile.local.md');
 
-A signal QUALIFIES as a BD opportunity for Sov only when ALL of these hold:
-- it is about an ORG in his ICP (a crypto/OSS/AI foundation, DAO, protocol, lab, or funder), not an individual, an academic award, or an off-domain org;
-- it maps to a concrete need in ONE of his three lines (the org now has program/ops/BD/governance work that he does);
-- there is a why-now: something just launched, opened, changed, restructured, a role opened, a lead departed, a fund/treasury landed, or a governance process broke, within roughly 30 days;
-- there is a plausible path for Sov to be the operator (the org could hire or contract someone with his background).
+/**
+ * The operator profile the qualifier reasons against: BD_PROFILE, else the
+ * untracked config/bd-profile.local.md, else the generic default.
+ */
+export function loadOperatorProfile(): string {
+  if (config.bdLeads.profile.trim()) return config.bdLeads.profile.trim();
+  try {
+    const fromFile = fs.readFileSync(PROFILE_FILE, 'utf8').trim();
+    if (fromFile) return fromFile;
+  } catch {
+    // No local profile file; fall through to the default.
+  }
+  return DEFAULT_OPERATOR_PROFILE;
+}
 
-Judge each signal ORGANICALLY on its own merits against the rules above. Do NOT favor or penalize any specific named organization, and do NOT carry an inclusion or exclusion list of orgs. Whatever appears in the wires that week is judged the same way.
-QUALIFY examples (by TYPE, never specific orgs): a foundation or DAO actively running, launching, or expanding a grants program that needs an operator (grant_program_ops); an active governance change, council formation, or committee election (governance_ops); an org that just raised or launched a fund and needs ops/partnerships/GTM, or opened a senior ecosystem/BD/ops/governance role (ops_sales_bd).
-DO-NOT-QUALIFY examples (by TYPE): an individual's academic award (e.g. a university professor's NSF grant) — no ICP org, no path; a startup's seed raise with no program/ops need; a one-off grant a recipient just won; generic news with no actionable org-side work.`;
+export const OPERATOR_PROFILE = loadOperatorProfile();
 
 function buildQualifyPrompt(candidates: BdCandidate[]): string {
   const lines = candidates.map((c, idx) => {
@@ -70,12 +76,12 @@ function buildQualifyPrompt(candidates: BdCandidate[]): string {
     return `${idx + 1}. [ID:${c.id}] wire:${c.wire || '?'} class:${c.classification || '?'}\n   Name: "${c.name}"\n   Desc: "${(c.description || '').slice(0, 240)}"${ctx ? `\n   Context: ${ctx}` : ''}`;
   }).join('\n\n');
 
-  return `You qualify business-development opportunities for SOV against his consulting shape. Be a STRICT gatekeeper: default NO, high bar. Most signals are NOT opportunities for him.
+  return `You qualify business-development opportunities for the operator against the profile below. Be a STRICT gatekeeper: default NO, high bar. Most signals are NOT opportunities for the operator.
 
-${SOV_SHAPE}
+${OPERATOR_PROFILE}
 
-For EACH numbered entry below, decide if it is a qualified BD opportunity for Sov. Return a JSON array only, no markdown, one object per entry, same ids:
-[{"id":123,"qualified":true,"fit_line":"grant_program_ops","org":"Uniswap Foundation","pain":"one sentence: the org-side work Sov would do","why_now":"one sentence: the dated trigger","confidence":78,"reason":"one short sentence: why it qualifies or not"}]
+For EACH numbered entry below, decide if it is a qualified BD opportunity for the operator. Return a JSON array only, no markdown, one object per entry, same ids:
+[{"id":123,"qualified":true,"fit_line":"grant_program_ops","org":"Example Foundation","pain":"one sentence: the org-side work the operator would do","why_now":"one sentence: the dated trigger","confidence":78,"reason":"one short sentence: why it qualifies or not"}]
 
 Rules: fit_line is exactly one of grant_program_ops | ops_sales_bd | governance_ops | none. If qualified is false, set fit_line to "none". confidence is 0-100. Keep pain and why_now to one sentence each. "org" is the funder/org the opportunity is about.
 

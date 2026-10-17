@@ -1,5 +1,5 @@
 /**
- * Write verified BD leads into the Notion "Leads" database in Sov's CRM.
+ * Write verified BD leads into the Notion "Leads" database in the operator's CRM.
  *
  * Reuses the existing Notion integration (same token as the org sync). Dedups
  * by Source URL so a lead is never re-added across weeks, and sets Status =

@@ -2,7 +2,7 @@
 
 Pacing is implemented and still ships **off**. `distribution:pace.enabled` defaults to `false`, and no migration writes that key. A deploy does not change when posts go out.
 
-What Sov can do from Settings → Distribution, on a phone, with no SQL:
+What the operator can do from Settings → Distribution, on a phone, with no SQL:
 
 - Turn pacing on or off.
 - Set the minutes between posts (1–180; 20 is the recommendation).
@@ -185,7 +185,7 @@ None of these are a paced approve button that recorded each item. That is why it
 
 That design had four concrete failures:
 
-1. **It was not the approve path.** Approve still published immediately. The drip only did anything if a `schedules` row of type `drip-distribution` existed and was enabled. The button Sov uses never entered it.
+1. **It was not the approve path.** Approve still published immediately. The drip only did anything if a `schedules` row of type `drip-distribution` existed and was enabled. The button the operator uses never entered it.
 2. **The selector was the entire approved corpus.** Any old approved entry that had never been logged was eligible. Quiet approvals were safe only because `distributable` was false. Everything else approved before distribution existed was a candidate. The same day, `d0d6b3f` added a 30-day `created_at` filter and a description-length gate. That was a bandage on a backlog flood, not a queue.
 3. **Any log row, including `failed`, meant "done."** A failed send was skipped forever. `4bf081b` (March 28) changed the filter to "no `success` or `pending` log," so failures would be retried. Claim-before-send did not exist yet (#149 is September). A retry after Telegram had accepted the message but the log write had failed would post a second time.
 4. **Nothing was visible per item.** Pace was "whatever the cron expression is" plus an in-memory overlap skip (`executingJobs` in the scheduler). No scheduled time, no pause, no reorder, no "this one did not send." Errors were a console line and a scheduler status blob.
@@ -260,7 +260,7 @@ next slot    = max(now, latest available_at already booked on that chat,
 
 Booking is the new row's `available_at`. The next approval for a chat that shares that timestamp waits another full interval. An entry that fans out to two chats takes the later of the two slots, and both chats are busy at that time, so each chat still sees one post per interval.
 
-Do this in the approval statement's order. `id = ANY($ids)` does not preserve the order Sov clicked. Use `unnest(ids) WITH ORDINALITY` when assigning slots so bulk approve sends in selection order.
+Do this in the approval statement's order. `id = ANY($ids)` does not preserve the order the operator clicked. Use `unnest(ids) WITH ORDINALITY` when assigning slots so bulk approve sends in selection order.
 
 If a wire has no enabled Telegram channel, still insert the queue row. The outgoing list shows "no channel" on that row. Do not drop it, and do not mark it `done`.
 

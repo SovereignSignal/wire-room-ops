@@ -2202,7 +2202,7 @@ export async function ensureMonitoredAccountsTable(): Promise<void> {
 
 /**
  * Watchtower registry: one row per watchable surface of an org.
- * Human-facing fields (tier, wire, org_name) mirror Notion Sov's Orgs;
+ * Human-facing fields (tier, wire, org_name) mirror Notion Orgs;
  * machine state (last_checked_at, failure_streak, ...) lives only here.
  */
 export async function ensureWatchSurfacesTable(): Promise<void> {

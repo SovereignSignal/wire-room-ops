@@ -87,7 +87,7 @@ test('post and summary prompts carry area wording and the verifier fail rule', (
   assert.match(verifier, /derived or added up rather than quoted from the source/);
 });
 
-test('forum, parallel, source-feed, and registry prompts cover areas 1-6 and keep Uniswap skipped', () => {
+test('forum, parallel, source-feed, and registry prompts cover areas 1-6 and keep the exclusion list wired', () => {
   const judge = buildForumJudgePrompt([{ title: 'Treasury vote', url: 'https://forum.example/t/1', forumName: 'Optimism', createdAt: null, replies: 0, views: 0, source: 'allowlist' }], 'crypto');
   assert.match(judge, /Find posts in wire areas 1–6/);
   assert.match(judge, /delegate elections and comms/i);
@@ -99,7 +99,8 @@ test('forum, parallel, source-feed, and registry prompts cover areas 1-6 and kee
   assert.deepEqual(DISCUSS_WATCH_NEWS_QUERY.status.split(','), ['awarded', 'voting']);
 
   const forum = require('fs').readFileSync(require('path').join(__dirname, '../src/services/forum.ts'), 'utf8');
-  assert.match(forum, /uniswap/i);
+  assert.match(forum, /config\.forum\.excludedOrgs/);
+  assert.doesNotMatch(forum, /uniswap/i);
 
   const guide = parallelAreaGuide();
   assert.match(guide, /grant program results/);

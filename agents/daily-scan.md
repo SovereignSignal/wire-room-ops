@@ -56,7 +56,7 @@ Once source credibility is established, check content:
 
 ### Rule 3: Operator-specific constraints
 
-- **Skip all Uniswap Foundation-related entries** — the operator works for UF.
+- **Skip orgs on the operator's exclusion list** (`EXCLUDED_ORGS`).
 - **Mila AI Policy Fellowship** appears often — don't re-submit if already in DB.
 - **Same URL = same thing** — check DB for duplicate URLs before submitting.
 

@@ -7,7 +7,7 @@ const { buildPublicSnapshot } = require('../src/services/public-snapshot');
 // the projection leaked a field it was never allowed to emit.
 const POISON = {
   email: 'canary-person@example.com',
-  operatorRead: 'CANARY they have no grants lead, Sov could run it',
+  operatorRead: 'CANARY they have no grants lead, the operator could run it',
   declineReason: 'CANARY declined, funder is hostile',
   description: 'CANARY long internal description',
   actor: 'CANARY agent:stringer',

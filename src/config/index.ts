@@ -26,6 +26,20 @@ export function isFlagEnabled(raw: string | undefined): boolean {
   return raw.trim().toLowerCase() !== 'false';
 }
 
+/**
+ * Comma-separated org patterns. Each entry is a case-insensitive regex, so a
+ * plain name works too; an entry that is not a valid regex matches literally.
+ */
+export function parseOrgPatterns(raw: string | undefined): RegExp[] {
+  return (raw || '').split(',').map(s => s.trim()).filter(Boolean).map(s => {
+    try {
+      return new RegExp(s, 'i');
+    } catch {
+      return new RegExp(s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    }
+  });
+}
+
 export const config = {
   database: {
     url: process.env.DATABASE_URL || '',
@@ -119,6 +133,8 @@ export const config = {
     // Grok judge spend; set FORUM_GRANTS_FEED_ENABLED=false to kill-switch.
     grantsFeedEnabled: process.env.FORUM_GRANTS_FEED_ENABLED !== 'false',
     grantsMinConfidence: parseInt(process.env.FORUM_GRANTS_MIN_CONFIDENCE || '60', 10) || 60,
+    // Orgs never surfaced by the forum lane (matched against forum name, protocol and url).
+    excludedOrgs: parseOrgPatterns(process.env.EXCLUDED_ORGS),
   },
 
   // Notion database ids the CRM jobs read. Empty means the job skips with a reason.
@@ -130,6 +146,9 @@ export const config = {
   bdLeads: {
     // Link under the BD leads block of the daily digest email; omitted when unset.
     digestUrl: process.env.BD_LEADS_DIGEST_URL || '',
+    // Operator profile the qualifier scores against. Falls back to
+    // config/bd-profile.local.md (untracked), then a generic default.
+    profile: process.env.BD_PROFILE || '',
   },
 
   crm: {

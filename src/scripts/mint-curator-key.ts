@@ -1,6 +1,6 @@
 /**
  * Mint a scoped curator key. Prints the bearer token once and a JSON entry
- * that contains only the SHA-256 hash. Sov pastes that entry into
+ * that contains only the SHA-256 hash. The operator pastes that entry into
  * WIRE_ROOM_CURATOR_KEYS. The token is not written to disk.
  *
  *   npm run curator-key:mint -- --name hedwig --scopes read_queue,decide,propose

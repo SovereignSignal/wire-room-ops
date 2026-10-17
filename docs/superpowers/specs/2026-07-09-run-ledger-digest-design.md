@@ -1,14 +1,14 @@
 # Run Ledger Digest — Design
 
 **Date:** 2026-07-09
-**Status:** Approved by Sov (visual direction "Run Ledger" chosen from 4 mockups; content architecture "Operator's Cockpit" chosen from 3 approaches).
+**Status:** Approved by the operator (visual direction "Run Ledger" chosen from 4 mockups; content architecture "Operator's Cockpit" chosen from 3 approaches).
 **Supersedes:** `2026-07-09-digest-email-refresh-design.md` (Codex WIP — kept as input; its curator-first ORDER BY survives, its 24h window and "Ops Dashboard Lite" shell do not).
 
 ## Goal
 
 The daily digest email becomes an operator's cockpit with exactly three jobs:
 
-1. **Drive the review workflow** — surface queue items Sov has never seen before, with curator context, deep-linked into the dashboard queue.
+1. **Drive the review workflow** — surface queue items the operator has never seen before, with curator context, deep-linked into the dashboard queue.
 2. **System trust at a glance** — prove the machine ran, via a color-coded status band whose states (clean / issues) are unmistakable at arm's length.
 3. **Fold in deadlines** — absorb the standalone weekly "Closing Soon" email (retired) as a conditional section.
 

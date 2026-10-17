@@ -13,7 +13,7 @@ These rules override older sections below when they conflict.
 - **Perplexity is an active `tool_type`**, not disabled.
 - **Forum lane** is a governance allowlist + LLM judge, not the old dual-strategy keyword search.
 - **Auto-summarize** is Ollama primary (`OLLAMA_DEFAULT_MODEL`) then Ollama fallback (`OLLAMA_FALLBACK_MODEL`). Grok and Claude are not in that chain.
-- **Watchtower stays off.** Do not set `X_LISTS_ENABLED` or `REGISTRY_WATCH_ENABLED`, and do not activate the seeded `watchtower-*` `x_search` prompts. Sov enables those lanes; this agent does not.
+- **Watchtower stays off.** Do not set `X_LISTS_ENABLED` or `REGISTRY_WATCH_ENABLED`, and do not activate the seeded `watchtower-*` `x_search` prompts. The operator enables those lanes; this agent does not.
 - **If Watchtower is quiet after enablement:** check `WATCHTOWER_BUDGET_MONTHLY_USD` (default $20) before assuming a source died. Cutover instrument: `npx ts-node src/scripts/challenger-scoreboard.ts --days 7`.
 - **`x-list` entries** (when the lane is on) are dumb-pipe tweets, URL-first — treat like `x-monitor`. Classifier judges; do not auto-approve.
 - **`watch_surfaces`** is the discovery registry (one row per org surface: grants page, RSS, X, forum, …). Humans edit orgs in Notion; machine state (last checked/changed, failure streak) lives only here.
@@ -50,7 +50,7 @@ WireOps exists to:
    @SovGrantWire (X, unified)
    Daily Digest Email (6 AM PT), Newsletter
 
-5. CONSENSUS CONSULTING — Revenue
+5. CONSULTING — Revenue
    Authority from Sovereign Signal → consulting revenue
 ```
 
@@ -177,7 +177,7 @@ Key endpoints:
 Dashboard Approve to Wires publishes to Telegram. Agent approvals are force-quiet and cannot redistribute. Do not set `distribute_after` — that drip path is gone.
 
 ### Autonomous Operation — Current Phase
-**Phase 1: Calibrated Confidence.** I review entries and make calls. Sov approves everything. Building an explicit rubric from the historical dataset. Target: >90% agreement on HIGH-confidence calls.
+**Phase 1: Calibrated Confidence.** I review entries and make calls. The operator approves everything. Building an explicit rubric from the historical dataset. Target: >90% agreement on HIGH-confidence calls.
 
 ---
 

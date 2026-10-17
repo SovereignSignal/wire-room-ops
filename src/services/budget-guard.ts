@@ -1,6 +1,6 @@
 /**
  * Watchtower budget guard. One number, one gate: month-to-date discovery spend
- * vs WATCHTOWER_BUDGET_MONTHLY_USD (Sov's cap: $10-20). Grok spend comes from
+ * vs WATCHTOWER_BUDGET_MONTHLY_USD (the operator's cap: $10-20). Grok spend comes from
  * api_usage_log.estimated_cost_usd; X reads are metered here (pay-per-use has
  * no pricing row) via an app_state monthly counter at TWITTER_READ_UNIT_USD
  * per read — the owned-read price, since these reads are of the account's

@@ -1,6 +1,6 @@
 /**
  * Seed Watchtower Tier-2 x_search prompts — INACTIVE by construction.
- * These are v1 starters modeled on Sov's manual daily Grok scans (the
+ * These are v1 starters modeled on the operator's manual daily Grok scans (the
  * incumbent); tune against the summarizer channel's yield before activating.
  * Activate via the dashboard (Sources > Scan Prompts) once GROK_API_KEY is live.
  *
