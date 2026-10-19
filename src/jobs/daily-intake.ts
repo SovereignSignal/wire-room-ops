@@ -5,7 +5,8 @@
  * Processes raw scan submissions through the full pipeline:
  *
  * 1. Parse structured text into RawScanResult[]
- * 2. For forums, skip repeated observations; retain trusted source changes
+ * 2. For forums, skip repeated observations; retain trusted source changes.
+ *    For Parallel Frontier, skip a known program or a closed call.
  * 3. Insert the rest as scan_entries with status='raw'
  * 4. Run dedup against seen_urls and seen_names
  * 5. Score unique entries for quality
@@ -45,6 +46,7 @@ import { finalizeProgramForEntry } from '../services/program-identity';
 import type { ProgramResolutionStamp } from '../services/program-identity';
 import { applyKnownProgramCycleGuard, hasNewCycleStamp, type Classification, type ClassificationResult } from '../services/classifier';
 import { applyEvergreenRegistryRoute } from '../services/evergreen-route';
+import { isParallelFrontierIntake, parallelFrontierSkips } from '../services/parallel-intake-gate';
 
 // ============================================================
 // Default Configuration
@@ -280,9 +282,11 @@ export async function runDailyIntake(
   progress(`Parsed ${allResults.length} total results from ${submissions.length} scans`, 5);
 
   // Forum rows re-fetch the same topic under slightly different URLs. Drop
-  // repeats before insert, preserving collector-attested source changes. Every other
-  // source still inserts first and lets the existing dedup pass decide.
+  // repeats before insert, preserving collector-attested source changes.
+  // Parallel Frontier drops a known program or a closed call before insert.
+  // Every other source still inserts first and lets the existing dedup pass decide.
   let skippedAlreadySeen = 0;
+  let skippedParallel = 0;
   const forumPositions: number[] = [];
   for (let i = 0; i < allResults.length; i++) {
     if (allResults[i].scanSource === 'forum') forumPositions.push(i);
@@ -319,6 +323,39 @@ export async function runDailyIntake(
         '[DailyIntake] Forum already-seen lookup failed; inserting forum rows unfiltered:',
         err instanceof Error ? err.message : err,
       );
+    }
+  }
+
+  // Parallel Frontier re-finds programs the wire already has, usually at a
+  // different URL, and it also re-finds calls that have already closed.
+  // Drop those before insert. A lookup failure keeps the open rows.
+  const parallelPositions: number[] = [];
+  for (let i = 0; i < allResults.length; i++) {
+    const item = allResults[i];
+    if (isParallelFrontierIntake(item.scanSource, item.promptVariant)) parallelPositions.push(i);
+  }
+  if (parallelPositions.length > 0) {
+    const skips = await parallelFrontierSkips(pool, parallelPositions.map(position => {
+      const item = allResults[position];
+      return {
+        name: item.result.name,
+        description: item.result.description,
+        deadline: item.result.deadline,
+        wire: item.wire,
+      };
+    }));
+    const drop = new Set<number>();
+    skips.forEach((reason, localIndex) => {
+      if (reason) drop.add(parallelPositions[localIndex]);
+    });
+    if (drop.size > 0) {
+      skippedParallel = drop.size;
+      for (let i = allResults.length - 1; i >= 0; i--) {
+        if (drop.has(i)) allResults.splice(i, 1);
+      }
+      const known = skips.filter(reason => reason === 'known_program').length;
+      const closed = skips.filter(reason => reason === 'closed').length;
+      console.log(`[DailyIntake] Skipped ${skippedParallel} Parallel row(s) before insert (${known} known program, ${closed} closed)`);
     }
   }
 
@@ -423,6 +460,7 @@ export async function runDailyIntake(
       totalIngested: allResults.length,
       duplicatesFound: 0,
       skippedAlreadySeen,
+      skippedParallel,
       newUnique: validIndices.length,
       averageQualityScore: 0,
       highQualityCount: 0,
@@ -794,6 +832,7 @@ export async function runDailyIntake(
     totalIngested: allResults.length,
     duplicatesFound,
     skippedAlreadySeen,
+    skippedParallel,
     newUnique: uniqueEntryIds.length,
     averageQualityScore: Math.round(avgScore),
     highQualityCount,
