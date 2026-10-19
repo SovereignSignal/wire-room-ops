@@ -187,6 +187,8 @@ export interface IntakeRunSummary {
   duplicatesFound: number;
   /** Forum observations suppressed before insert because the source is unchanged. */
   skippedAlreadySeen?: number;
+  /** Parallel Frontier rows skipped before insert: known program or closed call. */
+  skippedParallel?: number;
   newUnique: number;
   averageQualityScore: number;
   highQualityCount: number;         // Score >= 60
