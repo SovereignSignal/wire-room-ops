@@ -119,10 +119,44 @@ test('a short funder spelling still matches the canonical program', () => {
   ), true);
 });
 
-test('a numbered round of a program already on the wire matches', () => {
+test('a later numbered round is a new program', () => {
+  assert.equal(parallelProgramsMatch(
+    { name: 'Uniswap Grants Round 5', orgName: 'Uniswap Foundation', sourceUrl: 'https://example.org/uniswap-round-5' },
+    { name: 'Uniswap Grants Round 4', orgName: 'Uniswap Foundation' },
+  ), false);
   assert.equal(parallelProgramsMatch(
     { name: 'Uniswap Grants Round 6', orgName: 'Uniswap Foundation' },
     { name: 'Uniswap Grants Round 4', orgName: 'Uniswap Foundation' },
+  ), false);
+});
+
+test('a new year or cohort is a new program', () => {
+  assert.equal(parallelProgramsMatch(
+    { name: 'Anthropic Fellows Program (2026 cohort)', orgName: 'Anthropic', sourceUrl: 'https://example.org/fellows-2026' },
+    { name: 'Anthropic Fellows Program (2025 cohort)', orgName: 'Anthropic' },
+  ), false);
+  assert.equal(parallelProgramsMatch(
+    { name: 'Anthropic Fellows Program (Sept 2026 cohort)', orgName: 'Anthropic' },
+    { name: 'Anthropic Fellows Program (July 2026 cohort)', orgName: 'Anthropic' },
+  ), false);
+});
+
+test('the same round under a different URL is a duplicate', () => {
+  assert.equal(parallelProgramsMatch(
+    {
+      name: 'Uniswap Grants — Round 4',
+      orgName: 'Uniswap Foundation',
+      sourceUrl: 'https://news.example.org/uniswap-round-4',
+    },
+    { name: 'Uniswap Grants Round 4', orgName: 'Uniswap Foundation' },
+  ), true);
+  assert.equal(parallelProgramsMatch(
+    {
+      name: 'Anthropic Fellows Program (Sept 2026 cohort)',
+      orgName: 'Anthropic',
+      sourceUrl: 'https://blog.example.org/anthropic-fellows-sept-2026',
+    },
+    { name: 'Anthropic Fellows Program (September 2026 cohort)', orgName: 'Anthropic' },
   ), true);
 });
 
@@ -184,6 +218,54 @@ test('parallelFrontierSkips drops a known program, a closed call, and a second c
     },
   ], NOW);
   assert.deepEqual(skips, ['known_program', 'known_program', 'closed', null]);
+});
+
+test('a later round and a new cohort are kept; the same round is skipped', async () => {
+  const pool = {
+    async query() {
+      return {
+        rows: [
+          {
+            name: 'Uniswap Grants Round 4',
+            canonicalName: 'Uniswap Grants Round 4',
+            orgName: 'Uniswap Foundation',
+          },
+          {
+            name: 'Anthropic Fellows Program (2025 cohort)',
+            canonicalName: 'Anthropic Fellows Program',
+            orgName: 'Anthropic',
+          },
+        ],
+      };
+    },
+  };
+  const skips = await parallelFrontierSkips(pool, [
+    {
+      wire: 'crypto',
+      name: 'Uniswap Grants Round 5',
+      description: 'Round 5, run by the Uniswap Foundation.',
+      deadline: '2026-12-01',
+    },
+    {
+      wire: 'crypto',
+      name: 'Uniswap Grants Round 4',
+      description: 'The same round on a new page, run by the Uniswap Foundation.',
+      deadline: '2026-12-01',
+    },
+    {
+      wire: 'ai',
+      name: 'Anthropic Fellows Program (2026 cohort)',
+      description: 'The 2026 cohort, run by Anthropic.',
+      deadline: '2026-12-01',
+    },
+    {
+      wire: 'crypto',
+      name: 'Uniswap Grants Round 5',
+      description: 'Second page for round 5, run by the Uniswap Foundation.',
+      deadline: '2026-12-01',
+    },
+  ], NOW);
+  assert.deepEqual(skips, [null, 'known_program', null, 'known_program']);
 });
 
 test('a failed program lookup still skips closed calls and keeps open ones', async () => {
@@ -273,6 +355,48 @@ test('intake skips a known Parallel program and a closed call before insert', as
   assert.ok(lookup);
   assert.equal(lookup.sql.includes('source_url'), false);
   assert.equal(lookup.params[0], 'oss');
+});
+
+test('intake keeps a later round and a new cohort, and skips the same round at a new URL', async () => {
+  const pool = intakePool([
+    {
+      name: 'Uniswap Grants Round 4',
+      canonicalName: 'Uniswap Grants Round 4',
+      orgName: 'Uniswap Foundation',
+    },
+    {
+      name: 'Anthropic Fellows Program (2025 cohort)',
+      canonicalName: 'Anthropic Fellows Program',
+      orgName: 'Anthropic',
+    },
+  ]);
+  const summary = await runDailyIntake(pool, [parallelSubmission([
+    result({
+      name: 'Uniswap Grants Round 5',
+      sourceUrl: 'https://example.org/uniswap-round-5',
+      description: 'Round 5, run by the Uniswap Foundation.',
+      deadline: '2026-12-01',
+    }),
+    result({
+      name: 'Uniswap Grants — Round 4',
+      sourceUrl: 'https://news.example.org/uniswap-round-4',
+      description: 'The same round on a new page, run by the Uniswap Foundation.',
+      deadline: '2026-12-01',
+    }),
+    result({
+      name: 'Anthropic Fellows Program (2026 cohort)',
+      sourceUrl: 'https://example.org/anthropic-fellows-2026',
+      description: 'The 2026 cohort, run by Anthropic.',
+      deadline: '2026-12-01',
+    }),
+  ])], { insertOnly: true });
+
+  assert.equal(summary.skippedParallel, 1);
+  assert.equal(summary.totalIngested, 2);
+  assert.deepEqual(pool.insertedNames, [
+    'Uniswap Grants Round 5',
+    'Anthropic Fellows Program (2026 cohort)',
+  ]);
 });
 
 test('a new open Parallel program is still inserted when nothing matches', async () => {
