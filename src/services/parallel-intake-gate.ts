@@ -4,13 +4,15 @@
  * URL dedup misses the same program when Parallel returns a different page.
  * Of the decided Frontier rows, 1 of 37 was approved and 41% were duplicates
  * of programs already on the wire, plus closed calls. Before a variant-P
- * web-search row is inserted, skip it when the normalized funder and program
- * name already exist on that wire, or when the call is closed.
+ * web-search row is inserted, skip it when the same funder, program, and
+ * round already exist on that wire, or when the call is closed. A different
+ * round number, or a different year or cohort, is a new program and stays.
  *
  * Other lanes are unchanged. The advisory program resolver still does not
  * demote entries after they exist.
  */
 
+import { extractCycleMarkers } from './dedup';
 import { parseDeadline } from './intake';
 import { canonicalizeOrgName, classifyOrgName, extractOrgFromName } from './org-extractor';
 import { normalizeProgramKey, sameOrgIdentity } from './program-identity';
@@ -157,10 +159,84 @@ function nameContainsFunder(name: string, funder: string): boolean {
   return new RegExp(`(?:^|[^A-Za-z0-9])${escapeRegExp(needle)}(?:[^A-Za-z0-9]|$)`, 'i').test(name);
 }
 
+const MONTH_WORDS = 'january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sept|sep|oct|nov|dec';
+const SEASON_WORDS = 'spring|summer|autumn|winter|fall';
+const MONTH_KEY: Record<string, string> = {
+  january: 'jan', jan: 'jan',
+  february: 'feb', feb: 'feb',
+  march: 'mar', mar: 'mar',
+  april: 'apr', apr: 'apr',
+  may: 'may',
+  june: 'jun', jun: 'jun',
+  july: 'jul', jul: 'jul',
+  august: 'aug', aug: 'aug',
+  september: 'sep', sept: 'sep', sep: 'sep',
+  october: 'oct', oct: 'oct',
+  november: 'nov', nov: 'nov',
+  december: 'dec', dec: 'dec',
+};
+
+function numberedRoundSignature(name: string): string {
+  const parts = extractCycleMarkers(name).numbered.map(marker => `${marker.kind}:${marker.value}`);
+  const cohortNumber = name.match(/\bcohorts?\s*#?\s*(\d+)\b/i)
+    || name.match(/\b(\d+)(?:st|nd|rd|th)\s+cohorts?\b/i);
+  // A 20xx figure next to "cohort" is a year, not a cohort index.
+  if (cohortNumber && !/^20\d\d$/.test(cohortNumber[1])) {
+    parts.push(`cohort:${Number(cohortNumber[1])}`);
+  }
+  if (parts.length === 0) {
+    const ordinal = name.match(/\b(\d+)(?:st|nd|rd|th)\s+(rounds?|cycles?|seasons?|batches|batch|waves?|funds?)\b/i);
+    if (ordinal) {
+      const raw = ordinal[2].toLowerCase();
+      const kind = raw.startsWith('batch') ? 'batch'
+        : raw.startsWith('wave') ? 'wave'
+        : raw.startsWith('season') ? 'season'
+        : raw.startsWith('cycle') ? 'cycle'
+        : raw.startsWith('fund') ? 'fund'
+        : 'round';
+      parts.push(`${kind}:${Number(ordinal[1])}`);
+    }
+  }
+  return [...new Set(parts)].sort().join(',');
+}
+
+function yearSignature(name: string): string {
+  const markers = extractCycleMarkers(name);
+  const years = new Set(markers.years.map(year => String(year)));
+  if (markers.fiscal) {
+    for (const year of markers.fiscal.match(/20\d\d/g) || []) years.add(year);
+  }
+  return [...years].sort().join(',');
+}
+
+/** Month or season written next to the word "cohort". A bare year stays in the year signature. */
+function cohortSeasonKey(name: string): string {
+  if (!/\bcohorts?\b/i.test(name)) return '';
+  const before = name.match(new RegExp(`\\b(${MONTH_WORDS}|${SEASON_WORDS})\\b(?:\\s+20\\d\\d)?\\s+cohorts?\\b`, 'i'));
+  const after = name.match(new RegExp(`\\bcohorts?\\b(?:\\s+20\\d\\d)?\\s+(${MONTH_WORDS}|${SEASON_WORDS})\\b`, 'i'));
+  const token = (before?.[1] || after?.[1] || '').toLowerCase();
+  if (!token) return '';
+  if (token === 'autumn') return 'fall';
+  if (token === 'spring' || token === 'summer' || token === 'winter' || token === 'fall') return token;
+  return MONTH_KEY[token] || token.slice(0, 3);
+}
+
 /**
- * Same program when the normalized funder agrees and the normalized program
- * name agrees. The source URL is not part of the match. Round, cohort, and
- * year noise folds away, matching program identity elsewhere.
+ * The same round is the same number, the same year, and the same cohort
+ * season. A missing marker on one side is not the same round. Two names
+ * with no round, year, or cohort are the standing program.
+ */
+function sameParallelRound(incomingName: string, existingName: string): boolean {
+  return numberedRoundSignature(incomingName) === numberedRoundSignature(existingName)
+    && yearSignature(incomingName) === yearSignature(existingName)
+    && cohortSeasonKey(incomingName) === cohortSeasonKey(existingName);
+}
+
+/**
+ * Same program when the normalized funder and program name agree and the
+ * round agrees. A different round number, year, or cohort is a different
+ * program. The source URL is not part of the match, so the same round
+ * reposted at a new address still matches.
  */
 export function parallelProgramsMatch(incoming: ParallelGateResult, existing: ExistingProgramRow): boolean {
   const incomingFunder = parallelFunderName(incoming);
@@ -180,7 +256,8 @@ export function parallelProgramsMatch(incoming: ParallelGateResult, existing: Ex
 
   const incomingHasFunder = Boolean(incomingFunder) || nameContainsFunder(incoming.name, funder);
   const existingHasFunder = Boolean(existingFunder) || existingNames.some(name => nameContainsFunder(name, funder));
-  return incomingHasFunder && existingHasFunder;
+  if (!incomingHasFunder || !existingHasFunder) return false;
+  return existingNames.some(name => sameParallelRound(incoming.name, name));
 }
 
 function distinctiveWords(value: string): string[] {

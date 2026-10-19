@@ -6,7 +6,7 @@
  *
  * 1. Parse structured text into RawScanResult[]
  * 2. For forums, skip repeated observations; retain trusted source changes.
- *    For Parallel Frontier, skip a known program or a closed call.
+ *    For Parallel Frontier, skip the same round of a known program, or a closed call.
  * 3. Insert the rest as scan_entries with status='raw'
  * 4. Run dedup against seen_urls and seen_names
  * 5. Score unique entries for quality
@@ -283,7 +283,7 @@ export async function runDailyIntake(
 
   // Forum rows re-fetch the same topic under slightly different URLs. Drop
   // repeats before insert, preserving collector-attested source changes.
-  // Parallel Frontier drops a known program or a closed call before insert.
+  // Parallel Frontier drops the same round of a known program, or a closed call, before insert.
   // Every other source still inserts first and lets the existing dedup pass decide.
   let skippedAlreadySeen = 0;
   let skippedParallel = 0;
@@ -326,9 +326,10 @@ export async function runDailyIntake(
     }
   }
 
-  // Parallel Frontier re-finds programs the wire already has, usually at a
-  // different URL, and it also re-finds calls that have already closed.
-  // Drop those before insert. A lookup failure keeps the open rows.
+  // Parallel Frontier re-finds the same round at a different URL, and it
+  // also re-finds calls that have already closed. Drop those before insert.
+  // A later numbered round, or a new year or cohort, stays. A lookup failure
+  // keeps the open rows.
   const parallelPositions: number[] = [];
   for (let i = 0; i < allResults.length; i++) {
     const item = allResults[i];
