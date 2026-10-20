@@ -31,7 +31,7 @@ import {
 import { parseWireArea } from '../types/wire-area';
 import {
   parseStructuredOutput,
-  parseAmount,
+  resolveStoredAmount,
   parseDeadline,
 
   normalizeName,
@@ -375,8 +375,9 @@ export async function runDailyIntake(
 
     for (let i = 0; i < batch.length; i++) {
       const item = batch[i];
-      const parsed = parseAmount(item.result.amount);
-      const metadata = forumIntakeMetadata(item.result, item.scanSource, item.submittedBy);
+      const storedAmount = resolveStoredAmount(item.result.amount);
+      const metadata = forumIntakeMetadata(item.result, item.scanSource, item.submittedBy) || {};
+      if (storedAmount.note) metadata.amount_note = storedAmount.note;
       const deadlineParsed = parseDeadline(item.result.deadline);
       const offset = i * COLS_PER_ROW;
 
@@ -387,9 +388,9 @@ export async function runDailyIntake(
         item.result.name,
         item.result.description,
         item.result.sourceUrl,
-        item.result.amount,
-        parsed?.numeric || null,
-        parsed?.currency || null,
+        storedAmount.amount,
+        storedAmount.numeric,
+        storedAmount.currency,
         item.result.deadline,
         deadlineParsed,
         item.wire,
@@ -401,7 +402,7 @@ export async function runDailyIntake(
         item.result.sourcePublishedAt || null,
         item.rawOutput || null,
         item.parseStrategy || null,
-        metadata ? JSON.stringify(metadata) : null,
+        Object.keys(metadata).length ? JSON.stringify(metadata) : null,
         parseWireArea(item.result.metadata?.wire_area),
       );
     }

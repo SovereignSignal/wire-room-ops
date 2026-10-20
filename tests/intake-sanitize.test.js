@@ -25,6 +25,18 @@ test('sanitizeResult strips a leading deadline/due label from the deadline value
   assert.equal(sanitizeResult(base({ deadline: '2026-07-27' })).deadline, '2026-07-27');
 });
 
+test('sanitizeResult leaves a percentage or share commitment null with a note', () => {
+  const sanitized = sanitizeResult(base({
+    amount: '5% share commitment',
+    metadata: { fit_score: 3 },
+  }));
+  assert.equal(sanitized.amount, null);
+  assert.equal(sanitized.metadata.fit_score, 3);
+  assert.match(sanitized.metadata.amount_note, /5% share commitment/);
+  assert.match(sanitized.metadata.amount_note, /Not stored as a USD amount/);
+  assert.equal(sanitizeResult(base({ amount: '$2M pool' })).metadata, undefined);
+});
+
 test('sanitizeResult discards bare duration strings mistaken for amounts', () => {
   assert.equal(sanitizeResult(base({ amount: '3 m' })).amount, null);
   assert.equal(sanitizeResult(base({ amount: '4 months' })).amount, null);

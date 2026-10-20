@@ -41,12 +41,36 @@ function scrubConnectionStrings(value: string): string {
   return value.replace(/postgres(?:ql)?:\/\/\S+/gi, 'postgresql://****');
 }
 
+/**
+ * JSON.stringify emits an ISO string for a real Date. This walk copies own
+ * properties, and a Date has none, so delivery timestamps were coming back
+ * as {}. A Date that has lost its prototype still exposes toISOString and
+ * nothing else; that shape gets the same ISO string.
+ */
+function isoTimestamp(value: object): string | null | undefined {
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value.toISOString();
+  }
+  const toIso = (value as { toISOString?: unknown }).toISOString;
+  if (typeof toIso !== 'function') return undefined;
+  if (Object.keys(value).some(key => key !== 'toISOString')) return undefined;
+  try {
+    const out = toIso.call(value);
+    if (typeof out === 'string' && !Number.isNaN(Date.parse(out))) return new Date(out).toISOString();
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 /** Replace secret-shaped fields. Masked and raw values both become `****`. */
 export function redactSecrets(value: unknown, depth = 0): unknown {
   if (depth > 8) return null;
   if (typeof value === 'string') return scrubConnectionStrings(value);
   if (!value || typeof value !== 'object') return value;
   if (Array.isArray(value)) return value.map(item => redactSecrets(item, depth + 1));
+  const timestamp = isoTimestamp(value);
+  if (timestamp !== undefined) return timestamp;
   const out: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
     if (key === 'confirm') continue;
