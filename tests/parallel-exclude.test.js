@@ -14,6 +14,7 @@ test('Parallel exclude list is separate from the Gate 1 block list', () => {
   for (const host of [
     'facebook.com', 'fundsforngos.org', 'web3grant.com', 'web3grants.com', 'gate.com', 'grants.watch',
     'blockchainacademics.com', 'grantedai.com', 'inventya.com', 'casrai.org',
+    'ossfunded.org', 'open-source-ai.tech',
   ]) {
     assert.ok(PARALLEL_EXCLUDE_DOMAINS.includes(host), host);
     assert.equal(blockedSourceDomain(`https://${host}/some/post`), null, `${host} stays off the global list`);
@@ -32,6 +33,8 @@ test('Parallel aggregator match includes subdomains', () => {
   assert.equal(isParallelAggregatorHost('https://www.blockchainacademics.com/grants'), true);
   assert.equal(isParallelAggregatorHost('https://www.inventya.com/calls/ngi-zero-commons-fund'), true);
   assert.equal(isParallelAggregatorHost('https://dictionary.casrai.org/entry'), true);
+  assert.equal(isParallelAggregatorHost('https://www.ossfunded.org/grants'), true);
+  assert.equal(isParallelAggregatorHost('https://grants.open-source-ai.tech/calls'), true);
   assert.equal(isParallelAggregatorHost('https://nlnet.nl/news/2026-call'), false);
 });
 
@@ -60,6 +63,16 @@ test('aggregator hits are dropped unless the excerpt cites an official URL', () 
     title: 'Crypto grants database',
     excerpts: ['A directory of active Web3 grants.'],
   }), null);
+  assert.equal(settleParallelHit({
+    url: 'https://ossfunded.org/programs',
+    title: 'OSS funding directory',
+    excerpts: ['A roundup of open-source grants.'],
+  }), null);
+  assert.equal(settleParallelHit({
+    url: 'https://www.open-source-ai.tech/grants/nlnet',
+    title: 'NLnet via directory',
+    excerpts: ['Apply at https://nlnet.nl/funding/open-call/ before June.'],
+  }).url, 'https://nlnet.nl/funding/open-call/');
   assert.equal(settleParallelHit({
     url: 'https://blog.inventya.com/calls/example',
     title: 'NGI Zero',

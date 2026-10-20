@@ -81,6 +81,9 @@ export const PARALLEL_EXCLUDE_DOMAINS = [
   'grantedai.com',
   'inventya.com',
   'casrai.org',
+  // Grant directories that list someone else's calls.
+  'ossfunded.org',
+  'open-source-ai.tech',
 ];
 
 /** Scholarship block list plus the Parallel-only hosts, de-duplicated. */
