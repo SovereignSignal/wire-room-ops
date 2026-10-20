@@ -47,9 +47,10 @@ import { ensureAcknowledgedDistribution } from './acknowledged-distribution';
 import { ensureWireAreaColumn } from './wire-area';
 import { refreshOssParallelDiscoveryPrompt } from './oss-parallel-prompt';
 import { ensureEntryLifecycleColumns } from './entry-lifecycle';
+import { ensureSummaryTitleColumn } from './summary-title';
 
 // Increment whenever the schema contract changes, including enum constants.
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 13;
 
 export const STARTUP_MIGRATIONS: ReadonlyArray<{ name: string; version?: number; run: () => Promise<void> }> = [
   { name: 'sessions', run: ensureSessionsTable },
@@ -86,6 +87,7 @@ export const STARTUP_MIGRATIONS: ReadonlyArray<{ name: string; version?: number;
   { name: 'wire-area', version: 10, run: ensureWireAreaColumn },
   { name: 'oss-parallel-prompt', version: 11, run: refreshOssParallelDiscoveryPrompt },
   { name: 'entry-lifecycle', version: 12, run: ensureEntryLifecycleColumns },
+  { name: 'summary-title', version: 13, run: ensureSummaryTitleColumn },
 ];
 
 export interface StartupMigrationHealth {
