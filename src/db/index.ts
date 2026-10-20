@@ -2014,9 +2014,97 @@ export interface SummaryInsert {
   entities: Record<string, unknown>;
 }
 
+interface ApprovedSummaryWrite {
+  title: string;
+  summary: string;
+  wire: string;
+  dataQuality: string;
+  confidence: string;
+  entities: Record<string, unknown>;
+  scanEntryId?: number;
+}
+
+const SUMMARY_LENGTH_COLUMNS = ['title', 'summary', 'wire', 'data_quality'];
+
+async function insertApprovedSummaryOnce(pool: Pool, row: ApprovedSummaryWrite): Promise<number | null> {
+  if (row.scanEntryId != null || typeof row.entities?.source_url === 'string') {
+    const existing = await pool.query(
+      `SELECT id FROM summaries
+       WHERE ($1::int IS NOT NULL AND entities->>'scan_entry_id' = $1::text)
+          OR (
+            $2::text IS NOT NULL
+            AND entities->>'source_url' = $2
+            AND wire = $3
+          )
+       ORDER BY id ASC
+       LIMIT 1`,
+      [
+        row.scanEntryId ?? null,
+        typeof row.entities?.source_url === 'string' ? row.entities.source_url : null,
+        row.wire,
+      ]
+    );
+    if (existing.rows[0]?.id) return existing.rows[0].id;
+  }
+
+  const result = await pool.query(
+    `INSERT INTO summaries (title, summary, wire, processing_status, data_quality, confidence, entities, message_id, category_id)
+     VALUES ($1, $2, $3, 'SUCCESS', $4, $5, $6, NULL, NULL)
+     RETURNING id`,
+    [
+      row.title,
+      row.summary,
+      row.wire,
+      row.dataQuality,
+      row.confidence,
+      JSON.stringify(row.entities),
+    ]
+  );
+  return result.rows[0]?.id ?? null;
+}
+
+/** Cut string fields that exceed a varchar limit. Null when nothing was over. */
+async function fitSummaryWrite(pool: Pool, row: ApprovedSummaryWrite): Promise<{ row: ApprovedSummaryWrite; note: string } | null> {
+  const { rows } = await pool.query<{ column_name: string; character_maximum_length: number }>(
+    `SELECT column_name, character_maximum_length
+     FROM information_schema.columns
+     WHERE table_schema = (
+       SELECT n.nspname
+       FROM pg_class rel
+       JOIN pg_namespace n ON n.oid = rel.relnamespace
+       WHERE rel.oid = to_regclass('summaries')
+     )
+       AND table_name = 'summaries'
+       AND character_maximum_length IS NOT NULL
+       AND column_name = ANY($1::text[])`,
+    [SUMMARY_LENGTH_COLUMNS],
+  );
+  const limits = new Map(rows.map(column => [column.column_name, Number(column.character_maximum_length)]));
+  const notes: string[] = [];
+  const shorten = (value: string, column: string): string => {
+    const limit = limits.get(column);
+    if (limit != null && Number.isFinite(limit) && value.length > limit) {
+      notes.push(`${column}:${value.length}->${limit}`);
+      return value.slice(0, limit);
+    }
+    return value;
+  };
+  const fitted: ApprovedSummaryWrite = {
+    ...row,
+    title: shorten(row.title, 'title'),
+    summary: shorten(row.summary, 'summary'),
+    wire: shorten(row.wire, 'wire'),
+    dataQuality: shorten(row.dataQuality, 'data_quality'),
+  };
+  if (notes.length === 0) return null;
+  return { row: fitted, note: notes.join(',') };
+}
+
 /**
  * Insert an approved scan_entry into the summaries table.
  * Returns the new summaries row ID, or null if the summaries table doesn't exist.
+ * A string overflow is logged. When a written field is past its column
+ * limit, that field is cut and the row is still inserted.
  */
 export async function insertApprovedSummary(entry: SummaryInsert): Promise<number | null> {
   const pool = getPool();
@@ -2033,47 +2121,40 @@ export async function insertApprovedSummary(entry: SummaryInsert): Promise<numbe
     ...entry.entities,
     ...(entry.scanEntryId != null ? { scan_entry_id: entry.scanEntryId } : {}),
   };
+  const prepared: ApprovedSummaryWrite = {
+    title: entry.title,
+    summary: entry.summary,
+    wire: entry.wire,
+    dataQuality,
+    confidence,
+    entities,
+    scanEntryId: entry.scanEntryId,
+  };
 
   try {
-    if (entry.scanEntryId != null || typeof entry.entities?.source_url === 'string') {
-      const existing = await pool.query(
-        `SELECT id FROM summaries
-         WHERE ($1::int IS NOT NULL AND entities->>'scan_entry_id' = $1::text)
-            OR (
-              $2::text IS NOT NULL
-              AND entities->>'source_url' = $2
-              AND wire = $3
-            )
-         ORDER BY id ASC
-         LIMIT 1`,
-        [
-          entry.scanEntryId ?? null,
-          typeof entry.entities?.source_url === 'string' ? entry.entities.source_url : null,
-          entry.wire,
-        ]
-      );
-      if (existing.rows[0]?.id) return existing.rows[0].id;
-    }
-
-    const result = await pool.query(
-      `INSERT INTO summaries (title, summary, wire, processing_status, data_quality, confidence, entities, message_id, category_id)
-       VALUES ($1, $2, $3, 'SUCCESS', $4, $5, $6, NULL, NULL)
-       RETURNING id`,
-      [
-        entry.title,
-        entry.summary,
-        entry.wire,
-        dataQuality,
-        confidence,
-        JSON.stringify(entities),
-      ]
-    );
-    return result.rows[0]?.id ?? null;
+    return await insertApprovedSummaryOnce(pool, prepared);
   } catch (err: any) {
     // Gracefully handle missing summaries table (external table may not exist in dev)
     if (err.code === '42P01') {
       console.warn('[DB] summaries table does not exist — skipping write-through');
       return null;
+    }
+    if (err.code === '22001') {
+      let fitted: { row: ApprovedSummaryWrite; note: string } | null = null;
+      try {
+        fitted = await fitSummaryWrite(pool, prepared);
+      } catch (fitErr: any) {
+        console.error(`[DB] insertApprovedSummary overflow — code=${err.code} message=${err.message} detail=${err.detail} scanEntryId=${entry.scanEntryId ?? 'none'} titleLength=${entry.title?.length ?? 0} fitFailed=${fitErr.message}`);
+        return null;
+      }
+      console.error(`[DB] insertApprovedSummary overflow — code=${err.code} message=${err.message} detail=${err.detail} scanEntryId=${entry.scanEntryId ?? 'none'} titleLength=${entry.title?.length ?? 0}${fitted ? ` truncated=${fitted.note}` : ''}`);
+      if (!fitted) return null;
+      try {
+        return await insertApprovedSummaryOnce(pool, fitted.row);
+      } catch (retryErr: any) {
+        console.error(`[DB] insertApprovedSummary overflow retry FAILED — code=${retryErr.code} message=${retryErr.message} detail=${retryErr.detail}`);
+        return null;
+      }
     }
     console.error(`[DB] insertApprovedSummary FAILED — code=${err.code} message=${err.message} detail=${err.detail}`);
     // Don't throw — log and return null so approve still succeeds
