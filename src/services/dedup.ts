@@ -16,6 +16,7 @@
 import type { Pool } from 'pg';
 import type { DedupResult, RelatedOpportunityResult, ScanEntry } from '../types/intake';
 import { normalizeUrl, normalizeName, extractNameTokens } from './intake';
+import { urlLookupKeys } from '../utils/url';
 import { demoteEntryToDuplicateInTransaction, lockDuplicateGraph } from './duplicate-chain';
 import { resolveProgram, assessRound, historyLine, ProgramResolutionStamp } from './program-identity';
 import { blockedSourceDomain, classifySourceLink } from './source-filter';
@@ -672,22 +673,24 @@ async function checkUrlMatch(
   deadline?: string | Date | null,
   createdAt?: string | Date | null,
 ): Promise<DedupResult> {
-  const normalized = normalizeUrl(sourceUrl);
+  const keys = urlLookupKeys(sourceUrl);
 
   // Match against active intake states, including raw.
   // Batch classification is async, so a second paste can arrive while the first
   // copy is still raw. Excluding raw lets exact URL duplicates slip through.
   // Only archived (auto-filtered junk) is excluded — those may deserve a second look.
+  // http/https, www, highlight fragments and tracking parameters name the same page.
   const result = await pool.query(
     `SELECT su.first_seen_entry_id, se.name, su.url, se.deadline, se.deadline_parsed, se.status,
             se.decision_at, se.action_reason, se.metadata, se.lifecycle
      FROM seen_urls su
      JOIN scan_entries se ON se.id = su.first_seen_entry_id
-     WHERE su.normalized_url = $1 AND su.wire = $2
+     WHERE su.normalized_url = ANY($1::text[]) AND su.wire = $2
        AND se.status IN ('raw', 'approved', 'queued', 'declined')
        AND ($3::int IS NULL OR su.first_seen_entry_id != $3)
+     ORDER BY (su.normalized_url = $4) DESC, su.first_seen_entry_id ASC
      LIMIT 1`,
-    [normalized, wire, excludeEntryId ?? null]
+    [keys, wire, excludeEntryId ?? null, keys[0] ?? '']
   );
 
   if (result.rows.length > 0) {
