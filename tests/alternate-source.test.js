@@ -349,6 +349,51 @@ test('opposite concurrent duplicate links cannot create a two-entry cycle', asyn
   }
 });
 
+test('findRelatedOpportunity SQL matches the same EU topic and skips a fellowship with the same words', async () => {
+  const pool = getPool();
+  const { findRelatedOpportunity } = require('../src/services/dedup');
+  const pid = `${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const topic = 'HORIZON-BRIDGING-2027-01-13';
+  const otherTopic = 'HORIZON-BRIDGING-2027-01-12';
+  const fellowshipId = await insertEntry(pool, 'Horizon Bridging Fellowship Programme 2026', `https://fellowship-${pid}.example/2026`, 'approved');
+  const topicId = await insertEntry(pool, `Commission note ${topic}`, `https://notes-${pid}.example/brief`, 'queued');
+  const otherId = await insertEntry(pool, `${otherTopic} briefing`, `https://notes-${pid}.example/other`, 'approved');
+  await pool.query(
+    `INSERT INTO seen_names (name_original, name_normalized, name_tokens, entry_id, wire, first_seen)
+     VALUES
+       ($1, 'bridging fellowship horizon', $2::text[], $3, 'oss', CURRENT_DATE),
+       ($4, 'commission note', $5::text[], $6, 'oss', CURRENT_DATE),
+       ($7, 'bridging horizon', $8::text[], $9, 'oss', CURRENT_DATE)`,
+    [
+      'Horizon Bridging Fellowship Programme 2026', ['horizon', 'bridging', '2026'], fellowshipId,
+      `Commission note ${topic}`, ['commission', 'note'], topicId,
+      `${otherTopic} briefing`, ['horizon', 'bridging'], otherId,
+    ],
+  );
+  try {
+    const same = await findRelatedOpportunity(pool, {
+      sourceUrl: `https://ec.europa.eu/topic-details/${topic.toLowerCase()}`,
+      name: topic,
+      wire: 'oss',
+    });
+    assert.equal(same.isRelated, true);
+    assert.equal(Number(same.matchedEntryId), topicId);
+    assert.equal(same.confidence, 1);
+    assert.match(same.reason, new RegExp(topic));
+
+    const absent = await findRelatedOpportunity(pool, {
+      sourceUrl: 'https://ec.europa.eu/topic-details/horizon-bridging-2027-01-14',
+      name: 'HORIZON-BRIDGING-2027-01-14',
+      wire: 'oss',
+    });
+    assert.equal(absent.isRelated, false, 'a different topic id and a fellowship are not alternate sources');
+    assert.equal(absent.matchedEntryId, null);
+  } finally {
+    await pool.query(`DELETE FROM seen_names WHERE entry_id IN ($1, $2, $3)`, [fellowshipId, topicId, otherId]);
+    await pool.query(`DELETE FROM scan_entries WHERE id IN ($1, $2, $3)`, [fellowshipId, topicId, otherId]);
+  }
+});
+
 test.after(async () => {
   await closePool();
 });
