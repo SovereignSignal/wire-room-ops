@@ -8,11 +8,13 @@
 
 import type { Pool } from 'pg';
 import { logApiUsage } from './api-usage';
+import { settleForthcomingIntake } from './dedup';
 import { getCachedProvider, isProviderExplicitlyDisabled } from './api-provider';
 import { computeOperatorSignals, formatSignalsForPrompt } from './operator-signals';
 import { blockedSourceDomain, classifySourceLink } from './source-filter';
 import { chatCompletionExtras, DEFAULT_GROK_MODEL } from './grok';
 import { parseWireArea, type WireArea } from '../types/wire-area';
+import { isEntryLifecycle, type EntryLifecycle, type LifecycleSettleAction } from '../types/lifecycle';
 
 export type Classification = 'GRANT' | 'EXPIRED' | 'NEWS' | 'NOISE' | 'UNCHECKED';
 export type OperatorRoute = 'publish' | 'source_check' | 'park' | 'decline' | 'relationship_signal';
@@ -33,6 +35,10 @@ export interface ClassificationResult {
   detectedWire?: 'crypto' | 'ai' | 'oss' | 'off_domain';
   /** Wire eligibility. GRANT remains area 3 only; grants.watch reads that label. */
   wireArea: WireArea;
+  /** open = intake is live. forthcoming = a real call that is not open yet. */
+  lifecycle: EntryLifecycle;
+  /** YYYY-MM-DD the source says intake starts, or null. */
+  openingDate: string | null;
   extracted: {
     amount?: string;
     deadline?: string;
@@ -72,7 +78,21 @@ function formatDateContext(value: string | Date | null | undefined): string {
   return Number.isNaN(parsed.getTime()) ? 'invalid/unparseable' : parsed.toISOString();
 }
 
-export function buildClassificationPrompt(entry: ClassificationEntry, operatorGuidance?: string): string {
+export function buildClassificationPrompt(
+  entry: ClassificationEntry,
+  operatorGuidance?: string,
+  options?: { variant?: 'current' | 'legacy' },
+): string {
+  const variant = options?.variant ?? 'current';
+  const grantBoundary = variant === 'legacy'
+    ? 'GRANT vs NEWS boundary: if there is an application path that is open now or opens on a stated date (an apply link, "applications are now open", a future deadline), classify GRANT even when the item reads like a news announcement. Reserve NEWS for items with no application path.'
+    : 'GRANT vs NEWS boundary: if there is an application path that is open now (an apply link, "applications are now open", a future deadline), classify GRANT even when the item reads like a news announcement. Reserve NEWS for items with no application path.';
+  const lifecycleInstructions = variant === 'legacy'
+    ? ''
+    : '\nAlso return lifecycle and opening_date. lifecycle is open|forthcoming|closed|unknown. open = someone can submit now. forthcoming = real call whose intake is not open yet; a stated opening date is not itself live intake; keep classification GRANT. closed = intake closed or deadline passed. unknown = evidence does not establish which. opening_date is YYYY-MM-DD or null.\n';
+  const responseExample = variant === 'legacy'
+    ? '{"classification":"GRANT","in_scope":true,"wire":"oss","wire_area":"3","quality_score":72,"operator_route":"publish","score_reason":"Linux Foundation mentorship program — credible org, actionable for OSS contributors, clear structure","reason":"Open application for LFX Mentorship 2026","tags":["Linux Foundation","LFX Mentorship"],"extracted":{"amount":"$6,000 stipend","deadline":"April 15 2026","eligibility":"Open source contributors","summary":"One sentence."}}'
+    : '{"classification":"GRANT","in_scope":true,"wire":"oss","wire_area":"3","lifecycle":"open","opening_date":null,"quality_score":72,"operator_route":"publish","score_reason":"Linux Foundation mentorship program — credible org, actionable for OSS contributors, clear structure","reason":"Open application for LFX Mentorship 2026","tags":["Linux Foundation","LFX Mentorship"],"extracted":{"amount":"$6,000 stipend","deadline":"April 15 2026","eligibility":"Open source contributors","summary":"One sentence."}}';
   const intentGuidance = entry.intent === 'signal'
     ? '\n## Prompt Intent: Signal\nThis entry came from a signal-detection prompt. Still return wire_area. Classify as GRANT only when someone can apply right now. Items in areas 1–6 with a primary source stay eligible for operator_route publish or source_check.'
     : entry.intent === 'canonical'
@@ -107,8 +127,8 @@ Classify as exactly one of:
 - NEWS: Article/announcement about funding, org update, or industry signal — not a direct application
 - NOISE: Not relevant (spam, hype/shill content, unrelated, error)
 
-GRANT vs NEWS boundary: if there is an application path that is open now or opens on a stated date (an apply link, "applications are now open", a future deadline), classify GRANT even when the item reads like a news announcement. Reserve NEWS for items with no application path.
-
+${grantBoundary}
+${lifecycleInstructions}
 ## Quality Score (0-100)
 Score based on INFORMATION VALUE to a professional tracking grants, funding, and industry signals.
 
@@ -165,7 +185,7 @@ Also extract if available: amount, deadline, eligibility, summary.
 Also extract entity tags: 1-5 short labels for the organizations, protocols, platforms, or projects specifically named in this entry. Use canonical names (e.g., "Ethereum Foundation" not "EF", "Gitcoin" not "Gitcoin Grants"). Only include entities directly relevant — not generic terms like "blockchain" or "web3". If a specific chain (Ethereum, Solana) is mentioned, include it.
 
 Respond in JSON only, no markdown:
-{"classification":"GRANT","in_scope":true,"wire":"oss","wire_area":"3","quality_score":72,"operator_route":"publish","score_reason":"Linux Foundation mentorship program — credible org, actionable for OSS contributors, clear structure","reason":"Open application for LFX Mentorship 2026","tags":["Linux Foundation","LFX Mentorship"],"extracted":{"amount":"$6,000 stipend","deadline":"April 15 2026","eligibility":"Open source contributors","summary":"One sentence."}}`;
+${responseExample}`;
 }
 
 function readRequiredString(value: unknown, field: string): string {
@@ -198,6 +218,7 @@ function toCalendarDate(value: string | Date | null | undefined): string | null 
 export function parseClassificationResponse(
   content: string,
   context?: Pick<ClassificationEntry, 'deadlineParsed' | 'currentDate'>,
+  options?: { settleLifecycle?: boolean },
 ): ClassificationResult {
   if (!content.trim()) throw new ClassifierResponseError('empty response');
 
@@ -296,6 +317,35 @@ export function parseClassificationResponse(
     ? record.extracted as Record<string, unknown>
     : {};
 
+  const lifecycleRaw = typeof record.lifecycle === 'string' ? record.lifecycle.trim().toLowerCase() : null;
+  const statedLifecycle = isEntryLifecycle(lifecycleRaw) ? lifecycleRaw : null;
+  const openingDate = toCalendarDate(typeof record.opening_date === 'string' ? record.opening_date : null)
+    ?? toCalendarDate(typeof extractedRecord.opening_date === 'string' ? extractedRecord.opening_date : null);
+
+  // Legacy replies have no lifecycle. Do not invent one, and do not rewrite
+  // their classification from a lifecycle the new prompt would have coerced.
+  const settleLifecycle = options?.settleLifecycle !== false;
+  let lifecycle: EntryLifecycle = statedLifecycle ?? 'unknown';
+  if (settleLifecycle) {
+    const opensLater = !!(openingDate && currentDate && openingDate > currentDate);
+    if (classification === 'EXPIRED') {
+      lifecycle = 'closed';
+    } else if (
+      inScope
+      && classification !== 'NOISE'
+      && (statedLifecycle === 'forthcoming' || (classification === 'GRANT' && opensLater))
+    ) {
+      lifecycle = 'forthcoming';
+      classification = 'GRANT';
+      settledArea = '3';
+      if (!operatorRoute || operatorRoute === 'decline') operatorRoute = 'source_check';
+    } else if (!statedLifecycle) {
+      lifecycle = classification === 'GRANT' ? 'open' : 'unknown';
+    } else {
+      lifecycle = statedLifecycle;
+    }
+  }
+
   return {
     classification,
     reason,
@@ -306,12 +356,50 @@ export function parseClassificationResponse(
     inScope,
     detectedWire,
     wireArea: settledArea,
+    lifecycle,
+    openingDate,
     extracted: {
       amount: readOptionalString(extractedRecord.amount),
       deadline: readOptionalString(extractedRecord.deadline),
       eligibility: readOptionalString(extractedRecord.eligibility),
       summary: readOptionalString(extractedRecord.summary),
     },
+  };
+}
+
+/** In-scope GRANT and EXPIRED rows still create program and round records. */
+export function shouldFinalizeProgram(
+  result: Pick<ClassificationResult, 'inScope' | 'classification'>,
+): boolean {
+  return result.inScope === true
+    && (result.classification === 'GRANT' || result.classification === 'EXPIRED');
+}
+
+/**
+ * Skip a second program write when this intake updated or collapsed onto a
+ * forthcoming owner. A failed promotion still finalises so an open call is
+ * not dropped. `none` is today's gate, including forthcoming GRANTs.
+ */
+export function shouldFinalizeAfterLifecycleSettle(
+  action: LifecycleSettleAction,
+  promoted: boolean,
+  result: Pick<ClassificationResult, 'inScope' | 'classification'>,
+): boolean {
+  if (action === 'collapse') return false;
+  if (action === 'promote' && promoted) return false;
+  return shouldFinalizeProgram(result);
+}
+
+/** Metadata written beside the classification columns. */
+export function classificationMetadata(result: ClassificationResult): Record<string, unknown> {
+  const lifecycle = isEntryLifecycle(result.lifecycle) ? result.lifecycle : 'unknown';
+  return {
+    ...(result.extracted ?? {}),
+    operator_route: result.operatorRoute || null,
+    wire_area: result.wireArea ?? null,
+    lifecycle,
+    opening_date: result.openingDate ?? null,
+    ...(lifecycle === 'forthcoming' ? { lifecycle_hold: { reason: 'forthcoming' } } : {}),
   };
 }
 
@@ -376,16 +464,33 @@ export function applyKnownProgramCycleGuard(
   };
 }
 
-export async function classifyEntry(entry: ClassificationEntry): Promise<ClassificationResult> {
+export interface ClassifyEntryOptions {
+  /** `legacy` is the pre-lifecycle prompt, parsed without lifecycle coercion. */
+  variant?: 'current' | 'legacy';
+  /** Replay passes false so a dry run does not write api_usage_log. */
+  recordUsage?: boolean;
+  /** When set, both prompt variants share this guidance and skip a second lookup. */
+  operatorGuidance?: string;
+}
+
+export async function classifyEntry(
+  entry: ClassificationEntry,
+  options: ClassifyEntryOptions = {},
+): Promise<ClassificationResult> {
+  const variant = options.variant ?? 'current';
+  const recordUsage = options.recordUsage !== false;
   // Fetch operator signals (cached, non-blocking on failure)
-  let operatorGuidance = '';
-  try {
-    const signals = await computeOperatorSignals(entry.wire);
-    operatorGuidance = formatSignalsForPrompt(signals);
-  } catch (err) {
-    console.error('[Classifier] Failed to fetch operator signals:', err);
+  let operatorGuidance = options.operatorGuidance;
+  if (operatorGuidance === undefined) {
+    operatorGuidance = '';
+    try {
+      const signals = await computeOperatorSignals(entry.wire);
+      operatorGuidance = formatSignalsForPrompt(signals);
+    } catch (err) {
+      console.error('[Classifier] Failed to fetch operator signals:', err);
+    }
   }
-  const prompt = buildClassificationPrompt(entry, operatorGuidance);
+  const prompt = buildClassificationPrompt(entry, operatorGuidance, { variant });
 
   const provider = getCachedProvider('grok');
   if (!provider?.api_key) {
@@ -416,17 +521,21 @@ export async function classifyEntry(entry: ClassificationEntry): Promise<Classif
       }),
     });
   } catch (err) {
-    logApiUsage({
-      provider: 'grok', model: classifyModel, purpose: 'classify', wire: entry.wire,
-      duration_ms: Date.now() - start, success: false,
-      error_message: err instanceof Error ? err.message : String(err),
-    });
+    if (recordUsage) {
+      logApiUsage({
+        provider: 'grok', model: classifyModel, purpose: 'classify', wire: entry.wire,
+        duration_ms: Date.now() - start, success: false,
+        error_message: err instanceof Error ? err.message : String(err),
+      });
+    }
     throw err;
   }
 
   if (!response.ok) {
     const errorText = await response.text();
-    logApiUsage({ provider: 'grok', model: classifyModel, purpose: 'classify', wire: entry.wire, duration_ms: Date.now() - start, success: false, error_message: `${response.status} ${errorText.slice(0, 200)}`.trim() });
+    if (recordUsage) {
+      logApiUsage({ provider: 'grok', model: classifyModel, purpose: 'classify', wire: entry.wire, duration_ms: Date.now() - start, success: false, error_message: `${response.status} ${errorText.slice(0, 200)}`.trim() });
+    }
     throw new Error(`Grok API error: ${response.status} - ${errorText}`);
   }
 
@@ -435,30 +544,38 @@ export async function classifyEntry(entry: ClassificationEntry): Promise<Classif
     data = await response.json() as typeof data;
   } catch {
     const error = new ClassifierResponseError('malformed API response JSON');
-    logApiUsage({
-      provider: 'grok', model: classifyModel, purpose: 'classify', wire: entry.wire,
-      duration_ms: Date.now() - start, success: false, error_message: error.message,
-    });
+    if (recordUsage) {
+      logApiUsage({
+        provider: 'grok', model: classifyModel, purpose: 'classify', wire: entry.wire,
+        duration_ms: Date.now() - start, success: false, error_message: error.message,
+      });
+    }
     throw error;
   }
   const content = data.choices?.[0]?.message?.content;
 
   try {
-    const result = parseClassificationResponse(content || '', entry);
-    logApiUsage({
-      provider: 'grok', model: classifyModel, purpose: 'classify', wire: entry.wire,
-      duration_ms: Date.now() - start,
-      tokens_in: data.usage?.prompt_tokens, tokens_out: data.usage?.completion_tokens,
+    const result = parseClassificationResponse(content || '', entry, {
+      settleLifecycle: variant !== 'legacy',
     });
+    if (recordUsage) {
+      logApiUsage({
+        provider: 'grok', model: classifyModel, purpose: 'classify', wire: entry.wire,
+        duration_ms: Date.now() - start,
+        tokens_in: data.usage?.prompt_tokens, tokens_out: data.usage?.completion_tokens,
+      });
+    }
     return result;
   } catch (err) {
-    logApiUsage({
-      provider: 'grok', model: classifyModel, purpose: 'classify', wire: entry.wire,
-      duration_ms: Date.now() - start,
-      tokens_in: data.usage?.prompt_tokens, tokens_out: data.usage?.completion_tokens,
-      success: false,
-      error_message: err instanceof Error ? err.message : String(err),
-    });
+    if (recordUsage) {
+      logApiUsage({
+        provider: 'grok', model: classifyModel, purpose: 'classify', wire: entry.wire,
+        duration_ms: Date.now() - start,
+        tokens_in: data.usage?.prompt_tokens, tokens_out: data.usage?.completion_tokens,
+        success: false,
+        error_message: err instanceof Error ? err.message : String(err),
+      });
+    }
     throw err;
   }
 }
@@ -504,7 +621,15 @@ export async function classifyBatch(
                quality_breakdown = $4,
                metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
                tags = $6,
-               wire_area = $15
+               wire_area = $15,
+               lifecycle = $16,
+               opening_date = $17::date,
+               operator_notes = CASE
+                 WHEN $16::text = 'forthcoming'
+                   AND COALESCE(operator_notes, '') NOT LIKE '%Forthcoming call; held from sending until intake is open.%'
+                 THEN CONCAT_WS(E'\n', NULLIF(operator_notes, ''), 'Forthcoming call; held from sending until intake is open.')
+                 ELSE operator_notes
+               END
            WHERE id = $7
              AND status = 'queued'
              AND (classification IS NULL OR classification = 'UNCHECKED')
@@ -528,7 +653,7 @@ export async function classifyBatch(
             // Keep operator_route persistence in lockstep with process-raw —
             // this backfill path classifies dumb-pipe (telegram/manual) entries,
             // so without it those lanes never carry the BD/relationship signal.
-            JSON.stringify({ ...result.extracted, operator_route: result.operatorRoute || null, wire_area: result.wireArea }),
+            JSON.stringify(classificationMetadata(result)),
             result.tags,
             entry.id,
             entry.name,
@@ -539,8 +664,22 @@ export async function classifyBatch(
             entry.deadlineParsed ?? null,
             entry.sourcePublishedAt ?? null,
             result.wireArea,
+            result.lifecycle,
+            result.openingDate,
           ]
         );
+
+        if (updated.rowCount === 1) {
+          await settleForthcomingIntake(pool, {
+            sourceId: entry.id,
+            lifecycle: result.lifecycle,
+            openingDate: result.openingDate,
+            expectedStatus: 'queued',
+            sourceUrl: entry.source_url,
+            name: entry.name,
+            wire: entry.wire,
+          });
+        }
 
         return updated.rowCount === 1;
       })

@@ -479,6 +479,8 @@ export interface PromptStatsData {
   declinedCount: number;
   approvalRate: number;
   classificationMix: Record<string, number>;
+  openCalls: number;
+  forthcomingCalls: number;
   publishedAtCoverage: number;
 }
 

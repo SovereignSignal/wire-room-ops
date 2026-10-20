@@ -55,7 +55,8 @@ test.before(async () => {
       distributable boolean,
       actioned_by text,
       decision_at timestamptz,
-      updated_at timestamptz
+      updated_at timestamptz,
+      lifecycle text
     );
     CREATE TABLE publication_queue (
       entry_id integer,

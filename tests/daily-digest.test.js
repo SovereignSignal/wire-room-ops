@@ -422,6 +422,7 @@ test('buildRunLedger: held lane appears with 24h review-hold count, omitted at z
   assert.equal(held.detail, 'held 3 for review');
   assert.equal(held.state, 'warn');
   assert.match(pool.calls[1].sql, /cross_wire_blocked/, 'held probe must count recheck holds');
+  assert.match(pool.calls[1].sql, /lifecycle = 'forthcoming'/, 'forthcoming calls stay on the held lane');
   assert.ok(!ledger.lanes.some(l => l.key === 'gate'), 'the retired program-gate lane must not appear');
 
   const pool2 = fakePool();

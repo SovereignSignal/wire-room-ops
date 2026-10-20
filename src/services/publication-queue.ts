@@ -23,6 +23,7 @@ const DUE_TARGETS = `
     OR (q.status = 'running' AND q.lease_expires_at < NOW())
   )
     AND se.status = 'approved' AND se.distributable IS NOT FALSE
+    AND se.lifecycle IS DISTINCT FROM 'forthcoming'
   GROUP BY q.entry_id, q.available_at, q.status
   ORDER BY q.available_at, q.entry_id
 `;
@@ -49,7 +50,7 @@ async function runClaimedJob(pool: Pool, job: { entry_id: number; attempts: numb
   let state = 'done';
   let error: string | null = null;
   try {
-    const entry = (await pool.query("SELECT wire FROM scan_entries WHERE id = $1 AND status = 'approved' AND distributable IS NOT FALSE", [job.entry_id])).rows[0];
+    const entry = (await pool.query("SELECT wire FROM scan_entries WHERE id = $1 AND status = 'approved' AND distributable IS NOT FALSE AND lifecycle IS DISTINCT FROM 'forthcoming'", [job.entry_id])).rows[0];
     if (entry) {
       const result = await distributeEntry(job.entry_id, entry.wire);
       const unresolved = await pool.query(`SELECT id FROM distribution_logs

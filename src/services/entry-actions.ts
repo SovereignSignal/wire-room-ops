@@ -120,10 +120,36 @@ export function eligibleStatusesForAction(action: string): readonly string[] | n
 }
 
 const STATUS_CHANGE_SQL = `UPDATE scan_entries
-     SET status = $1, distributable = $2, actioned_by = COALESCE($3, actioned_by), action_reason = COALESCE($4, action_reason), updated_at = NOW()
+     SET status = $1,
+         distributable = CASE WHEN lifecycle = 'forthcoming' AND $1 = 'approved' THEN false ELSE $2::boolean END,
+         actioned_by = COALESCE($3, actioned_by),
+         action_reason = COALESCE($4, action_reason),
+         metadata = CASE
+           WHEN lifecycle = 'forthcoming' AND $1 = 'approved'
+           THEN COALESCE(metadata, '{}'::jsonb) || '{"lifecycle_hold":{"reason":"forthcoming"}}'::jsonb
+           ELSE metadata
+         END,
+         updated_at = NOW()
      WHERE id = ANY($5)
        AND ($6::text[] IS NULL OR status = ANY($6))
-     RETURNING id, status, wire, wires, name, description, enriched_summary, quality_score, amount, deadline, source_url, org_id, program_id, scan_date, tags`;
+     RETURNING id, status, wire, wires, name, description, enriched_summary, quality_score, amount, deadline, source_url, org_id, program_id, scan_date, tags, lifecycle`;
+
+/** Forthcoming approvals stay approved but are not booked for a send. */
+export function splitApprovalDelivery<T extends { lifecycle?: string | null }>(rows: T[]): { send: T[]; hold: T[] } {
+  const send: T[] = [];
+  const hold: T[] = [];
+  for (const row of rows) {
+    if (row.lifecycle === 'forthcoming') hold.push(row);
+    else send.push(row);
+  }
+  return { send, hold };
+}
+
+const FORTHCOMING_QUEUE_SQL = `INSERT INTO publication_queue (entry_id, status, error_message)
+     SELECT id, 'withheld', 'Forthcoming call; held from sending' FROM unnest($1::int[]) AS t(id)
+     ON CONFLICT (entry_id) DO UPDATE
+       SET status = 'withheld', error_message = EXCLUDED.error_message, updated_at = NOW()
+       WHERE publication_queue.status IN ('queued', 'done', 'withheld')`;
 
 async function applyStatusChange(
   pool: Pool,
@@ -150,14 +176,22 @@ async function applyStatusChange(
          FROM changed c
          LEFT JOIN unnest($7::int[], $8::text[], $9::timestamptz[], $10::text[], $11::text[], $12::text[])
            AS p(id, post_text, generated_at, model, check_result, verifier_result) ON p.id = c.id
-         WHERE $1 = 'approved' AND $2
+         WHERE $1 = 'approved' AND $2 AND c.lifecycle IS DISTINCT FROM 'forthcoming'
          ON CONFLICT (entry_id) DO UPDATE SET status = 'queued', attempts = 0,
            available_at = NOW(), lease_token = NULL, updated_at = NOW(),
            post_text = COALESCE(EXCLUDED.post_text, publication_queue.post_text),
            generated_at = COALESCE(EXCLUDED.generated_at, publication_queue.generated_at),
            model = COALESCE(EXCLUDED.model, publication_queue.model),
            check_result = COALESCE(EXCLUDED.check_result, publication_queue.check_result),
-           verifier_result = COALESCE(EXCLUDED.verifier_result, publication_queue.verifier_result))
+           verifier_result = COALESCE(EXCLUDED.verifier_result, publication_queue.verifier_result)),
+       held AS (
+         INSERT INTO publication_queue (entry_id, status, error_message)
+         SELECT c.id, 'withheld', 'Forthcoming call; held from sending'
+         FROM changed c
+         WHERE $1 = 'approved' AND c.lifecycle = 'forthcoming'
+         ON CONFLICT (entry_id) DO UPDATE
+           SET status = 'withheld', error_message = EXCLUDED.error_message, updated_at = NOW()
+           WHERE publication_queue.status IN ('queued', 'done', 'withheld'))
        SELECT * FROM changed`,
       [...params, entryIds, stored.postText, stored.generatedAt, stored.model, stored.checkResult, stored.verifierResult],
     );
@@ -180,11 +214,15 @@ async function applyStatusChange(
       seen.add(id);
       ordered.push(row);
     }
-    await bookPacedQueue(client, ordered.map(row => ({
+    const delivery = splitApprovalDelivery(ordered);
+    await bookPacedQueue(client, delivery.send.map(row => ({
       id: Number(row.id),
       wire: row.wire,
       wires: Array.isArray(row.wires) ? row.wires : [],
     })), pace, posts);
+    if (delivery.hold.length) {
+      await client.query(FORTHCOMING_QUEUE_SQL, [delivery.hold.map(row => Number(row.id))]);
+    }
     if (repeatOverrides.length) {
       await recordRepeatFunderOverride(client, repeatOverrides, opts.actor || 'unknown', opts.reason || '');
     }
