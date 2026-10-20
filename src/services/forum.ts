@@ -14,7 +14,7 @@
 import { config } from '../config';
 import type { Pool } from 'pg';
 import type { RawScanResult } from '../types/intake';
-import { findForumHistoryByHost, forumFingerprint, forumTopicKey, forumObservationAlreadySeen, forumObservationMayBeNew, stampForumObservation, storedForumObservation, trustedForumObservation, forumUpdateNote, type ForumObservation, type ForumHistoryEntry } from './forum-seen';
+import { findForumHistoryByHost, forumFingerprint, forumTopicKey, forumObservationAlreadySeen, forumObservationMayBeNew, forumPriorReviewable, forumUpdateEligible, stampForumObservation, storedForumObservation, trustedForumObservation, forumUpdateNote, type ForumObservation, type ForumHistoryEntry } from './forum-seen';
 import { sleep } from '../utils/async';
 import { getCachedProvider } from './api-provider';
 import { logApiUsage } from './api-usage';
@@ -637,8 +637,10 @@ export async function captureForumObservation(c: ForumCandidate, budget: { remai
     })).sort((a, b) => (a.number || 0) - (b.number || 0));
     if (!posts.length) return observation;
     const complete = Number.isInteger(topic.postsCount) && topic.postsCount === posts.length;
+    const opening = posts[0].number === 1 ? posts[0] : undefined;
     return {
       ...observation, evidence: 'topic_detail', complete,
+      ...(opening ? { postFingerprint: forumFingerprint([topic.title || c.title, opening.text, opening.links]) } : {}),
       // Engagement and timestamps cannot change a complete content fingerprint.
       // With partial detail, newer activity may be in the unreturned posts.
       fingerprint: forumFingerprint([topic.title || c.title, posts, complete ? null : observation.revision]),
@@ -684,7 +686,8 @@ export async function prepareForumObservations(
     if (!priorRows.length) {
       if (!raw.sourcePublishedAt || Date.parse(raw.sourcePublishedAt) >= ageCutoff) out.feeds.push(raw);
     } else if (observation && !forumObservationAlreadySeen(observation, priorRows)
-        && forumObservationMayBeNew(observation, priorRows[0])) {
+        && forumObservationMayBeNew(observation, priorRows[0])
+        && forumUpdateEligible(observation, priorRows)) {
       out.updates.push(updatedForumResult(raw, observation, priorRows[0]));
     }
   }
@@ -696,6 +699,9 @@ export async function prepareForumObservations(
       continue;
     }
     const old = storedForumObservation(prior);
+    // Only an opening-post change can reopen a declined or archived topic, and
+    // that needs a stored opening-post baseline. Without one, spend no detail read.
+    if (!forumPriorReviewable(priorRows) && !priorRows.some(row => storedForumObservation(row)?.postFingerprint)) continue;
     // A first-post edit need not bump Discourse activity. Re-read a bounded
     // number of known detail snapshots even when the list revision is stable.
     // Without a prior detail baseline, an unchanged revision is not evidence
@@ -713,6 +719,7 @@ export async function prepareForumObservations(
     if (old?.revision === observation.revision
         && (old.evidence !== observation.evidence || old.complete !== observation.complete)) continue;
     if (forumObservationAlreadySeen(observation, priorRows) || !forumObservationMayBeNew(observation, prior)) continue;
+    if (!forumUpdateEligible(observation, priorRows)) continue;
     // If both adapters observed the change, retain one source-check candidate
     // with the thread detail, rather than one feed row plus one topic row.
     out.updates = out.updates.filter(raw => forumTopicKey(raw.sourceUrl) !== observation.topicKey);
