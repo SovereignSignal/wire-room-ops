@@ -435,6 +435,7 @@ const FRESH_FINDS_SELECT = `
          m.name AS recheck_matched_name,
          m.status AS recheck_matched_status,
          NULLIF(concat_ws(' · ',
+           CASE WHEN q.lifecycle = 'forthcoming' THEN 'forthcoming hold' END,
            CASE WHEN q.metadata->'decided_recheck'->>'cross_wire_blocked' = 'true' THEN 'cross-wire hold' END,
            CASE WHEN q.metadata->'decided_recheck'->>'canonical_parent_blocked' = 'true' THEN 'canonical hold' END,
            CASE WHEN jsonb_typeof(q.metadata->'duplicate_chain_error') = 'object' THEN 'chain hold' END,
@@ -617,7 +618,8 @@ export async function buildRunLedger(
   }
 
   // held — recheck blocks (cross-wire, wrong canonical parent, broken chain)
-  // that parked a queued entry for mandatory human review in the last 24h.
+  // that parked a queued entry for mandatory human review in the last 24h,
+  // plus forthcoming calls, which stay held until a later intake marks them open.
   // Replaces the retired program-gate lane: the gate is advisory-only now and
   // no longer produces actioned_by='program-gate' rows.
   try {
@@ -625,11 +627,16 @@ export async function buildRunLedger(
       SELECT COUNT(*) AS n FROM scan_entries
       WHERE status = 'queued'
         AND (
-          metadata->'decided_recheck'->>'cross_wire_blocked' = 'true'
-          OR metadata->'decided_recheck'->>'canonical_parent_blocked' = 'true'
-          OR (metadata->'duplicate_chain_error') IS NOT NULL
-        )
-        AND COALESCE((metadata->'decided_recheck'->>'at')::timestamptz, updated_at) >= NOW() - INTERVAL '24 hours'`);
+          (
+            (
+              metadata->'decided_recheck'->>'cross_wire_blocked' = 'true'
+              OR metadata->'decided_recheck'->>'canonical_parent_blocked' = 'true'
+              OR (metadata->'duplicate_chain_error') IS NOT NULL
+            )
+            AND COALESCE((metadata->'decided_recheck'->>'at')::timestamptz, updated_at) >= NOW() - INTERVAL '24 hours'
+          )
+          OR lifecycle = 'forthcoming'
+        )`);
     const n = parseInt(rows[0]?.n ?? '0', 10);
     if (n > 0) lanes.push({ key: 'held', state: 'warn', detail: `held ${n} for review` });
   } catch {

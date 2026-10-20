@@ -1720,6 +1720,7 @@ export async function getUndistributedEntries(
     SELECT se.* FROM scan_entries se
     WHERE (se.wire = $1 OR $1 = ANY(se.wires))
       AND se.status = 'approved' AND se.distributable IS NOT FALSE
+      AND se.lifecycle IS DISTINCT FROM 'forthcoming'
       AND NOT EXISTS (SELECT 1 FROM publication_queue q WHERE q.entry_id = se.id AND q.status = 'withheld')
       AND (
         ($2::text = 'newsletter' AND NOT EXISTS (

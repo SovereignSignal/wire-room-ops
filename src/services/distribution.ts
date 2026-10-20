@@ -330,6 +330,7 @@ export async function distributeEntry(entryId: number, wire: string, wireOnly = 
   // Withheld is checked here because the wire run and the retry route reach this without the queue worker.
   const entryResult = await pool.query(
     `SELECT * FROM scan_entries WHERE id = $1 AND status = 'approved' AND distributable IS NOT FALSE
+       AND lifecycle IS DISTINCT FROM 'forthcoming'
        AND NOT EXISTS (SELECT 1 FROM publication_queue q WHERE q.entry_id = scan_entries.id AND q.status = 'withheld')`,
     [entryId]
   );

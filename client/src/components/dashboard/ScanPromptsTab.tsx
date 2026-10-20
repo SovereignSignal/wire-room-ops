@@ -450,6 +450,8 @@ export function ScanPromptsTab({ verticals }: ScanPromptsTabProps) {
                             {s.classificationMix.EXPIRED > 0 && <span className="px-1 py-0 rounded text-[8px] font-mono bg-orange-500/10 text-orange-400 border border-orange-500/20">{s.classificationMix.EXPIRED}E</span>}
                             {s.classificationMix.NOISE > 0 && <span className="px-1 py-0 rounded text-[8px] font-mono bg-red-500/10 text-red-400 border border-red-500/20">{s.classificationMix.NOISE}X</span>}
                             {s.classificationMix.UNCHECKED > 0 && <span className="px-1 py-0 rounded text-[8px] font-mono bg-muted/20 text-muted-foreground border border-border">{s.classificationMix.UNCHECKED}?</span>}
+                            {(s.openCalls ?? 0) > 0 && <span className="px-1 py-0 rounded text-[8px] font-mono bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">{s.openCalls} open</span>}
+                            {(s.forthcomingCalls ?? 0) > 0 && <span className="px-1 py-0 rounded text-[8px] font-mono bg-amber-500/10 text-amber-300 border border-amber-500/20">{s.forthcomingCalls} forthcoming</span>}
                           </div>
                         </td>
                         <td className={`px-2 py-2 text-xs font-mono text-right ${pubPct > 0 ? 'text-cyan-400' : 'text-muted-foreground/40'}`}>{pubPct}%</td>

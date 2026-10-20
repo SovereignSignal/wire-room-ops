@@ -38,13 +38,13 @@ import {
   extractNameTokens,
   hasUsefulSourceUrl,
 } from '../services/intake';
-import { findRelatedOpportunity, finalizeExistingEntryDedup, annotateAlternateSource } from '../services/dedup';
+import { findRelatedOpportunity, finalizeExistingEntryDedup, annotateAlternateSource, settleForthcomingIntake } from '../services/dedup';
 import { findForumHistoryByHost, forumTopicKey, forumObservationAlreadySeen, forumObservationMayBeNew, trustedForumObservation, forumIntakeMetadata } from '../services/forum-seen';
 // quality-scorer.ts replaced by LLM scoring in classifier.ts
 import { seedSeenUrlsFromMessages } from '../db';
 import { finalizeProgramForEntry } from '../services/program-identity';
 import type { ProgramResolutionStamp } from '../services/program-identity';
-import { applyKnownProgramCycleGuard, hasNewCycleStamp, type Classification, type ClassificationResult } from '../services/classifier';
+import { applyKnownProgramCycleGuard, classificationMetadata, hasNewCycleStamp, shouldFinalizeAfterLifecycleSettle, type Classification, type ClassificationResult } from '../services/classifier';
 import { applyEvergreenRegistryRoute } from '../services/evergreen-route';
 import { isParallelFrontierIntake, parallelFrontierSkips } from '../services/parallel-intake-gate';
 
@@ -187,14 +187,43 @@ function classifyDisposition(
   return {
     status: evergreen?.status ?? freshness.status,
     metadata: {
-      ...classResult.extracted,
-      operator_route: classResult.operatorRoute,
-      wire_area: classResult.wireArea,
+      ...classificationMetadata(classResult),
       ...freshness.metadata,
       ...(evergreen?.metadata ?? {}),
     },
     reason: evergreen ? `${classResult.reason} ${evergreen.reasonSuffix}`.trim() : classResult.reason,
   };
+}
+
+/** Forthcoming GRANTs still finalise. A promotion or collapse does not write a second program. */
+async function finalizeAfterLifecycle(
+  pool: Pool,
+  entryId: number,
+  classResult: ClassificationResult,
+  expectedStatus: string,
+  entry: { name: string; source_url: string; wire: string; deadline_parsed?: string | Date | null; description?: string | null },
+  ownerId: number | null,
+  programResolution: ProgramResolutionStamp | null,
+): Promise<void> {
+  const settled = await settleForthcomingIntake(pool, {
+    sourceId: entryId,
+    lifecycle: classResult.lifecycle,
+    openingDate: classResult.openingDate ?? null,
+    expectedStatus,
+    sourceUrl: entry.source_url,
+    name: entry.name,
+    wire: entry.wire,
+    ownerId,
+  });
+  if (!shouldFinalizeAfterLifecycleSettle(settled.action, settled.promoted, classResult)) return;
+  await finalizeProgramForEntry(pool, {
+    id: entryId,
+    name: entry.name,
+    sourceUrl: entry.source_url,
+    wire: entry.wire,
+    deadline: entry.deadline_parsed ?? null,
+    description: entry.description ?? null,
+  }, programResolution);
 }
 
 // ============================================================
@@ -476,6 +505,7 @@ export async function runDailyIntake(
   const uniqueEntryIds: number[] = [];
   const programResolutions = new Map<number, ProgramResolutionStamp | null>();
   const priorCycles = new Map<number, { entryId: number; name: string } | null>();
+  const lifecyclePromotions = new Map<number, number | null>();
 
   for (const idx of validIndices) {
     const item = allResults[idx];
@@ -520,6 +550,7 @@ export async function runDailyIntake(
     // scope, and a validated deadline.
     programResolutions.set(entryId, dedupOutcome.programResolution ?? null);
     priorCycles.set(entryId, dedupOutcome.priorCycle ?? null);
+    lifecyclePromotions.set(entryId, dedupOutcome.lifecyclePromotion?.entryId ?? null);
 
     // Progress update every 10 entries
     if (duplicatesFound % 10 === 0 && duplicatesFound > 0) {
@@ -596,7 +627,15 @@ export async function runDailyIntake(
              classification = $3, classification_reason = $4,
              metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
              tags = $6,
-             wire_area = $16
+             wire_area = $16,
+             lifecycle = $17,
+             opening_date = $18::date,
+             operator_notes = CASE
+               WHEN $17::text = 'forthcoming'
+                 AND COALESCE(operator_notes, '') NOT LIKE '%Forthcoming call; held from sending until intake is open.%'
+               THEN CONCAT_WS(E'\n', NULLIF(operator_notes, ''), 'Forthcoming call; held from sending until intake is open.')
+               ELSE operator_notes
+             END
          WHERE id = $7
            AND status = 'deduped'
            AND name IS NOT DISTINCT FROM $9
@@ -629,6 +668,8 @@ export async function runDailyIntake(
           entry.source_published_at,
           entry.amount,
           classResult.wireArea,
+          classResult.lifecycle ?? null,
+          classResult.openingDate ?? null,
         ]
       );
       if (classified.rowCount !== 1) continue;
@@ -637,16 +678,15 @@ export async function runDailyIntake(
       scoredCount++;
       if (classResult.qualityScore >= 60) highQualityCount++;
 
-      if (classResult.inScope && (classResult.classification === 'GRANT' || classResult.classification === 'EXPIRED')) {
-        await finalizeProgramForEntry(pool, {
-          id: entryId,
-          name: entry.name,
-          sourceUrl: entry.source_url,
-          wire: entry.wire,
-          deadline: entry.deadline_parsed ?? null,
-          description: entry.description ?? null,
-        }, programResolutions.get(entryId) ?? null);
-      }
+      await finalizeAfterLifecycle(
+        pool,
+        entryId,
+        classResult,
+        classStatus,
+        entry,
+        lifecyclePromotions.get(entryId) ?? null,
+        programResolutions.get(entryId) ?? null,
+      );
     } catch (classError) {
       console.error(`[DailyIntake] Classification failed for entry ${entryId}:`, classError);
       // Preserve the row for retry without turning an unavailable score into a
@@ -725,7 +765,15 @@ export async function runDailyIntake(
                classification = $3, classification_reason = $4,
                metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
                tags = $6,
-               wire_area = $16
+               wire_area = $16,
+               lifecycle = $17,
+               opening_date = $18::date,
+               operator_notes = CASE
+                 WHEN $17::text = 'forthcoming'
+                   AND COALESCE(operator_notes, '') NOT LIKE '%Forthcoming call; held from sending until intake is open.%'
+                 THEN CONCAT_WS(E'\n', NULLIF(operator_notes, ''), 'Forthcoming call; held from sending until intake is open.')
+                 ELSE operator_notes
+               END
            WHERE id = $7
              AND status = 'queued'
              AND name IS NOT DISTINCT FROM $9
@@ -758,20 +806,21 @@ export async function runDailyIntake(
             entry.source_published_at,
             entry.amount,
             classResult.wireArea,
+            classResult.lifecycle ?? null,
+            classResult.openingDate ?? null,
           ]
         );
         if (retried.rowCount !== 1) continue;
 
-        if (classResult.inScope && (classResult.classification === 'GRANT' || classResult.classification === 'EXPIRED')) {
-          await finalizeProgramForEntry(pool, {
-            id: entryId,
-            name: entry.name,
-            sourceUrl: entry.source_url,
-            wire: entry.wire,
-            deadline: entry.deadline_parsed ?? null,
-            description: entry.description ?? null,
-          }, programResolutions.get(entryId) ?? null);
-        }
+        await finalizeAfterLifecycle(
+          pool,
+          entryId,
+          classResult,
+          retryStatus,
+          entry,
+          lifecyclePromotions.get(entryId) ?? null,
+          programResolutions.get(entryId) ?? null,
+        );
 
         // Update running totals
         totalScore += classResult.qualityScore;

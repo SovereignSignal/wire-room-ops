@@ -798,7 +798,7 @@ export async function listOutgoing(sentSince?: Date): Promise<OutgoingSnapshot> 
   const [queued, missing, blankReceipts, sent, chatRows, sentTodayRows, programsOnlyRows] = await Promise.all([
     pool.query(
       `SELECT q.entry_id, q.status, q.available_at, q.created_at, q.error_message, q.attempts,
-              q.post_text, se.name, se.wire
+              q.post_text, se.name, se.wire, se.lifecycle
        FROM publication_queue q
        JOIN scan_entries se ON se.id = q.entry_id
        WHERE q.status <> 'done'
@@ -809,6 +809,7 @@ export async function listOutgoing(sentSince?: Date): Promise<OutgoingSnapshot> 
        FROM scan_entries se
        WHERE se.status = 'approved'
          AND se.distributable IS NOT FALSE
+         AND se.lifecycle IS DISTINCT FROM 'forthcoming'
          AND NOT EXISTS (
            SELECT 1 FROM publication_queue q
            WHERE q.entry_id = se.id
@@ -871,15 +872,18 @@ export async function listOutgoing(sentSince?: Date): Promise<OutgoingSnapshot> 
   ]);
 
   const items: OutgoingItem[] = queued.rows.map(row => {
-    const state = queueState(row, now);
+    const forthcoming = row.lifecycle === 'forthcoming';
+    const state = forthcoming ? 'withheld' : queueState(row, now);
     return {
       entryId: Number(row.entry_id),
       name: row.name,
       wire: row.wire,
       state,
-      availableAt: row.status === 'withheld' ? null : iso(row.available_at),
+      availableAt: row.status === 'withheld' || forthcoming ? null : iso(row.available_at),
       createdAt: iso(row.created_at),
-      errorMessage: pace.enabled && pace.paused && state === 'due' && !row.error_message ? 'Paused' : row.error_message,
+      errorMessage: forthcoming
+        ? 'Forthcoming call; held from sending'
+        : (pace.enabled && pace.paused && state === 'due' && !row.error_message ? 'Paused' : row.error_message),
       externalId: null,
       attempts: Number(row.attempts),
       postText: row.post_text ?? null,

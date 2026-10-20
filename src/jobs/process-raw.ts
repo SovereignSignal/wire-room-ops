@@ -16,9 +16,9 @@
 
 import type { Pool } from 'pg';
 import { DEFAULT_DEDUPE_WINDOW_DAYS } from '../types/intake';
-import { finalizeExistingEntryDedup } from '../services/dedup';
+import { finalizeExistingEntryDedup, settleForthcomingIntake } from '../services/dedup';
 // quality-scorer.ts replaced by LLM scoring in classifier.ts
-import { applyKnownProgramCycleGuard, classifyEntry } from '../services/classifier';
+import { applyKnownProgramCycleGuard, classificationMetadata, classifyEntry, shouldFinalizeAfterLifecycleSettle } from '../services/classifier';
 import { classifySourceLink } from '../services/source-filter';
 import { determinePostClassificationStatus } from '../services/intake-core';
 import { finalizeProgramForEntry, normalizeProgramDeadline } from '../services/program-identity';
@@ -141,6 +141,8 @@ export interface RawClassificationWrite {
   tags: string[];
   status: 'queued' | 'archived';
   wireArea: string | null;
+  lifecycle: string | null;
+  openingDate: string | null;
 }
 
 export interface RawClassificationSnapshot {
@@ -170,7 +172,15 @@ export async function applyClassificationIfQueued(
          metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
          tags = $6,
          status = $8,
-         wire_area = $17
+         wire_area = $17,
+         lifecycle = $18,
+         opening_date = $19::date,
+         operator_notes = CASE
+           WHEN $18::text = 'forthcoming'
+             AND COALESCE(operator_notes, '') NOT LIKE '%Forthcoming call; held from sending until intake is open.%'
+           THEN CONCAT_WS(E'\n', NULLIF(operator_notes, ''), 'Forthcoming call; held from sending until intake is open.')
+           ELSE operator_notes
+         END
      WHERE id = $7 AND status = $9
        AND ($10::text IS NULL OR (
          source_url = $10 AND name = $11
@@ -199,6 +209,8 @@ export async function applyClassificationIfQueued(
       expected?.deadlineParsed ?? null,
       expected?.sourcePublishedAt ?? null,
       result.wireArea,
+      result.lifecycle,
+      result.openingDate,
     ],
   );
   return classified.rowCount === 1;
@@ -384,14 +396,12 @@ export async function processRawEntries(pool?: Pool): Promise<{
                 },
                 // operator_route MUST persist into metadata. It is the BD
                 // loop's source signal and the queue's route filter.
-                metadata: {
-                  ...classResult.extracted,
-                  operator_route: classResult.operatorRoute || null,
-                  wire_area: classResult.wireArea,
-                },
+                metadata: classificationMetadata(classResult),
                 tags: classResult.tags,
                 status: classStatus,
                 wireArea: classResult.wireArea,
+                lifecycle: classResult.lifecycle ?? null,
+                openingDate: classResult.openingDate ?? null,
               }, isXMonitor ? 'deduped' : 'queued', {
                 sourceUrl: row.source_url,
                 name: row.name,
@@ -410,10 +420,19 @@ export async function processRawEntries(pool?: Pool): Promise<{
                 } else if (isXMonitor) {
                   stats.queued++;
                 }
+                const settled = await settleForthcomingIntake(db, {
+                  sourceId: row.id,
+                  lifecycle: classResult.lifecycle,
+                  openingDate: classResult.openingDate ?? null,
+                  expectedStatus: classStatus,
+                  sourceUrl: row.source_url,
+                  name: row.name,
+                  wire: row.wire,
+                  ownerId: dedupOutcome.lifecyclePromotion?.entryId ?? null,
+                });
                 if (
                   classStatus === 'queued'
-                  && classResult.inScope
-                  && (classResult.classification === 'GRANT' || classResult.classification === 'EXPIRED')
+                  && shouldFinalizeAfterLifecycleSettle(settled.action, settled.promoted, classResult)
                 ) {
                   // Program identity is downstream of the classification CAS:
                   // do not create intelligence for stale, off-scope, or news

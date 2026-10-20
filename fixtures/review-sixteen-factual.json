@@ -1,0 +1,1756 @@
+{
+  "schema_version": 1,
+  "fixture_id": "grant-wire-factual-regression-2026-10-20",
+  "purpose": "Offline factual regression for prompt changes. No publication, hold or rejection target labels; queue decisions remain a separate human/editorial review.",
+  "workstream_identity": "Sov / Grant Wire",
+  "case_count": 16,
+  "evaluation_date": "2026-10-20",
+  "input_snapshot_captured_at_utc": "2026-10-20T13:31:47.690Z",
+  "evaluation_rules": [
+    "Use saved source facts and identified later corrections to evaluate factual output. Original input descriptions and matching metadata are untrusted and may be stale or wrong.",
+    "Do not evaluate agreement with earlier editorial recommendations. Those recommendation labels are intentionally omitted.",
+    "Source-check dates are not source publication dates. Null exact timestamps mean unknown precision, not unverified facts.",
+    "Distinguish historical observed database status from programme lifecycle and direct delivery proof.",
+    "Do not call external services, regenerate discovery, mutate queues or alter schedules when running this fixture."
+  ],
+  "input_artifacts": [
+    {
+      "file": "review-sixteen.json",
+      "sha256": "dee310b2dae95dff40277122256d23c23221d3cbc086f8e7c0cf700406b5a21e"
+    },
+    {
+      "file": "review-crypto-20177-20179.json",
+      "sha256": "bff90da5f7b178f49b83df455c2ecdc46e8fc30f00995e5a4359ed0e565fbc68"
+    },
+    {
+      "file": "review-oss.json",
+      "sha256": "c341922b4404e53be8e2c76985dd696f0f59e1f1ce0a984d855c50063d4bb7bc"
+    },
+    {
+      "file": "eu-ai-editorial-review.json",
+      "sha256": "cdd577b0191d814e37c1cb40ea9c400fdf8b02da62282ddfd2cc16c77fc7d259"
+    },
+    {
+      "file": "review-precedents.json",
+      "sha256": "effe2c295aeed46e90dba0ea1d280654fd1171f7e54bffdf549ca834aa9eb689"
+    },
+    {
+      "file": "review-duplicates.json",
+      "sha256": "7070e689604c4d47eba320139356d53eb6f043d0cc6d842713d092e21d1342e5"
+    }
+  ],
+  "later_evidence_overrides": [
+    {
+      "source": "parent_live_portal_correction",
+      "checked_at_utc": "2026-10-20T13:36Z",
+      "entry_ids": [
+        19856,
+        19921
+      ],
+      "observation": "Official live portal showed Forthcoming for both topics. Replaces earlier eu-ai-editorial-review.json claim that live submission status could not be verified."
+    },
+    {
+      "source": "parent_verified_source_corrections",
+      "checked_date": "2026-10-20",
+      "checked_at_utc": null,
+      "entry_ids": [
+        19546,
+        20052,
+        20092,
+        20180,
+        20181,
+        20183,
+        20184
+      ],
+      "observation": "Parent supplied final browser facts and evidence-bound delivery/match corrections; exact per-source timestamps were not supplied."
+    }
+  ],
+  "cases": [
+    {
+      "entry_id": 19546,
+      "wire": "ai",
+      "input_record": {
+        "name": "Apart Research Agent Attribution Hackathon",
+        "description": "Apart Research is taking sign-ups for the Agent Attribution Hackathon, where participants \"build classifiers that tell who is behind an agent's activity, simulate agents designed to evade them, or search for rogue agents in the wild,\" with \"$2,000 in cash prizes across all tracks.\" The page says \"When: Friday, November 27 to Sunday, November 29, 2026, online. Submissions close Sunday, November 29 at 11:59 PM Anywhere on Earth (AoE).\"",
+        "source_url": "https://apartresearch.com/sprints/agent-attribution-2026",
+        "amount": "$2,000 in cash prizes across all tracks",
+        "deadline": "2026-11-29",
+        "classification": "GRANT",
+        "created_at": "2026-10-14T06:15:17.829Z",
+        "stored_matching_claims": {
+          "program": {
+            "id": 1720,
+            "history": "seen 5×",
+            "verdict": "same_round",
+            "confidence": 0.85,
+            "round_label": null
+          },
+          "decided_recheck": {
+            "at": "2026-10-14T06:21:15.295Z",
+            "reason": "Different hackathon topic (Agent Attribution) and date (Nov 27-29, 2026) from all previous Apart Research entries.",
+            "verdict": "distinct",
+            "confidence": 0.95,
+            "matched_id": null
+          }
+        }
+      },
+      "identity": {
+        "name": "Apart Research Agent Attribution Hackathon",
+        "event_key": "agent-attribution-2026",
+        "organizer": "Apart Research"
+      },
+      "evidence": {
+        "source_urls": [
+          "https://apartresearch.com/sprints/agent-attribution-2026"
+        ],
+        "provenance": [
+          "review-sixteen.json",
+          "review-precedents.json",
+          "parent_verified_source_corrections"
+        ],
+        "source_checked_date": "2026-10-20",
+        "source_checked_at_utc": null,
+        "precision_note": "Saved source review supplies the date; no exact check timestamp was retained.",
+        "source_facts": {
+          "event_dates": [
+            "2026-11-27",
+            "2026-11-29"
+          ],
+          "format": "online",
+          "total_cash_prizes_USD": "2000",
+          "submission_cutoff": "2026-11-29 23:59 Anywhere on Earth",
+          "signup_status": "taking sign-ups"
+        }
+      },
+      "lifecycle": "Open event registration; future funded hackathon, not awarded prizes",
+      "amounts": [
+        {
+          "currency": "USD",
+          "value": "2000",
+          "basis": "total cash prize pool across all tracks",
+          "instrument": "prize",
+          "execution": "not awarded or paid in supplied evidence"
+        }
+      ],
+      "dates": {
+        "source_publication_date": null,
+        "publication_date_basis": "No source publication timestamp established in supplied page evidence; October14 is the prior Apart Swarm delivery date.",
+        "deadline": "2026-11-29",
+        "deadline_time": "23:59",
+        "deadline_timezone": "Anywhere on Earth"
+      },
+      "prior_program_matches": [
+        {
+          "entry_id": 19545,
+          "name": "Apart Research Swarm Alignment Hackathon (Nov 6–8): $4,000 in cash prizes plus $4,000 LA hub pool",
+          "source_url": "https://apartresearch.com/sprints/swarm-alignment-2026",
+          "observed_status": "approved",
+          "successful_telegram_delivery_at": "2026-10-14T19:18:04.071Z",
+          "relation": "same organizer, distinct event",
+          "caveat": "Swarm Alignment is November6-8 and has different prizes; delivery is independently recorded."
+        },
+        {
+          "entry_id": 16611,
+          "name": "Apart Research AI Collusion Research Sprint",
+          "source_url": "https://apartresearch.com/sprints/ai-collusion-research-sprint-2026-10-23-to-2026-10-25",
+          "observed_status": "approved",
+          "successful_telegram_delivery_at": null,
+          "relation": "same organizer, distinct event",
+          "caveat": "AI Collusion is October23-25; approval does not itself prove delivery."
+        }
+      ],
+      "inferences": [],
+      "expected_factual_assertions": [
+        "Preserve Agent Attribution event identity, November27-29 dates and USD2000 total pool.",
+        "Separate this event from the earlier Swarm Alignment and AI Collusion events.",
+        "Flag repeat-organizer history independently of event duplication."
+      ],
+      "prohibited_overclaims": [
+        "Same organizer proves same event or same round.",
+        "No repeat-funder history.",
+        "USD2000 per participant or per track.",
+        "Prizes already awarded or paid.",
+        "Stored same_round metadata overrides explicit distinct topic/date evidence.",
+        "The queue creation date or prior Swarm delivery date proves this event source was published October14."
+      ]
+    },
+    {
+      "entry_id": 19856,
+      "wire": "ai",
+      "input_record": {
+        "name": "HORIZON-BRIDGING-2027-01-13 EU Frontier AI advanced scaling frameworks",
+        "description": "Needs review: Official EU Funding and Tenders search excerpt identifies HORIZON-BRIDGING-2027-01-13 for EU Frontier AI advanced scaling frameworks. Listed opening October 20, 2026 and deadline 2027-02-16. Announced future intake, not currently open. Topic page inaccessible or a dynamic shell; budget, consortium eligibility and submission terms unconfirmed. Original publication unknown; canonical topic route constructed from the exact identifier, with retained official index excerpt as evidence.",
+        "source_url": "https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/HORIZON-BRIDGING-2027-01-13",
+        "amount": null,
+        "deadline": "2027-02-16",
+        "classification": "GRANT",
+        "created_at": "2026-10-16T13:47:50.017Z",
+        "stored_matching_claims": {
+          "program": {
+            "id": 6718,
+            "verdict": "new_program"
+          },
+          "related_source": {
+            "reason": "Likely alternate source for entry #16491: \"Frontier Fellowship Programme 2026\" (100% token overlap)",
+            "confidence": 1,
+            "relation_type": "alternate_source",
+            "matched_status": "declined",
+            "matched_entry_id": 16491,
+            "matched_entry_name": "Frontier Fellowship Programme 2026",
+            "matched_source_url": "https://x.com/OpportunityDesk/status/2095842712226251186"
+          },
+          "decided_recheck": {
+            "at": "2026-10-16T13:53:09.831Z",
+            "reason": "Different topic ID (HORIZON-BRIDGING-2027-01-13 vs -01-12) and different subject (AI scaling frameworks vs energy platforms).",
+            "verdict": "distinct",
+            "confidence": 0.98,
+            "matched_id": null
+          }
+        }
+      },
+      "identity": {
+        "name": "HORIZON-BRIDGING-2027-01-13 EU Frontier AI advanced scaling frameworks",
+        "call_id": "HORIZON-BRIDGING-2027-01-13",
+        "funder": "European Commission"
+      },
+      "evidence": {
+        "source_urls": [
+          "https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/HORIZON-BRIDGING-2027-01-13",
+          "https://hadea.ec.europa.eu/news/horizon-europe-cluster-4-digital-2027-calls-now-published-2026-10-05_en",
+          "https://ec.europa.eu/info/funding-tenders/opportunities/docs/2021-2027/horizon/wp-call/2026-2027/wp-14-horizontal-activities_horizon-2026-2027_en.pdf"
+        ],
+        "provenance": [
+          "eu-ai-editorial-review.json",
+          "review-duplicates.json",
+          "parent_live_portal_correction_2026-10-20T13:36Z"
+        ],
+        "source_checked_date": "2026-10-20",
+        "source_checked_at_utc": "2026-10-20T13:36Z",
+        "precision_note": "Exact check time supplied by parent live-browser observation; seconds were not recorded.",
+        "source_facts": {
+          "topic_id": "HORIZON-BRIDGING-2027-01-13",
+          "portal_status": "Forthcoming",
+          "total_budget_EUR": "15000000",
+          "expected_projects": 1,
+          "scheduled_opening": "2026-10-20",
+          "deadline": "2027-02-16",
+          "deadline_time": "17:00 Brussels local time",
+          "scope": "Frontier AI advanced scaling frameworks research."
+        }
+      },
+      "lifecycle": "Forthcoming; scheduled dates do not establish open submission",
+      "amounts": [
+        {
+          "currency": "EUR",
+          "value": "15000000",
+          "basis": "total topic budget",
+          "instrument": "forthcoming research/innovation grants",
+          "expected_projects": 1
+        },
+        {
+          "currency": "EUR",
+          "value": "15000000",
+          "basis": "expected contribution per project, not guaranteed award or payment"
+        }
+      ],
+      "dates": {
+        "scheduled_opening": "2026-10-20",
+        "deadline": "2027-02-16",
+        "deadline_time": "17:00",
+        "deadline_timezone": "Europe/Brussels",
+        "announcement_date": "2026-10-05",
+        "national_listing_publication_date": null
+      },
+      "prior_program_matches": [
+        {
+          "entry_id": 19922,
+          "name": "HORIZON-BRIDGING-2027-01-13 EU Frontier AI advanced scaling frameworks",
+          "source_url": "https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/HORIZON-BRIDGING-2027-01-13",
+          "observed_status": "archived",
+          "successful_telegram_delivery_at": null,
+          "relation": "same exact topic and canonical URL",
+          "caveat": "Stored prior status is historical; no live queue action is implied."
+        },
+        {
+          "entry_id": 16491,
+          "relation": "false lexical match",
+          "caveat": "Frontier Fellowship is unrelated to EU Frontier AI."
+        }
+      ],
+      "inferences": [],
+      "expected_factual_assertions": [
+        "Preserve the exact topic identifier and distinguish it from other Horizon topics.",
+        "State EUR15000000 as total topic budget, with 1 expected project(s).",
+        "Preserve forthcoming status, scheduled opening and EC deadline separately.",
+        "Reject unrelated fellowship matches based only on Frontier or Horizon tokens.",
+        "Recognize exact-topic prior record without inferring a new round from a metadata label.",
+        "Report live portal Forthcoming at13:36UTC October20; this supersedes earlier dynamic-shell uncertainty."
+      ],
+      "prohibited_overclaims": [
+        "Currently open because the scheduled opening date has arrived.",
+        "Budget remains unconfirmed.",
+        "A general worldwide individual/startup grant with no consortium or country/control restrictions.",
+        "The unrelated fellowship is an alternate source for this EU topic.",
+        "A circular duplicate pointer is a resolved canonical duplicate chain.",
+        "Live submission status is unknown because a prior reader returned a shell."
+      ]
+    },
+    {
+      "entry_id": 19921,
+      "wire": "ai",
+      "input_record": {
+        "name": "HORIZON-BRIDGING-2027-01-12 AI-driven European energy platforms",
+        "description": "Needs review: Official EU Funding and Tenders search excerpt identifies HORIZON-BRIDGING-2027-01-12 for AI-driven European energy platforms. Listed opening October 20, 2026 and deadline 2027-02-16. Announced future intake, not currently open. Topic page inaccessible or a dynamic shell; budget, consortium eligibility and submission terms unconfirmed. Original publication unknown; canonical topic route constructed from the exact identifier, with retained official index excerpt as evidence.",
+        "source_url": "https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/HORIZON-BRIDGING-2027-01-12",
+        "amount": null,
+        "deadline": "2027-02-16",
+        "classification": "GRANT",
+        "created_at": "2026-10-16T13:47:50.981Z",
+        "stored_matching_claims": {
+          "program": {
+            "id": 6719,
+            "verdict": "new_program"
+          },
+          "related_source": {
+            "reason": "Likely alternate source for entry #15662: \"Horizon Fellowship 2027 cohort\" (100% token overlap)",
+            "confidence": 1,
+            "relation_type": "alternate_source",
+            "matched_status": "declined",
+            "matched_entry_id": 15662,
+            "matched_entry_name": "Horizon Fellowship 2027 cohort",
+            "matched_source_url": "https://horizonpublicservice.org/applications-open-for-2027-horizon-fellowship-cohort/"
+          },
+          "decided_recheck": {
+            "at": "2026-10-16T13:57:16.992Z",
+            "reason": "Same HORIZON-BRIDGING-2027-01-12 topic and URL, already marked duplicate; no new material information.",
+            "verdict": "same_listing",
+            "confidence": 0.98,
+            "matched_id": 19855
+          },
+          "duplicate_chain_error": {
+            "at": "2026-10-16T13:57:16.992Z",
+            "depth": 1,
+            "error": "cycle-to-target",
+            "matched_id": 19855
+          }
+        }
+      },
+      "identity": {
+        "name": "HORIZON-BRIDGING-2027-01-12 AI-driven European energy platforms",
+        "call_id": "HORIZON-BRIDGING-2027-01-12",
+        "funder": "European Commission"
+      },
+      "evidence": {
+        "source_urls": [
+          "https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/HORIZON-BRIDGING-2027-01-12",
+          "https://hadea.ec.europa.eu/news/horizon-europe-cluster-4-digital-2027-calls-now-published-2026-10-05_en",
+          "https://ec.europa.eu/info/funding-tenders/opportunities/docs/2021-2027/horizon/wp-call/2026-2027/wp-14-horizontal-activities_horizon-2026-2027_en.pdf"
+        ],
+        "provenance": [
+          "eu-ai-editorial-review.json",
+          "review-duplicates.json",
+          "parent_live_portal_correction_2026-10-20T13:36Z"
+        ],
+        "source_checked_date": "2026-10-20",
+        "source_checked_at_utc": "2026-10-20T13:36Z",
+        "precision_note": "Exact check time supplied by parent live-browser observation; seconds were not recorded.",
+        "source_facts": {
+          "topic_id": "HORIZON-BRIDGING-2027-01-12",
+          "portal_status": "Forthcoming",
+          "total_budget_EUR": "15000000",
+          "expected_projects": 1,
+          "scheduled_opening": "2026-10-20",
+          "deadline": "2027-02-16",
+          "deadline_time": "17:00 Brussels local time",
+          "scope": "One cross-border AI energy pilot with operational pilots in at least six Member States or Associated Countries."
+        }
+      },
+      "lifecycle": "Forthcoming; scheduled dates do not establish open submission",
+      "amounts": [
+        {
+          "currency": "EUR",
+          "value": "15000000",
+          "basis": "total topic budget",
+          "instrument": "forthcoming research/innovation grants",
+          "expected_projects": 1
+        },
+        {
+          "currency": "EUR",
+          "value": "15000000",
+          "basis": "expected contribution per project, not guaranteed award or payment"
+        }
+      ],
+      "dates": {
+        "scheduled_opening": "2026-10-20",
+        "deadline": "2027-02-16",
+        "deadline_time": "17:00",
+        "deadline_timezone": "Europe/Brussels",
+        "announcement_date": "2026-10-05",
+        "national_listing_publication_date": null
+      },
+      "prior_program_matches": [
+        {
+          "entry_id": 19855,
+          "name": "HORIZON-BRIDGING-2027-01-12 AI-driven European energy platforms",
+          "source_url": "https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/HORIZON-BRIDGING-2027-01-12",
+          "observed_status": "duplicate",
+          "successful_telegram_delivery_at": null,
+          "relation": "same exact topic and canonical URL",
+          "caveat": "Stored prior status is historical; no live queue action is implied."
+        },
+        {
+          "entry_id": 15662,
+          "relation": "false lexical match",
+          "caveat": "Horizon Fellowship is unrelated to the EU Horizon topic."
+        }
+      ],
+      "inferences": [],
+      "expected_factual_assertions": [
+        "Preserve the exact topic identifier and distinguish it from other Horizon topics.",
+        "State EUR15000000 as total topic budget, with 1 expected project(s).",
+        "Preserve forthcoming status, scheduled opening and EC deadline separately.",
+        "Reject unrelated fellowship matches based only on Frontier or Horizon tokens.",
+        "Recognize exact-topic prior record without inferring a new round from a metadata label.",
+        "Report live portal Forthcoming at13:36UTC October20; this supersedes earlier dynamic-shell uncertainty."
+      ],
+      "prohibited_overclaims": [
+        "Currently open because the scheduled opening date has arrived.",
+        "Budget remains unconfirmed.",
+        "A general worldwide individual/startup grant with no consortium or country/control restrictions.",
+        "The unrelated fellowship is an alternate source for this EU topic.",
+        "A circular duplicate pointer is a resolved canonical duplicate chain.",
+        "Live submission status is unknown because a prior reader returned a shell.",
+        "Six separate EUR15m awards are offered because six countries participate."
+      ]
+    },
+    {
+      "entry_id": 19924,
+      "wire": "ai",
+      "input_record": {
+        "name": "HORIZON-CL4-2027-04-DIGITAL-EMERGING-05 AI-driven robotics industry adoption",
+        "description": "Needs review: Official EU Funding and Tenders search excerpt identifies HORIZON-CL4-2027-04-DIGITAL-EMERGING-05 for AI-driven robotics industry adoption. Listed opening November 17, 2026 and deadline 2027-03-18. Announced future intake, not currently open. Topic page inaccessible or a dynamic shell; budget, consortium eligibility and submission terms unconfirmed. Original publication unknown; canonical topic route constructed from the exact identifier, with retained official index excerpt as evidence.",
+        "source_url": "https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/HORIZON-CL4-2027-04-DIGITAL-EMERGING-05",
+        "amount": null,
+        "deadline": "2027-03-18",
+        "classification": "GRANT",
+        "created_at": "2026-10-16T13:47:50.981Z",
+        "stored_matching_claims": {
+          "program": {
+            "id": 6722,
+            "verdict": "new_program"
+          },
+          "related_source": {
+            "reason": "Likely alternate source for entry #15662: \"Horizon Fellowship 2027 cohort\" (100% token overlap)",
+            "confidence": 1,
+            "relation_type": "alternate_source",
+            "matched_status": "declined",
+            "matched_entry_id": 15662,
+            "matched_entry_name": "Horizon Fellowship 2027 cohort",
+            "matched_source_url": "https://horizonpublicservice.org/applications-open-for-2027-horizon-fellowship-cohort/"
+          },
+          "decided_recheck": {
+            "at": "2026-10-16T13:58:13.340Z",
+            "reason": "Same topic ID and URL; no new deadline or material information beyond what was already seen.",
+            "verdict": "same_listing",
+            "confidence": 0.98,
+            "matched_id": 19858
+          },
+          "duplicate_chain_error": {
+            "at": "2026-10-16T13:58:13.340Z",
+            "depth": 1,
+            "error": "cycle-to-target",
+            "matched_id": 19858
+          }
+        }
+      },
+      "identity": {
+        "name": "HORIZON-CL4-2027-04-DIGITAL-EMERGING-05 AI-driven robotics industry adoption",
+        "call_id": "HORIZON-CL4-2027-04-DIGITAL-EMERGING-05",
+        "funder": "European Commission"
+      },
+      "evidence": {
+        "source_urls": [
+          "https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/HORIZON-CL4-2027-04-DIGITAL-EMERGING-05",
+          "https://ec.europa.eu/info/funding-tenders/opportunities/docs/2021-2027/horizon/wp-call/2026-2027/wp-7-digital-industry-and-space_horizon-2026-2027_en.pdf",
+          "https://pq-ue.ani.pt/concursos-abertos/h-europa/topico/horizon-cl4-2027-04-digital-emerging-05",
+          "https://www.horizon-europe.gouv.fr/appels/numerique"
+        ],
+        "provenance": [
+          "eu-ai-editorial-review.json",
+          "review-duplicates.json",
+          "parent_verified_source_corrections"
+        ],
+        "source_checked_date": "2026-10-20",
+        "source_checked_at_utc": null,
+        "precision_note": "Saved source review supplies the date; no exact check timestamp was retained.",
+        "source_facts": {
+          "topic_id": "HORIZON-CL4-2027-04-DIGITAL-EMERGING-05",
+          "portal_status": "forthcoming call",
+          "total_budget_EUR": "18000000",
+          "expected_projects": 1,
+          "scheduled_opening": "2026-11-17",
+          "deadline": "2027-03-18",
+          "deadline_time": "17:00 Brussels local time",
+          "scope": "AI-driven robotics integration and industrial adoption.",
+          "national_listing_publication_date": "2025-12-12"
+        }
+      },
+      "lifecycle": "Forthcoming; scheduled dates do not establish open submission",
+      "amounts": [
+        {
+          "currency": "EUR",
+          "value": "18000000",
+          "basis": "total topic budget",
+          "instrument": "forthcoming research/innovation grants",
+          "expected_projects": 1
+        },
+        {
+          "currency": "EUR",
+          "value": "18000000",
+          "basis": "expected contribution per project, not guaranteed award or payment"
+        }
+      ],
+      "dates": {
+        "scheduled_opening": "2026-11-17",
+        "deadline": "2027-03-18",
+        "deadline_time": "17:00",
+        "deadline_timezone": "Europe/Brussels",
+        "announcement_date": null,
+        "national_listing_publication_date": "2025-12-12"
+      },
+      "prior_program_matches": [
+        {
+          "entry_id": 19858,
+          "name": "HORIZON-CL4-2027-04-DIGITAL-EMERGING-05 AI-driven robotics industry adoption",
+          "source_url": "https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/HORIZON-CL4-2027-04-DIGITAL-EMERGING-05",
+          "observed_status": "duplicate",
+          "successful_telegram_delivery_at": null,
+          "relation": "same exact topic and canonical URL",
+          "caveat": "Stored prior status is historical; no live queue action is implied."
+        },
+        {
+          "entry_id": 15662,
+          "relation": "false lexical match",
+          "caveat": "Horizon Fellowship is unrelated to the EU Horizon topic."
+        }
+      ],
+      "inferences": [],
+      "expected_factual_assertions": [
+        "Preserve the exact topic identifier and distinguish it from other Horizon topics.",
+        "State EUR18000000 as total topic budget, with 1 expected project(s).",
+        "Preserve forthcoming status, scheduled opening and EC deadline separately.",
+        "Reject unrelated fellowship matches based only on Frontier or Horizon tokens.",
+        "Recognize exact-topic prior record without inferring a new round from a metadata label.",
+        "Use March18,2027 at17:00 Brussels from the EC work programme rather than conflicting national display."
+      ],
+      "prohibited_overclaims": [
+        "Currently open because the scheduled opening date has arrived.",
+        "Budget remains unconfirmed.",
+        "A general worldwide individual/startup grant with no consortium or country/control restrictions.",
+        "The unrelated fellowship is an alternate source for this EU topic.",
+        "A circular duplicate pointer is a resolved canonical duplicate chain.",
+        "The October5 HaDEA announcement newly announced this topic.",
+        "March17 23:00 is the controlling EC deadline."
+      ]
+    },
+    {
+      "entry_id": 19923,
+      "wire": "ai",
+      "input_record": {
+        "name": "HORIZON-CL4-2027-04-DIGITAL-EMERGING-04 Challenge-driven AI Innovation Booster",
+        "description": "Needs review: Official EU Funding and Tenders search excerpt identifies HORIZON-CL4-2027-04-DIGITAL-EMERGING-04 for Challenge-driven AI Innovation Booster. Listed opening November 17, 2026 and deadline 2027-03-18. Announced future intake, not currently open. Topic page inaccessible or a dynamic shell; budget, consortium eligibility and submission terms unconfirmed. Original publication unknown; canonical topic route constructed from the exact identifier, with retained official index excerpt as evidence.",
+        "source_url": "https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/HORIZON-CL4-2027-04-DIGITAL-EMERGING-04",
+        "amount": null,
+        "deadline": "2027-03-18",
+        "classification": "GRANT",
+        "created_at": "2026-10-16T13:47:50.981Z",
+        "stored_matching_claims": {
+          "program": {
+            "id": 6721,
+            "verdict": "new_program"
+          },
+          "related_source": {
+            "reason": "Likely alternate source for entry #15662: \"Horizon Fellowship 2027 cohort\" (100% token overlap)",
+            "confidence": 1,
+            "relation_type": "alternate_source",
+            "matched_status": "declined",
+            "matched_entry_id": 15662,
+            "matched_entry_name": "Horizon Fellowship 2027 cohort",
+            "matched_source_url": "https://horizonpublicservice.org/applications-open-for-2027-horizon-fellowship-cohort/"
+          },
+          "decided_recheck": {
+            "at": "2026-10-16T14:01:52.986Z",
+            "reason": "Same topic ID, URL, and deadline; no material new information beyond what was already captured.",
+            "verdict": "same_listing",
+            "confidence": 0.98,
+            "matched_id": 19857
+          },
+          "duplicate_chain_error": {
+            "at": "2026-10-16T14:01:52.986Z",
+            "depth": 1,
+            "error": "cycle-to-target",
+            "matched_id": 19857
+          }
+        }
+      },
+      "identity": {
+        "name": "HORIZON-CL4-2027-04-DIGITAL-EMERGING-04 Challenge-driven AI Innovation Booster",
+        "call_id": "HORIZON-CL4-2027-04-DIGITAL-EMERGING-04",
+        "funder": "European Commission"
+      },
+      "evidence": {
+        "source_urls": [
+          "https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/HORIZON-CL4-2027-04-DIGITAL-EMERGING-04",
+          "https://ec.europa.eu/info/funding-tenders/opportunities/docs/2021-2027/horizon/wp-call/2026-2027/wp-7-digital-industry-and-space_horizon-2026-2027_en.pdf",
+          "https://pq-ue.ani.pt/concursos-abertos/h-europa/topico/horizon-cl4-2027-04-digital-emerging-04",
+          "https://www.horizon-europe.gouv.fr/appels/numerique"
+        ],
+        "provenance": [
+          "eu-ai-editorial-review.json",
+          "review-duplicates.json",
+          "parent_verified_source_corrections"
+        ],
+        "source_checked_date": "2026-10-20",
+        "source_checked_at_utc": null,
+        "precision_note": "Saved source review supplies the date; no exact check timestamp was retained.",
+        "source_facts": {
+          "topic_id": "HORIZON-CL4-2027-04-DIGITAL-EMERGING-04",
+          "portal_status": "forthcoming call",
+          "total_budget_EUR": "42000000",
+          "expected_projects": 3,
+          "scheduled_opening": "2026-11-17",
+          "deadline": "2027-03-18",
+          "deadline_time": "17:00 Brussels local time",
+          "expected_contribution_per_project_EUR": "14000000",
+          "third_party_support": "Mandatory downstream support; no current SME subgrant application established.",
+          "national_listing_publication_date": "2025-12-12"
+        }
+      },
+      "lifecycle": "Forthcoming; scheduled dates do not establish open submission",
+      "amounts": [
+        {
+          "currency": "EUR",
+          "value": "42000000",
+          "basis": "total topic budget",
+          "instrument": "forthcoming research/innovation grants",
+          "expected_projects": 3
+        },
+        {
+          "currency": "EUR",
+          "value": "14000000",
+          "basis": "expected contribution per project, not guaranteed award or payment"
+        }
+      ],
+      "dates": {
+        "scheduled_opening": "2026-11-17",
+        "deadline": "2027-03-18",
+        "deadline_time": "17:00",
+        "deadline_timezone": "Europe/Brussels",
+        "announcement_date": null,
+        "national_listing_publication_date": "2025-12-12"
+      },
+      "prior_program_matches": [
+        {
+          "entry_id": 19857,
+          "name": "HORIZON-CL4-2027-04-DIGITAL-EMERGING-04 Challenge-driven AI Innovation Booster",
+          "source_url": "https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/HORIZON-CL4-2027-04-DIGITAL-EMERGING-04",
+          "observed_status": "duplicate",
+          "successful_telegram_delivery_at": null,
+          "relation": "same exact topic and canonical URL",
+          "caveat": "Stored prior status is historical; no live queue action is implied."
+        },
+        {
+          "entry_id": 15662,
+          "relation": "false lexical match",
+          "caveat": "Horizon Fellowship is unrelated to the EU Horizon topic."
+        }
+      ],
+      "inferences": [],
+      "expected_factual_assertions": [
+        "Preserve the exact topic identifier and distinguish it from other Horizon topics.",
+        "State EUR42000000 as total topic budget, with 3 expected project(s).",
+        "Preserve forthcoming status, scheduled opening and EC deadline separately.",
+        "Reject unrelated fellowship matches based only on Frontier or Horizon tokens.",
+        "Recognize exact-topic prior record without inferring a new round from a metadata label.",
+        "Use March18,2027 at17:00 Brussels from the EC work programme rather than conflicting national display."
+      ],
+      "prohibited_overclaims": [
+        "Currently open because the scheduled opening date has arrived.",
+        "Budget remains unconfirmed.",
+        "A general worldwide individual/startup grant with no consortium or country/control restrictions.",
+        "The unrelated fellowship is an alternate source for this EU topic.",
+        "A circular duplicate pointer is a resolved canonical duplicate chain.",
+        "The October5 HaDEA announcement newly announced this topic.",
+        "March17 23:00 is the controlling EC deadline.",
+        "EUR42m per project.",
+        "Approximately EUR14m is the entire topic budget.",
+        "Downstream SME subgrants are already accepting applications."
+      ]
+    },
+    {
+      "entry_id": 20052,
+      "wire": "ai",
+      "input_record": {
+        "name": "NSF DCL: Unleashing a New Age of AI-Enabled Scientific Discovery through the Genesis Mission (NSF 26-023)",
+        "description": "NSF invites proposals for AI-enabled scientific discovery and foundational research in support of the Genesis Mission, in three areas: leveraging AI for science, building foundations for the National Science and Technology Challenges, and workforce development. Proposals go to current open NSF funding opportunities and use a \"Genesis Mission:\" title prefix. The DCL was posted July 22, 2026 and last updated August 18, 2026.",
+        "source_url": "https://www.nsf.gov/funding/opportunities/dcl-unleashing-new-age-ai-enabled-scientific-discovery-through",
+        "amount": "not specified",
+        "deadline": "Rolling",
+        "classification": "GRANT",
+        "created_at": "2026-10-18T04:12:39.579Z",
+        "stored_matching_claims": {
+          "program": {
+            "id": 6808,
+            "verdict": "new_program"
+          },
+          "decided_recheck": {
+            "at": "2026-10-18T04:17:21.737Z",
+            "reason": "Genesis Mission DCL is a new, broad AI funding initiative distinct from the dataset-focused and ExpandAI entries.",
+            "verdict": "distinct",
+            "confidence": 0.97,
+            "matched_id": null
+          }
+        }
+      },
+      "identity": {
+        "name": "NSF Genesis Mission Dear Colleague Letter",
+        "call_id": "NSF 26-023",
+        "funder": "U.S. National Science Foundation"
+      },
+      "evidence": {
+        "source_urls": [
+          "https://www.nsf.gov/funding/opportunities/dcl-unleashing-new-age-ai-enabled-scientific-discovery-through"
+        ],
+        "provenance": [
+          "review-sixteen.json",
+          "review-duplicates.json",
+          "parent_verified_source_corrections"
+        ],
+        "source_checked_date": "2026-10-20",
+        "source_checked_at_utc": null,
+        "precision_note": "Saved source review supplies the date; no exact check timestamp was retained.",
+        "source_facts": {
+          "posted": "2026-07-22",
+          "updated": "2026-08-18",
+          "mechanism": "Guidance to submit through existing open NSF opportunities using the Genesis Mission title prefix.",
+          "standalone_budget": "not specified",
+          "standalone_deadline": "not established"
+        }
+      },
+      "lifecycle": "Existing-program guidance; underlying solicitations control eligibility and deadlines",
+      "amounts": [
+        {
+          "currency": null,
+          "value": null,
+          "basis": "No standalone funding amount established by the DCL"
+        }
+      ],
+      "dates": {
+        "source_publication_date": "2026-07-22",
+        "source_update_date": "2026-08-18",
+        "standalone_deadline": null
+      },
+      "prior_program_matches": [
+        {
+          "entry_id": 19710,
+          "name": "DOE Genesis Mission: 12 Phase II awards totaling $159M (plus six Phase I)",
+          "source_url": "https://www.energy.gov/articles/energy-department-announces-new-genesis-mission-awards-advance-super-intelligence-science",
+          "observed_status": "approved",
+          "successful_telegram_delivery_at": "2026-10-15T17:03:08.362Z",
+          "relation": "different agency/instrument",
+          "caveat": "DOE PhaseII awards are not the NSF DCL."
+        },
+        {
+          "entry_id": 19144,
+          "name": "Genesis Mission Graduate Fellowship Pilot (DE-FOA-0003673)",
+          "source_url": "https://www.energy.gov/articles/energy-department-launches-genesis-mission-graduate-fellowship-advance-american-scientific",
+          "observed_status": "approved",
+          "successful_telegram_delivery_at": "2026-10-09T17:36:51.005Z",
+          "relation": "different agency/instrument",
+          "caveat": "DOE graduate fellowship is not the NSF DCL."
+        },
+        {
+          "entry_id": 19170,
+          "name": "Genesis Mission Consortium: $2.4B in AI tools and compute credits from 11 industry partners",
+          "source_url": "https://www.whitehouse.gov/fact-sheets/2026/10/fact-sheet-trump-administration-announces-the-most-ambitious-set-of-science-initiatives-this-century/",
+          "observed_status": "approved",
+          "successful_telegram_delivery_at": "2026-10-09T17:16:20.650Z",
+          "relation": "different agency/instrument",
+          "caveat": "Industry compute commitments are not the NSF DCL."
+        }
+      ],
+      "inferences": [],
+      "expected_factual_assertions": [
+        "Identify a July Dear Colleague Letter, updated August18.",
+        "Distinguish NSF guidance from DOE Genesis awards, fellowships and consortium commitments.",
+        "Keep underlying-program eligibility and deadlines rather than inventing a universal rolling application."
+      ],
+      "prohibited_overclaims": [
+        "Fresh October grant launch.",
+        "A standalone new funded track or separate pot.",
+        "Universal rolling deadline or common eligibility for all NSF programmes.",
+        "Same Genesis label proves duplication with DOE instruments."
+      ]
+    },
+    {
+      "entry_id": 20092,
+      "wire": "ai",
+      "input_record": {
+        "name": "NSF TIP super intelligence infrastructure efficiency teams",
+        "description": "In an update dated \"October 14, 2026,\" NSF TIP wrote: \"The U.S. National Science Foundation Directorate for Technology, Innovation and Partnerships (NSF TIP) announced nine teams selected to accelerate efficiency gains in U.S. super intelligence (SI) infrastructure, the result of a competition that began in May 2026.\" \"The selected teams will receive up to $3.5 million over two years as they advance through three stages from decision models to at-scale deployments that will speed the commercial adoption of improved super intelligence technologies.\" \"Teams are expected to develop at-scale deployment or Benchmarking standards within two years.\"",
+        "source_url": "https://www.nsf.gov/tip/updates/nsf-announces-teams-selected-accelerate-efficiency-gains-us",
+        "amount": "up to $3.5 million over two years",
+        "deadline": "unknown",
+        "classification": "GRANT",
+        "created_at": "2026-10-19T06:19:36.897Z",
+        "stored_matching_claims": {
+          "program": {
+            "id": 6814,
+            "verdict": "new_program"
+          },
+          "decided_recheck": {
+            "at": "2026-10-19T06:22:22.990Z",
+            "reason": "New entry announces selected teams for the SI infrastructure efficiency program, which is a result announcement for the previously seen NSF Super Intelligence funding line.",
+            "verdict": "update",
+            "confidence": 0.85,
+            "matched_id": 19271
+          },
+          "related_decided": 19271
+        }
+      },
+      "identity": {
+        "name": "NSF TIP super intelligence infrastructure efficiency team selection",
+        "funder": "NSF TIP",
+        "call_id": null,
+        "programme_identity": "Nine-team SI infrastructure efficiency competition begun in May2026"
+      },
+      "evidence": {
+        "source_urls": [
+          "https://www.nsf.gov/tip/updates/nsf-announces-teams-selected-accelerate-efficiency-gains-us"
+        ],
+        "provenance": [
+          "review-sixteen.json",
+          "review-duplicates.json",
+          "parent_verified_source_corrections"
+        ],
+        "source_checked_date": "2026-10-20",
+        "source_checked_at_utc": null,
+        "precision_note": "Saved source review supplies the date; no exact check timestamp was retained.",
+        "source_facts": {
+          "announcement_date": "2026-10-14",
+          "teams_selected": 9,
+          "competition_started": "2026-05",
+          "funding_statement": "Selected teams will receive up to USD3.5m over two years, progressing through three stages.",
+          "new_applications": "No new application opening established by this selection notice."
+        }
+      },
+      "lifecycle": "Award/selection news; not open grant intake",
+      "amounts": [
+        {
+          "currency": "USD",
+          "value": "3500000",
+          "basis": "Source statement applies to selected teams; per-team versus aggregate basis not resolved in supplied notes",
+          "duration": "two years",
+          "qualifier": "up to",
+          "execution": "selection/anticipated funding, not payment proof"
+        }
+      ],
+      "dates": {
+        "source_publication_date": "2026-10-14",
+        "application_deadline": null
+      },
+      "prior_program_matches": [
+        {
+          "entry_id": 19271,
+          "name": "NSF plans Super Intelligence-Native Instruments funding line, up to $75M over five years",
+          "source_url": "https://www.nsf.gov/news/nsf-lays-foundation-next-generation-technologies-support",
+          "observed_status": "approved",
+          "successful_telegram_delivery_at": "2026-10-12T19:21:19.485Z",
+          "relation": "false programme match",
+          "caveat": "SINI is a planned instruments line up to USD75m/five years; shared NSF/SI wording is insufficient."
+        }
+      ],
+      "inferences": [],
+      "expected_factual_assertions": [
+        "Use NEWS/award-result framing rather than an open GRANT call.",
+        "Preserve nine selected teams, October14 date, up-to ceiling and two-year period.",
+        "Treat the stored match to19271 as a false programme match."
+      ],
+      "prohibited_overclaims": [
+        "Applications are open.",
+        "USD3.5m already paid.",
+        "Nine times USD3.5m is a verified total.",
+        "This is the previously covered USD75m SINI instruments line."
+      ]
+    },
+    {
+      "entry_id": 20180,
+      "wire": "ai",
+      "input_record": {
+        "name": "Anthropic Public Benefit Fund — 5% of Anthropic shares committed (plus discretionary 2% escalator)",
+        "description": "On Oct 18, 2026, Anthropic announced the Anthropic Public Benefit Fund: \"Subject to stockholder approval, 5% of Anthropic's shares will be committed\", with \"an additional 2% added at the board's discretion for every 50% increase in the company's value.\" Anthropic says it is \"establishing the Anthropic Public Benefit Fund as a wholly-owned LLC\" and \"might explore large donations to traditional nonprofits or direct distributions to specific populations.\"",
+        "source_url": "https://www.anthropic.com/news/public-benefit-fund",
+        "amount": "5% of Anthropic's shares, plus an additional 2% at the board's discretion for every 50% increase in the company's value",
+        "deadline": "unknown",
+        "classification": "NEWS",
+        "created_at": "2026-10-20T04:09:31.722Z",
+        "stored_matching_claims": {
+          "decided_recheck": {
+            "at": "2026-10-20T04:14:16.014Z",
+            "reason": "The new entry describes a new Anthropic Public Benefit Fund share commitment, not the Claude Corps fellowship program.",
+            "verdict": "distinct",
+            "confidence": 0.98,
+            "matched_id": null
+          }
+        }
+      },
+      "identity": {
+        "name": "Anthropic Public Benefit Fund",
+        "organization": "Anthropic",
+        "mechanism": "Proposed corporate share commitment to a wholly-owned LLC"
+      },
+      "evidence": {
+        "source_urls": [
+          "https://www.anthropic.com/news/public-benefit-fund"
+        ],
+        "provenance": [
+          "review-sixteen.json",
+          "parent_verified_source_corrections"
+        ],
+        "source_checked_date": "2026-10-20",
+        "source_checked_at_utc": null,
+        "precision_note": "Saved source review supplies the date; no exact check timestamp was retained.",
+        "source_facts": {
+          "announcement_date": "2026-10-18",
+          "initial_share_percentage": "5",
+          "initial_condition": "subject to stockholder approval",
+          "additional_share_percentage": "2",
+          "additional_trigger": "for every50% increase in company value",
+          "additional_authority": "at board discretion",
+          "recipient_routes": "Possible nonprofit donations or direct distributions were exploratory.",
+          "open_applications": "none established"
+        }
+      },
+      "lifecycle": "Announced conditional share commitment; shareholder approval and execution unverified",
+      "amounts": [
+        {
+          "unit": "percent of Anthropic shares",
+          "value": "5",
+          "basis": "initial commitment subject to stockholder approval"
+        },
+        {
+          "unit": "additional percent",
+          "value": "2",
+          "basis": "discretionary board addition per50% increase in company value"
+        }
+      ],
+      "dates": {
+        "source_publication_date": "2026-10-18",
+        "application_deadline": null
+      },
+      "prior_program_matches": [
+        {
+          "relation": "distinct from other Anthropic programmes",
+          "caveat": "Public Benefit Fund is not Claude Corps, Claude Startups or the Genesis compute commitment."
+        }
+      ],
+      "inferences": [],
+      "expected_factual_assertions": [
+        "Retain subject-to-stockholder-approval language for the initial5%.",
+        "Retain board discretion for2% additions.",
+        "Describe a share-based funding mechanism without an applicant window or confirmed disbursement."
+      ],
+      "prohibited_overclaims": [
+        "The shares have already been transferred.",
+        "Shareholder approval is complete.",
+        "Automatic or guaranteed2% escalator.",
+        "A fixed cash grant budget or known dollar value.",
+        "Nonprofit or public applications are open."
+      ]
+    },
+    {
+      "entry_id": 20181,
+      "wire": "ai",
+      "input_record": {
+        "name": "Claude Startups Program expansion — $1,000 API credits, free year of Claude Team, Claude Startup Stack (cohort now full)",
+        "description": "On October 6, 2026, Anthropic expanded the Claude Startups program, offering \"$1,000 to start building\" in API credits, \"A free year of Claude Team\", and \"Discounts and credits worth up to $45,000\" via the Claude Startup Stack; \"Startups founded in the last five years or funded in the last two are eligible to apply.\" An October 13, 2026 update says: \"Our current cohort is now full, and we're not accepting new applications right now.\"",
+        "source_url": "https://claude.com/blog/were-expanding-the-claude-startups-program-to-help-founders-build",
+        "amount": "$1,000 in API credits; a free year of Claude Team (up to 5 Premium seats); partner discounts and credits worth up to $45,000",
+        "deadline": "unknown",
+        "classification": "EXPIRED",
+        "created_at": "2026-10-20T04:09:31.722Z",
+        "stored_matching_claims": {
+          "program": {
+            "id": 4837,
+            "history": "seen 1× · approved 1×",
+            "verdict": "new_round",
+            "confidence": 0.85,
+            "round_label": "cohort now full"
+          },
+          "decided_recheck": {
+            "at": "2026-10-20T04:14:17.175Z",
+            "reason": "Same program but new material information: cohort now full as of Oct 13, 2026, which is a status change not in the prior entry.",
+            "verdict": "update",
+            "confidence": 0.85,
+            "matched_id": 18832
+          },
+          "related_decided": 18832
+        }
+      },
+      "identity": {
+        "name": "Claude Startups program expansion",
+        "organization": "Anthropic",
+        "programme_key": "claude-startups",
+        "round_identity": "October6 expansion with October13 closure update"
+      },
+      "evidence": {
+        "source_urls": [
+          "https://claude.com/blog/were-expanding-the-claude-startups-program-to-help-founders-build",
+          "https://claude.com/programs/startups"
+        ],
+        "provenance": [
+          "review-sixteen.json",
+          "review-duplicates.json",
+          "parent_verified_source_corrections"
+        ],
+        "source_checked_date": "2026-10-20",
+        "source_checked_at_utc": null,
+        "precision_note": "Saved source review supplies the date; no exact check timestamp was retained.",
+        "source_facts": {
+          "expansion_date": "2026-10-06",
+          "closure_update_date": "2026-10-13",
+          "current_cohort": "full; not accepting new applications",
+          "API_credit_USD": "1000",
+          "Claude_Team": "free year, up to five Premium seats",
+          "partner_offers_USD_up_to": "45000",
+          "eligibility": "Founded within five years or funded within two years, under stated programme terms."
+        }
+      },
+      "lifecycle": "Existing expanded cohort closed to new applications",
+      "amounts": [
+        {
+          "currency": "USD",
+          "value": "1000",
+          "basis": "one-time API credits, not cash"
+        },
+        {
+          "value": "1",
+          "unit": "year",
+          "basis": "Claude Team access, up to five Premium seats"
+        },
+        {
+          "currency": "USD",
+          "value": "45000",
+          "basis": "up-to partner discounts and credits, not guaranteed cash"
+        }
+      ],
+      "dates": {
+        "source_publication_date": "2026-10-06",
+        "source_update_date": "2026-10-13",
+        "application_deadline": null
+      },
+      "prior_program_matches": [
+        {
+          "entry_id": 18832,
+          "name": "Claude Startups program expansion",
+          "source_url": "https://claude.com/resources/articles/were-expanding-the-claude-startups-program-to-help-founders-build",
+          "observed_status": "approved",
+          "successful_telegram_delivery_at": "2026-10-07T23:34:21.478Z",
+          "relation": "same programme/expansion, later closure update",
+          "caveat": "Delivery recorded2026-10-07T23:34:21.478Z; closure is new status evidence, not proof of a new round."
+        }
+      ],
+      "inferences": [],
+      "expected_factual_assertions": [
+        "Separate October6 expansion from October13 full-cohort status change.",
+        "Recognize the same expansion as18832, whose successful Telegram delivery is recorded October7.",
+        "Describe an existing-program status update; credits and partner offers are distinct components."
+      ],
+      "prohibited_overclaims": [
+        "A new round is open.",
+        "Cohort full means a fresh application cohort.",
+        "Unqualified apply-now language.",
+        "USD45000 cash grant or guaranteed total value for every participant.",
+        "No prior delivery is known."
+      ]
+    },
+    {
+      "entry_id": 20177,
+      "wire": "crypto",
+      "input_record": {
+        "name": "Celo Community Fund — Bi-Weekly L2 Sequencer Revenue Distribution under CGP-287 (Sep 16–30, 2026 report)",
+        "description": "CeloCoreCo reports that, under CGP-287, L2 sequencer revenue is used to buy CELO, and \"That CELO is sent to the Community Fund.\" Its update posted October 2, 2026 for the period September 16, 2026 – September 30, 2026 gives \"Net distributed to the Community Fund\" as 648,972 CELO, after operating costs and revenue-sharing obligations.",
+        "source_url": "https://forum.celo.org/t/initiating-ongoing-celo-chain-revenue-transactions/13494",
+        "amount": "648,972 CELO (period Sep 16–30, 2026)",
+        "deadline": "unknown",
+        "classification": "NEWS",
+        "created_at": "2026-10-20T04:05:32.899Z",
+        "stored_matching_claims": {
+          "decided_recheck": {
+            "at": "2026-10-20T04:09:19.569Z",
+            "reason": "New entry reports ongoing L2 sequencer revenue distribution results under CGP-287, which is a different program from the previous Celo Core Co. Season 3 and Prezenti grant entries.",
+            "verdict": "distinct",
+            "confidence": 0.9,
+            "matched_id": null
+          }
+        }
+      },
+      "identity": {
+        "name": "Celo Community Fund L2 sequencer revenue distributions",
+        "mechanism_id": "CGP-287",
+        "thread_id": "13494",
+        "report_post_id": 21,
+        "superseding_report_post_id": 22
+      },
+      "evidence": {
+        "source_urls": [
+          "https://forum.celo.org/t/initiating-ongoing-celo-chain-revenue-transactions/13494?page=2",
+          "https://forum.celo.org/t/initiating-ongoing-celo-chain-revenue-transactions/13494"
+        ],
+        "provenance": [
+          "review-crypto-20177-20179.json",
+          "review-sixteen.json"
+        ],
+        "source_checked_date": "2026-10-20",
+        "source_checked_at_utc": null,
+        "precision_note": "Saved source review supplies the date; no exact check timestamp was retained.",
+        "source_facts": {
+          "source_date": "2026-10-02",
+          "period": "2026-09-16/2026-09-30",
+          "reported_net_CELO": "648972",
+          "lifecycle": "Celo Core Co reports distributed; transaction link supplied, independent execution not verified",
+          "superseding_report_date": "2026-10-16",
+          "superseding_period": "2026-10-01/2026-10-15",
+          "superseding_reported_net_CELO": "598607",
+          "superseding_transaction_link": "PENDING"
+        }
+      },
+      "lifecycle": "Recurring distribution reported by Celo Core Co; independent transfer execution not verified",
+      "amounts": [
+        {
+          "currency": "CELO",
+          "value": "648972",
+          "basis": "reported net distribution for September16-30 after costs and revenue share"
+        },
+        {
+          "currency": "CELO",
+          "value": "598607",
+          "basis": "superseding reported net distribution for October1-15; transaction link PENDING"
+        }
+      ],
+      "dates": {
+        "source_publication_date": "2026-10-02",
+        "superseding_report_date": "2026-10-16"
+      },
+      "prior_program_matches": [
+        {
+          "relation": "same recurring mechanism, distinct reporting periods",
+          "caveat": "A fresh report is not a new programme or round; root handles any exact database duplicate."
+        }
+      ],
+      "inferences": [],
+      "expected_factual_assertions": [
+        "Distinguish the October2 report/September16-30 period from October16 report/October1-15 period.",
+        "Attribute distribution claims to Celo Core Co.",
+        "Retain the pending transaction link on the newer report.",
+        "Distinguish the existing CGP-287 mechanism from a new funding launch."
+      ],
+      "prohibited_overclaims": [
+        "648972 CELO is the latest report.",
+        "598607 CELO independently verified as transferred.",
+        "An open applicant grant or new October mechanism.",
+        "Report publication proves payment."
+      ]
+    },
+    {
+      "entry_id": 20178,
+      "wire": "crypto",
+      "input_record": {
+        "name": "DeFi Saver × Compound — $20k USDC Supply Incentive Pool for the Compound Institutional Market",
+        "description": "DeFi Saver says it arranged a \"$20k incentive pool\" with the Compound team for users who supply up to 2m USDC to Compound's new institutional market through DeFi Saver. DeFi Saver says the incentives run for three months, with rewards distributed pro rata based on how long the USDC stays supplied.",
+        "source_url": "https://blog.defisaver.com/defi-saver-newsletter-october-2026/",
+        "amount": "$20k incentive pool",
+        "deadline": "unknown",
+        "classification": "NEWS",
+        "created_at": "2026-10-20T04:05:32.899Z",
+        "stored_matching_claims": {
+          "decided_recheck": {
+            "at": "2026-10-20T04:09:21.714Z",
+            "reason": "DeFi Saver × Compound USDC supply incentive is a different program from the BNB, Arbitrum, and Stacks entries.",
+            "verdict": "distinct",
+            "confidence": 0.95,
+            "matched_id": null
+          }
+        }
+      },
+      "identity": {
+        "name": "DeFi Saver x Compound Institutional Market USDC supplier incentives",
+        "organizers": [
+          "DeFi Saver",
+          "Compound"
+        ],
+        "programme_key": "compound-institutional-dfs-usdc-incentives-2026"
+      },
+      "evidence": {
+        "source_urls": [
+          "https://blog.defisaver.com/defi-saver-newsletter-october-2026/",
+          "https://blog.defisaver.com/the-compound-institutional-market-is-live-and-with-it-20k-in-incentives-for-dfs-users/"
+        ],
+        "provenance": [
+          "review-crypto-20177-20179.json",
+          "review-sixteen.json"
+        ],
+        "source_checked_date": "2026-10-20",
+        "source_checked_at_utc": null,
+        "precision_note": "Saved source review supplies the date; no exact check timestamp was retained.",
+        "source_facts": {
+          "newsletter_date": "2026-10-16",
+          "dedicated_article_date": "2026-09-17",
+          "launch_post_embedded_date": "2026-09-08",
+          "pool_USDC": "20000",
+          "duration": "three months",
+          "payment_timing": "at campaign end, proportional to supply duration",
+          "minimum_deposit": "none",
+          "newsletter_material_update": "48-hour deposit window extended through campaign end for DeFi Saver users"
+        }
+      },
+      "lifecycle": "Ongoing September campaign recapped in October; rewards described as payable at campaign end",
+      "amounts": [
+        {
+          "currency": "USDC",
+          "value": "20000",
+          "basis": "total supplier incentive pool",
+          "duration": "three months",
+          "payment": "at campaign end, pro rata by supply duration"
+        }
+      ],
+      "dates": {
+        "source_publication_date": "2026-10-16",
+        "dedicated_announcement_date": "2026-09-17",
+        "embedded_launch_post_date": "2026-09-08",
+        "exact_campaign_end": null
+      },
+      "prior_program_matches": [
+        {
+          "relation": "same programme across newsletter and dedicated article",
+          "caveat": "Different publication URLs do not establish a new round."
+        }
+      ],
+      "inferences": [],
+      "expected_factual_assertions": [
+        "Keep USD/USDC20000 as a total incentive pool.",
+        "Distinguish October16 recap/window extension from September launch.",
+        "Describe capital-supply incentives and preserve the lack of a verified exact calendar end date."
+      ],
+      "prohibited_overclaims": [
+        "New October programme launch.",
+        "Builder grant or research grant.",
+        "USD20000 per user.",
+        "Rewards already disbursed.",
+        "Invented exact campaign deadline."
+      ]
+    },
+    {
+      "entry_id": 20179,
+      "wire": "crypto",
+      "input_record": {
+        "name": "Kevin Owocki (Gitcoin",
+        "description": "Gitcoin co-founder Kevin Owocki argues that Ethereum funding mechanisms such as quadratic funding, retroactive rewards, token streaming and protocol revenue sharing can fund value that markets ignore. In his words: \"Capitalism is not wrong. It is incomplete. It accounts for roughly half of what matters and ignores the rest.\"",
+        "source_url": "https://gitcoin.co/research/post-capitalist-substrate-of-the-abundance-economy",
+        "amount": "not specified",
+        "deadline": "unknown",
+        "classification": "NEWS",
+        "created_at": "2026-10-20T04:05:32.899Z",
+        "stored_matching_claims": {
+          "decided_recheck": {
+            "at": "2026-10-20T04:09:20.639Z",
+            "reason": "New entry is a conceptual essay by Kevin Owocki on Ethereum funding mechanisms, not a specific grant program or round listed in previous entries.",
+            "verdict": "distinct",
+            "confidence": 0.92,
+            "matched_id": null
+          }
+        }
+      },
+      "identity": {
+        "name": "Post-Capitalist Substrate of the Abundance Economy",
+        "author": "Kevin Owocki",
+        "publisher": "Gitcoin",
+        "article_key": "post-capitalist-substrate-of-the-abundance-economy"
+      },
+      "evidence": {
+        "source_urls": [
+          "https://gitcoin.co/research/post-capitalist-substrate-of-the-abundance-economy"
+        ],
+        "provenance": [
+          "review-crypto-20177-20179.json",
+          "review-sixteen.json"
+        ],
+        "source_checked_date": "2026-10-20",
+        "source_checked_at_utc": null,
+        "precision_note": "Saved source review supplies the date; no exact check timestamp was retained.",
+        "source_facts": {
+          "source_date": "2026-03-06",
+          "author": "Kevin Owocki",
+          "type": "Opinion",
+          "article_title": "Post-Capitalist Substrate of the Abundance Economy"
+        }
+      },
+      "lifecycle": "Published opinion/research commentary; no funding event announced",
+      "amounts": [
+        {
+          "value": null,
+          "basis": "Not applicable to opinion essay"
+        }
+      ],
+      "dates": {
+        "source_publication_date": "2026-03-06",
+        "application_deadline": null
+      },
+      "prior_program_matches": [
+        {
+          "entry_id": 18582,
+          "name": "Kevin Owocki on folding Gitcoin quadratic funding into Buoy",
+          "source_url": "https://gov.gitcoin.co/t/october-2026-gitcoin-reboot-update-techne-gets-a-name-a-pilot-and-a-launch-date/25394",
+          "observed_status": "approved",
+          "successful_telegram_delivery_at": "2026-10-05T17:16:45.840Z",
+          "relation": "same author/brand, different subject",
+          "caveat": "Gitcoin/Buoy operational update is not this March opinion essay."
+        }
+      ],
+      "inferences": [],
+      "expected_factual_assertions": [
+        "Recover the complete article title and author from the source.",
+        "Preserve March6,2026 publication date and Opinion type.",
+        "Separate discussion of existing mechanisms from a new programme launch."
+      ],
+      "prohibited_overclaims": [
+        "Fresh October announcement.",
+        "A new open grant, committed budget or application deadline.",
+        "Truncated Kevin Owocki (Gitcoin is a complete title.",
+        "Same author proves same article as an earlier Gitcoin item."
+      ]
+    },
+    {
+      "entry_id": 19958,
+      "wire": "oss",
+      "input_record": {
+        "name": "CHARTED Fund 4: Supporting Professional Development",
+        "description": "CHARTED offers up to GBP5000 per individual from a GBP150000 fund for research-software, data and computing professionals, primarily early-career or transitioning UK practitioners. Supports training, conferences and knowledge exchange, usually by reimbursement; staff time excluded. Rolling applications are reviewed monthly on the 15th. Approval must precede costs. Publication date and cutoff timezone unstated; Good Grants form untested.",
+        "source_url": "https://drtp-skills.ac.uk/funds-prof-dev/",
+        "amount": null,
+        "deadline": null,
+        "classification": "GRANT",
+        "created_at": "2026-10-16T13:47:50.981Z",
+        "stored_matching_claims": {
+          "program": {
+            "id": 6766,
+            "verdict": "new_program"
+          },
+          "decided_recheck": {
+            "at": "2026-10-16T13:58:19.803Z",
+            "reason": "Same program name, URL, and description as previous entry; no new round, deadline, or material information.",
+            "verdict": "same_listing",
+            "confidence": 0.98,
+            "matched_id": 19892
+          },
+          "duplicate_chain_error": {
+            "at": "2026-10-16T13:58:19.803Z",
+            "depth": 1,
+            "error": "cycle-to-target",
+            "matched_id": 19892
+          }
+        }
+      },
+      "identity": {
+        "name": "CHARTED Fund 4: Supporting Professional Development",
+        "programme_key": "charted-fund-4",
+        "organization": "CHARTED/dRTP Skills"
+      },
+      "evidence": {
+        "source_urls": [
+          "https://drtp-skills.ac.uk/funds-prof-dev/"
+        ],
+        "provenance": [
+          "review-oss.json",
+          "review-duplicates.json",
+          "review-sixteen.json"
+        ],
+        "source_checked_date": "2026-10-20",
+        "source_checked_at_utc": null,
+        "precision_note": "Saved source review supplies the date; no exact check timestamp was retained.",
+        "source_facts": {
+          "fund": "Fund4 professional development",
+          "individual_max_GBP": "5000",
+          "total_fund_GBP": "150000",
+          "application_cadence": "rolling, monthly review on the15th",
+          "scope": "Primarily UK early-career or transitioning digital research technical professionals; training, conferences and knowledge exchange.",
+          "payment_terms": "Normally reimbursement; approval required before spending; staff time excluded.",
+          "form_check": "Public authenticated/JavaScript Good Grants form not fully inspected."
+        }
+      },
+      "lifecycle": "Existing rolling professional-development support; original publication date unknown",
+      "amounts": [
+        {
+          "currency": "GBP",
+          "value": "5000",
+          "basis": "maximum per individual"
+        },
+        {
+          "currency": "GBP",
+          "value": "150000",
+          "basis": "total fund, not individual award"
+        }
+      ],
+      "dates": {
+        "source_publication_date": null,
+        "review_day_of_month": 15
+      },
+      "prior_program_matches": [
+        {
+          "entry_id": 16101,
+          "name": "CHARTED Fund 4: Professional Development",
+          "source_url": "https://drtp-skills.ac.uk/funds-prof-dev",
+          "observed_status": "archived",
+          "successful_telegram_delivery_at": null,
+          "relation": "same programme and terms",
+          "caveat": "Archived state is not proof of a new round."
+        },
+        {
+          "entry_id": 19892,
+          "name": "CHARTED Fund 4: Supporting Professional Development",
+          "source_url": "https://drtp-skills.ac.uk/funds-prof-dev/",
+          "observed_status": "duplicate",
+          "successful_telegram_delivery_at": null,
+          "relation": "same listing with duplicate pointer to19958",
+          "caveat": "Do not turn the cycle-to-target into a resolved canonical chain."
+        },
+        {
+          "entry_id": 19312,
+          "name": "CHARTED Fund 2: up to £12.5k per community activity for UK research software and data, next deadline Nov 15",
+          "source_url": "https://drtp-skills.ac.uk/funds-community/",
+          "observed_status": "approved",
+          "successful_telegram_delivery_at": "2026-10-12T17:42:21.095Z",
+          "relation": "different fund under same umbrella",
+          "caveat": "Fund2 community activities and Fund4 individual development have different purpose and limits."
+        }
+      ],
+      "inferences": [],
+      "expected_factual_assertions": [
+        "Preserve per-person cap separately from fund total.",
+        "Recognize prior Fund4 record16101 with same route/terms and same-listing19892.",
+        "Distinguish Fund4 from Fund2 community activities.",
+        "Retain reimbursement, pre-approval and staff-time restrictions."
+      ],
+      "prohibited_overclaims": [
+        "GBP150000 per applicant.",
+        "Fund2 and Fund4 are the same programme.",
+        "An archived prior means this is a fresh programme.",
+        "Every application route has been verified.",
+        "Unspecified original publication date is the discovery date."
+      ]
+    },
+    {
+      "entry_id": 20053,
+      "wire": "oss",
+      "input_record": {
+        "name": "Namespace commits $100,000 a year in compute for three years to Omarchy (Omacom Foundation corporate patron)",
+        "description": "On October 9, 2026 Omarchy announced Namespace as a Distinguished Corporate Patron, \"contributing $100,000 a year in compute for three years that we're plowing straight into ARM builds and QA.\"",
+        "source_url": "https://omarchy.org/news/2026/10/namespace-joins-as-a-distinguished-corporate-patron",
+        "amount": "$100,000 a year in compute for three years",
+        "deadline": "unknown",
+        "classification": "NEWS",
+        "created_at": "2026-10-18T04:16:52.334Z",
+        "stored_matching_claims": {
+          "decided_recheck": {
+            "at": "2026-10-18T04:22:17.964Z",
+            "reason": "Same Omacom Foundation corporate patron program but new patron (Namespace) with specific compute contribution, distinct from the DigitalOcean founding patron entry.",
+            "verdict": "update",
+            "confidence": 0.9,
+            "matched_id": 17040
+          },
+          "related_decided": 17040
+        }
+      },
+      "identity": {
+        "name": "Namespace compute commitment to Omarchy",
+        "supporter": "Namespace",
+        "recipient": "Omacom Foundation/Omarchy",
+        "programme_key": "namespace-omarchy-corporate-patron-2026"
+      },
+      "evidence": {
+        "source_urls": [
+          "https://omarchy.org/news/2026/10/namespace-joins-as-a-distinguished-corporate-patron/"
+        ],
+        "provenance": [
+          "review-oss.json",
+          "review-sixteen.json",
+          "review-duplicates.json"
+        ],
+        "source_checked_date": "2026-10-20",
+        "source_checked_at_utc": null,
+        "precision_note": "Saved source review supplies the date; no exact check timestamp was retained.",
+        "source_facts": {
+          "source_date": "2026-10-09",
+          "annual_compute_USD": "100000",
+          "years": 3,
+          "use": "ARM builds and QA",
+          "instrument": "in-kind compute commitment",
+          "applicant_route": "none announced"
+        }
+      },
+      "lifecycle": "Pledged future in-kind support to one project; delivery not established",
+      "amounts": [
+        {
+          "currency": "USD",
+          "value": "100000",
+          "basis": "compute value per year",
+          "duration_years": 3
+        },
+        {
+          "currency": "USD",
+          "value": "300000",
+          "basis": "derived total compute value over three years",
+          "calculation": "100000 * 3",
+          "evidence_kind": "arithmetic inference, not an independently quoted payment"
+        }
+      ],
+      "dates": {
+        "source_publication_date": "2026-10-09"
+      },
+      "prior_program_matches": [
+        {
+          "entry_id": 19084,
+          "name": "SpaceXAI pledges $1.5M in Grok tokens to the Omacom Foundation for Omarchy",
+          "source_url": "https://omarchy.org/news/2026/10/spacexai-joins-as-founding-corporate-patron/",
+          "observed_status": "approved",
+          "successful_telegram_delivery_at": "2026-10-10T01:56:56.485Z",
+          "relation": "same recipient, different supporter and pledge",
+          "caveat": "USD1.5m Grok-token pledge is separate from Namespace compute."
+        },
+        {
+          "entry_id": 17040,
+          "relation": "same patronage umbrella, different supporter",
+          "caveat": "Input metadata says DigitalOcean; full prior record is not supplied here, so do not infer its exact terms or delivery."
+        }
+      ],
+      "inferences": [
+        {
+          "claim": "USD300000 total in-kind value",
+          "basis": "USD100000/year multiplied by three years"
+        }
+      ],
+      "expected_factual_assertions": [
+        "Preserve compute/in-kind instrument and three-year period.",
+        "If using USD300000 total, label it as the arithmetic total of the pledge.",
+        "Separate new patron commitment from an open application programme."
+      ],
+      "prohibited_overclaims": [
+        "USD300000 cash grant paid or awarded.",
+        "New public applications.",
+        "Same patronage umbrella proves identical pledge.",
+        "The earlier USD1.5m pledge amount belongs to Namespace."
+      ]
+    },
+    {
+      "entry_id": 20184,
+      "wire": "oss",
+      "input_record": {
+        "name": "AWS Open Source Promotional Credit Program (OpenSSF member post)",
+        "description": "In an OpenSSF blog post, AWS (Mila Zhou, Senior Technical Program Manager) describes the AWS Open Source Promotional Credit Program, which 'provides credits to eligible open source projects to cover these infrastructure costs,' citing Gradle Build Tool, Compiler Explorer and Read the Docs. Application details are on the AWS Open Source blog.",
+        "source_url": "https://openssf.org/blog/2026/09/14/empowering-open-source-security-with-scalable-infrastructure/",
+        "amount": "not specified",
+        "deadline": "Rolling",
+        "classification": "GRANT",
+        "created_at": "2026-10-20T04:13:56.181Z",
+        "stored_matching_claims": {
+          "program": {
+            "id": 6847,
+            "verdict": "new_program"
+          },
+          "decided_recheck": {
+            "at": "2026-10-20T04:19:18.690Z",
+            "reason": "AWS Open Source Promotional Credit Program is a different program from the OpenSSF Ambassador Program entries.",
+            "verdict": "distinct",
+            "confidence": 0.95,
+            "matched_id": null
+          }
+        }
+      },
+      "identity": {
+        "name": "AWS Open Source Promotional Credit Program",
+        "funder": "AWS",
+        "publisher_of_reminder": "OpenSSF",
+        "programme_key": "aws-open-source-promotional-credits"
+      },
+      "evidence": {
+        "source_urls": [
+          "https://openssf.org/blog/2026/09/14/empowering-open-source-security-with-scalable-infrastructure/",
+          "https://aws.amazon.com/blogs/opensource/aws-promotional-credits-open-source-projects/"
+        ],
+        "provenance": [
+          "review-oss.json",
+          "review-precedents.json",
+          "review-duplicates.json",
+          "parent_verified_source_corrections"
+        ],
+        "source_checked_date": "2026-10-20",
+        "source_checked_at_utc": null,
+        "precision_note": "Saved source review supplies the date; no exact check timestamp was retained.",
+        "source_facts": {
+          "reminder_date": "2026-09-14",
+          "linked_program_announcement_date": "2019-10-14",
+          "instrument": "infrastructure credits",
+          "universal_award_amount": "not stated",
+          "review_cadence": "monthly",
+          "account_requirements": "active paid AWS account; no outstanding invoices",
+          "project_requirements": "normally OSI-approved; foundation/nonprofit or multi-entity maintainership preferred",
+          "credit_expiry": "one year",
+          "new_round_or_terms_change": "not established by reminder"
+        }
+      },
+      "lifecycle": "Existing rolling credit programme recapped in an AWS-authored OpenSSF post",
+      "amounts": [
+        {
+          "currency": null,
+          "value": null,
+          "basis": "No universal credit award amount specified; not cash"
+        }
+      ],
+      "dates": {
+        "source_publication_date": "2026-09-14",
+        "programme_announcement_date": "2019-10-14",
+        "application_deadline": "rolling programme; no new fixed deadline established"
+      },
+      "prior_program_matches": [
+        {
+          "entry_id": 8501,
+          "name": "AWS Cloud Credits for Open Source Projects",
+          "source_url": "https://x.com/AWSSupport/status/2062897670037946438",
+          "observed_status": "approved",
+          "successful_telegram_delivery_at": null,
+          "relation": "same standing programme",
+          "caveat": "Approved is verified; direct successful Telegram delivery receipt is absent from this saved query, so sent status remains unconfirmed."
+        },
+        {
+          "entry_id": 17246,
+          "name": "AWS Open Source Promotional Credit Program",
+          "source_url": "https://x.com/openssf/status/2099578950527660129",
+          "observed_status": "declined",
+          "successful_telegram_delivery_at": null,
+          "relation": "same September14 reminder",
+          "caveat": "Its historical reason claims8501 was sent; that narrative is not direct delivery proof."
+        }
+      ],
+      "inferences": [],
+      "expected_factual_assertions": [
+        "Attribute programme funding to AWS and reminder publication to OpenSSF.",
+        "Recognize existing programme8501 and same September14 reminder17246.",
+        "State8501 was approved, with no successful delivery timestamp in the supplied query.",
+        "Keep rolling monthly review and credit instrument; no verified new round."
+      ],
+      "prohibited_overclaims": [
+        "OpenSSF funds a new cash grant.",
+        "A new October AWS programme or round.",
+        "A fixed universal award amount.",
+        "8501 was sent because17246 action_reason says so.",
+        "Null delivery timestamp proves it was never sent."
+      ]
+    },
+    {
+      "entry_id": 20183,
+      "wire": "oss",
+      "input_record": {
+        "name": "Making Impact Visible in Funding of Open Source Software: A Study of the Funders' Perspective (ESEM 2026)",
+        "description": "Johan Linåker, Kevin Lumbard and Georg Link interviewed 25 participants (funders, recipients, research organizations) and found funders rely on 'short-term, milestone-based deliverables and qualitative narratives' to assess impact. The authors argue that 'long-term sustainability, risk mitigation, and human-centered impacts are difficult to capture and rarely measured systematically' and recommend 'explicit impact logics and shared meta-frameworks.'",
+        "source_url": "https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.ESEM.2026.8",
+        "amount": "not specified",
+        "deadline": "unknown",
+        "classification": "NEWS",
+        "created_at": "2026-10-20T04:13:56.181Z",
+        "stored_matching_claims": {
+          "decided_recheck": {
+            "at": "2026-10-20T04:19:17.584Z",
+            "reason": "New entry is an academic study on impact measurement in OSS funding, not a funding program or announcement.",
+            "verdict": "distinct",
+            "confidence": 0.95,
+            "matched_id": null
+          }
+        }
+      },
+      "identity": {
+        "name": "Making Impact Visible in Funding of Open Source Software: A Study of the Funders' Perspective (ESEM 2026)",
+        "doi": "10.4230/LIPIcs.ESEM.2026.8",
+        "authors": [
+          "Johan Linaker",
+          "Kevin Lumbard",
+          "Georg Link"
+        ],
+        "venue": "ESEM2026"
+      },
+      "evidence": {
+        "source_urls": [
+          "https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.ESEM.2026.8",
+          "https://drops.dagstuhl.de/storage/00lipics/lipics-vol394-esem2026/LIPIcs.ESEM.2026.8/LIPIcs.ESEM.2026.8.pdf"
+        ],
+        "provenance": [
+          "review-oss.json",
+          "review-sixteen.json"
+        ],
+        "source_checked_date": "2026-10-20",
+        "source_checked_at_utc": null,
+        "precision_note": "Saved source review supplies the date; no exact check timestamp was retained.",
+        "source_facts": {
+          "publication_date": "2026-10-05",
+          "interview_participants": 25,
+          "participant_mix": [
+            "funders",
+            "recipients",
+            "research organizations"
+          ],
+          "followup_workshop_participants": 16,
+          "workshop_overlap": "partly overlaps interview participants",
+          "method": "qualitative study",
+          "findings": "Short-term milestone bias; maintenance, avoided failures and human sustainability under-measured; connect funder goals to signals and metrics."
+        }
+      },
+      "lifecycle": "Published research findings; no grant intake or award",
+      "amounts": [
+        {
+          "value": null,
+          "basis": "Not applicable to research paper"
+        }
+      ],
+      "dates": {
+        "source_publication_date": "2026-10-05",
+        "queue_created_at_utc": "2026-10-20T04:13:56.181Z",
+        "queue_local_date": "2026-10-19",
+        "review_date": "2026-10-20"
+      },
+      "prior_program_matches": [
+        {
+          "relation": "identity is the DOI/paper, not funding keywords",
+          "caveat": "No exact prior-program match established; research is not an applicant programme."
+        }
+      ],
+      "inferences": [
+        {
+          "claim": "15 calendar days old on October20;14 on October19 Pacific queue date",
+          "basis": "Date arithmetic; publication and ingestion dates are separate."
+        }
+      ],
+      "expected_factual_assertions": [
+        "Say25 participants across funders, recipients and research organizations.",
+        "Distinguish the16-person partly overlapping workshop from independent validation.",
+        "Preserve October5 publication date and qualitative scope.",
+        "Amount, applicant eligibility and deadline are not applicable."
+      ],
+      "prohibited_overclaims": [
+        "25 funders were interviewed.",
+        "41 independent participants or an independent16-person validation sample.",
+        "Quantified causal proof or statistically representative prevalence.",
+        "A new grant programme.",
+        "Newly released on October20."
+      ]
+    }
+  ]
+}

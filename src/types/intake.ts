@@ -145,6 +145,12 @@ export interface DedupResult {
    * duplicate. Distinct from priorCycle so Gate 2's new-cycle guard stays off.
    */
   resurfacedDecline?: { entryId: number; name: string } | null;
+  /**
+   * Same URL or exact name as a call whose intake is not open yet.
+   * The new row is not a duplicate yet: after classification, an open read
+   * updates the owner's lifecycle and a still-closed read collapses onto it.
+   */
+  lifecyclePromotion?: { entryId: number; name: string } | null;
 }
 
 /**

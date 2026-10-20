@@ -23,7 +23,25 @@ export interface PromptStats {
   declinedCount: number;
   approvalRate: number;        // 0-1 (of reviewed entries)
   classificationMix: Record<string, number>;  // e.g. { GRANT: 5, NEWS: 3, NOISE: 1 }
+  /** GRANT rows whose intake is live. Null lifecycle counts as open. */
+  openCalls: number;
+  /** Calls classified GRANT or otherwise whose intake is not open yet. */
+  forthcomingCalls: number;
   publishedAtCoverage: number; // 0-1 fraction of entries with source_published_at
+}
+
+/** Same split as the prompt-stats SQL. Closed GRANTs count as neither. */
+export function splitOpenCallCounts(
+  rows: Array<{ classification: string | null; lifecycle: string | null }>,
+): { openCalls: number; forthcomingCalls: number } {
+  let openCalls = 0;
+  let forthcomingCalls = 0;
+  for (const row of rows) {
+    if (row.lifecycle === 'forthcoming') forthcomingCalls++;
+    const lifecycle = row.lifecycle ?? 'open';
+    if (row.classification === 'GRANT' && lifecycle !== 'forthcoming' && lifecycle !== 'closed') openCalls++;
+  }
+  return { openCalls, forthcomingCalls };
 }
 
 export interface OverlapStats {
@@ -58,6 +76,7 @@ export async function getPromptEffectivenessStats(
         e.status,
         e.quality_score,
         e.classification,
+        e.lifecycle,
         e.source_published_at
       FROM scan_entries e
       LEFT JOIN scan_prompts p ON e.prompt_id = p.id
@@ -87,6 +106,11 @@ export async function getPromptEffectivenessStats(
       COUNT(*) FILTER (WHERE classification = 'EXPIRED') AS cls_expired,
       COUNT(*) FILTER (WHERE classification = 'NOISE') AS cls_noise,
       COUNT(*) FILTER (WHERE classification = 'UNCHECKED' OR classification IS NULL) AS cls_unchecked,
+      COUNT(*) FILTER (WHERE lifecycle = 'forthcoming') AS forthcoming_calls,
+      COUNT(*) FILTER (
+        WHERE classification = 'GRANT'
+          AND COALESCE(lifecycle, 'open') NOT IN ('forthcoming', 'closed')
+      ) AS open_calls,
       COUNT(*) FILTER (WHERE source_published_at IS NOT NULL) AS has_published_at,
       COUNT(*) FILTER (WHERE status NOT IN ('duplicate')) AS non_dup_total
     FROM prompt_entries
@@ -121,6 +145,8 @@ export async function getPromptEffectivenessStats(
         NOISE: parseInt(row.cls_noise, 10),
         UNCHECKED: parseInt(row.cls_unchecked, 10),
       },
+      openCalls: parseInt(row.open_calls, 10),
+      forthcomingCalls: parseInt(row.forthcoming_calls, 10),
       publishedAtCoverage: nonDup > 0 ? Math.round((parseInt(row.has_published_at, 10) / nonDup) * 1000) / 1000 : 0,
     };
   });

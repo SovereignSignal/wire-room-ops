@@ -19,6 +19,7 @@ import { normalizeUrl, normalizeName, extractNameTokens } from './intake';
 import { demoteEntryToDuplicateInTransaction, lockDuplicateGraph } from './duplicate-chain';
 import { resolveProgram, assessRound, historyLine, ProgramResolutionStamp } from './program-identity';
 import { blockedSourceDomain, classifySourceLink } from './source-filter';
+import { intakeLifecycleAction } from '../types/lifecycle';
 import { findForumHistoryByHost, forumTopicKey, storedForumObservation, forumObservationAlreadySeen, forumObservationMayBeNew, forumUpdateNote } from './forum-seen';
 
 /**
@@ -570,7 +571,9 @@ export async function checkDuplicate(
   // deadline, new FY) would otherwise be killed after the URL escape.
   // A same-round resubmission that escaped a premature decline must skip
   // the name layer too, or the declined copy's exact name re-blocks it.
-  if (urlResult.priorCycle || urlResult.resurfacedDecline) {
+  // A forthcoming owner yields the same way: the name layer must not
+  // collapse the later open intake into a duplicate before classification.
+  if (urlResult.priorCycle || urlResult.resurfacedDecline || urlResult.lifecyclePromotion) {
     return urlResult;
   }
 
@@ -589,7 +592,7 @@ export async function checkDuplicate(
   let programResolution: DedupResult['programResolution'] = null;
   if (!options?.urlOnly) {
     const nameResult = await checkExactNameMatch(pool, entry.name, entry.wire, lookbackDays, entry.excludeEntryId);
-    if (nameResult.isDuplicate) {
+    if (nameResult.isDuplicate || nameResult.lifecyclePromotion) {
       return nameResult;
     }
   }
@@ -634,6 +637,18 @@ export async function checkDuplicate(
   };
 }
 
+function forthcomingYield(entryId: number, name: string): DedupResult {
+  return {
+    isDuplicate: false,
+    matchType: null,
+    matchedEntryId: entryId,
+    matchedEntryName: name,
+    confidence: 0,
+    reason: `Forthcoming call #${entryId} ("${name}") stays the record; a later open intake updates its lifecycle`,
+    lifecyclePromotion: { entryId, name },
+  };
+}
+
 // ============================================================
 // Layer 1: URL Exact Match
 // ============================================================
@@ -665,7 +680,7 @@ async function checkUrlMatch(
   // Only archived (auto-filtered junk) is excluded — those may deserve a second look.
   const result = await pool.query(
     `SELECT su.first_seen_entry_id, se.name, su.url, se.deadline, se.deadline_parsed, se.status,
-            se.decision_at, se.action_reason, se.metadata
+            se.decision_at, se.action_reason, se.metadata, se.lifecycle
      FROM seen_urls su
      JOIN scan_entries se ON se.id = su.first_seen_entry_id
      WHERE su.normalized_url = $1 AND su.wire = $2
@@ -787,6 +802,10 @@ async function checkUrlMatch(
       };
     }
 
+    if (row.lifecycle === 'forthcoming' && entryId) {
+      return forthcomingYield(entryId, displayName);
+    }
+
     const reason = entryId
       ? `Exact URL match with entry #${entryId}: "${displayName}"`
       : `Exact URL match with existing wire content: "${displayName}"`;
@@ -845,7 +864,7 @@ async function checkExactNameMatch(
   if (!normalized) return noMatch;
 
   const result = await pool.query(
-    `SELECT id, name FROM scan_entries
+    `SELECT id, name, lifecycle FROM scan_entries
      WHERE lower(btrim(name)) = $1 AND wire = $2
        AND status IN ('raw', 'queued', 'approved', 'declined')
        AND created_at >= NOW() - INTERVAL '1 day' * $3
@@ -857,6 +876,9 @@ async function checkExactNameMatch(
 
   if (result.rows.length > 0) {
     const row = result.rows[0];
+    if (row.lifecycle === 'forthcoming') {
+      return forthcomingYield(row.id, row.name);
+    }
     return {
       isDuplicate: true,
       matchType: 'name_exact',
@@ -1105,6 +1127,8 @@ export interface RegisterSeenResult {
   urlConflict: boolean;
   /** The owning entry id, or null when the conflict is a seed-only history row. */
   conflictEntryId: number | null;
+  /** Set when the URL owner is a forthcoming call. The claim is not a conflict. */
+  lifecyclePromotion?: { entryId: number; name: string } | null;
 }
 
 interface SeenEntry {
@@ -1140,10 +1164,11 @@ export async function registerSeenInTransaction(
 
   let urlConflict = false;
   let conflictEntryId: number | null = null;
+  let lifecyclePromotion: { entryId: number; name: string } | null = null;
   if (urlRes.rowCount === 0) {
     const existing = await db.query(
       `SELECT su.first_seen_entry_id, se.name, se.status, se.deadline, se.deadline_parsed,
-              se.decision_at, se.action_reason, se.metadata
+              se.decision_at, se.action_reason, se.metadata, se.lifecycle
        FROM seen_urls su
        LEFT JOIN scan_entries se ON se.id = su.first_seen_entry_id
        WHERE su.normalized_url = $1 AND su.wire = $2
@@ -1257,6 +1282,8 @@ export async function registerSeenInTransaction(
               urlConflict = true;
               conflictEntryId = sameCycle.id;
             }
+          } else if (ownerId !== null && existing.rows[0].lifecycle === 'forthcoming') {
+            lifecyclePromotion = { entryId: ownerId, name: ownerName || String(ownerId) };
           } else {
             urlConflict = true;
             conflictEntryId = ownerId;
@@ -1275,7 +1302,9 @@ export async function registerSeenInTransaction(
     );
   }
 
-  return { urlConflict, conflictEntryId };
+  return lifecyclePromotion
+    ? { urlConflict, conflictEntryId, lifecyclePromotion }
+    : { urlConflict, conflictEntryId };
 }
 
 export async function registerSeen(
@@ -1372,6 +1401,7 @@ export async function finalizeExistingEntryDedup(
   canonicalParentId: number | null;
   programResolution?: DedupResult['programResolution'];
   priorCycle?: DedupResult['priorCycle'];
+  lifecyclePromotion?: DedupResult['lifecyclePromotion'];
 }> {
   const client = await pool.connect();
   try {
@@ -1559,6 +1589,7 @@ export async function finalizeExistingEntryDedup(
       canonicalParentId: null,
       programResolution: dedupResult.programResolution ?? null,
       priorCycle: dedupResult.priorCycle ?? null,
+      lifecyclePromotion: dedupResult.lifecyclePromotion ?? claim.lifecyclePromotion ?? null,
     };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => undefined);
@@ -1756,4 +1787,194 @@ export async function getDedupStats(
     duplicateUrls: parseInt(dupes.rows[0].count),
     uniqueNames: parseInt(uniqueNames.rows[0].count),
   };
+}
+
+export interface LifecyclePromotionInput {
+  sourceId: number;
+  lifecycle: string | null | undefined;
+  openingDate: string | null;
+  expectedStatus: string;
+  sourceUrl: string;
+  name: string;
+  wire: string;
+  /**
+   * Owner found during dedup. Null means dedup did not yield a forthcoming
+   * owner, so this intake is not a promotion. Omit the field to look one up
+   * (classify backfill, which does not carry the dedup result).
+   */
+  ownerId?: number | null;
+}
+
+/**
+ * Point a forthcoming call at open intake. The carrier is archived, not
+ * marked duplicate, so the owner's program record stays the one that finalised.
+ * An already-approved hold is released onto the publication queue.
+ */
+export async function promoteOpenCall(
+  pool: Pool,
+  input: {
+    ownerId: number;
+    sourceId: number;
+    openingDate: string | null;
+    expectedStatus: string;
+    sourceUrl: string;
+  },
+): Promise<{ promoted: boolean }> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await lockDuplicateGraph(client);
+    const note = `Opened by intake #${input.sourceId}; lifecycle updated from forthcoming to open.`;
+    const owner = await client.query(
+      `UPDATE scan_entries
+       SET lifecycle = 'open',
+           opening_date = COALESCE($2::date, opening_date),
+           operator_notes = CONCAT_WS(E'\n', NULLIF(operator_notes, ''), $3::text),
+           distributable = CASE
+             WHEN status = 'approved' AND metadata->'lifecycle_hold'->>'reason' = 'forthcoming' THEN true
+             ELSE distributable
+           END,
+           metadata = (COALESCE(metadata, '{}'::jsonb) - 'lifecycle_hold')
+             || jsonb_build_object('lifecycle', 'open', 'lifecycle_opened', jsonb_build_object('by_entry_id', $4::int)),
+           updated_at = NOW()
+       WHERE id = $1 AND lifecycle = 'forthcoming'
+       RETURNING id, status`,
+      [input.ownerId, input.openingDate, note, input.sourceId],
+    );
+    if (owner.rowCount !== 1) {
+      await client.query('ROLLBACK');
+      return { promoted: false };
+    }
+    const carrier = await client.query(
+      `UPDATE scan_entries
+       SET status = 'archived',
+           distributable = false,
+           duplicate_of_id = NULL,
+           duplicate_reason = NULL,
+           metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
+             'archived_reason', 'lifecycle_opened_existing',
+             'opened_entry_id', $2::int
+           ),
+           updated_at = NOW()
+       WHERE id = $1 AND status = $3 AND source_url = $4
+       RETURNING id`,
+      [input.sourceId, input.ownerId, input.expectedStatus, input.sourceUrl],
+    );
+    if (carrier.rowCount !== 1) {
+      await client.query('ROLLBACK');
+      return { promoted: false };
+    }
+    if (owner.rows[0].status === 'approved') {
+      await client.query(
+        `UPDATE publication_queue
+         SET status = 'queued', error_message = NULL, available_at = NOW(), updated_at = NOW()
+         WHERE entry_id = $1 AND status = 'withheld' AND error_message LIKE 'Forthcoming call%'`,
+        [input.ownerId],
+      );
+    }
+    await client.query('COMMIT');
+    return { promoted: true };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** The later intake is the same call and still not open. Demote it onto the owner. */
+export async function collapseUnopenedIntake(
+  pool: Pool,
+  input: { ownerId: number; sourceId: number; expectedStatus: string; sourceUrl: string },
+): Promise<'duplicate' | 'stale'> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const linked = await demoteEntryToDuplicateInTransaction(client, {
+      targetId: input.sourceId,
+      requestedParentId: input.ownerId,
+      expectedStatus: input.expectedStatus,
+      expectedSourceUrl: input.sourceUrl,
+      reason: `Same forthcoming call as #${input.ownerId}; intake is not open yet`,
+      actor: 'dedup-worker',
+    });
+    if (linked.outcome !== 'linked') {
+      await client.query('ROLLBACK');
+      return 'stale';
+    }
+    await client.query('COMMIT');
+    return 'duplicate';
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function findForthcomingOwner(
+  pool: Pool,
+  input: Pick<LifecyclePromotionInput, 'sourceId' | 'sourceUrl' | 'name' | 'wire'>,
+): Promise<{ id: number; name: string } | null> {
+  const normalized = normalizeUrl(input.sourceUrl);
+  if (normalized) {
+    const byUrl = await pool.query(
+      `SELECT se.id, se.name
+       FROM seen_urls su
+       JOIN scan_entries se ON se.id = su.first_seen_entry_id
+       WHERE su.normalized_url = $1 AND su.wire = $2
+         AND se.lifecycle = 'forthcoming'
+         AND se.id <> $3
+         AND se.status IN ('raw', 'approved', 'queued', 'declined')
+       LIMIT 1`,
+      [normalized, input.wire, input.sourceId],
+    );
+    if (byUrl.rows[0]) return { id: Number(byUrl.rows[0].id), name: byUrl.rows[0].name };
+  }
+  const byName = await pool.query(
+    `SELECT id, name FROM scan_entries
+     WHERE lower(btrim(name)) = lower(btrim($1)) AND wire = $2
+       AND lifecycle = 'forthcoming'
+       AND id <> $3
+       AND status IN ('raw', 'queued', 'approved', 'declined')
+     ORDER BY created_at ASC
+     LIMIT 1`,
+    [input.name, input.wire, input.sourceId],
+  );
+  if (!byName.rows[0]) return null;
+  return { id: Number(byName.rows[0].id), name: byName.rows[0].name };
+}
+
+/**
+ * After classification: open a forthcoming owner in place, or collapse a
+ * still-unopened copy onto it. `promoted` is false when the owner moved
+ * first, so the caller can still finalise the carrier.
+ */
+export async function settleForthcomingIntake(
+  pool: Pool,
+  input: LifecyclePromotionInput,
+): Promise<{ action: 'none' | 'promote' | 'collapse'; promoted: boolean }> {
+  if (input.ownerId === null) return { action: 'none', promoted: false };
+  const owner = input.ownerId != null
+    ? { id: input.ownerId, name: '' }
+    : await findForthcomingOwner(pool, input);
+  if (!owner) return { action: 'none', promoted: false };
+  const action = intakeLifecycleAction('forthcoming', input.lifecycle);
+  if (action === 'promote') {
+    const result = await promoteOpenCall(pool, {
+      ownerId: owner.id,
+      sourceId: input.sourceId,
+      openingDate: input.openingDate,
+      expectedStatus: input.expectedStatus,
+      sourceUrl: input.sourceUrl,
+    });
+    return { action, promoted: result.promoted };
+  }
+  await collapseUnopenedIntake(pool, {
+    ownerId: owner.id,
+    sourceId: input.sourceId,
+    expectedStatus: input.expectedStatus,
+    sourceUrl: input.sourceUrl,
+  });
+  return { action: 'collapse', promoted: false };
 }
