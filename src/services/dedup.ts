@@ -16,6 +16,7 @@
 import type { Pool } from 'pg';
 import type { DedupResult, RelatedOpportunityResult, ScanEntry } from '../types/intake';
 import { normalizeUrl, normalizeName, extractNameTokens } from './intake';
+import { urlLookupKeys } from '../utils/url';
 import { demoteEntryToDuplicateInTransaction, lockDuplicateGraph } from './duplicate-chain';
 import { resolveProgram, assessRound, historyLine, ProgramResolutionStamp } from './program-identity';
 import { blockedSourceDomain, classifySourceLink } from './source-filter';
@@ -672,22 +673,24 @@ async function checkUrlMatch(
   deadline?: string | Date | null,
   createdAt?: string | Date | null,
 ): Promise<DedupResult> {
-  const normalized = normalizeUrl(sourceUrl);
+  const keys = urlLookupKeys(sourceUrl);
 
   // Match against active intake states, including raw.
   // Batch classification is async, so a second paste can arrive while the first
   // copy is still raw. Excluding raw lets exact URL duplicates slip through.
   // Only archived (auto-filtered junk) is excluded — those may deserve a second look.
+  // http/https, www, highlight fragments and tracking parameters name the same page.
   const result = await pool.query(
     `SELECT su.first_seen_entry_id, se.name, su.url, se.deadline, se.deadline_parsed, se.status,
             se.decision_at, se.action_reason, se.metadata, se.lifecycle
      FROM seen_urls su
      JOIN scan_entries se ON se.id = su.first_seen_entry_id
-     WHERE su.normalized_url = $1 AND su.wire = $2
+     WHERE su.normalized_url = ANY($1::text[]) AND su.wire = $2
        AND se.status IN ('raw', 'approved', 'queued', 'declined')
        AND ($3::int IS NULL OR su.first_seen_entry_id != $3)
+     ORDER BY (su.normalized_url = $4) DESC, su.first_seen_entry_id ASC
      LIMIT 1`,
-    [normalized, wire, excludeEntryId ?? null]
+    [keys, wire, excludeEntryId ?? null, keys[0] ?? '']
   );
 
   if (result.rows.length > 0) {
@@ -834,9 +837,27 @@ async function checkUrlMatch(
 // Layer 1.5: Exact Name Match
 // ============================================================
 
+// Whitespace, ASCII punctuation, and the dash/quote/bullet forms models emit.
+// Letters and digits (including non-ASCII letters) are never removed, so a
+// fold cannot merge names that differ by a word. Keep the two forms in step.
+const FOLD_CHARS = String.raw`!-/:-@[-\`{-~\u00A0—–―‒’‘“”«»…·•`;
+const FOLD_JS = new RegExp(`[\\s${FOLD_CHARS}]+`, 'g');
+const FOLDED_NAME_SQL = String.raw`btrim(regexp_replace(lower(name), '[[:space:]!-/:-@[-${'`'}{-~\u00A0—–―‒’‘“”«»…·•]+', ' ', 'g'))`;
+
+/**
+ * Name key that ignores case, spacing, and punctuation: "OpenSats — General
+ * Fund" and "OpenSats: General Fund" are one name. Null for keys under two
+ * words or eight characters, where the plain exact match is the safer test.
+ */
+export function foldedNameKey(name: string): string | null {
+  const key = (name || '').toLowerCase().replace(FOLD_JS, ' ').trim();
+  if (key.length < 8 || key.split(' ').length < 2) return null;
+  return key;
+}
+
 /**
  * Check if an entry with the identical (case-insensitive) name already exists
- * on this wire. Deliberately exact-only — the token-overlap fuzzy layer stays
+ * on this wire. Punctuation and spacing differences count as identical. Deliberately exact-only — the token-overlap fuzzy layer stays
  * disabled because of false positives, but two entries whose names match
  * character-for-character within the lookback window are the same program.
  *
@@ -862,16 +883,19 @@ async function checkExactNameMatch(
 
   const normalized = name.trim().toLowerCase();
   if (!normalized) return noMatch;
+  const folded = foldedNameKey(name);
 
   const result = await pool.query(
     `SELECT id, name, lifecycle FROM scan_entries
-     WHERE lower(btrim(name)) = $1 AND wire = $2
+     WHERE (lower(btrim(name)) = $1
+            OR ($5::text IS NOT NULL AND ${FOLDED_NAME_SQL} = $5))
+       AND wire = $2
        AND status IN ('raw', 'queued', 'approved', 'declined')
        AND created_at >= NOW() - INTERVAL '1 day' * $3
        AND ($4::int IS NULL OR id != $4)
      ORDER BY created_at ASC
      LIMIT 1`,
-    [normalized, wire, lookbackDays, excludeEntryId ?? null]
+    [normalized, wire, lookbackDays, excludeEntryId ?? null, folded]
   );
 
   if (result.rows.length > 0) {

@@ -4,7 +4,7 @@ import { config } from '../config';
 import { DatabaseEntry } from '../types';
 import type { PromptVariant, ToolType, DistributionChannel, DistributionStatus, DistributionConfig, DistributionLog } from '../types/intake';
 import { applyAcknowledgedDistributionSchema } from './acknowledged-distribution';
-import { normalizeUrl } from '../utils/url';
+import { normalizeUrl, urlLookupKeys } from '../utils/url';
 import { buildScanEntryFilterClauses, type ScanEntryQueryFilters } from './entry-query';
 
 let pool: Pool | null = null;
@@ -1428,10 +1428,11 @@ export async function findSeenUrls(pool: Pool, urls: string[], wire: string): Pr
   if (!urls.length) return new Set();
   const byNormalized = new Map<string, string[]>();
   for (const u of urls) {
-    const n = normalizeUrl(u);
-    const bucket = byNormalized.get(n);
-    if (bucket) bucket.push(u);
-    else byNormalized.set(n, [u]);
+    for (const n of urlLookupKeys(u)) {
+      const bucket = byNormalized.get(n);
+      if (bucket) bucket.push(u);
+      else byNormalized.set(n, [u]);
+    }
   }
   const { rows } = await pool.query<{ normalized_url: string }>(
     `SELECT DISTINCT normalized_url FROM seen_urls WHERE normalized_url = ANY($1::text[]) AND wire = $2`,
