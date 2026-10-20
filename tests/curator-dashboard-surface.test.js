@@ -139,6 +139,33 @@ test('every dashboard UI route accepts a Hedwig curator token', () => {
   assert.match(server, /app\.use\('\/api\/source-feeds', requireAuthOrCurator/);
 });
 
+test('distribution timestamps survive curator serialization as ISO strings', () => {
+  const created = new Date('2026-10-19T21:06:00.000Z');
+  const lostPrototype = { toISOString() { return '2026-10-19T21:06:00.000Z'; } };
+  const redacted = redactSecrets([
+    {
+      id: 629,
+      entryId: 8501,
+      channel: 'telegram',
+      wire: 'oss',
+      status: 'success',
+      externalId: '125',
+      createdAt: created,
+      created_at: created,
+      sent_at: lostPrototype,
+      acknowledgedAt: new Date(NaN),
+    },
+  ]);
+  const json = JSON.parse(JSON.stringify(redacted));
+  assert.equal(json[0].id, 629);
+  assert.equal(json[0].externalId, '125');
+  assert.equal(json[0].createdAt, '2026-10-19T21:06:00.000Z');
+  assert.equal(json[0].created_at, '2026-10-19T21:06:00.000Z');
+  assert.equal(json[0].sent_at, '2026-10-19T21:06:00.000Z');
+  assert.equal(json[0].acknowledgedAt, null);
+  assert.notDeepEqual(json[0].created_at, {});
+});
+
 test('secret fields are redacted and risky writes require confirm', () => {
   const redacted = redactSecrets({
     api_key: 'sk-live-secret-1234',

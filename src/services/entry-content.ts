@@ -16,7 +16,7 @@ import type { Pool } from 'pg';
 import { getPool } from '../db';
 import { QUEUE_CLASSIFICATIONS, type QueueClassification } from '../db/entry-query';
 import { lockDuplicateGraph } from './duplicate-chain';
-import { normalizeUrl, parseAmount, parseDeadline } from './intake';
+import { normalizeUrl, parseDeadline, resolveStoredAmount } from './intake';
 import { findSummaryLeak } from './summary-guard';
 import { blockedSourceDomain, classifySourceLink } from './source-filter';
 import { refreshQueuedPost } from './publication-post';
@@ -511,7 +511,24 @@ export async function updateEntryContent(
     if ('name' in patch) assign('name', patch.name ?? null, current.name);
     if ('description' in patch) assign('description', patch.description ?? null, current.description);
     if ('enriched_summary' in patch) assign('enriched_summary', patch.enriched_summary ?? null, current.enriched_summary);
-    if ('amount' in patch) assign('amount', patch.amount ?? null, current.amount);
+    let amountNote: string | null = null;
+    if ('amount' in patch) {
+      const stored = resolveStoredAmount(patch.amount ?? null);
+      amountNote = stored.note;
+      if (stored.note) {
+        // The column becomes null. Record the change even when it was already
+        // empty so the percentage is kept as a note instead of as USD.
+        if ((current.amount ?? null) !== null) assign('amount', null, current.amount);
+        else {
+          from.amount = current.amount;
+          to.amount = null;
+          changed.push('amount');
+          text.amount = null;
+        }
+      } else {
+        assign('amount', patch.amount ?? null, current.amount);
+      }
+    }
     if ('deadline' in patch) assign('deadline', patch.deadline ?? null, current.deadline);
     if ('source_url' in patch) assign('source_url', patch.source_url ?? null, current.source_url);
     if ('classification' in patch && patch.classification !== current.classification) {
@@ -591,6 +608,7 @@ export async function updateEntryContent(
       if (text.amount == null) delete metadata.amount;
       else metadata.amount = text.amount;
     }
+    if (amountNote) metadata.amount_note = amountNote;
     if (changed.includes('deadline')) {
       if (text.deadline == null) delete metadata.deadline;
       else metadata.deadline = text.deadline;
@@ -618,10 +636,10 @@ export async function updateEntryContent(
       if (text.enriched_summary) sets.push('auto_summarize_failed = false');
     }
     if (changed.includes('amount')) {
-      const parsed = parseAmount(text.amount);
-      add('amount', text.amount);
-      add('amount_numeric', parsed?.numeric ?? null);
-      add('amount_currency', parsed?.currency ?? null);
+      const stored = resolveStoredAmount(text.amount);
+      add('amount', stored.amount);
+      add('amount_numeric', stored.numeric);
+      add('amount_currency', stored.currency);
     }
     if (changed.includes('deadline')) {
       add('deadline', text.deadline);

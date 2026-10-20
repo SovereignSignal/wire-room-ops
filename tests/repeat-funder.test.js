@@ -5,7 +5,8 @@ const assert = require('node:assert/strict');
 const { Pool } = require('pg');
 
 const {
-  funderNameKeys, normalizeFunderName, repeatFunderWindowDays, repeatFunderPayload, RepeatFunderHoldError,
+  funderNameKeys, horizonTopicId, normalizeFunderName, repeatFunderLift, repeatFunderWindowDays,
+  repeatFunderPayload, RepeatFunderHoldError, sameRepeatFunder,
 } = require('../src/services/repeat-funder');
 
 test('funder names collapse case and punctuation', () => {
@@ -38,6 +39,74 @@ test('the repeat window defaults to 30 days', () => {
     if (previous === undefined) delete process.env.REPEAT_FUNDER_WINDOW_DAYS;
     else process.env.REPEAT_FUNDER_WINDOW_DAYS = previous;
   }
+});
+
+test('each Horizon topic ID is its own funder', () => {
+  const raise = {
+    name: 'European Commission — HORIZON-RAISE-2026-01-01',
+    description: 'Sent topic',
+    orgId: 7,
+    programId: 11,
+    tags: ['European Commission'],
+  };
+  const bridging = {
+    name: 'European Commission — HORIZON-BRIDGING-2027-01-13',
+    sourceUrl: 'https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/horizon-bridging-2027-01-13',
+    description: 'Also mentions HORIZON-RAISE-2026-01-01 in the body',
+    orgId: 7,
+    programId: 11,
+    tags: ['European Commission'],
+  };
+  assert.equal(horizonTopicId(raise), 'HORIZON-RAISE-2026-01-01');
+  assert.equal(horizonTopicId(bridging), 'HORIZON-BRIDGING-2027-01-13');
+  assert.equal(sameRepeatFunder(bridging, raise), false);
+  assert.equal(sameRepeatFunder(bridging, {
+    name: 'Update on HORIZON-BRIDGING-2027-01-13',
+    orgId: 99,
+  }), true);
+});
+
+test('a new program launch or a $1M+ pledge lifts the hold, and a liquidity incentive does not', () => {
+  const prior = { name: 'Btrust — Builder Grants', tags: ['Btrust'] };
+  assert.equal(sameRepeatFunder({ name: 'Btrust Starter Grants', tags: ['Btrust'] }, prior), true);
+  assert.equal(repeatFunderLift({
+    name: 'Btrust launches a new grants program',
+    description: 'Applications are open.',
+    tags: ['Btrust'],
+  }), 'new_program_launch');
+  assert.equal(repeatFunderLift({
+    name: 'Btrust launches a liquidity incentive program',
+    description: 'LP rewards for the new pool.',
+    tags: ['Btrust'],
+  }), null);
+  assert.equal(repeatFunderLift({
+    name: 'Btrust',
+    description: 'The grants program launched in 2024.',
+    tags: ['Btrust'],
+  }), null);
+  assert.equal(repeatFunderLift({
+    name: 'Anthropic Public Benefit Fund',
+    description: 'pledges $2,000,000 for public-interest research',
+    amount: '$2,000,000',
+    tags: ['Anthropic'],
+  }), 'pledge_1m');
+  assert.equal(repeatFunderLift({
+    name: 'Anthropic Public Benefit Fund',
+    description: '5% share commitment',
+    amount: '5% share commitment',
+    amountNumeric: 5,
+    tags: ['Anthropic'],
+  }), null);
+  assert.equal(repeatFunderLift({
+    name: 'Btrust pledges $50,000',
+    amountNumeric: 50000,
+    tags: ['Btrust'],
+  }), null);
+  assert.equal(repeatFunderLift({
+    name: 'Btrust commits $1,000,000',
+    amountNumeric: '1000000.00',
+    tags: ['Btrust'],
+  }), 'pledge_1m');
 });
 
 test('a hold error explains the priors', () => {
@@ -179,5 +248,40 @@ if (!process.env.DATABASE_URL) {
     );
     assert.equal((await pool.query('SELECT status FROM scan_entries WHERE id = $1', [starter.id])).rows[0].status, 'queued');
     assert.equal((await pool.query('SELECT count(*)::int AS n FROM publication_queue WHERE entry_id = $1', [starter.id])).rows[0].n, 0);
+  });
+
+  test('a HORIZON-RAISE send does not hold a different Horizon topic, and launch or pledge lifts do', async () => {
+    const { repeatFunderHolds } = require('../src/services/repeat-funder');
+    await posted('European Commission — HORIZON-RAISE-2026-01-01', 'ai', '125', 1);
+    await posted('European Commission — HORIZON-BRIDGING-2027-01-12', 'ai', '126', 1);
+    const bridging = await entry('European Commission — HORIZON-BRIDGING-2027-01-13', ['European Commission']);
+    await pool.query(
+      `UPDATE scan_entries SET description = $2, source_url = $3 WHERE id = $1`,
+      [bridging.id, 'Forthcoming topic. The body cites HORIZON-RAISE-2026-01-01.', 'https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/HORIZON-BRIDGING-2027-01-13'],
+    );
+    const sameTopic = await entry('Update — HORIZON-BRIDGING-2027-01-12', ['European Commission']);
+    const launch = await entry('Btrust launches a new grants program', ['Btrust']);
+    const liquidity = await entry('Btrust launches a liquidity incentive program', ['Btrust']);
+    const pledge = await entry('Anthropic commits $2,000,000', ['Anthropic']);
+    await pool.query(
+      `UPDATE scan_entries SET description = $2, amount = $3, amount_numeric = $4, amount_currency = 'USD' WHERE id = $1`,
+      [pledge.id, 'Anthropic pledges $2,000,000 for public-interest research.', '$2,000,000', 2000000],
+    );
+    const smallPledge = await entry('Anthropic pledges $50,000', ['Anthropic']);
+    await pool.query(
+      `UPDATE scan_entries SET amount = $2, amount_numeric = $3, amount_currency = 'USD' WHERE id = $1`,
+      [smallPledge.id, '$50,000', 50000],
+    );
+    await posted('Btrust — Builder Grants', 'crypto', '9001', 2);
+    await posted('Anthropic — Public Benefit Fund', 'ai', '9002', 3);
+
+    const holds = await repeatFunderHolds(pool, [bridging.id, sameTopic.id, launch.id, liquidity.id, pledge.id, smallPledge.id]);
+    const held = Object.fromEntries(holds.map(hold => [hold.entryId, hold.held]));
+    assert.equal(held[bridging.id], false);
+    assert.equal(held[sameTopic.id], true);
+    assert.equal(held[launch.id], false);
+    assert.equal(held[liquidity.id], true);
+    assert.equal(held[pledge.id], false);
+    assert.equal(held[smallPledge.id], true);
   });
 }

@@ -354,6 +354,24 @@ test('a withheld entry can be corrected without booking or sending', async () =>
   assert.equal(Number(seen.first_seen_entry_id), Number(row.id));
 });
 
+test('a percentage or share commitment is stored as a null amount with a note', async () => {
+  const row = await entry('Anthropic Public Benefit Fund');
+  await pool.query(
+    `UPDATE scan_entries SET amount = $2, amount_numeric = 5, amount_currency = 'USD' WHERE id = $1`,
+    [row.id, '5'],
+  );
+  const res = await patchContent(row.id, evidence({ amount: '5% share commitment' }));
+  assert.equal(res.status, 200, await res.clone().text());
+  const after = await snap(row.id);
+  assert.equal(after.entry.amount, null);
+  assert.equal(after.entry.amount_numeric, null);
+  assert.equal(after.entry.amount_currency, null);
+  assert.match(after.entry.metadata.amount_note, /5% share commitment/);
+  assert.equal(after.entry.metadata.amount, undefined);
+  assert.equal(after.logs, 0);
+  assert.equal(after.queue, null);
+});
+
 test('the same idempotency key replays and does not append a second audit row', async () => {
   const row = await entry('Replay me');
   const body = evidence({ name: 'Replay Grants Program' });

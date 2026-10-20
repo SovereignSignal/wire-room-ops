@@ -114,9 +114,15 @@ export function sanitizeResult(result: RawScanResult): RawScanResult {
     }
   }
 
-  // 4. Amount: flag suspiciously low bare numbers without K/M/B suffix
-  //    "$53" is almost certainly a misparse, but "$53K" and "$5,000" are fine
-  if (amount) {
+  // 4. Amount: a percentage or share commitment is not a dollar figure.
+  //    "$53" is almost certainly a misparse, but "$53K" and "$5,000" are fine.
+  //    A bare duration is not an amount ("3 m", "4 months" — program length leakage).
+  let metadata = result.metadata;
+  const amountNote = nonMonetaryAmountNote(amount);
+  if (amountNote) {
+    amount = null;
+    metadata = { ...(metadata || {}), amount_note: amountNote };
+  } else if (amount) {
     const bareSmallAmount = amount.match(/^\$(\d{1,3})$/);
     if (bareSmallAmount) {
       const num = parseInt(bareSmallAmount[1]);
@@ -124,7 +130,6 @@ export function sanitizeResult(result: RawScanResult): RawScanResult {
         amount = null; // Likely a misparse
       }
     }
-    // A bare duration is not an amount ("3 m", "4 months" — program length leakage)
     if (amount && /^\d+(?:\.\d+)?\s*m(?:o|os|onths?)?$/i.test(amount.trim())) {
       amount = null;
     }
@@ -164,7 +169,7 @@ export function sanitizeResult(result: RawScanResult): RawScanResult {
     deadline,
     sourceUrl,
     sourcePublishedAt: result.sourcePublishedAt,
-    metadata: result.metadata,
+    metadata,
   };
 }
 
@@ -776,14 +781,54 @@ export function extractAmount(text: string): string | null {
   return null;
 }
 
+const PERCENT_FIGURE = /\d+(?:\.\d+)?\s*(?:%|％|percent\b|per\s+cent\b)/i;
+const SHARE_COMMITMENT = /\bshare\s+commitments?\b|\b(?:equity|revenue|profit|ownership)\s+shares?\b|\bpercent(?:age)?\s+(?:share|stake|commitment)\b/i;
+const CURRENCY_AMOUNT = /(?:[$€£₹₦]|USD|EUR|GBP|INR|NGN|USDT|USDC|\bSOL\b|\bSTX\b)\s*\d|\d[\d,]*(?:\.\d+)?\s*(?:USD|EUR|GBP|INR|NGN|dollars?|million|billion)\b/i;
+
+/**
+ * A percentage or share commitment is not a USD amount. "5% share commitment"
+ * must not become $5. A string that also states a real currency amount is
+ * still money ("5% of a $2,000,000 pool").
+ */
+export function nonMonetaryAmountNote(raw: string | null | undefined): string | null {
+  if (!raw || !raw.trim()) return null;
+  const text = raw.trim();
+  if (!PERCENT_FIGURE.test(text) && !SHARE_COMMITMENT.test(text)) return null;
+  if (CURRENCY_AMOUNT.test(text)) return null;
+  return `Not stored as a USD amount: percentage or share commitment ("${text}")`;
+}
+
+export interface StoredAmount {
+  amount: string | null;
+  numeric: number | null;
+  currency: string | null;
+  note: string | null;
+}
+
+/** Amount column, numeric USD, and the note left when the text is not money. */
+export function resolveStoredAmount(raw: string | null | undefined): StoredAmount {
+  const note = nonMonetaryAmountNote(raw ?? null);
+  if (note) return { amount: null, numeric: null, currency: null, note };
+  const text = raw?.trim() ? raw.trim() : null;
+  const parsed = parseAmount(text);
+  return {
+    amount: text,
+    numeric: parsed?.numeric ?? null,
+    currency: parsed?.currency ?? null,
+    note: null,
+  };
+}
+
 /**
  * Parse a raw amount string into a numeric USD value and currency code.
- * Returns { numeric, currency } or null if unparseable.
+ * Returns { numeric, currency } or null if unparseable. Percentages and
+ * share commitments return null; callers keep resolveStoredAmount().note.
  */
 export function parseAmount(
   raw: string | null
 ): { numeric: number; currency: string } | null {
   if (!raw) return null;
+  if (nonMonetaryAmountNote(raw)) return null;
 
   let currency = 'USD';
   let text = raw.trim();
@@ -805,6 +850,8 @@ export function parseAmount(
     /\b(USD|EUR|GBP|INR|NGN|SOL|STX|ENS|USDT|USDC|up\s+to|per\s+award|total|pool|prizes?|credits?|stipend|matching|varies|free)\b/gi,
     ''
   );
+  // "5% of a $2,000,000 pool" is the pool, not five dollars.
+  text = text.replace(/\d+(?:\.\d+)?\s*(?:%|％|percent\b|per\s+cent\b)/gi, ' ');
   text = text.trim();
 
   // Handle ranges: take the higher number

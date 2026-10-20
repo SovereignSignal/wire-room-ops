@@ -7,6 +7,7 @@ const {
   extractAmount,
   parseAmount,
   parseStructuredOutput,
+  resolveStoredAmount,
 } = require('../src/services/intake');
 const {
   buildIntakeMetadata,
@@ -50,6 +51,28 @@ test('parseAmount takes upper bound of numeric ranges', () => {
   assert.ok(parsed);
   assert.equal(parsed.currency, 'USD');
   assert.equal(parsed.numeric, 350000);
+});
+
+test('parseAmount does not treat a percentage or share commitment as USD', () => {
+  assert.equal(parseAmount('5% share commitment'), null);
+  assert.equal(parseAmount('5%'), null);
+  assert.equal(parseAmount('5 percent equity share'), null);
+  const stored = resolveStoredAmount('5% share commitment');
+  assert.equal(stored.amount, null);
+  assert.equal(stored.numeric, null);
+  assert.equal(stored.currency, null);
+  assert.match(stored.note, /percentage or share commitment/i);
+  assert.match(stored.note, /5% share commitment/);
+
+  const pool = parseAmount('5% of a $2,000,000 pool');
+  assert.ok(pool);
+  assert.equal(pool.numeric, 2000000);
+  assert.equal(pool.currency, 'USD');
+  assert.equal(resolveStoredAmount('5% of a $2,000,000 pool').note, null);
+
+  const millions = parseAmount('$5M');
+  assert.ok(millions);
+  assert.equal(millions.numeric, 5000000);
 });
 
 test('extractAmount detects non-USD amounts', () => {
