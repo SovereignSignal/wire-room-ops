@@ -6,8 +6,8 @@ if (!process.env.DATABASE_URL) {
   process.exit(0);
 }
 const { getPool, closePool } = require('../src/db');
-const { grantsFeedItemToRaw, prepareForumObservations } = require('../src/services/forum');
-const { forumIntakeMetadata, trustedForumObservation } = require('../src/services/forum-seen');
+const { grantsFeedItemToRaw, prepareForumObservations, captureForumObservation } = require('../src/services/forum');
+const { forumIntakeMetadata, trustedForumObservation, stampForumObservation } = require('../src/services/forum-seen');
 const { runDailyIntake } = require('../src/jobs/daily-intake');
 const { registerSeen, checkDuplicate, finalizeExistingEntryDedup } = require('../src/services/dedup');
 const { processRawEntries } = require('../src/jobs/process-raw');
@@ -128,4 +128,37 @@ test('material forum update survives locked URL/name dedup, replay, raw-worker r
     await pool.query('DELETE FROM scan_entries WHERE id = ANY($1::bigint[])', [ids]);
   }
 });
+test('intake drops a reply-only forum update once the prior entry is declined', async () => {
+  const pool = getPool();
+  const url = `https://forum-decline-${process.pid}.example.org/t/delegate-thread/900`;
+  const name = `Delegate thread ${process.pid}`;
+  const ids = [];
+  const candidate = { title: name, url, forumName: 'Example', createdAt: '2026-08-01T12:00:00Z', lastActivityAt: '2026-10-12T12:00:00Z', replies: 0, views: 5, source: 'allowlist' };
+  const opening = { id: 901, postNumber: 1, content: '<p>Delegates are paid from the incentive budget.</p>' };
+  const detail = posts => ({ topic: { id: 900, title: name, postsCount: posts.length, posts } });
+  const originalFetch = global.fetch;
+  try {
+    global.fetch = async () => ({ ok: true, json: async () => detail([opening]) });
+    const baseline = await captureForumObservation(candidate, { remaining: 1 });
+    const raw = stampForumObservation({ name, description: name, sourceUrl: url }, baseline);
+    const prior = await pool.query(
+      `INSERT INTO scan_entries (name,description,source_url,wire,prompt_variant,scan_source,scan_date,status,submitted_by,metadata)
+       VALUES ($1,$1,$2,'crypto','N','forum','2026-10-12','approved','forum:discuss.watch',$3::jsonb) RETURNING id`,
+      [name, url, JSON.stringify(forumIntakeMetadata(raw, 'forum', 'forum:discuss.watch'))]);
+    ids.push(prior.rows[0].id);
+
+    global.fetch = async () => ({ ok: true, json: async () => detail([opening, { id: 902, postNumber: 2, content: '<p>When are payouts?</p>' }]) });
+    const prepared = await prepareForumObservations(pool, [{ ...candidate, lastActivityAt: '2026-10-14T12:00:00Z', replies: 1 }], [], { remaining: 1 });
+    assert.equal(prepared.updates.length, 1);
+
+    await pool.query(`UPDATE scan_entries SET status = 'declined' WHERE id = $1`, [prior.rows[0].id]);
+    const summary = await runDailyIntake(pool, [{ wire: 'crypto', promptVariant: 'N', scanDate: '2026-10-15', source: 'forum', submittedBy: 'forum:discuss.watch', results: prepared.updates }], { insertOnly: true });
+    assert.equal(summary.totalIngested, 0);
+    assert.equal(summary.skippedAlreadySeen, 1);
+  } finally {
+    global.fetch = originalFetch;
+    await pool.query('DELETE FROM scan_entries WHERE id = ANY($1::bigint[]) OR source_url = $2', [ids, url]);
+  }
+});
+
 test.after(closePool);

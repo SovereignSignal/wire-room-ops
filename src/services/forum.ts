@@ -14,7 +14,7 @@
 import { config } from '../config';
 import type { Pool } from 'pg';
 import type { RawScanResult } from '../types/intake';
-import { findForumHistoryByHost, forumFingerprint, forumTopicKey, forumObservationAlreadySeen, forumObservationMayBeNew, stampForumObservation, storedForumObservation, trustedForumObservation, forumUpdateNote, type ForumObservation, type ForumHistoryEntry } from './forum-seen';
+import { findForumHistoryByHost, forumFingerprint, forumTopicKey, forumObservationAlreadySeen, forumObservationMayBeNew, forumPriorReviewable, forumUpdateEligible, stampForumObservation, storedForumObservation, trustedForumObservation, forumUpdateNote, type ForumObservation, type ForumHistoryEntry } from './forum-seen';
 import { sleep } from '../utils/async';
 import { getCachedProvider } from './api-provider';
 import { logApiUsage } from './api-usage';
@@ -149,8 +149,16 @@ function isRelevantDiscussion(title: string): boolean {
     return false;
   }
 
-  return RELEVANCE_KEYWORDS.some(kw => lower.includes(kw));
+  return RELEVANCE_KEYWORDS.some(kw => lower.includes(kw))
+    && FALLBACK_OPEN_CALL.test(title)
+    && !FALLBACK_NOT_A_CALL.test(title);
 }
+
+// The keyword fallback runs with no judge and no body text, so a title must
+// also name something a reader can apply to, and must not read as a vote,
+// treasury move, result, recap, or company raise.
+const FALLBACK_OPEN_CALL = /\b(apply|applications?|open call|calls? for (proposals|applications|papers)|cfp|rfps?|accepting|now open|(is|are) open|bount(y|ies)|hackathons?|fellowships?|grants?|funding (opportunity|program)|stipends?|scholarships?|residency|accelerator|incubator)\b/i;
+const FALLBACK_NOT_A_CALL = /\b(treasury|vot(e|es|ing)|delegates?|elections?|budgets?|allocations?|results?|recipients?|awarded|winners?|recap|retro(spective)?s?|(progress|quarterly|monthly|annual|final|status) (report|update)|transfers?|temp check|snapshot|ratif(y|ied|ication)|renewal|raises?|raised|series [a-e]|seed round|[a-z]{1,4}ip[- ]?\d+)\b/i;
 
 // =====================================================================
 // Governance-forum lane (the primary, current forum strategy)
@@ -189,7 +197,10 @@ const GOVERNANCE_ALLOWLIST: Record<string, string[]> = {
     'zcash', 'aztec', 'neutron', 'safedao', 'iotex', 'moonbeam',
     // Big-DAO early-signal — program creation/renewal surfaces on-forum as governance
     // even when the apply step is off-forum
-    'arbitrum', 'zksync era', 'polygon', 'polkadot', 'cosmos hub', 'sui',
+    // Polkadot and Cosmos Hub were dropped 2026-10-20: in a two-day sample
+    // Polkadot alone was 16 of 43 crypto candidates, and both were almost all
+    // delegate, digest and treasury chatter. Hot threads still use the catch-all.
+    'arbitrum', 'zksync era', 'polygon', 'sui',
     // Re-added 2026-07-03 (recall re-measure): the v2 trim assumed ENS intake had
     // fully migrated to the grants portal, but SPP Season 3's application thread
     // ran ON discuss.ens.domains (ratified via Snapshot 2026-05-10, $2.89M cohort)
@@ -286,11 +297,8 @@ export function grantsFeedItemToRaw(item: GrantsFeedItem): RawScanResult {
   if (item.status?.trim()) parts.push(`Signal: ${item.status.trim()}`);
   parts.push(`Source: ${forumLabel} (discuss.watch grants feed, ${item.confidence ?? 0}% ${item.kind || 'grant'})`);
 
-  const status = (item.status || '').trim().toLowerCase();
-  const wireArea = status === 'awarded' ? '2' : status === 'voting' ? '1' : undefined;
   const metadata: Record<string, unknown> = {};
   if (program) metadata.program = program;
-  if (wireArea) metadata.wire_area = wireArea;
 
   const raw: RawScanResult = {
     name,
@@ -311,13 +319,10 @@ export function grantsFeedItemToRaw(item: GrantsFeedItem): RawScanResult {
   });
 }
 
-/** Second discuss.watch pull: award results and live capital votes, not open calls.
- *  Statuses are exact-match filters. discuss.watch does not treat a comma as OR,
- *  so fetchGrantsFeedResults requests each value on its own and merges the pages. */
-export const DISCUSS_WATCH_NEWS_QUERY = {
-  classification: 'NEWS',
-  status: 'awarded,voting',
-} as const;
+/** Feed statuses that are never an open call. The feed's GRANT class still
+ *  carries live votes, award results and closed calls; those skip the judge,
+ *  so they are dropped here rather than queued. */
+const GRANTS_FEED_DROPPED_STATUSES = new Set(['voting', 'awarded', 'closed']);
 
 /** discuss.watch matches `status` exactly, so each comma-separated value is its own request. */
 function grantsFeedStatusValues(status: string | undefined): Array<string | undefined> {
@@ -417,6 +422,7 @@ export async function fetchGrantsFeedResults(
   const urls = new Set<string>();
   for (const item of items) {
     if (!item.url || !(item.title || item.name)) continue;
+    if (GRANTS_FEED_DROPPED_STATUSES.has((item.status || '').trim().toLowerCase())) continue;
     // Same exclusion-list skip as the judge path (matches protocol AND url)
     const skipHaystack = `${item.protocol || ''} ${item.url}`;
     if (FORUM_SKIP_PATTERNS.some(p => p.test(skipHaystack))) continue;
@@ -637,8 +643,10 @@ export async function captureForumObservation(c: ForumCandidate, budget: { remai
     })).sort((a, b) => (a.number || 0) - (b.number || 0));
     if (!posts.length) return observation;
     const complete = Number.isInteger(topic.postsCount) && topic.postsCount === posts.length;
+    const opening = posts[0].number === 1 ? posts[0] : undefined;
     return {
       ...observation, evidence: 'topic_detail', complete,
+      ...(opening ? { postFingerprint: forumFingerprint([topic.title || c.title, opening.text, opening.links]) } : {}),
       // Engagement and timestamps cannot change a complete content fingerprint.
       // With partial detail, newer activity may be in the unreturned posts.
       fingerprint: forumFingerprint([topic.title || c.title, posts, complete ? null : observation.revision]),
@@ -684,7 +692,8 @@ export async function prepareForumObservations(
     if (!priorRows.length) {
       if (!raw.sourcePublishedAt || Date.parse(raw.sourcePublishedAt) >= ageCutoff) out.feeds.push(raw);
     } else if (observation && !forumObservationAlreadySeen(observation, priorRows)
-        && forumObservationMayBeNew(observation, priorRows[0])) {
+        && forumObservationMayBeNew(observation, priorRows[0])
+        && forumUpdateEligible(observation, priorRows)) {
       out.updates.push(updatedForumResult(raw, observation, priorRows[0]));
     }
   }
@@ -696,6 +705,9 @@ export async function prepareForumObservations(
       continue;
     }
     const old = storedForumObservation(prior);
+    // Only an opening-post change can reopen a declined or archived topic, and
+    // that needs a stored opening-post baseline. Without one, spend no detail read.
+    if (!forumPriorReviewable(priorRows) && !priorRows.some(row => storedForumObservation(row)?.postFingerprint)) continue;
     // A first-post edit need not bump Discourse activity. Re-read a bounded
     // number of known detail snapshots even when the list revision is stable.
     // Without a prior detail baseline, an unchanged revision is not evidence
@@ -713,6 +725,7 @@ export async function prepareForumObservations(
     if (old?.revision === observation.revision
         && (old.evidence !== observation.evidence || old.complete !== observation.complete)) continue;
     if (forumObservationAlreadySeen(observation, priorRows) || !forumObservationMayBeNew(observation, prior)) continue;
+    if (!forumUpdateEligible(observation, priorRows)) continue;
     // If both adapters observed the change, retain one source-check candidate
     // with the thread detail, rather than one feed row plus one topic row.
     out.updates = out.updates.filter(raw => forumTopicKey(raw.sourceUrl) !== observation.topicKey);
@@ -891,14 +904,6 @@ export async function runGovernanceForumScan(
     let feedUrls = new Set<string>();
     if (config.forum.grantsFeedEnabled) {
       ({ results: feedResults, urls: feedUrls } = await fetchGrantsFeedResults(wire, since, {}, Boolean(options.pool)));
-      await sleep(REQUEST_DELAY_MS);
-      const news = await fetchGrantsFeedResults(wire, since, { ...DISCUSS_WATCH_NEWS_QUERY }, Boolean(options.pool));
-      for (const item of news.results) {
-        const key = normalizeUrl(item.sourceUrl);
-        if (feedUrls.has(key)) continue;
-        feedResults.push(item);
-        feedUrls.add(key);
-      }
       candidateCount += feedResults.length;
       await sleep(REQUEST_DELAY_MS);
     }

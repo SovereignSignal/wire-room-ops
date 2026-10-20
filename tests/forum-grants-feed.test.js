@@ -6,7 +6,7 @@ const assert = require('node:assert/strict');
 // Exclusion list is read from env at config load, so set it before requiring.
 process.env.EXCLUDED_ORGS = 'example dao';
 
-const { grantsFeedItemToRaw, fetchGrantsFeedResults, DISCUSS_WATCH_NEWS_QUERY } = require('../src/services/forum');
+const { grantsFeedItemToRaw, fetchGrantsFeedResults } = require('../src/services/forum');
 
 // --- grantsFeedItemToRaw mapping ---
 
@@ -119,50 +119,48 @@ test('fetchGrantsFeedResults request behavior', async (t) => {
     assert.equal(params.get('status'), null);
   });
 
-  await t.test('NEWS pull requests awarded and voting separately and still skips excluded orgs', async () => {
+  await t.test('drops voting, awarded and closed items, keeps other statuses, and still skips excluded orgs', async () => {
     const fresh = new Date().toISOString();
-    const calls = stubFetch({
+    stubFetch({
       items: [
         { id: 10, title: 'Season results', url: 'https://gov.optimism.io/t/results/1', protocol: 'Optimism', confidence: 90, status: 'awarded', topicCreatedAt: fresh },
-        { id: 11, title: 'Example DAO vote', url: 'https://gov.example-dao.org/t/vote/2', protocol: 'Example DAO', confidence: 99, status: 'voting', topicCreatedAt: fresh },
+        { id: 11, title: 'Live treasury vote', url: 'https://gov.arbitrum.foundation/t/vote/2', protocol: 'Arbitrum', confidence: 92, status: 'Voting', topicCreatedAt: fresh },
+        { id: 12, title: 'Round 4 closed', url: 'https://forum.celo.org/t/round-4/3', protocol: 'Celo', confidence: 95, status: 'closed', topicCreatedAt: fresh },
+        { id: 13, title: 'Builder grants are open', url: 'https://forum.celo.org/t/builders/4', protocol: 'Celo', confidence: 95, status: 'open', topicCreatedAt: fresh },
+        { id: 14, title: 'Next round announced', url: 'https://forum.cow.fi/t/next/5', protocol: 'CoW Protocol', confidence: 90, status: 'announced', topicCreatedAt: fresh },
+        { id: 15, title: 'Grants program', url: 'https://forum.zcashcommunity.com/t/zcg/6', protocol: 'Zcash', confidence: 90, status: 'unknown', topicCreatedAt: fresh },
+        { id: 16, title: 'Untagged RFP', url: 'https://forum.scroll.io/t/rfp/7', protocol: 'Scroll', confidence: 90, topicCreatedAt: fresh },
+        { id: 17, title: 'Example DAO open call', url: 'https://gov.example-dao.org/t/call/8', protocol: 'Example DAO', confidence: 99, status: 'open', topicCreatedAt: fresh },
       ],
     });
-    const { results } = await fetchGrantsFeedResults('crypto', '2026-10-01', { ...DISCUSS_WATCH_NEWS_QUERY });
-    assert.equal(calls.length, 2);
-    assert.deepEqual(calls.map(url => grantsParams(url).get('status')).sort(), ['awarded', 'voting']);
-    for (const url of calls) {
-      const params = grantsParams(url);
-      assert.equal(params.get('classification'), 'NEWS');
-      assert.equal(params.get('wire'), 'crypto');
-      assert.equal(params.get('since'), '2026-10-01');
-      assert.equal(params.get('limit'), '100');
-      assert.match(params.get('min_confidence'), /^\d+$/);
-      assert.equal((params.get('status') || '').includes(','), false);
-    }
-    // The stub returns the same page twice; id/url dedupe keeps one row.
-    assert.equal(results.length, 1);
-    assert.equal(results[0].name, 'Season results');
-    assert.equal(results[0].metadata.wire_area, '2');
-    assert.doesNotMatch(results.map(item => item.sourceUrl).join('\n'), /example-?dao/i);
+    const { results, urls } = await fetchGrantsFeedResults('crypto', '2026-10-01');
+    assert.deepEqual(results.map(item => item.name), [
+      'Builder grants are open',
+      'Next round announced',
+      'Grants program',
+      'Untagged RFP',
+    ]);
+    assert.equal(urls.has('https://gov.optimism.io/t/results/1'), false);
+    assert.equal(results.some(item => item.metadata && 'wire_area' in item.metadata), false);
   });
 
-  await t.test('NEWS pull dedupes merged pages by item id or url', async () => {
+  await t.test('a comma-separated status is one request per value, merged and deduped by id or url', async () => {
     const fresh = new Date().toISOString();
     const stale = new Date(Date.now() - 90 * 86400000).toISOString();
     const pages = {
-      awarded: {
+      open: {
         items: [
-          { id: 10, title: 'Season results', url: 'https://gov.optimism.io/t/results/1', protocol: 'Optimism', confidence: 90, status: 'awarded', topicCreatedAt: fresh },
-          { id: 12, title: 'Shared url winner', url: 'https://forum.celo.org/t/round/3', protocol: 'Celo', confidence: 80, status: 'awarded', topicCreatedAt: fresh },
-          { id: 15, title: 'Stale twin', url: 'https://forum.example/t/cycle/9', protocol: 'Example', confidence: 70, status: 'awarded', topicCreatedAt: stale },
+          { id: 10, title: 'Season grants', url: 'https://gov.optimism.io/t/grants/1', protocol: 'Optimism', confidence: 90, status: 'open', topicCreatedAt: fresh },
+          { id: 12, title: 'Shared url call', url: 'https://forum.celo.org/t/round/3', protocol: 'Celo', confidence: 80, status: 'open', topicCreatedAt: fresh },
+          { id: 15, title: 'Stale twin', url: 'https://forum.example/t/cycle/9', protocol: 'Example', confidence: 70, status: 'open', topicCreatedAt: stale },
         ],
       },
-      voting: {
+      announced: {
         items: [
-          { id: '10', title: 'Season results again', url: 'https://gov.optimism.io/t/results/1?src=vote', protocol: 'Optimism', confidence: 91, status: 'voting', topicCreatedAt: fresh },
-          { id: 13, title: 'Shared url duplicate', url: 'https://forum.celo.org/t/round/3/', protocol: 'Celo', confidence: 70, status: 'voting', topicCreatedAt: fresh },
-          { id: 15, title: 'Fresh cycle', url: 'https://forum.example/t/cycle/9', protocol: 'Example', confidence: 84, status: 'voting', topicCreatedAt: fresh },
-          { id: 14, title: 'Live vote', url: 'https://gov.arbitrum.foundation/t/vote/4', protocol: 'Arbitrum', confidence: 88, status: 'voting', topicCreatedAt: fresh },
+          { id: '10', title: 'Season grants again', url: 'https://gov.optimism.io/t/grants/1?src=feed', protocol: 'Optimism', confidence: 91, status: 'announced', topicCreatedAt: fresh },
+          { id: 13, title: 'Shared url duplicate', url: 'https://forum.celo.org/t/round/3/', protocol: 'Celo', confidence: 70, status: 'announced', topicCreatedAt: fresh },
+          { id: 15, title: 'Fresh cycle', url: 'https://forum.example/t/cycle/9', protocol: 'Example', confidence: 84, status: 'announced', topicCreatedAt: fresh },
+          { id: 14, title: 'New RFP', url: 'https://gov.arbitrum.foundation/t/rfp/4', protocol: 'Arbitrum', confidence: 88, status: 'announced', topicCreatedAt: fresh },
         ],
       },
     };
@@ -173,54 +171,54 @@ test('fetchGrantsFeedResults request behavior', async (t) => {
       return { ok: true, status: 200, json: async () => pages[status] || { items: [] } };
     };
 
-    const { results, urls } = await fetchGrantsFeedResults('crypto', '2026-10-01', { ...DISCUSS_WATCH_NEWS_QUERY });
+    const { results, urls } = await fetchGrantsFeedResults('crypto', '2026-10-01', { status: 'open,announced' });
 
-    assert.deepEqual(calls.map(url => grantsParams(url).get('status')), ['awarded', 'voting']);
+    assert.deepEqual(calls.map(url => grantsParams(url).get('status')), ['open', 'announced']);
+    for (const url of calls) {
+      const params = grantsParams(url);
+      assert.equal(params.get('wire'), 'crypto');
+      assert.equal(params.get('since'), '2026-10-01');
+      assert.equal(params.get('limit'), '100');
+      assert.match(params.get('min_confidence'), /^\d+$/);
+    }
     assert.deepEqual(results.map(item => item.name), [
-      'Season results',
-      'Shared url winner',
+      'Season grants',
+      'Shared url call',
       'Fresh cycle',
-      'Live vote',
+      'New RFP',
     ]);
-    assert.equal(results[0].metadata.wire_area, '2');
-    assert.equal(results[3].metadata.wire_area, '1');
     assert.equal(urls.size, 4);
     assert.ok(urls.has('https://forum.celo.org/t/round/3'));
     assert.equal([...urls].some(url => url.endsWith('/')), false);
   });
 
-  await t.test('NEWS pull keeps the other status when one request fails', async () => {
+  await t.test('a multi-status pull keeps the other status when one request fails', async () => {
     const fresh = new Date().toISOString();
     const calls = [];
     global.fetch = async (url) => {
       calls.push(String(url));
       const status = grantsParams(url).get('status');
-      if (status === 'awarded') return { ok: false, status: 500, json: async () => ({}) };
+      if (status === 'open') return { ok: false, status: 500, json: async () => ({}) };
       return {
         ok: true,
         status: 200,
         json: async () => ({
-          items: [{ id: 20, title: 'Live vote', url: 'https://gov.arbitrum.foundation/t/vote/4', protocol: 'Arbitrum', confidence: 88, status: 'voting', topicCreatedAt: fresh }],
+          items: [{ id: 20, title: 'New RFP', url: 'https://gov.arbitrum.foundation/t/rfp/4', protocol: 'Arbitrum', confidence: 88, status: 'announced', topicCreatedAt: fresh }],
         }),
       };
     };
 
-    const { results } = await fetchGrantsFeedResults('oss', '2026-10-01', { ...DISCUSS_WATCH_NEWS_QUERY });
+    const { results } = await fetchGrantsFeedResults('oss', '2026-10-01', { status: 'open,announced' });
     assert.equal(calls.length, 2);
     assert.equal(results.length, 1);
-    assert.equal(results[0].name, 'Live vote');
-    assert.equal(results[0].metadata.wire_area, '1');
-    for (const url of calls) {
-      assert.equal(grantsParams(url).get('wire'), 'oss');
-      assert.equal(grantsParams(url).get('limit'), '100');
-    }
+    assert.equal(results[0].name, 'New RFP');
 
     global.fetch = async (url) => {
       const status = grantsParams(url).get('status');
-      if (status === 'awarded') return { ok: false, status: 502, json: async () => ({}) };
+      if (status === 'open') return { ok: false, status: 502, json: async () => ({}) };
       return { ok: true, status: 200, json: async () => ({ error: 'Internal error' }) };
     };
-    const bothFailed = await fetchGrantsFeedResults('oss', '2026-10-01', { ...DISCUSS_WATCH_NEWS_QUERY });
+    const bothFailed = await fetchGrantsFeedResults('oss', '2026-10-01', { status: 'open,announced' });
     assert.equal(bothFailed.results.length, 0);
   });
 

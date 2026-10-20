@@ -39,7 +39,7 @@ import {
   hasUsefulSourceUrl,
 } from '../services/intake';
 import { findRelatedOpportunity, finalizeExistingEntryDedup, annotateAlternateSource, settleForthcomingIntake } from '../services/dedup';
-import { findForumHistoryByHost, forumTopicKey, forumObservationAlreadySeen, forumObservationMayBeNew, trustedForumObservation, forumIntakeMetadata } from '../services/forum-seen';
+import { findForumHistoryByHost, forumTopicKey, forumObservationAlreadySeen, forumObservationMayBeNew, forumUpdateEligible, trustedForumObservation, forumIntakeMetadata } from '../services/forum-seen';
 // quality-scorer.ts replaced by LLM scoring in classifier.ts
 import { seedSeenUrlsFromMessages } from '../db';
 import { finalizeProgramForEntry } from '../services/program-identity';
@@ -334,7 +334,8 @@ export async function runDailyIntake(
         const claimKey = observation ? `${key}:${observation.fingerprint}` : key;
         const prior = observation?.priorEntryId ? history.find(row => row.id === observation.priorEntryId) : undefined;
         const changed = observation && prior && forumObservationMayBeNew(observation, prior)
-          && !forumObservationAlreadySeen(observation, history);
+          && !forumObservationAlreadySeen(observation, history)
+          && forumUpdateEligible(observation, history);
         if (claimed.has(claimKey) || (history.length > 0 && !changed)) skip.add(localIndex);
         else claimed.add(claimKey);
       });

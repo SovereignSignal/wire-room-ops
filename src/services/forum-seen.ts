@@ -70,6 +70,8 @@ export interface ForumObservation {
   evidence: 'topic_detail' | 'grants_feed' | 'activity_only';
   complete: boolean;
   excerpt: string;
+  /** Opening post only (title + first post), so a new reply leaves it unchanged. */
+  postFingerprint?: string;
   priorEntryId?: number;
   changeEvidence?: 'content' | 'activity';
 }
@@ -114,8 +116,41 @@ export function storedForumObservation(entry: ForumHistoryEntry): ForumObservati
   if (!value || value.version !== 1 || value.topicKey !== forumTopicKey(entry.source_url)
       || !/^[a-f0-9]{64}$/.test(value.fingerprint) || typeof value.revision !== 'string'
       || !['topic_detail', 'grants_feed', 'activity_only'].includes(value.evidence)
-      || typeof value.excerpt !== 'string' || typeof value.complete !== 'boolean') return null;
+      || typeof value.excerpt !== 'string' || typeof value.complete !== 'boolean'
+      || (value.postFingerprint !== undefined && !/^[a-f0-9]{64}$/.test(value.postFingerprint))) return null;
   return value;
+}
+
+const REVIEWABLE_PRIOR_STATUSES = new Set(['approved', 'queued']);
+
+/** True when the newest decision on this topic is approved or still queued.
+ * Duplicate and deduped rows point at another entry, so they carry no decision. */
+export function forumPriorReviewable(history: ForumHistoryEntry[]): boolean {
+  const decided = [...history].sort((a, b) => b.id - a.id)
+    .find(row => row.status !== 'duplicate' && row.status !== 'deduped');
+  return REVIEWABLE_PRIOR_STATUSES.has(decided?.status || '');
+}
+
+/** True when the post itself changed, not just its replies or engagement.
+ * Feed fingerprints cover only extracted post fields. Topic detail compares the
+ * opening-post fingerprint, which older snapshots lack, so those never qualify. */
+export function forumPostChanged(observation: ForumObservation, history: ForumHistoryEntry[]): boolean {
+  const baseline = [...history].sort((a, b) => b.id - a.id)
+    .map(storedForumObservation)
+    .find(old => old?.topicKey === observation.topicKey && old.evidence === observation.evidence);
+  if (!baseline) return false;
+  if (observation.evidence === 'grants_feed') return baseline.fingerprint !== observation.fingerprint;
+  if (observation.evidence === 'topic_detail') {
+    return Boolean(baseline.postFingerprint && observation.postFingerprint
+      && baseline.postFingerprint !== observation.postFingerprint);
+  }
+  return false;
+}
+
+/** A known topic returns to review only while the operator still wants it, or
+ * when the post itself changed. A new reply on a declined thread does not. */
+export function forumUpdateEligible(observation: ForumObservation, history: ForumHistoryEntry[]): boolean {
+  return forumPriorReviewable(history) || forumPostChanged(observation, history);
 }
 
 export async function findForumHistoryByHost(pool: Pick<Pool, 'query'>, urls: string[]): Promise<ForumHistoryEntry[]> {
