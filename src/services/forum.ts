@@ -189,7 +189,10 @@ const GOVERNANCE_ALLOWLIST: Record<string, string[]> = {
     'zcash', 'aztec', 'neutron', 'safedao', 'iotex', 'moonbeam',
     // Big-DAO early-signal — program creation/renewal surfaces on-forum as governance
     // even when the apply step is off-forum
-    'arbitrum', 'zksync era', 'polygon', 'polkadot', 'cosmos hub', 'sui',
+    // Polkadot and Cosmos Hub were dropped 2026-10-20: in a two-day sample
+    // Polkadot alone was 16 of 43 crypto candidates, and both were almost all
+    // delegate, digest and treasury chatter. Hot threads still use the catch-all.
+    'arbitrum', 'zksync era', 'polygon', 'sui',
     // Re-added 2026-07-03 (recall re-measure): the v2 trim assumed ENS intake had
     // fully migrated to the grants portal, but SPP Season 3's application thread
     // ran ON discuss.ens.domains (ratified via Snapshot 2026-05-10, $2.89M cohort)
