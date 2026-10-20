@@ -2,7 +2,10 @@ require('ts-node/register/transpile-only');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { captureForumObservation, prepareForumObservations, grantsFeedItemToRaw } = require('../src/services/forum');
+// The keyword fallback is what runs when the judge has no key or fails.
+process.env.GROK_API_KEY = '';
+
+const { captureForumObservation, prepareForumObservations, grantsFeedItemToRaw, judgeForumCandidates } = require('../src/services/forum');
 const { forumPriorReviewable, forumPostChanged, trustedForumObservation } = require('../src/services/forum-seen');
 
 const ago = days => new Date(Date.now() - days * 86400000).toISOString();
@@ -93,4 +96,33 @@ test('grants-feed updates follow the same rule', async t => {
     const wanted = await prepareForumObservations(pool([row(null, 'approved')]), [], [next], { remaining: 0 });
     assert.equal(wanted.updates.length, 1);
   });
+});
+
+test('keyword fallback passes open calls and drops governance, results and raises', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({ ok: false, status: 500, text: async () => '', json: async () => ({}) });
+  try {
+    const pass = [
+      'Builder Grants RFP — applications are open',
+      'Open call: OSS security fellowship program',
+      'Hackathon with $50k prizes — apply now',
+      'Bug bounty program for the bridge contracts',
+      'Grant round 9: accepting applications',
+    ];
+    const drop = [
+      'Transfer 1,700 ETH from the Treasury to the grants multisig',
+      'Grants Council Season 8 results',
+      'Delegate incentive program: October stipends',
+      'Staking rewards distribution for Q3',
+      'Deadline extension for delegate elections',
+      'Hackathon winners announced',
+      'Startup raises $5M funding round',
+      'AIP-120: Renew the grant program budget',
+      'Retro funding round 6 recipients',
+      'Grants program quarterly report',
+    ];
+    const candidates = [...pass, ...drop].map((title, i) => ({ ...candidate, title, url: `https://forum.example.org/t/x/${i}` }));
+    const out = await judgeForumCandidates(candidates, 'crypto');
+    assert.deepEqual(out.map(raw => raw.name), pass);
+  } finally { global.fetch = originalFetch; }
 });

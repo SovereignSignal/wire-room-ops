@@ -149,8 +149,16 @@ function isRelevantDiscussion(title: string): boolean {
     return false;
   }
 
-  return RELEVANCE_KEYWORDS.some(kw => lower.includes(kw));
+  return RELEVANCE_KEYWORDS.some(kw => lower.includes(kw))
+    && FALLBACK_OPEN_CALL.test(title)
+    && !FALLBACK_NOT_A_CALL.test(title);
 }
+
+// The keyword fallback runs with no judge and no body text, so a title must
+// also name something a reader can apply to, and must not read as a vote,
+// treasury move, result, recap, or company raise.
+const FALLBACK_OPEN_CALL = /\b(apply|applications?|open call|calls? for (proposals|applications|papers)|cfp|rfps?|accepting|now open|(is|are) open|bount(y|ies)|hackathons?|fellowships?|grants?|funding (opportunity|program)|stipends?|scholarships?|residency|accelerator|incubator)\b/i;
+const FALLBACK_NOT_A_CALL = /\b(treasury|vot(e|es|ing)|delegates?|elections?|budgets?|allocations?|results?|recipients?|awarded|winners?|recap|retro(spective)?s?|(progress|quarterly|monthly|annual|final|status) (report|update)|transfers?|temp check|snapshot|ratif(y|ied|ication)|renewal|raises?|raised|series [a-e]|seed round|[a-z]{1,4}ip[- ]?\d+)\b/i;
 
 // =====================================================================
 // Governance-forum lane (the primary, current forum strategy)
