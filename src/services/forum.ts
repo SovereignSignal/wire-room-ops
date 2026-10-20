@@ -286,11 +286,8 @@ export function grantsFeedItemToRaw(item: GrantsFeedItem): RawScanResult {
   if (item.status?.trim()) parts.push(`Signal: ${item.status.trim()}`);
   parts.push(`Source: ${forumLabel} (discuss.watch grants feed, ${item.confidence ?? 0}% ${item.kind || 'grant'})`);
 
-  const status = (item.status || '').trim().toLowerCase();
-  const wireArea = status === 'awarded' ? '2' : status === 'voting' ? '1' : undefined;
   const metadata: Record<string, unknown> = {};
   if (program) metadata.program = program;
-  if (wireArea) metadata.wire_area = wireArea;
 
   const raw: RawScanResult = {
     name,
@@ -311,13 +308,10 @@ export function grantsFeedItemToRaw(item: GrantsFeedItem): RawScanResult {
   });
 }
 
-/** Second discuss.watch pull: award results and live capital votes, not open calls.
- *  Statuses are exact-match filters. discuss.watch does not treat a comma as OR,
- *  so fetchGrantsFeedResults requests each value on its own and merges the pages. */
-export const DISCUSS_WATCH_NEWS_QUERY = {
-  classification: 'NEWS',
-  status: 'awarded,voting',
-} as const;
+/** Feed statuses that are never an open call. The feed's GRANT class still
+ *  carries live votes, award results and closed calls; those skip the judge,
+ *  so they are dropped here rather than queued. */
+const GRANTS_FEED_DROPPED_STATUSES = new Set(['voting', 'awarded', 'closed']);
 
 /** discuss.watch matches `status` exactly, so each comma-separated value is its own request. */
 function grantsFeedStatusValues(status: string | undefined): Array<string | undefined> {
@@ -417,6 +411,7 @@ export async function fetchGrantsFeedResults(
   const urls = new Set<string>();
   for (const item of items) {
     if (!item.url || !(item.title || item.name)) continue;
+    if (GRANTS_FEED_DROPPED_STATUSES.has((item.status || '').trim().toLowerCase())) continue;
     // Same exclusion-list skip as the judge path (matches protocol AND url)
     const skipHaystack = `${item.protocol || ''} ${item.url}`;
     if (FORUM_SKIP_PATTERNS.some(p => p.test(skipHaystack))) continue;
@@ -898,14 +893,6 @@ export async function runGovernanceForumScan(
     let feedUrls = new Set<string>();
     if (config.forum.grantsFeedEnabled) {
       ({ results: feedResults, urls: feedUrls } = await fetchGrantsFeedResults(wire, since, {}, Boolean(options.pool)));
-      await sleep(REQUEST_DELAY_MS);
-      const news = await fetchGrantsFeedResults(wire, since, { ...DISCUSS_WATCH_NEWS_QUERY }, Boolean(options.pool));
-      for (const item of news.results) {
-        const key = normalizeUrl(item.sourceUrl);
-        if (feedUrls.has(key)) continue;
-        feedResults.push(item);
-        feedUrls.add(key);
-      }
       candidateCount += feedResults.length;
       await sleep(REQUEST_DELAY_MS);
     }

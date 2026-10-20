@@ -7,7 +7,7 @@ const { buildScrapedContentPrompt, buildFallbackPrompt } = require('../src/servi
 const { buildGrokPrompt, buildAggregatorThreadPrompt, GROK_SEARCH_MODEL } = require('../src/services/grok');
 const { buildPostPrompt, buildVerifierPrompt } = require('../src/services/post-generator');
 const { buildEnrichedSummaryPrompt } = require('../src/services/auto-summarize');
-const { buildForumJudgePrompt, RELEVANCE_KEYWORDS, DISCUSS_WATCH_NEWS_QUERY } = require('../src/services/forum');
+const { buildForumJudgePrompt, RELEVANCE_KEYWORDS } = require('../src/services/forum');
 const { parallelAreaGuide } = require('../src/services/parallel');
 const { buildOpenExtractPrompt, buildWireResultExtractPrompt } = require('../src/services/source-feeds');
 const { surfaceToScrapeSource } = require('../src/services/registry-watchers');
@@ -95,9 +95,6 @@ test('forum, parallel, source-feed, and registry prompts cover areas 1-6 and kee
   for (const word of ['awarded', 'recipients', 'results', 'retro', 'treasury', 'allocation', 'incentive', 'rewards', 'credits']) {
     assert.ok(RELEVANCE_KEYWORDS.includes(word), word);
   }
-  assert.equal(DISCUSS_WATCH_NEWS_QUERY.classification, 'NEWS');
-  assert.deepEqual(DISCUSS_WATCH_NEWS_QUERY.status.split(','), ['awarded', 'voting']);
-
   const forum = require('fs').readFileSync(require('path').join(__dirname, '../src/services/forum.ts'), 'utf8');
   assert.match(forum, /config\.forum\.excludedOrgs/);
   assert.doesNotMatch(forum, /uniswap/i);
