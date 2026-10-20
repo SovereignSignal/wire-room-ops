@@ -82,7 +82,7 @@ interface RecheckTarget {
   deadline: string | null;
 }
 
-async function findCandidates(pool: Pool, target: RecheckTarget): Promise<Candidate[]> {
+export async function findCandidates(pool: Pool, target: RecheckTarget): Promise<Candidate[]> {
   const result = await pool.query(
     `WITH t AS (
        SELECT
@@ -107,6 +107,8 @@ async function findCandidates(pool: Pool, target: RecheckTarget): Promise<Candid
                 OR position(lower(regexp_replace(d.name, '[^a-zA-Z0-9]', '', 'g')) IN (SELECT squash FROM t)) > 0)) AS squash_match
      FROM scan_entries d, t
      WHERE d.id != $1
+       -- Own duplicate children resolve back to this row and only propose a cycle.
+       AND d.duplicate_of_id IS DISTINCT FROM $1
        AND d.status IN ('approved', 'declined', 'queued', 'duplicate')
        AND d.created_at > NOW() - INTERVAL '365 days'
        AND (
@@ -320,6 +322,8 @@ export async function applyVerdict(pool: Pool, target: RecheckTarget, candidates
 
       // Resolve from current database state after the external verdict call.
       // The candidate snapshot captured before Grok is only display context.
+      // findCandidates drops this row's own duplicate children; a longer chain
+      // can still resolve back here, and that cycle must not demote the row.
       const resolution = await resolveDuplicateChain(client, matched.id);
       const chainError = resolution.error || resolution.id === null
         ? resolution.error || 'missing'

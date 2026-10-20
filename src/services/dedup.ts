@@ -1021,11 +1021,50 @@ async function checkNameMatch(
 // Token Overlap Scoring
 // ============================================================
 
+const RELATED_NOISE_TOKENS = new Set([
+  'application', 'applications', 'apply', 'open', 'opens', 'opened', 'announced',
+  'announcement', 'accepting', 'launch', 'launched', 'program', 'grant', 'grants',
+]);
+
+// Years and programme-structure words are not identity. A stored token list
+// of {horizon, 2027} must not score as a perfect match for a different call
+// that happens to contain those words.
+const NON_DISTINCTIVE_TOKENS = new Set<string>([
+  ...SEMI_GENERIC_TOKENS,
+  ...RELATED_NOISE_TOKENS,
+  'programme', 'programmes', 'programs',
+  'fellowship', 'fellowships', 'fellow', 'fellows',
+  'cohort', 'cohorts',
+  'fund', 'funds', 'funding',
+  'call', 'calls', 'topic', 'topics',
+]);
+
+function isDistinctiveToken(token: string): boolean {
+  return !NON_DISTINCTIVE_TOKENS.has(token) && !/^20\d{2}$/.test(token) && !/^\d+$/.test(token);
+}
+
 /**
- * Calculate the Jaccard-like overlap between two token sets.
- * Requires at least one "anchor" token (not in SEMI_GENERIC_TOKENS)
- * to be shared, preventing matches based solely on common vocabulary.
- *
+ * Shared distinctive tokens over the larger distinctive set.
+ * Dividing by the shorter name alone scored 100% whenever the short name
+ * was contained in the long one, including {horizon, 2027} inside an
+ * unrelated title. A perfect score means the distinctive words agree.
+ */
+function distinctiveOverlapScore(tokensA: Iterable<string>, tokensB: Iterable<string>): number {
+  const distA = [...new Set(tokensA)].filter(isDistinctiveToken);
+  const distB = [...new Set(tokensB)].filter(isDistinctiveToken);
+  if (distA.length === 0 || distB.length === 0) return 0;
+  const distBSet = new Set(distB);
+  let shared = 0;
+  for (const token of distA) {
+    if (distBSet.has(token)) shared++;
+  }
+  if (shared === 0) return 0;
+  return shared / Math.max(distA.length, distB.length);
+}
+
+/**
+ * Overlap between two token sets. Requires at least one distinctive token
+ * (not a year, a bare number, or a generic programme word).
  * Returns a score from 0 to 1.
  */
 function tokenOverlapScore(tokensA: string[], tokensB: string[]): number {
@@ -1040,37 +1079,27 @@ function tokenOverlapScore(tokensA: string[], tokensB: string[]): number {
   for (const token of setA) {
     if (setB.has(token)) {
       intersection++;
-      if (!SEMI_GENERIC_TOKENS.has(token)) {
-        anchorIntersection++;
-      }
+      if (isDistinctiveToken(token)) anchorIntersection++;
     }
   }
 
-  // Use the smaller set as denominator (asymmetric Jaccard)
-  // This handles the case where "DARPA CLARA" matches "DARPA CLARA High-Assurance AI"
   const minSize = Math.min(setA.size, setB.size);
 
   // Require at least 2 overlapping tokens when both sets have multiple tokens,
   // to avoid false positives like "Optimism Grant" vs "Optimism Governance Update".
-  // Allow single-token overlap when one set has only 1 token (specific match).
   if (intersection < 2 && minSize > 1 && setA.size + setB.size > 3) {
     return 0;
   }
 
-  // Require at least one anchor (non-semi-generic) token in the overlap.
+  // Require at least one distinctive token in the overlap.
   // Without this, matches like "Foundation Labs Rewards" vs "Foundation Labs Incentives"
   // would trigger on purely generic vocabulary.
   if (anchorIntersection === 0 && intersection > 0) {
     return 0;
   }
 
-  return intersection / minSize;
+  return distinctiveOverlapScore(setA, setB);
 }
-
-const RELATED_NOISE_TOKENS = new Set([
-  'application', 'applications', 'apply', 'open', 'opens', 'opened', 'announced',
-  'announcement', 'accepting', 'launch', 'launched', 'program', 'grant', 'grants',
-]);
 
 function relationNameTokens(name: string): string[] {
   return normalizeName(name)
@@ -1082,14 +1111,7 @@ function relationOverlapScore(nameA: string, nameB: string): number {
   const tokensA = relationNameTokens(nameA);
   const tokensB = relationNameTokens(nameB);
   if (tokensA.length < 2 || tokensB.length < 2) return 0;
-
-  const setA = new Set(tokensA);
-  const setB = new Set(tokensB);
-  let intersection = 0;
-  for (const token of Array.from(setA)) {
-    if (setB.has(token)) intersection++;
-  }
-  return intersection / Math.min(setA.size, setB.size);
+  return distinctiveOverlapScore(tokensA, tokensB);
 }
 
 // ============================================================
@@ -1612,10 +1634,51 @@ export async function annotateAlternateSource(
 // Soft Related Opportunity Detection
 // ============================================================
 
+// EU topic ids (HORIZON-BRIDGING-2027-01-13) are their own opportunity.
+// A fresh regex per call: a shared /g pattern keeps lastIndex between names.
+function euTopicPattern(): RegExp {
+  return /\b[a-z]{3,}(?:-[a-z0-9]{1,24}){3,}\b/gi;
+}
+
+function extractEuTopicIds(...parts: Array<string | null | undefined>): string[] {
+  const found = new Set<string>();
+  for (const part of parts) {
+    const text = (part || '').toLowerCase();
+    for (const raw of text.matchAll(euTopicPattern())) {
+      const id = raw[0].toUpperCase();
+      const segments = id.split('-');
+      if (!/^[A-Z]{3,}$/.test(segments[0])) continue;
+      const yearAt = segments.findIndex(segment => /^20\d{2}$/.test(segment));
+      if (yearAt < 1) continue;
+      const numericTail = segments.slice(yearAt + 1).filter(segment => /^\d{2}$/.test(segment));
+      if (numericTail.length < 2) continue;
+      found.add(id);
+    }
+  }
+  return [...found].sort();
+}
+
+function sameIdentity(left: string[], right: string[]): boolean {
+  return left.length > 0 && left.length === right.length && left.every((id, index) => id === right[index]);
+}
+
+/** Numbered round/cohort/season markers. Bare years are not identifiers. */
+function numberedRoundIdentity(name: string): string[] {
+  const stripped = (name || '').replace(euTopicPattern(), ' ');
+  const markers = extractCycleMarkers(stripped);
+  const keys = markers.numbered.map(marker => `${marker.kind}:${marker.value}`);
+  for (const match of stripped.matchAll(/\bcohorts?\s*#?\s*(\d+)\b/gi)) {
+    const value = Number(match[1]);
+    if (value > 0 && value < 1900) keys.push(`cohort:${value}`);
+  }
+  return [...new Set(keys)].sort();
+}
+
 /**
  * Find a likely prior appearance of the same opportunity without blocking the
  * current row. This is the review-intelligence layer: it annotates alternate
  * source links and sibling-ish replays so the operator can make the call in queue.
+ * Exact identifiers (EU topic ids, numbered rounds) are decided before token overlap.
  */
 export async function findRelatedOpportunity(
   pool: Pool,
@@ -1623,7 +1686,8 @@ export async function findRelatedOpportunity(
   lookbackDays: number = 180
 ): Promise<RelatedOpportunityResult> {
   const tokens = extractNameTokens(entry.name);
-  if (tokens.length < 2) {
+  const entryTopics = extractEuTopicIds(entry.name, entry.sourceUrl);
+  if (tokens.length < 2 && entryTopics.length === 0) {
     return {
       isRelated: false,
       relationType: null,
@@ -1636,17 +1700,37 @@ export async function findRelatedOpportunity(
     };
   }
 
-  const result = await pool.query(
-    `SELECT sn.entry_id, sn.name_original, sn.name_tokens, se.source_url, se.status
-     FROM seen_names sn
-     JOIN scan_entries se ON se.id = sn.entry_id
-     WHERE sn.wire = $1
-       AND sn.first_seen >= CURRENT_DATE - INTERVAL '1 day' * $2
-       AND sn.name_tokens && $3::text[]
-       AND se.status IN ('approved', 'queued', 'declined')
-     ORDER BY sn.first_seen DESC`,
-    [entry.wire, lookbackDays, tokens]
-  );
+  const topicNeedles = entryTopics.map(id => id.toLowerCase());
+  const result = entryTopics.length === 0
+    ? await pool.query(
+      `SELECT sn.entry_id, sn.name_original, sn.name_tokens, se.source_url, se.status
+       FROM seen_names sn
+       JOIN scan_entries se ON se.id = sn.entry_id
+       WHERE sn.wire = $1
+         AND sn.first_seen >= CURRENT_DATE - INTERVAL '1 day' * $2
+         AND sn.name_tokens && $3::text[]
+         AND se.status IN ('approved', 'queued', 'declined')
+       ORDER BY sn.first_seen DESC`,
+      [entry.wire, lookbackDays, tokens]
+    )
+    : await pool.query(
+      `SELECT sn.entry_id, sn.name_original, sn.name_tokens, se.source_url, se.status
+       FROM seen_names sn
+       JOIN scan_entries se ON se.id = sn.entry_id
+       WHERE sn.wire = $1
+         AND sn.first_seen >= CURRENT_DATE - INTERVAL '1 day' * $2
+         AND se.status IN ('approved', 'queued', 'declined')
+         AND (
+           ($3::text[] <> '{}'::text[] AND sn.name_tokens && $3::text[])
+           OR EXISTS (
+             SELECT 1 FROM unnest($4::text[]) AS topic(needle)
+             WHERE strpos(lower(sn.name_original), needle) > 0
+                OR strpos(lower(COALESCE(se.source_url, '')), needle) > 0
+           )
+         )
+       ORDER BY sn.first_seen DESC`,
+      [entry.wire, lookbackDays, tokens, topicNeedles]
+    );
 
   let bestMatch: {
     entryId: number;
@@ -1654,10 +1738,32 @@ export async function findRelatedOpportunity(
     sourceUrl: string | null;
     status: any;
     score: number;
+    via: 'topic' | 'tokens';
+    topicLabel: string | null;
   } | null = null;
+
+  const entryRounds = numberedRoundIdentity(entry.name);
 
   for (const row of result.rows) {
     if (normalizeUrl(row.source_url || '') === normalizeUrl(entry.sourceUrl)) continue;
+    const rowTopics = extractEuTopicIds(row.name_original, row.source_url);
+    if (entryTopics.length > 0 || rowTopics.length > 0) {
+      if (!sameIdentity(entryTopics, rowTopics)) continue;
+      bestMatch = {
+        entryId: row.entry_id,
+        name: row.name_original,
+        sourceUrl: row.source_url || null,
+        status: row.status || null,
+        score: 1,
+        via: 'topic',
+        topicLabel: entryTopics.join(', '),
+      };
+      continue;
+    }
+
+    const rowRounds = numberedRoundIdentity(row.name_original || '');
+    if (entryRounds.length > 0 && rowRounds.length > 0 && !sameIdentity(entryRounds, rowRounds)) continue;
+
     const score = Math.max(
       tokenOverlapScore(tokens, row.name_tokens || []),
       relationOverlapScore(entry.name, row.name_original || '')
@@ -1669,12 +1775,17 @@ export async function findRelatedOpportunity(
         sourceUrl: row.source_url || null,
         status: row.status || null,
         score,
+        via: 'tokens',
+        topicLabel: null,
       };
     }
   }
 
   const ALTERNATE_SOURCE_THRESHOLD = 0.66;
   if (bestMatch && bestMatch.score >= ALTERNATE_SOURCE_THRESHOLD) {
+    const reason = bestMatch.via === 'topic'
+      ? `Same EU topic ${bestMatch.topicLabel} as entry #${bestMatch.entryId}: "${bestMatch.name}"`
+      : `Likely alternate source for entry #${bestMatch.entryId}: "${bestMatch.name}" (${Math.round(bestMatch.score * 100)}% token overlap)`;
     return {
       isRelated: true,
       relationType: 'alternate_source',
@@ -1683,7 +1794,7 @@ export async function findRelatedOpportunity(
       matchedSourceUrl: bestMatch.sourceUrl,
       matchedStatus: bestMatch.status,
       confidence: bestMatch.score,
-      reason: `Likely alternate source for entry #${bestMatch.entryId}: "${bestMatch.name}" (${Math.round(bestMatch.score * 100)}% token overlap)`,
+      reason,
     };
   }
 

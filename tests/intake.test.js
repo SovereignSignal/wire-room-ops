@@ -873,3 +873,186 @@ test('related opportunity detection ignores weak same-org matches so organic res
   assert.equal(relation.isRelated, false);
   assert.equal(relation.matchedEntryId, null);
 });
+
+test('an EU topic does not match an unrelated fellowship that shares its words', async () => {
+  const calls = [];
+  const pool = {
+    query: async (sql, params) => {
+      calls.push({ sql, params });
+      return {
+        rows: [
+          {
+            entry_id: 16491,
+            name_original: 'Horizon Bridging Fellowship Programme 2026',
+            name_tokens: ['horizon', 'bridging', '2026'],
+            source_url: 'https://frontier.example/fellowship-2026',
+            status: 'approved',
+          },
+          {
+            entry_id: 15662,
+            name_original: 'Horizon Fellowship 2027 cohort',
+            name_tokens: ['horizon', '2027'],
+            source_url: 'https://horizon.example/fellowship-2027',
+            status: 'approved',
+          },
+        ],
+      };
+    },
+  };
+
+  const relation = await findRelatedOpportunity(pool, {
+    sourceUrl: 'https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/horizon-bridging-2027-01-13',
+    name: 'HORIZON-BRIDGING-2027-01-13',
+    wire: 'ai',
+  });
+
+  assert.equal(relation.isRelated, false);
+  assert.equal(relation.matchedEntryId, null);
+  assert.ok(relation.confidence < 1);
+  assert.ok(calls[0].params[3].includes('horizon-bridging-2027-01-13'));
+});
+
+test('the same EU topic id matches before token overlap', async () => {
+  const pool = {
+    query: async () => ({
+      rows: [{
+        entry_id: 19921,
+        name_original: 'Commission briefing on HORIZON-BRIDGING-2027-01-12',
+        name_tokens: ['commission', 'briefing'],
+        source_url: 'https://notes.example/horizon-bridging-2027-01-12',
+        status: 'queued',
+      }],
+    }),
+  };
+
+  const relation = await findRelatedOpportunity(pool, {
+    sourceUrl: 'https://ec.europa.eu/topic-details/horizon-bridging-2027-01-12',
+    name: 'HORIZON-BRIDGING-2027-01-12 open call',
+    wire: 'ai',
+  });
+
+  assert.equal(relation.isRelated, true);
+  assert.equal(relation.matchedEntryId, 19921);
+  assert.equal(relation.confidence, 1);
+  assert.match(relation.reason, /HORIZON-BRIDGING-2027-01-12/);
+});
+
+test('different EU topic ids are not alternate sources', async () => {
+  const pool = {
+    query: async () => ({
+      rows: [{
+        entry_id: 19921,
+        name_original: 'HORIZON-BRIDGING-2027-01-12',
+        name_tokens: ['horizon', 'bridging'],
+        source_url: 'https://ec.europa.eu/topic-details/horizon-bridging-2027-01-12',
+        status: 'queued',
+      }],
+    }),
+  };
+
+  const relation = await findRelatedOpportunity(pool, {
+    sourceUrl: 'https://ec.europa.eu/topic-details/horizon-bridging-2027-01-13',
+    name: 'HORIZON-BRIDGING-2027-01-13',
+    wire: 'ai',
+  });
+
+  assert.equal(relation.isRelated, false);
+  assert.equal(relation.matchedEntryId, null);
+});
+
+test('a shared year is not a perfect match and a short contained name is not 100%', async () => {
+  const yearPool = {
+    query: async () => ({
+      rows: [{
+        entry_id: 50,
+        name_original: 'Horizon 2024',
+        name_tokens: ['horizon', '2024'],
+        source_url: 'https://horizon.example/2024',
+        status: 'approved',
+      }],
+    }),
+  };
+  const yearRelation = await findRelatedOpportunity(yearPool, {
+    sourceUrl: 'https://example.org/horizon-bridging-2024',
+    name: 'Horizon Bridging 2024 Call',
+    wire: 'ai',
+  });
+  assert.equal(yearRelation.isRelated, false);
+  assert.ok(yearRelation.confidence > 0);
+  assert.ok(yearRelation.confidence < 1);
+
+  const shortPool = {
+    query: async () => ({
+      rows: [{
+        entry_id: 51,
+        name_original: 'DARPA CLARA',
+        name_tokens: ['darpa', 'clara'],
+        source_url: 'https://darpa.example/clara',
+        status: 'approved',
+      }],
+    }),
+  };
+  const shortRelation = await findRelatedOpportunity(shortPool, {
+    sourceUrl: 'https://example.org/darpa-clara-high-assurance',
+    name: 'DARPA CLARA High-Assurance AI',
+    wire: 'ai',
+  });
+  assert.equal(shortRelation.isRelated, false);
+  assert.ok(shortRelation.confidence < 1);
+  assert.ok(shortRelation.confidence < 0.66);
+});
+
+test('different round or cohort numbers are not alternate sources; the same number still is', async () => {
+  const different = await findRelatedOpportunity({
+    query: async () => ({
+      rows: [{
+        entry_id: 70,
+        name_original: 'Uniswap Acceleration Season 7',
+        name_tokens: ['uniswap', 'acceleration'],
+        source_url: 'https://uniswap.example/season-7',
+        status: 'approved',
+      }],
+    }),
+  }, {
+    sourceUrl: 'https://uniswap.example/season-3',
+    name: 'Uniswap Acceleration Season 3',
+    wire: 'crypto',
+  });
+  assert.equal(different.isRelated, false);
+
+  const differentCohort = await findRelatedOpportunity({
+    query: async () => ({
+      rows: [{
+        entry_id: 71,
+        name_original: 'Example Builders Cohort 9',
+        name_tokens: ['example', 'builders'],
+        source_url: 'https://example.org/cohort-9',
+        status: 'approved',
+      }],
+    }),
+  }, {
+    sourceUrl: 'https://example.org/cohort-4',
+    name: 'Example Builders Cohort 4',
+    wire: 'oss',
+  });
+  assert.equal(differentCohort.isRelated, false);
+
+  const same = await findRelatedOpportunity({
+    query: async () => ({
+      rows: [{
+        entry_id: 72,
+        name_original: 'Uniswap Acceleration Season 3',
+        name_tokens: ['uniswap', 'acceleration'],
+        source_url: 'https://uniswap.example/season-3-page',
+        status: 'approved',
+      }],
+    }),
+  }, {
+    sourceUrl: 'https://x.com/uniswap/status/1',
+    name: 'Uniswap Acceleration Season 3 applications open',
+    wire: 'crypto',
+  });
+  assert.equal(same.isRelated, true);
+  assert.equal(same.matchedEntryId, 72);
+  assert.ok(same.confidence >= 0.66);
+});

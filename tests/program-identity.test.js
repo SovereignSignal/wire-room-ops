@@ -161,6 +161,23 @@ test('assessRound: differing round label = new_round; same/absent = same_round; 
   assert.equal(assessRound(noLabel, { name: 'Anthropic Fellows Program' }).verdict, 'same_round');
 });
 
+test('a bare cohort or a closure stays on the existing round', () => {
+  assert.equal(extractRoundLabel('Claude for Startups cohort now full'), null);
+  assert.equal(extractRoundLabel('Claude for Startups (cohort now full)'), null);
+  assert.equal(extractRoundLabel('Claude for Startups cohort'), null);
+
+  const existing = fakeProgram();
+  const closure = assessRound(existing, { name: 'Claude for Startups (cohort now full)' });
+  assert.equal(closure.verdict, 'same_round');
+  assert.equal(closure.roundLabel, null);
+  const unlabeled = fakeProgram({ latest_round_label: null });
+  assert.equal(assessRound(unlabeled, { name: 'Claude for Startups cohort now full' }).verdict, 'same_round');
+
+  assert.equal(extractRoundLabel('Example Builders cohort 4'), 'cohort 4');
+  assert.equal(assessRound(existing, { name: 'Example Builders cohort 4' }).verdict, 'new_round');
+  assert.equal(assessRound(existing, { name: 'Anthropic Fellows Program July 2026 cohort' }).verdict, 'same_round');
+});
+
 test('historyLine composes the display string', () => {
   assert.equal(historyLine(fakeProgram()), 'seen 60× · approved 1× · declined 12× · last recorded declined 2026-07-07');
   assert.equal(historyLine(fakeProgram({ approved_count: 0, declined_count: 0, last_decision: null, entry_count: 3 })), 'seen 3×');

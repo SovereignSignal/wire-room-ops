@@ -52,6 +52,38 @@ test('candidate generator catches squashed-name variants against decided entries
   }
 });
 
+test('findCandidates does not propose a row\'s own duplicate children', async () => {
+  const pool = getPool();
+  const { findCandidates } = require('../src/jobs/decided-recheck');
+  const pid = `${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const host = `recheck-children-${pid}.example`;
+  const parentName = `Parent Program ${pid} Alpha Beta`;
+  const parentId = await insertEntry(pool, parentName, `https://${host}/parent`, 'queued');
+  const childId = await insertEntry(pool, `${parentName} reprint`, `https://${host}/child`, 'duplicate');
+  const otherId = await insertEntry(pool, `Other Decided Program ${pid}`, `https://${host}/other`, 'approved');
+  const foreignParent = await insertEntry(pool, `Foreign Parent ${pid} Gamma Delta`, `https://foreign-${pid}.example/parent`, 'approved');
+  const foreignChild = await insertEntry(pool, `Foreign Child ${pid} Gamma Delta`, `https://${host}/foreign-child`, 'duplicate');
+  await pool.query(`UPDATE scan_entries SET duplicate_of_id = $2 WHERE id = $1`, [childId, parentId]);
+  await pool.query(`UPDATE scan_entries SET duplicate_of_id = $2 WHERE id = $1`, [foreignChild, foreignParent]);
+  try {
+    const candidates = await findCandidates(pool, {
+      id: parentId,
+      wire: 'oss',
+      name: parentName,
+      description: TEST_DESCRIPTION,
+      source_url: `https://${host}/parent`,
+      deadline: null,
+    });
+    const ids = candidates.map(candidate => Number(candidate.id));
+    assert.ok(!ids.includes(Number(childId)), 'own duplicate child must not be proposed');
+    assert.ok(ids.includes(Number(otherId)), 'another decided row on the same domain stays a candidate');
+    assert.ok(ids.includes(Number(foreignChild)), 'a duplicate of a different parent stays a candidate');
+  } finally {
+    await pool.query(`DELETE FROM scan_entries WHERE id IN ($1, $2)`, [childId, foreignChild]);
+    await pool.query(`DELETE FROM scan_entries WHERE id IN ($1, $2, $3)`, [parentId, otherId, foreignParent]);
+  }
+});
+
 test('applyVerdict: update verdict keeps entry queued and adds a note', async () => {
   const pool = getPool();
   const pid = process.pid;

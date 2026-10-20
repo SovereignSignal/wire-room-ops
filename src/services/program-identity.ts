@@ -323,18 +323,29 @@ export async function resolveProgram(
 // ── Round assessment ────────────────────────────────────────────────────
 export interface RoundVerdict { verdict: 'same_round' | 'new_round'; roundLabel: string | null }
 
+// A bare "cohort" is not a round. "cohort now full" is a status update and
+// stays on the current round. A round needs a year, a number, or a quarter.
 const ROUND_RE = new RegExp(
-  `\\b(?:(?:${MONTHS})[\\s./&-]*)*20\\d\\d\\s*cohorts?\\b|\\bcohorts?\\b|\\bfund\\s*\\d+\\b|\\brounds?\\s*\\d+\\b|\\bseasons?\\s*\\d+\\b|\\bbatch(?:es)?\\s*\\d+\\b|\\bwaves?\\s*\\d+\\b|\\bq[1-4](?:\\s*/\\s*q[1-4])?\\s*20\\d\\d\\b|\\b20\\d\\d\\b`,
+  `\\b(?:(?:${MONTHS})[\\s./&-]*)*20\\d\\d\\s*cohorts?\\b|\\bcohorts?\\s*#?\\s*\\d+\\b|\\bfund\\s*\\d+\\b|\\brounds?\\s*\\d+\\b|\\bseasons?\\s*\\d+\\b|\\bbatch(?:es)?\\s*\\d+\\b|\\bwaves?\\s*\\d+\\b|\\bq[1-4](?:\\s*/\\s*q[1-4])?\\s*20\\d\\d\\b|\\b20\\d\\d\\b`,
   'gi',
 );
 
+function isSubstantiveRoundLabel(label: string): boolean {
+  return /\b20\d\d\b/i.test(label)
+    || /\b(?:cohort|round|batch|fund|season|wave)s?\s*#?\s*\d+\b/i.test(label)
+    || /\bfund\d+\b/i.test(label)
+    || /\bq[1-4]\b/i.test(label);
+}
+
 export function extractRoundLabel(name: string): string | null {
-  // Grab the widest round-ish phrase: prefer "(...cohort)" parentheticals, else regex hits joined
+  // Grab the widest round-ish phrase: prefer "(...cohort)" parentheticals, else regex hits joined.
+  // Parentheticals that only say "cohort" or "cohort now full" are status, not a new round.
   const paren = name.match(/\(([^)]*(?:cohort|round|batch|fund|season)[^)]*)\)/i);
-  if (paren) return paren[1].trim().toLowerCase();
+  if (paren && isSubstantiveRoundLabel(paren[1])) return paren[1].trim().toLowerCase();
   const hits = name.match(ROUND_RE);
   if (!hits || hits.length === 0) return null;
-  return hits.join(' ').trim().toLowerCase() || null;
+  const label = hits.join(' ').trim().toLowerCase();
+  return label && isSubstantiveRoundLabel(label) ? label : null;
 }
 
 export function assessRound(program: ProgramRow, candidate: { name: string; deadline?: string | null }): RoundVerdict {
