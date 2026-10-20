@@ -107,8 +107,9 @@ const MAX_DISCUSSION_AGE_DAYS = 30;
  * when the LLM judge is unavailable (no key) or a batch errors — degrades to the
  * old keyword behavior rather than dropping or flooding candidates.
  */
-// Keyword fallback when the LLM judge is down. Open calls plus wire areas
-// 1–6 (results, treasury moves, incentives). The judge is the primary gate.
+// The keyword list stays broad. Open-call filtering is FALLBACK_OPEN_CALL and
+// FALLBACK_NOT_A_CALL below, which drop votes, treasury moves, and status posts
+// when the judge is down. The judge prompt is the primary gate.
 export const RELEVANCE_KEYWORDS = [
   // Core funding signals
   'grant program', 'grants program', 'funding opportunity', 'funding round',
@@ -234,10 +235,10 @@ const JUDGE_BATCH_SIZE = 12;
 //
 // This pull complements (not replaces) the allowlist+judge path: the feed
 // covers 196 forums with body-level classification, while the judge path
-// still uniquely catches governance proposals that create/renew programs
-// (classified NEWS server-side) on the curated allowlist. URLs surfaced
-// by the feed are excluded from the judge batch — pre-judged items should
-// not re-spend Grok. Kill switch: FORUM_GRANTS_FEED_ENABLED=false.
+// screens allowlist threads the feed did not already return and keeps only
+// open funding calls. URLs surfaced by the feed are excluded from the judge
+// batch — pre-judged items should not re-spend Grok. Kill switch:
+// FORUM_GRANTS_FEED_ENABLED=false.
 
 interface GrantsFeedItem {
   id?: string | number;
@@ -746,27 +747,40 @@ interface ForumJudgment {
   summary?: string;
 }
 
+/** True only for a judgment the prompt marks as an open funding call. */
+function isOpenFundingJudgment(j: ForumJudgment): boolean {
+  if (j.is_opportunity !== true) return false;
+  return (j.signal_stage || '').trim().toLowerCase() === 'open';
+}
+
 export function buildForumJudgePrompt(batch: ForumCandidate[], wire: string): string {
   const wireLabel = wire === 'crypto' ? 'crypto / web3' : wire === 'ai' ? 'AI / ML' : 'open-source software';
   const lines = batch.map((c, i) => `${i + 1}. [${c.forumName || 'forum'}] ${c.title}`).join('\n');
-  return `You are screening ${wireLabel} forum threads for the wire.
+  return `You are screening ${wireLabel} forum threads for open funding calls only.
 
-Find posts in wire areas 1–6: treasury/governance decisions that move capital or create/renew/change grant programs, grant round results and retros, open calls, incentive programs, and substantive analysis of funding mechanisms. NOT: delegate elections and comms, price/token talk, routine ops with no capital decision. Individual applications from a single team are not wire items unless the decision itself moves capital.
+Pass (is_opportunity=true, signal_stage="open") only when someone can apply right now:
+- grants, RFPs, and calls for proposals that are open to apply
+- bounties that are open to apply
+- hackathons with prizes that are open to apply
+A rolling program counts only when applications are accepted now. Use signal_stage "open" for every pass.
 
-Set is_opportunity=true only for areas 1–6. Set is_opportunity=false for the NOT list and for anything outside those areas.
+Skip (is_opportunity=false) all of these:
+- governance proposals, votes, and delegate elections
+- treasury transfers and budget allocations
+- status updates, award announcements, retros, and round results
+- closed, expired, or not-yet-open programs
+- price talk, product launches, and an individual team's application
 
-When unsure BUT the thread is a capital decision, a round result, or a named open program, lean is_opportunity=true — an operator reviews everything downstream.
+When unsure, set is_opportunity=false.
 
 For EACH numbered thread, return one JSON object. Respond with ONLY a JSON array (no prose, no markdown fences):
-[{"n":1,"is_opportunity":true,"name":"<concise name, not the raw thread title>","funder":"<org or null>","amount":"<figure as written or null>","deadline":"<date / Rolling / null>","signal_stage":"proposed|open|awarded|voting|recurring","summary":"<one sentence of facts only: who, what, amount, date>"}]
-
-signal_stage: "proposed" = governance proposal that moves capital or changes a grant framework; "open" = currently accepting; "awarded" = results, recipients, or a retro; "voting" = a live capital or framework vote; "recurring" = established rolling program.
+[{"n":1,"is_opportunity":true,"name":"<concise name, not the raw thread title>","funder":"<org or null>","amount":"<figure as written or null>","deadline":"<date / Rolling / null>","signal_stage":"open","summary":"<one sentence of facts only: who, what, amount, date>"}]
 
 Threads:
 ${lines}`;
 }
 
-function parseForumJudgeResponse(content: string, batch: ForumCandidate[]): RawScanResult[] {
+export function parseForumJudgeResponse(content: string, batch: ForumCandidate[]): RawScanResult[] {
   let arr: unknown;
   try {
     const cleaned = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
@@ -791,8 +805,7 @@ function parseForumJudgeResponse(content: string, batch: ForumCandidate[]): RawS
   const out: RawScanResult[] = [];
   for (let i = 0; i < batch.length; i++) {
     const j = byIndex.get(i + 1);
-    if (!j) continue;                    // model omitted it → treat as not an opportunity
-    if (j.is_opportunity === false) continue;
+    if (!j || !isOpenFundingJudgment(j)) continue;
     out.push(candidateToRaw(batch[i], j));
   }
   return out;
