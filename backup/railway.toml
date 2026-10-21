@@ -1,0 +1,12 @@
+# Config-as-code for the Railway cron backup services (one per database).
+# In each backup service: Settings -> Source -> this repo, branch main, and
+# Config-as-code file path = /backup/railway.toml. Leave Root Directory empty (repo root).
+# Variables are documented in backup/README.md.
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "backup/Dockerfile"
+watchPatterns = ["backup/**"]
+
+[deploy]
+cronSchedule = "0 5 * * *"   # 05:00 UTC daily, same as the GitHub Action it replaces
+restartPolicyType = "NEVER"
