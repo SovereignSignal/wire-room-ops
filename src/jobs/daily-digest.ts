@@ -436,6 +436,8 @@ const FRESH_FINDS_SELECT = `
          m.status AS recheck_matched_status,
          NULLIF(concat_ws(' · ',
            CASE WHEN q.lifecycle = 'forthcoming' THEN 'forthcoming hold' END,
+           CASE WHEN q.lifecycle = 'forthcoming' AND q.opening_date IS NULL
+                THEN 'no opening date, recheck manually' END,
            CASE WHEN q.metadata->'decided_recheck'->>'cross_wire_blocked' = 'true' THEN 'cross-wire hold' END,
            CASE WHEN q.metadata->'decided_recheck'->>'canonical_parent_blocked' = 'true' THEN 'canonical hold' END,
            CASE WHEN jsonb_typeof(q.metadata->'duplicate_chain_error') = 'object' THEN 'chain hold' END,
@@ -623,8 +625,10 @@ export async function buildRunLedger(
   // Replaces the retired program-gate lane: the gate is advisory-only now and
   // no longer produces actioned_by='program-gate' rows.
   try {
-    const { rows } = await pool.query<{ n: string }>(`
-      SELECT COUNT(*) AS n FROM scan_entries
+    const { rows } = await pool.query<{ n: string; no_opening_date?: string }>(`
+      SELECT COUNT(*) AS n,
+             COUNT(*) FILTER (WHERE lifecycle = 'forthcoming' AND opening_date IS NULL) AS no_opening_date
+      FROM scan_entries
       WHERE status = 'queued'
         AND (
           (
@@ -638,7 +642,13 @@ export async function buildRunLedger(
           OR lifecycle = 'forthcoming'
         )`);
     const n = parseInt(rows[0]?.n ?? '0', 10);
-    if (n > 0) lanes.push({ key: 'held', state: 'warn', detail: `held ${n} for review` });
+    // Forthcoming rows with no opening date have nothing that will move them
+    // to open on their own, so call them out for a manual recheck.
+    const noOpeningDate = parseInt(rows[0]?.no_opening_date ?? '0', 10) || 0;
+    const noDateNote = noOpeningDate > 0
+      ? ` (${noOpeningDate} forthcoming with no opening date, recheck manually)`
+      : '';
+    if (n > 0) lanes.push({ key: 'held', state: 'warn', detail: `held ${n} for review${noDateNote}` });
   } catch {
     // omit — optional evidence
   }

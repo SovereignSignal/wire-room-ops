@@ -432,6 +432,23 @@ test('buildRunLedger: held lane appears with 24h review-hold count, omitted at z
   assert.ok(!r2.ledger.lanes.some(l => l.key === 'held'), 'zero → omitted');
 });
 
+test('buildRunLedger: held lane flags forthcoming rows with no opening date for manual recheck', async () => {
+  const pool = fakePool();
+  pool.queueResponse([{ ok: '5', failed: '0' }]);
+  pool.queueResponse([{ n: '4', no_opening_date: '2' }]);
+  const { deps } = fakeState({ 'summary-sync:watermark': new Date().toISOString() });
+  const { ledger } = await buildRunLedger(pool, { date: '2026-07-10' }, deps);
+  const held = ledger.lanes.find(l => l.key === 'held');
+  assert.equal(held.detail, 'held 4 for review (2 forthcoming with no opening date, recheck manually)');
+  assert.match(pool.calls[1].sql, /lifecycle = 'forthcoming' AND opening_date IS NULL/);
+
+  const pool2 = fakePool();
+  pool2.queueResponse([{ ok: '5', failed: '0' }]);
+  pool2.queueResponse([{ n: '4', no_opening_date: '0' }]);
+  const r2 = await buildRunLedger(pool2, { date: '2026-07-10' }, deps);
+  assert.equal(r2.ledger.lanes.find(l => l.key === 'held').detail, 'held 4 for review');
+});
+
 test('getFreshFinds selects program history via the programs join', async () => {
   const pool = fakePool();
   pool.queueResponse([]);
@@ -447,6 +464,8 @@ test('getFreshFinds selects program history via the programs join', async () => 
   assert.match(pool.calls[0].sql, /curator_by/);
   assert.match(pool.calls[0].sql, /hold_hints/);
   assert.match(pool.calls[0].sql, /repeat_funder_overrides/);
+  assert.match(pool.calls[0].sql, /q\.lifecycle = 'forthcoming' AND q\.opening_date IS NULL\s+THEN 'no opening date, recheck manually'/,
+    'held forthcoming rows with no opening date must be flagged for a manual recheck');
   assert.match(pool.calls[0].sql, /operator_notes/);
   assert.doesNotMatch(pool.calls[0].sql, /'seen '/, 'program history must not select seen counts');
 });
