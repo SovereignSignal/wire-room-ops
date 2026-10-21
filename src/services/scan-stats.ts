@@ -23,23 +23,28 @@ export interface PromptStats {
   declinedCount: number;
   approvalRate: number;        // 0-1 (of reviewed entries)
   classificationMix: Record<string, number>;  // e.g. { GRANT: 5, NEWS: 3, NOISE: 1 }
-  /** GRANT rows whose intake is live. Null lifecycle counts as open. */
+  /** Non-duplicate GRANT rows whose lifecycle is 'open' or blank (older rows). */
   openCalls: number;
-  /** Calls classified GRANT or otherwise whose intake is not open yet. */
+  /** Non-duplicate GRANT rows whose lifecycle is 'forthcoming'. */
   forthcomingCalls: number;
   publishedAtCoverage: number; // 0-1 fraction of entries with source_published_at
 }
 
-/** Same split as the prompt-stats SQL. Closed GRANTs count as neither. */
+/**
+ * Same split as the prompt-stats SQL. Only non-duplicate GRANT rows count.
+ * open = lifecycle 'open' or blank (rows from before lifecycle existed);
+ * forthcoming = lifecycle 'forthcoming'. Closed and unknown count as neither.
+ */
 export function splitOpenCallCounts(
-  rows: Array<{ classification: string | null; lifecycle: string | null }>,
+  rows: Array<{ classification: string | null; lifecycle: string | null; status?: string | null }>,
 ): { openCalls: number; forthcomingCalls: number } {
   let openCalls = 0;
   let forthcomingCalls = 0;
   for (const row of rows) {
-    if (row.lifecycle === 'forthcoming') forthcomingCalls++;
-    const lifecycle = row.lifecycle ?? 'open';
-    if (row.classification === 'GRANT' && lifecycle !== 'forthcoming' && lifecycle !== 'closed') openCalls++;
+    if (row.classification !== 'GRANT' || row.status === 'duplicate') continue;
+    const lifecycle = row.lifecycle == null || row.lifecycle.trim() === '' ? 'open' : row.lifecycle;
+    if (lifecycle === 'open') openCalls++;
+    else if (lifecycle === 'forthcoming') forthcomingCalls++;
   }
   return { openCalls, forthcomingCalls };
 }
@@ -106,10 +111,15 @@ export async function getPromptEffectivenessStats(
       COUNT(*) FILTER (WHERE classification = 'EXPIRED') AS cls_expired,
       COUNT(*) FILTER (WHERE classification = 'NOISE') AS cls_noise,
       COUNT(*) FILTER (WHERE classification = 'UNCHECKED' OR classification IS NULL) AS cls_unchecked,
-      COUNT(*) FILTER (WHERE lifecycle = 'forthcoming') AS forthcoming_calls,
       COUNT(*) FILTER (
         WHERE classification = 'GRANT'
-          AND COALESCE(lifecycle, 'open') NOT IN ('forthcoming', 'closed')
+          AND status IS DISTINCT FROM 'duplicate'
+          AND lifecycle = 'forthcoming'
+      ) AS forthcoming_calls,
+      COUNT(*) FILTER (
+        WHERE classification = 'GRANT'
+          AND status IS DISTINCT FROM 'duplicate'
+          AND COALESCE(NULLIF(btrim(lifecycle), ''), 'open') = 'open'
       ) AS open_calls,
       COUNT(*) FILTER (WHERE source_published_at IS NOT NULL) AS has_published_at,
       COUNT(*) FILTER (WHERE status NOT IN ('duplicate')) AS non_dup_total

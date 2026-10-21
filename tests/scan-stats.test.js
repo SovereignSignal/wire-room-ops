@@ -32,5 +32,42 @@ test('open and forthcoming counts do not lump a not-yet-open call into open', ()
     { classification: 'GRANT', lifecycle: 'closed' },
     { classification: 'NEWS', lifecycle: 'forthcoming' },
     { classification: 'GRANT', lifecycle: 'open' },
-  ]), { openCalls: 2, forthcomingCalls: 2 });
+  ]), { openCalls: 2, forthcomingCalls: 1 });
+});
+
+test('open count takes only open or blank GRANT rows, skipping unknown and duplicates', () => {
+  assert.deepEqual(splitOpenCallCounts([
+    { classification: 'GRANT', lifecycle: 'open', status: 'queued' },
+    { classification: 'GRANT', lifecycle: null, status: 'approved' },
+    { classification: 'GRANT', lifecycle: '', status: 'queued' },
+    { classification: 'GRANT', lifecycle: 'unknown', status: 'queued' },
+    { classification: 'GRANT', lifecycle: 'open', status: 'duplicate' },
+    { classification: 'GRANT', lifecycle: null, status: 'duplicate' },
+    { classification: 'NEWS', lifecycle: 'open', status: 'queued' },
+  ]), { openCalls: 3, forthcomingCalls: 0 });
+});
+
+test('forthcoming count takes only non-duplicate GRANT rows', () => {
+  assert.deepEqual(splitOpenCallCounts([
+    { classification: 'GRANT', lifecycle: 'forthcoming', status: 'queued' },
+    { classification: 'NOISE', lifecycle: 'forthcoming', status: 'queued' },
+    { classification: 'GRANT', lifecycle: 'forthcoming', status: 'duplicate' },
+    { classification: null, lifecycle: 'forthcoming' },
+  ]), { openCalls: 0, forthcomingCalls: 1 });
+});
+
+test('prompt stats SQL applies the GRANT, lifecycle and duplicate filters', async () => {
+  const calls = [];
+  const pool = {
+    async query(sql, params) {
+      calls.push({ sql, params });
+      if (sql.includes('WITH prompt_entries')) return { rows: [] };
+      return { rows: [{ total_unique: '0', found_by_multiple: '0' }] };
+    },
+  };
+  await getPromptEffectivenessStats(pool, 7);
+  const sql = calls[0].sql.replace(/\s+/g, ' ');
+  assert.match(sql, /classification = 'GRANT' AND status IS DISTINCT FROM 'duplicate' AND lifecycle = 'forthcoming' \) AS forthcoming_calls/);
+  assert.match(sql, /classification = 'GRANT' AND status IS DISTINCT FROM 'duplicate' AND COALESCE\(NULLIF\(btrim\(lifecycle\), ''\), 'open'\) = 'open' \) AS open_calls/);
+  assert.doesNotMatch(sql, /NOT IN \('forthcoming', 'closed'\)/);
 });
