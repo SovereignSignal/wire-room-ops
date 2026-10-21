@@ -448,7 +448,12 @@ test('outgoing lists recent programs-only approvals and hides the rest', async (
   assert.ok(!body.items.some(row => row.entryId === recent.id && row.state === 'missing'));
 });
 
-test('curator approve stays quiet unless publish and confirm are set with pacing on', async () => {
+test('curator approve stays quiet unless publish and confirm are set with pacing on', async (t) => {
+  // A publish approve schedules drainPublicationQueue on setImmediate. Its pace pass
+  // re-plans the booked row and can clear the 'quiet hours' note before snap() reads it,
+  // so the result depended on which finished first. Stub the drain so this test checks
+  // only what the booking wrote.
+  t.mock.method(require('../src/services/publication-queue'), 'drainPublicationQueue', async () => {});
   await channel('crypto', 'crypto-chat');
   await enablePace({ quietHours: quietCovering(new Date()) });
 
