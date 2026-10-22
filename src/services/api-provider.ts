@@ -133,8 +133,35 @@ export function isProviderExplicitlyDisabled(provider: string): boolean {
 }
 
 export function getCachedProvider(provider: string): ProviderConfig | null {
+  if (provider === 'grok') {
+    const override = llmProviderOverride();
+    if (override) return override;
+  }
   const cached = getProviderState(provider);
   return cached?.enabled ? cached : null;
+}
+
+/**
+ * LLM_PROVIDER=ollama reroutes every caller of the 'grok' chat slot (classify,
+ * decided-recheck, tag backfill, qualifiers) to Ollama Cloud's OpenAI-compatible
+ * endpoint, ahead of the api_providers row. Default (unset or 'grok') changes
+ * nothing. Key: WRO_OLLAMA_API_KEY. Model: LLM_OLLAMA_MODEL. Base URL:
+ * LLM_OLLAMA_BASE_URL. Grok-only features (x_search / web_search Responses
+ * calls) are not served by Ollama and will fail on this slot while it is set.
+ */
+export function llmProviderOverride(env: NodeJS.ProcessEnv = process.env): ProviderConfig | null {
+  if ((env.LLM_PROVIDER || 'grok').trim().toLowerCase() !== 'ollama') return null;
+  const apiKey = (env.WRO_OLLAMA_API_KEY || '').trim();
+  if (!apiKey) return null;
+  return {
+    provider: 'grok',
+    display_name: 'Ollama Cloud (LLM_PROVIDER=ollama)',
+    api_key: apiKey,
+    base_url: (env.LLM_OLLAMA_BASE_URL || 'https://ollama.com/v1').replace(/\/$/, ''),
+    default_model: env.LLM_OLLAMA_MODEL || 'deepseek-v4.1-flash',
+    enabled: true,
+    source: 'env',
+  };
 }
 
 export async function refreshProviderCache(): Promise<void> {
