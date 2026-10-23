@@ -37,7 +37,8 @@ for both (it can dump PG 17).
 Run both side by side for at least 5 days. Because both write the same naming scheme, and the
 cron runs at the same time, you'll see two objects per day under each prefix during the overlap;
 that's expected. Then disable `backup-db.yml` (a follow-up PR deletes it), and only after that
-remove the public TCP proxies.
+remove the public TCP proxies. The other clients that must move first, and the cutover order, are
+in `docs/private-database-runbook.md`.
 
 ## Behaviour
 Fails (non-zero exit, nothing uploaded) if pg_dump fails, reports `error`/`fatal`/`aborting`, or

@@ -46,6 +46,7 @@ Monitored accounts, registry watch, and source feeds are dashboard controls. Rea
 - `/api/scan/agent/approval-patterns`
 - `/api/scan/status-counts`
 - `/api/scan/deadline-digest`
+- `/api/read/*`, the read-only views for scouts and ops scripts (entries, approvals, deliveries, seen URLs, intake counts, backlog, names, daily usage). Any method other than `GET` or `HEAD` is `403`. See `docs/read-api.md`.
 - Every dashboard GET listed under [Dashboard](#dashboard). `raw_output` is still omitted on queue, list, and single-entry responses.
 
 `raw_output` is omitted on queue, list, and single-entry responses for curator keys. Internal-key responses are unchanged.

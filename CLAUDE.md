@@ -100,7 +100,7 @@ src/
 │   ├── auth.ts           # Privy session auth (requireAuth middleware)
 │   ├── internal-auth.ts  # Internal API key auth for agent access (requireAuthOrInternalKey)
 │   └── rate-limit.ts     # In-memory rateLimit() helper used by expensive/admin endpoints
-├── routes/               # Express route modules (mounted in server.ts — 18 routers)
+├── routes/               # Express route modules (mounted in server.ts — 19 routers)
 │   ├── accounts.ts       # monitored_accounts CRUD (X account/people watch-list)
 │   ├── admin.ts          # Admin operations (migrations, backfills, purges, contacts-sync trigger)
 │   ├── auth.ts           # Login, logout, session, file download
@@ -115,6 +115,7 @@ src/
 │   ├── models.ts         # Model & wire lookup
 │   ├── orgs.ts           # Org profiles
 │   ├── providers.ts      # API providers, usage tracking, pricing
+│   ├── read-api.ts       # /api/read/* — read-only views for scouts and ops scripts (read_queue; docs/read-api.md)
 │   ├── scan-entries.ts   # Entry queries, submit, queue, actions, curate stamp, redistribute, seen-urls, agent brief
 │   ├── scan-execution.ts # Scan execution + forum/feeds/cohort run triggers (/api/scan/run, /api/feeds/run, /api/forum/run, /api/cohort/run)
 │   ├── scan-prompts.ts   # Scan prompts CRUD, test, review, run
@@ -279,6 +280,8 @@ only after that historical review and a retained recovery copy.
 ### Shared PostgreSQL Database
 
 `wire-room-ops` and `tele-sum` share one PostgreSQL database hosted on Railway (`wire-room-db`). This repo is the primary writer. (The retired `the-wire-room` site's Railway service was deleted 2026-07-02.) The `grant-wire-scout` Railway services and the local `grant-wire-engine`/`grant-wire-weekly` tooling also connect to this database directly — treat its schema as a shared contract.
+
+The database is being taken off the public internet (Sov's hybrid plan, 2026-10-23). New readers use the read API (`/api/read/*`, `docs/read-api.md`), not a database URL. Client inventory, operator access without a public proxy (`railway ssh`, tunnels, migrations), the rotation toolkit changes, the Desk sync cron and the cutover order are in `docs/private-database-runbook.md`. Do not add a client that needs the public TCP proxy.
 
 ### Table Groups
 
@@ -574,7 +577,7 @@ The Stringer's queue-triage layer: `POST /api/scan/entries/:id/curate` (internal
 
 `src/middleware/internal-auth.ts` provides `requireAuthOrInternalKey` middleware. Accepts a valid **named** internal API key bearer token (timing-safe compare) or falls through to standard Privy session auth. Each key maps to its own audit-trail identity: `INTERNAL_API_KEY` → `agent:stringer` (The Stringer), `INTERNAL_API_KEY_DAILY_SCAN` → `agent:daily-scan` (the claude.ai daily-grant-scan routine; supported in code, but the variable is **not set in production** as of 2026-10-01, so nothing authenticates as `agent:daily-scan`). The internal key is the unscoped master key: `agent:stringer` in an audit column means "used `INTERNAL_API_KEY`", not "was The Stringer". New agents get a scoped key instead (next section). **An agent key cannot publish by approving.** Entry actions are force-quieted server-side. The internal key still gets 403 on send doors. A curator token may call those doors only with `confirm=true` (redistribute, distribution run, channel test, digest send, and the other send paths in `docs/curator-api.md`). That guarantee covers API keys, not dashboard logins. Since 2026-10-02 Hedwig also has a dashboard login (its inbox is in `ALLOWED_EMAILS`, by the owner's decision). That session is an operator session: its approvals publish, it can redistribute and change settings, and its actions are audited as `user:<email>`, not `agent:hedwig`.
 
-Internal-key mounts (see `src/server.ts`): `/api/scan/prompts`, `/api/scan` (entries, actions, queue, seen-urls, agent endpoints), `/api` scan-execution (`/api/scan/run`, `/api/feeds/run`, `/api/forum/run`, `/api/cohort/run`), `/api/grants-intel`, and the SSE job-progress endpoint. `/api/accounts` is a curator-or-session mount (`read_queue` / `decide`), not an internal-key mount. Agent behaviors enforced server-side: entry actions are **force-quieted** (agents cannot trigger distribution), `POST /api/scan/submit` runs `insertOnly` (dedup/classify completed by the 5-min process-raw cycle), `POST /api/scan/telegram-batch` (and `/manual-intake`) share `processBatchMessage` with the Telegram intake bot (`parseBatchEntries`, URL/name dedupe, `scan_source=telegram`) but an agent session inserts `raw` (`IntakeOptions.origin = 'agent'`, response carries `processing: 'background'`) so process-raw classifies within ~5 min — only a human session gets the unclassified queued insert, and `POST /entries/:id/curate` writes a non-destructive curator stamp.
+Internal-key mounts (see `src/server.ts`): `/api/scan/prompts`, `/api/scan` (entries, actions, queue, seen-urls, agent endpoints), `/api` scan-execution (`/api/scan/run`, `/api/feeds/run`, `/api/forum/run`, `/api/cohort/run`), `/api/grants-intel`, and the SSE job-progress endpoint. `/api/accounts` is a curator-or-session mount (`read_queue` / `decide`), not an internal-key mount. So is `/api/read` (`read_queue`, GET/HEAD only). Agent behaviors enforced server-side: entry actions are **force-quieted** (agents cannot trigger distribution), `POST /api/scan/submit` runs `insertOnly` (dedup/classify completed by the 5-min process-raw cycle), `POST /api/scan/telegram-batch` (and `/manual-intake`) share `processBatchMessage` with the Telegram intake bot (`parseBatchEntries`, URL/name dedupe, `scan_source=telegram`) but an agent session inserts `raw` (`IntakeOptions.origin = 'agent'`, response carries `processing: 'background'`) so process-raw classifies within ~5 min — only a human session gets the unclassified queued insert, and `POST /entries/:id/curate` writes a non-destructive curator stamp.
 
 **Mount order in `server.ts` is load-bearing**: the Telegram webhook router mounts first, and `scanExecutionRouter` must mount before the session-only `/api/feeds` + schedule routers or the internal key gets 401s from prefix shadowing (this broke agent access once — fixed in `8cc119f`).
 
@@ -584,7 +587,7 @@ Internal-key mounts (see `src/server.ts`): `/api/scan/prompts`, `/api/scan` (ent
 
 | Scope | Opens |
 |---|---|
-| `read_queue` | GET queue, entries, seen-urls, approval-patterns, status-counts, deadline-digest, and every dashboard GET (pace, outgoing, feeds, schedules, providers, and the rest in `docs/curator-api.md`) |
+| `read_queue` | GET queue, entries, seen-urls, approval-patterns, status-counts, deadline-digest, the `/api/read/*` views (`docs/read-api.md`; GET/HEAD only, one read-only transaction per request), and every dashboard GET (pace, outgoing, feeds, schedules, providers, and the rest in `docs/curator-api.md`) |
 | `decide` | entry actions (including `withhold` and `POST .../unwithhold`), bulk-action, link-duplicate, wire, source, and content edits (`PATCH .../content` for post text plus classification, tags, and metadata.amount; evidence + `Idempotency-Key` on those editorial writes; content and unwithhold also need `confirm=true` and never send), and every dashboard write. Sends, deletes, and secret writes also need `confirm=true` |
 | `propose` | `POST /entries/:id/curate` (evidence required) and `POST /api/scan/submit` |
 | `intake` | `POST /api/scan/telegram-batch` only |

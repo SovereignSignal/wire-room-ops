@@ -49,29 +49,27 @@ deploy time instead of as a runtime 42501.
 
 ## One-time setup on Railway (do this before redeploying)
 
-Order matters. Steps 1 and 2 happen in the `wire-room-db` project, the rest in
-`wire-room-ops`.
+All of this happens in the `wire-room-db` project, which holds both the
+Postgres service and `wire-room-ops` (the service was recreated there in
+October 2026).
 
-1. **Get the owner connection string** from the `wire-room-db` project:
-   Postgres service → Variables → `DATABASE_URL` (the superuser/owner login the
-   database was created with). If the runtime role was created from a
-   different owner, use that owner. The login has to own the tables, or be a
-   member of the owning role, or `ALTER TABLE` is refused.
+1. **Find the owner login.** It is the superuser/owner login the database was
+   created with: the Postgres service's `DATABASE_URL`. If the runtime role
+   was created from a different owner, use that owner. The login has to own
+   the tables, or be a member of the owning role, or `ALTER TABLE` is
+   refused.
 2. **Confirm the runtime role name.** It is the username in the
    `wire-room-ops` service's `DATABASE_URL`. The migration derives the role
    from that variable; only set `RUNTIME_DATABASE_ROLE` if the login in
    `DATABASE_URL` is not the role that should hold the grants.
-3. **Add the variable** on the `wire-room-ops` service (project
-   `wire-room-ops`, environment `production`): Variables → New Variable →
-   name `MIGRATION_DATABASE_URL`, value = the owner connection string from
-   step 1. Use the three-dot menu → **Seal** afterward.
-   - A Railway reference variable (`${{ Postgres.DATABASE_URL }}`) does
-     **not** work here. References resolve to services and shared variables
-     inside the same project and environment, and the database lives in a
-     different project (`wire-room-db`). Paste the literal value, the same way
-     the service's `DATABASE_URL` is already a literal. If the two projects
-     are ever merged, switch to the reference so a credential rotation on the
-     database propagates.
+3. **Add the variable** on the `wire-room-ops` service (environment
+   `production`): Variables → New Variable → name `MIGRATION_DATABASE_URL`,
+   value `${{Postgres.DATABASE_URL}}`. The reference resolves to the private
+   host (`*.railway.internal`), so it keeps working after the public TCP
+   proxy is deleted, and a superuser rotation reaches it on the next deploy.
+   Do not use `DATABASE_PUBLIC_URL`, and do not paste a literal string.
+   `docs/private-database-runbook.md` section 3 has a check that prints only
+   whether each variable is private.
 4. **Deploy the staged change.** Adding a variable stages a change; apply it.
    Railway redeploys the current commit (main, which includes #193 and #194).
    The pre-deploy container now runs the migration as the owner. Watch the
@@ -96,7 +94,8 @@ does not own.
 ## Verify after the deploy
 
 Run the SQL as the owner (Railway → `wire-room-db` → Postgres → Data tab, or
-`psql "$MIGRATION_DATABASE_URL"` locally). Nothing here writes.
+`psql` inside the database container over `railway ssh`, as in
+`docs/private-database-runbook.md` section 4.2). Nothing here writes.
 
 ```sql
 -- 1. Version 5 recorded, once.
@@ -164,6 +163,14 @@ generates without editing it: its plan treats anything the file omits as
 removed, including the service variables and the GitHub source.
 
 ## Running the migration by hand
+
+Against production, from the running app container, which has the built
+`dist/` and both variables. No public database address is involved:
+
+```bash
+railway ssh -s wire-room-ops -- node dist/scripts/migrate-database.js          # dry run, prints the plan
+railway ssh -s wire-room-ops -- node dist/scripts/migrate-database.js --apply
+```
 
 Against a non-Railway host, after `npm run build`:
 
