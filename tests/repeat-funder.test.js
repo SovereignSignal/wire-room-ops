@@ -26,6 +26,83 @@ test('Btrust Starter Grants shares a funder key with Btrust posts and tags', () 
   assert.equal(funderNameKeys('Crypto B', []).includes('crypto'), false);
 });
 
+test('Neon Open Source Program does not match other OSS funders, and a real Neon repeat does', () => {
+  const neon = {
+    name: 'Neon Open Source Program',
+    tags: ['Neon', 'open source', 'OSS', 'program', 'source', ''],
+    orgId: null,
+    programId: null,
+  };
+  const unrelated = [
+    { name: 'Pullfrog — Maintainer Grants', tags: ['open source', 'OSS', 'Pullfrog', 'program'] },
+    { name: 'SignPath: Open Source Code Signing', tags: ['oss', 'open source'] },
+    { name: 'CircleCI Open Source Program', tags: ['OSS'] },
+    { name: 'Netlify — Open Source Fund', tags: ['open source', 'program'] },
+    { name: 'Datadog OSS Credits', tags: ['oss', 'program'] },
+    { name: 'Syntax/Sentry — Open Source', tags: ['open source', 'OSS'] },
+    { name: 'Pullfrog', tags: ['open source'] },
+    { name: 'CircleCI', tags: ['source'] },
+    { name: 'Weekly OSS roundup', tags: ['oss'] },
+  ];
+  assert.deepEqual(funderNameKeys(neon.name, ['open source', 'OSS', 'program', 'oss', 'source', '']), []);
+  assert.ok(funderNameKeys('Neon — Open Source Program', ['open source', 'oss']).includes('neon'));
+  assert.equal(funderNameKeys('Neon — Open Source Program', ['open source', 'oss']).includes('open source'), false);
+  assert.equal(funderNameKeys('Neon — Open Source Program', ['open source', 'oss']).includes('oss'), false);
+  for (const prior of unrelated) {
+    assert.equal(sameRepeatFunder(neon, prior), false, prior.name);
+  }
+  assert.equal(sameRepeatFunder(
+    { name: 'Neon Open Source Program', tags: ['open source', 'OSS', 'program'] },
+    { name: 'Neon — Startup Program', tags: ['open source', 'OSS'] },
+  ), true);
+  assert.equal(sameRepeatFunder(
+    { name: 'Syntax/Sentry — Open Source', tags: ['OSS'] },
+    { name: 'Syntax/Sentry: Sponsorship', tags: ['open source'] },
+  ), true);
+  assert.equal(sameRepeatFunder(
+    { name: 'Open Source Collective — Funding', tags: [] },
+    { name: 'Open Source Collective: Grants', tags: ['open source'] },
+  ), true);
+});
+
+test('missing or empty funder keys never match, and known aliases still do', () => {
+  assert.equal(sameRepeatFunder(
+    { name: '', tags: ['', 'oss', 'open source'], orgId: null, programId: null },
+    { name: 'Pullfrog', tags: ['oss'], orgId: null, programId: null },
+  ), false);
+  assert.equal(sameRepeatFunder(
+    { name: null, tags: null, orgId: null, programId: null },
+    { name: null, tags: null, orgId: null, programId: null },
+  ), false);
+  assert.equal(sameRepeatFunder(
+    { name: 'Open Source Program', tags: ['oss'] },
+    { name: 'Another Open Source Program', tags: ['open source', 'program'] },
+  ), false);
+  assert.equal(sameRepeatFunder({ name: 'Aaa', orgId: 0 }, { name: 'Bbb', orgId: 0 }), false);
+  assert.equal(sameRepeatFunder({ name: 'Aaa', orgId: null }, { name: 'Bbb', orgId: null }), false);
+  assert.equal(sameRepeatFunder({ name: 'Aaa', programId: '' }, { name: 'Bbb', programId: '' }), false);
+  assert.equal(sameRepeatFunder(
+    { name: 'Neon Open Source Program', orgId: 4 },
+    { name: 'Neon Credits', orgId: 4 },
+  ), true);
+  assert.equal(sameRepeatFunder(
+    { name: 'Uniswap — Grants', tags: [] },
+    { name: 'Uniswap Foundation: New round', tags: ['Uniswap'] },
+  ), true);
+  assert.equal(sameRepeatFunder(
+    { name: 'Weekly notes', tags: ['Gitcoin Grants'] },
+    { name: 'Gitcoin — GG24', tags: [] },
+  ), true);
+  assert.equal(sameRepeatFunder(
+    { name: 'EF — Academic grants', tags: ['EF'] },
+    { name: 'Ethereum Foundation — ESP', tags: ['esp'] },
+  ), true);
+  assert.equal(sameRepeatFunder(
+    { name: 'Base Batches — 2026', tags: [] },
+    { name: 'Base (Coinbase) — Grants', tags: ['Coinbase'] },
+  ), true);
+});
+
 test('the repeat window defaults to 30 days', () => {
   const previous = process.env.REPEAT_FUNDER_WINDOW_DAYS;
   delete process.env.REPEAT_FUNDER_WINDOW_DAYS;
@@ -234,6 +311,44 @@ if (!process.env.DATABASE_URL) {
     assert.equal(audit.repeat_funder_overrides[0].actor, 'agent:hedwig');
     assert.equal(audit.repeat_funder_overrides[0].reason, 'Starter Grants is a distinct round.');
     assert.equal(audit.repeat_funder_overrides[0].priors.length, 3);
+  });
+
+  test('Neon Open Source Program is not held by other OSS funders, and a second Neon post is', async () => {
+    const generic = ['open source', 'OSS', 'program'];
+    const priors = [
+      'Pullfrog — Maintainer Grants',
+      'SignPath: Open Source Code Signing',
+      'CircleCI Open Source Program',
+      'Netlify — Open Source Fund',
+      'Datadog OSS Credits',
+      'Syntax/Sentry — Open Source',
+    ];
+    for (const [i, name] of priors.entries()) {
+      const row = await entry(name, generic);
+      await pool.query(`UPDATE scan_entries SET wire = 'oss', wires = ARRAY['oss'] WHERE id = $1`, [row.id]);
+      await pool.query(
+        `INSERT INTO distribution_logs (entry_id, channel, wire, status, external_id, sent_at)
+         VALUES ($1, 'telegram', 'oss', 'success', $2, NOW() - interval '3 days')`,
+        [row.id, String(9100 + i)],
+      );
+    }
+    const neon = await entry('Neon Open Source Program', ['Neon', 'open source', 'OSS', 'program']);
+    await pool.query(`UPDATE scan_entries SET wire = 'oss', wires = ARRAY['oss'] WHERE id = $1`, [neon.id]);
+    const { repeatFunderHolds } = require('../src/services/repeat-funder');
+    let holds = await repeatFunderHolds(pool, [neon.id]);
+    assert.equal(holds[0].held, false);
+    assert.equal(holds[0].priors.length, 0);
+
+    const earlier = await entry('Neon — Startup Program', ['Neon', 'open source']);
+    await pool.query(`UPDATE scan_entries SET wire = 'oss', wires = ARRAY['oss'] WHERE id = $1`, [earlier.id]);
+    await pool.query(
+      `INSERT INTO distribution_logs (entry_id, channel, wire, status, external_id, sent_at)
+       VALUES ($1, 'telegram', 'oss', 'success', '9201', NOW() - interval '2 days')`,
+      [earlier.id],
+    );
+    holds = await repeatFunderHolds(pool, [neon.id]);
+    assert.equal(holds[0].held, true);
+    assert.deepEqual(holds[0].priors.map(prior => prior.entryId), [earlier.id]);
   });
 
   test('an approve that would publish is refused while the funder is inside the window', async () => {
