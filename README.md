@@ -299,6 +299,7 @@ Optional:
 - `POST_GEN_MODEL` -- Telegram post draft model (default: `OLLAMA_DEFAULT_MODEL`)
 - `POST_VERIFY_MODEL` -- post faithfulness verifier model (default: `OLLAMA_DEFAULT_MODEL`)
 - `REPEAT_FUNDER_WINDOW_DAYS` -- hold a funder off Telegram after a successful post (default 30)
+- `OPEN_CALL_EXPIRY_GRACE_HOURS` -- hours after a deadline closes before the daily cycle marks the open call closed/EXPIRED (default 6, max 72)
 - `TELEGRAM_BOT_TOKEN` -- bot token for channel distribution posting
 - `DB_SSL_REJECT_UNAUTHORIZED`
 - `FORUM_SCAN_ENABLED`
