@@ -20,12 +20,14 @@ const POST_TEXT_CONFIRM_PATHS: { method: string; pattern: RegExp }[] = [
   { method: 'PATCH', pattern: /^\/api\/distribution\/queue\/\d+\/post$/ },
 ];
 
-/** Close a failed send. Confirm is required. This does not send. */
+/** Close a failed send, or release a publication stuck in review. Confirm is required. These do not send. */
 const ACKNOWLEDGE_CONFIRM_PATHS: { method: string; pattern: RegExp }[] = [
   { method: 'POST', pattern: /^\/api\/distribution\/logs\/\d+\/acknowledge$/ },
+  { method: 'POST', pattern: /^\/api\/distribution\/queue\/\d+\/release$/ },
 ];
 
 export const ACKNOWLEDGE_CONFIRM_MESSAGE = 'Acknowledging a failed send needs confirm=true. This action does not send.';
+export const RELEASE_CONFIRM_MESSAGE = 'Releasing a stuck publication needs confirm=true. This action does not send.';
 
 const SEND_PATHS = [
   /^\/api\/distribution\/run\/[^/]+$/,

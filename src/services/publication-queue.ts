@@ -7,6 +7,7 @@ import { composeStoredPost, fillMissingPublicationPost } from './publication-pos
 import { enforceRepeatFunderHold, recordRepeatFunderOverride } from './repeat-funder';
 
 export const PACING_REQUIRED_ERROR = 'pacing must be on and not paused';
+export const VERIFY_BEFORE_RETRY = 'A send needs verification before retrying';
 
 let running = false;
 
@@ -55,9 +56,15 @@ async function runClaimedJob(pool: Pool, job: { entry_id: number; attempts: numb
       const result = await distributeEntry(job.entry_id, entry.wire);
       const unresolved = await pool.query(`SELECT id FROM distribution_logs
         WHERE entry_id = $1 AND status = 'pending'`, [job.entry_id]);
-      if (unresolved.rows.length) { state = 'review'; error = 'A send needs verification before retrying'; }
+      if (unresolved.rows.length) { state = 'review'; error = VERIFY_BEFORE_RETRY; }
       else if (result.failed || result.skipped) {
-        state = 'review'; error = 'No new delivery confirmed; check destinations and receipts';
+        state = 'review';
+        const rejected = (await pool.query(`SELECT error_message FROM distribution_logs
+          WHERE entry_id = $1 AND status = 'failed' AND resolved_at IS NULL AND error_message IS NOT NULL
+          ORDER BY id DESC LIMIT 1`, [job.entry_id])).rows[0]?.error_message;
+        error = result.failed && rejected
+          ? `${rejected}; nothing was posted. Fix the destination, then retry`
+          : 'No new delivery confirmed; check destinations and receipts';
       } else if (result.totalEntries === 0) {
         const closed = await pool.query(
           `SELECT
@@ -376,7 +383,7 @@ export async function acknowledgeFailedDistribution(id: number, actor: string, r
   }
 }
 
-async function entryHasOpenDestination(client: { query: Pool['query'] }, entryId: number): Promise<boolean> {
+export async function entryHasOpenDestination(client: { query: Pool['query'] }, entryId: number): Promise<boolean> {
   const open = await client.query(
     `WITH entry AS (
        SELECT id, wire, wires FROM scan_entries WHERE id = $1
@@ -551,7 +558,13 @@ export async function enqueuePacedPublication(
     if (!pace.enabled || pace.paused) throw new EnqueueConflictError(PACING_REQUIRED_ERROR);
     const queueStatus = typeof row.queue_status === 'string' ? row.queue_status : null;
     if (queueStatus === 'withheld') throw new EnqueueConflictError('Entry is withheld');
-    if (queueStatus === 'queued' || queueStatus === 'running' || queueStatus === 'review') {
+    if (queueStatus === 'review') {
+      throw new EnqueueConflictError(
+        `Entry already has a review publication. Check GET /api/distribution/queue/${entryId}/verification, `
+        + `then release it with POST /api/distribution/queue/${entryId}/release before enqueueing again`,
+      );
+    }
+    if (queueStatus === 'queued' || queueStatus === 'running') {
       throw new EnqueueConflictError(`Entry already has a ${queueStatus} publication`);
     }
     if (row.telegram_sent) throw new EnqueueConflictError('Entry already has a successful Telegram send');
