@@ -135,7 +135,7 @@ function idem() {
   return `release-key-${idemSeq}-abcd`;
 }
 
-test('message ids and t.me links parse; only a 4xx ok:false body is a definite rejection', () => {
+test('message ids and t.me links parse; a 4xx ok:false body other than 429 is a definite rejection', () => {
   assert.equal(release.parseTelegramMessageId('4512'), '4512');
   assert.equal(release.parseTelegramMessageId(' https://t.me/grantwire/4512 '), '4512');
   assert.equal(release.parseTelegramMessageId('https://t.me/c/1234567890/77?single'), '77');
@@ -145,12 +145,111 @@ test('message ids and t.me links parse; only a 4xx ok:false body is a definite r
   assert.equal(release.telegramMessageLink('-1001234567890', '9'), 'https://t.me/c/1234567890/9');
   assert.equal(release.telegramMessageLink('12345', '9'), null);
 
-  const { isDefiniteTelegramRejection } = require('../src/services/telegram-channel');
+  const { isDefiniteTelegramRejection, telegramRetryAfterSeconds, DEFAULT_RETRY_AFTER_SECONDS } = require('../src/services/telegram-channel');
   assert.equal(isDefiniteTelegramRejection({ ok: false, error_code: 400, description: "Bad Request: can't parse entities" }), true);
-  assert.equal(isDefiniteTelegramRejection({ ok: false, error_code: 429, description: 'Too Many Requests' }), true);
+  assert.equal(isDefiniteTelegramRejection({ ok: false, error_code: 401, description: 'Unauthorized' }), true);
+  assert.equal(isDefiniteTelegramRejection({ ok: false, error_code: 403, description: 'Forbidden: bot is not a member of the channel chat' }), true);
+  assert.equal(isDefiniteTelegramRejection({ ok: false, error_code: 429, description: 'Too Many Requests: retry after 7', parameters: { retry_after: 7 } }), false);
   assert.equal(isDefiniteTelegramRejection({ ok: false, error_code: 502, description: 'Bad Gateway' }), false);
   assert.equal(isDefiniteTelegramRejection({ ok: false }), false);
   assert.equal(isDefiniteTelegramRejection(null), false);
+
+  assert.equal(telegramRetryAfterSeconds({ ok: false, error_code: 429, parameters: { retry_after: 7 } }), 7);
+  assert.equal(telegramRetryAfterSeconds({ ok: false, error_code: 429, parameters: { retry_after: 2.2 } }), 3);
+  assert.equal(telegramRetryAfterSeconds({ ok: false, error_code: 429 }), DEFAULT_RETRY_AFTER_SECONDS);
+  assert.equal(telegramRetryAfterSeconds({ ok: false, error_code: 400 }), null);
+
+  const { rateLimitedMessage, rateLimitRetryAfter } = require('../src/services/distribution');
+  assert.equal(rateLimitRetryAfter(rateLimitedMessage(45, '429: Too Many Requests')), 45);
+  assert.equal(rateLimitRetryAfter("Telegram rejected the send (400: Bad Request); retry after 3s"), null);
+  assert.equal(rateLimitRetryAfter(null), null);
+});
+
+test('sendChannelMessage waits out a short retry_after and retries; a long one goes back to the caller', async (t) => {
+  // beforeEach mocks the cached export, so load an unmocked copy of the module.
+  const file = require.resolve('../src/services/telegram-channel');
+  const cached = require.cache[file];
+  delete require.cache[file];
+  const { sendChannelMessage } = require(file);
+  require.cache[file] = cached;
+  const bodies = [
+    { ok: false, error_code: 429, description: 'Too Many Requests: retry after 3', parameters: { retry_after: 3 } },
+    { ok: true, result: { message_id: 42 } },
+  ];
+  const fetchMock = t.mock.method(globalThis, 'fetch', async () => ({ json: async () => bodies.shift() }));
+  const slept = [];
+  const sleep = async (ms) => { slept.push(ms); };
+  let rejected = null;
+  let limited = null;
+  const opts = { sleep, onRejected: d => { rejected = d; }, onRateLimited: (s, d) => { limited = [s, d]; } };
+
+  assert.deepEqual(await sendChannelMessage('token', '@chan', 'text', opts), { messageId: 42 });
+  assert.deepEqual(slept, [3000]);
+  assert.equal(fetchMock.mock.callCount(), 2);
+  assert.equal(rejected, null);
+  assert.equal(limited, null);
+
+  bodies.push({ ok: false, error_code: 429, description: 'Too Many Requests: retry after 600', parameters: { retry_after: 600 } });
+  assert.equal(await sendChannelMessage('token', '@chan', 'text', opts), null);
+  assert.deepEqual(slept, [3000], 'a long wait is not slept inline');
+  assert.deepEqual(limited, [600, '429: Too Many Requests: retry after 600']);
+  assert.equal(rejected, null, 'a 429 is never reported as a rejection');
+
+  limited = null;
+  const flood = { ok: false, error_code: 429, description: 'Too Many Requests: retry after 1', parameters: { retry_after: 1 } };
+  bodies.push(flood, flood, flood);
+  assert.equal(await sendChannelMessage('token', '@chan', 'text', opts), null);
+  assert.deepEqual(limited, [1, '429: Too Many Requests: retry after 1'], 'inline retries are bounded');
+  assert.equal(fetchMock.mock.callCount(), 6);
+
+  bodies.push({ ok: false, error_code: 403, description: 'Forbidden: bot was kicked' });
+  assert.equal(await sendChannelMessage('token', '@chan', 'text', opts), null);
+  assert.equal(rejected, '403: Forbidden: bot was kicked');
+});
+
+test('a send still rate limited after retries frees the slot and reschedules after retry_after, then posts once', async () => {
+  const e = await entry();
+  await channel();
+  telegram = async (_token, _chat, _text, opts) => {
+    opts?.onRateLimited?.(120, '429: Too Many Requests: retry after 120');
+    return null;
+  };
+  await publishOnce(e);
+  let rows = await logs(e.id);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].status, 'failed', 'Telegram created no message, so the slot is not held');
+  assert.equal(rows[0].needs_review, false);
+  assert.match(rows[0].error_message, /rate limited.*retry after 120s$/);
+  const row = (await pool.query(`SELECT status, error_message, EXTRACT(EPOCH FROM available_at - NOW()) AS wait
+    FROM publication_queue WHERE entry_id = $1`, [e.id])).rows[0];
+  assert.equal(row.status, 'queued', 'not parked in review');
+  assert.match(row.error_message, /retrying automatically/);
+  assert.ok(Number(row.wait) > 100 && Number(row.wait) <= 120, `rescheduled after retry_after, got ${row.wait}s`);
+  assert.equal((await queue.listPublicationReview()).length, 0);
+
+  await pool.query(`UPDATE publication_queue SET available_at = NOW() WHERE entry_id = $1`, [e.id]);
+  telegram = async () => ({ messageId: 777 });
+  await queue.drainPublicationQueue();
+  rows = await logs(e.id);
+  assert.deepEqual(rows.map(r => r.status), ['failed', 'success']);
+  assert.equal(rows[1].external_id, '777');
+  assert.equal((await queueRow(e.id)).status, 'done');
+  assert.equal(sends, 2);
+});
+
+test('a publication rate limited on every claim goes to review after the attempt cap', async () => {
+  const e = await entry();
+  await channel();
+  telegram = async (_token, _chat, _text, opts) => {
+    opts?.onRateLimited?.(30, '429: Too Many Requests: retry after 30');
+    return null;
+  };
+  await pool.query(`INSERT INTO publication_queue (entry_id, attempts) VALUES ($1, $2)`, [e.id, queue.MAX_RATE_LIMITED_ATTEMPTS - 1]);
+  await queue.drainPublicationQueue();
+  const row = await queueRow(e.id);
+  assert.equal(row.status, 'review');
+  assert.match(row.error_message, /nothing was posted\. Retry once the rate limit clears/);
+  assert.equal((await logs(e.id))[0].status, 'failed');
 });
 
 test('a definite Telegram rejection records a failed send, so retry needs no verification and posts once', async () => {

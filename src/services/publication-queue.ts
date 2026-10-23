@@ -1,13 +1,15 @@
 import { randomUUID } from 'crypto';
 import type { Pool } from 'pg';
 import { getPool } from '../db';
-import { distributeEntry } from './distribution';
+import { distributeEntry, rateLimitRetryAfter } from './distribution';
 import { bookPacedQueue, getDistributionPace, mergeQueueNote, paceRules, planQueue, sentTodayByTarget, UNSENT_TELEGRAM_DESTINATION_SQL, type DistributionPace } from './distribution-pace';
 import { composeStoredPost, fillMissingPublicationPost } from './publication-post';
 import { enforceRepeatFunderHold, recordRepeatFunderOverride } from './repeat-funder';
 
 export const PACING_REQUIRED_ERROR = 'pacing must be on and not paused';
 export const VERIFY_BEFORE_RETRY = 'A send needs verification before retrying';
+/** After this many claims a still rate-limited publication goes to review instead of rescheduling. */
+export const MAX_RATE_LIMITED_ATTEMPTS = 5;
 
 let running = false;
 
@@ -50,6 +52,7 @@ async function runClaimedJob(pool: Pool, job: { entry_id: number; attempts: numb
   heartbeat.unref();
   let state = 'done';
   let error: string | null = null;
+  let retryAfterSeconds: number | null = null;
   try {
     const entry = (await pool.query("SELECT wire FROM scan_entries WHERE id = $1 AND status = 'approved' AND distributable IS NOT FALSE AND lifecycle IS DISTINCT FROM 'forthcoming'", [job.entry_id])).rows[0];
     if (entry) {
@@ -59,12 +62,21 @@ async function runClaimedJob(pool: Pool, job: { entry_id: number; attempts: numb
       if (unresolved.rows.length) { state = 'review'; error = VERIFY_BEFORE_RETRY; }
       else if (result.failed || result.skipped) {
         state = 'review';
-        const rejected = (await pool.query(`SELECT error_message FROM distribution_logs
+        const failures = (await pool.query(`SELECT error_message FROM distribution_logs
           WHERE entry_id = $1 AND status = 'failed' AND resolved_at IS NULL AND error_message IS NOT NULL
-          ORDER BY id DESC LIMIT 1`, [job.entry_id])).rows[0]?.error_message;
-        error = result.failed && rejected
-          ? `${rejected}; nothing was posted. Fix the destination, then retry`
-          : 'No new delivery confirmed; check destinations and receipts';
+            AND created_at >= NOW() - INTERVAL '20 minutes'
+          ORDER BY id DESC`, [job.entry_id])).rows.map(row => String(row.error_message));
+        const waits = failures.map(rateLimitRetryAfter);
+        const rejected = failures.find((_, index) => waits[index] === null);
+        if (result.failed && failures.length && !rejected && job.attempts < MAX_RATE_LIMITED_ATTEMPTS) {
+          state = 'queued';
+          retryAfterSeconds = Math.max(...waits.map(Number));
+          error = `${failures[0]}; nothing was posted, retrying automatically`;
+        } else {
+          error = result.failed && failures.length
+            ? `${rejected ?? failures[0]}; nothing was posted. ${rejected ? 'Fix the destination, then retry' : 'Retry once the rate limit clears'}`
+            : 'No new delivery confirmed; check destinations and receipts';
+        }
       } else if (result.totalEntries === 0) {
         const closed = await pool.query(
           `SELECT
@@ -88,8 +100,9 @@ async function runClaimedJob(pool: Pool, job: { entry_id: number; attempts: numb
     state = job.attempts < 2 ? 'queued' : 'review';
   } finally { clearInterval(heartbeat); }
   await pool.query(`UPDATE publication_queue SET status = $2, error_message = $3,
-    available_at = NOW() + INTERVAL '5 minutes', lease_expires_at = NULL, updated_at = NOW()
-    WHERE entry_id = $1 AND lease_token = $4`, [job.entry_id, state, error, token]);
+    available_at = NOW() + COALESCE(make_interval(secs => $5::int), INTERVAL '5 minutes'),
+    lease_expires_at = NULL, updated_at = NOW()
+    WHERE entry_id = $1 AND lease_token = $4`, [job.entry_id, state, error, token, retryAfterSeconds]);
 }
 
 async function claimEntry(pool: Pool, entryId: number, token: string): Promise<{ entry_id: number; attempts: number } | null> {

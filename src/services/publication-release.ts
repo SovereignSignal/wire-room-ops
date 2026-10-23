@@ -246,8 +246,11 @@ export function parseDeliveryDecisions(raw: unknown): DeliveryDecision[] {
 /**
  * Record what happened to each unverified send and take the publication out of
  * review. Idempotent: repeating the same call after it succeeded changes nothing.
- * Holds the entry row lock that every send claim takes, so no send can start
- * for this entry while the release decides.
+ * Never enqueues or sends. Double-post safety rests on the unique destination
+ * index (one pending/success log per destination) and the queue status
+ * machine: the worker claims only queued rows and running rows with an expired
+ * lease, review rows are never claimed, this refuses queued rows, live leases
+ * and in-flight sends, and it leaves the row done.
  */
 export async function releaseStuckPublication(
   entryId: number,

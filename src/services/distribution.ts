@@ -263,10 +263,29 @@ async function dispatchToChannel(
 
 type SendOutcome = { ok: boolean; externalId?: string; errorMessage?: string; definite?: boolean };
 
+const RATE_LIMITED_PREFIX = 'Telegram rate limited the send';
+
+/** The failed-log message for a 429; the queue worker reads the wait back with `rateLimitRetryAfter`. */
+export function rateLimitedMessage(retryAfterSeconds: number, description: string): string {
+  return `${RATE_LIMITED_PREFIX} (${description}); retry after ${retryAfterSeconds}s`;
+}
+
+export function rateLimitRetryAfter(message: string | null | undefined): number | null {
+  if (!message?.startsWith(RATE_LIMITED_PREFIX)) return null;
+  const match = /; retry after (\d+)s$/.exec(message);
+  return match ? Number(match[1]) : null;
+}
+
 async function sendTelegram(token: string, chatId: string, text: string): Promise<SendOutcome> {
   let rejected: string | null = null;
-  const result = await sendChannelMessage(token, chatId, text, { onRejected: description => { rejected = description; } });
+  let rateLimited: string | null = null;
+  const result = await sendChannelMessage(token, chatId, text, {
+    onRejected: description => { rejected = description; },
+    onRateLimited: (seconds, description) => { rateLimited = rateLimitedMessage(seconds, description); },
+  });
   if (result) return { ok: true, externalId: String(result.messageId) };
+  // A 429 creates no message either, so its claim can be closed as failed and retried later.
+  if (rateLimited) return { ok: false, definite: true, errorMessage: rateLimited };
   return rejected
     ? { ok: false, definite: true, errorMessage: `Telegram rejected the send (${rejected})` }
     : { ok: false, errorMessage: 'Telegram API call failed' };

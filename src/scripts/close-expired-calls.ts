@@ -1,7 +1,8 @@
 /**
  * Mark open calls whose deadline has passed as closed (lifecycle 'closed',
- * classification 'EXPIRED'). The daily-digest cycle runs the same pass first;
- * this is for a manual run before a grants.watch Desk sync.
+ * classification 'EXPIRED'). The daily-digest cycle runs the same pass first
+ * when OPEN_CALL_AUTO_CLOSE_ENABLED=true; this is for reviewing the list, or a
+ * manual run before a grants.watch Desk sync.
  *
  * Dry run (default), prints what would close:
  *   npx ts-node --transpile-only src/scripts/close-expired-calls.ts

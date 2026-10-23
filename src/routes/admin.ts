@@ -271,8 +271,9 @@ router.post('/close-expired-calls', async (req: Request, res: Response) => {
     return;
   }
   try {
-    const { closeExpiredOpenCalls } = await import('../services/open-call-expiry');
-    res.json(await closeExpiredOpenCalls(getPool(), { dryRun }));
+    const { closeExpiredOpenCalls, openCallAutoCloseEnabled } = await import('../services/open-call-expiry');
+    const result = await closeExpiredOpenCalls(getPool(), { dryRun });
+    res.json({ ...result, dailyAutoCloseEnabled: openCallAutoCloseEnabled() });
   } catch (error) {
     console.error('[Admin] Open-call expiry failed:', error);
     res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });

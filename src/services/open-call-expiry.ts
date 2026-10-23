@@ -12,6 +12,10 @@
  * closes at the end of that day; with no zone, at the end of the day Anywhere
  * on Earth (UTC-12), the latest the call could still be open somewhere. A
  * grace period runs after that before the row is touched.
+ *
+ * Only approved and queued rows are considered. The daily fold writes only
+ * when OPEN_CALL_AUTO_CLOSE_ENABLED=true; the admin endpoint and CLI default
+ * to a dry run so the list can be reviewed first.
  */
 
 import type { Pool } from 'pg';
@@ -22,8 +26,13 @@ export const DEFAULT_GRACE_HOURS = 6;
 export const MAX_GRACE_HOURS = 72;
 export const DEFAULT_BATCH_LIMIT = 500;
 export const OPEN_CALL_EXPIRY_STATE_KEY = 'open-call-expiry:last-run';
-/** Statuses grants.watch reads, plus archived registry-lane rows. */
-export const EXPIRY_STATUSES = ['approved', 'queued', 'archived'] as const;
+/** Archived rows are never touched: their classification is historical record, not a live call. */
+export const EXPIRY_STATUSES = ['approved', 'queued'] as const;
+
+/** The daily fold writes only when OPEN_CALL_AUTO_CLOSE_ENABLED=true; read at call time. */
+export function openCallAutoCloseEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.OPEN_CALL_AUTO_CLOSE_ENABLED === 'true';
+}
 
 const AOE_OFFSET_MINUTES = -12 * 60;
 
@@ -195,8 +204,9 @@ export async function closeExpiredOpenCalls(
        WHERE se.id = v.id
          AND se.classification = 'GRANT'
          AND COALESCE(NULLIF(btrim(se.lifecycle), ''), 'open') = 'open'
+         AND se.status = ANY($3::text[])
        RETURNING se.id`,
-      [due.map(({ row }) => row.id), stamps],
+      [due.map(({ row }) => row.id), stamps, EXPIRY_STATUSES],
     );
     const done = new Set(updated.rows.map(row => Number(row.id)));
     closedRows = due.filter(({ row }) => done.has(Number(row.id)));
