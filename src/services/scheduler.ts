@@ -424,6 +424,15 @@ function createJobExecutor(schedule: ScheduleConfig) {
         let feedsLane: { ok: number; total: number } | null = null;
         let forumLane: 'ok' | 'fail' | null = null;
 
+        // First, so grants.watch never reads a past-deadline row as an open call.
+        try {
+          const { closeExpiredOpenCalls } = await import('./open-call-expiry');
+          await closeExpiredOpenCalls(pool);
+        } catch (e) {
+          console.error('[Scheduler] Open-call expiry failed (non-fatal):', e instanceof Error ? e.message : e);
+          anomalies.push(`Open-call expiry failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+
         // Discovery lanes run as part of this one daily cycle — no separate cron to manage.
         // Each is isolated so a lane failure never blocks the digest.
         try {

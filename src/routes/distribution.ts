@@ -8,6 +8,8 @@
  * PUT    /distribution/pace                      — validate and store pace settings
  * GET    /distribution/outgoing                  — scheduled, sent, stuck, and programs-only rows
  * POST   /distribution/queue/:id/enqueue      — book one approved entry onto the paced queue
+ * GET    /distribution/queue/:id/verification — what each send of a stuck publication did, and what to check
+ * POST   /distribution/queue/:id/release      — record verified outcomes and take it out of review (never sends)
  * GET    /distribution/config                     — list distribution configs (creds masked)
  * PUT    /distribution/config/:wire/:channel      — update channel config
  * POST   /distribution/run/:wire                  — trigger distribution
@@ -30,7 +32,8 @@ import { overrideQueuedPost, PublicationPostError, readPublicationPost, regenera
 import { RepeatFunderHoldError, repeatFunderPayload, repeatFunderStatus } from '../services/repeat-funder';
 import { openCuratorIdempotency } from '../services/curator-idempotency';
 import { parseCuratorEvidence } from '../services/curator-evidence';
-import { ACKNOWLEDGE_CONFIRM_MESSAGE, curatorConfirmed } from '../services/curator-confirm';
+import { ACKNOWLEDGE_CONFIRM_MESSAGE, RELEASE_CONFIRM_MESSAGE, curatorConfirmed } from '../services/curator-confirm';
+import { getPublicationVerification, parseDeliveryDecisions, PublicationReleaseError, releaseStuckPublication } from '../services/publication-release';
 import {
   getDistributionConfigs,
   upsertDistributionConfig,
@@ -331,6 +334,74 @@ router.post('/distribution/queue/:id/retry', async (req, res) => {
     res.status(409).json({ error: error instanceof Error ? error.message : 'Retry failed' });
   }
 });
+router.get('/distribution/queue/:id/verification', async (req, res) => {
+  const id = queueEntryId(req, res);
+  if (id === null) return;
+  try {
+    const verification = await getPublicationVerification(id);
+    if (!verification) {
+      res.status(404).json({ error: 'Entry not found' });
+      return;
+    }
+    res.json(verification);
+  } catch (error) {
+    console.error('[Distribution] Publication verification failed:', error);
+    res.status(500).json({ error: 'Could not load publication verification' });
+  }
+});
+
+router.post('/distribution/queue/:id/release', async (req, res) => {
+  const id = queueEntryId(req, res);
+  if (id === null) return;
+  if (!curatorConfirmed(req)) {
+    res.status(400).json({ error: 'confirm_required', message: RELEASE_CONFIRM_MESSAGE });
+    return;
+  }
+  const reason = acknowledgeReason(req.body);
+  if (!reason.ok) {
+    res.status(400).json({ error: reason.error });
+    return;
+  }
+  let decisions;
+  try {
+    decisions = parseDeliveryDecisions(req.body?.deliveries);
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid deliveries' });
+    return;
+  }
+  const actor = acknowledgeActor(req);
+  if (!actor) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+  const dryRun = req.body?.dryRun === true;
+  const idem = await openCuratorIdempotency(req, res);
+  if (idem.sent) return;
+  try {
+    const result = await releaseStuckPublication(id, { decisions, actor, reason: reason.reason, dryRun });
+    console.log(`[Distribution] Release #${id} by ${actor}: ${result.outcome}${result.dryRun ? ' (dry run)' : ''}${result.changed ? '' : ' (no change)'}`);
+    if (result.changed && !result.dryRun) {
+      noteCuratorChange(res, {
+        subject: `POST /api/distribution/queue/${id}/release`,
+        old: { queueStatus: result.queueStatus.before },
+        next: { queueStatus: result.queueStatus.after, outcome: result.outcome, resolved: result.resolved, sent: false },
+      });
+    }
+    await idem.finish(200, result);
+    res.status(200).json(result);
+  } catch (error) {
+    if (error instanceof PublicationReleaseError) {
+      const payload = { error: error.message, ...(error.details ? { details: error.details } : {}) };
+      await idem.finish(error.statusCode, payload);
+      res.status(error.statusCode).json(payload);
+      return;
+    }
+    await idem.abort();
+    console.error('[Distribution] Release failed:', error);
+    res.status(500).json({ error: 'Could not release the publication' });
+  }
+});
+
 router.post('/distribution/review/:id/resolve', async (req, res) => {
   const id = Number(req.params.id);
   const { delivered, externalId } = req.body;

@@ -353,6 +353,8 @@ curl -s -X PATCH "$WIREOPS_SERVER_URL/api/distribution/queue/18510/post" \
 | POST | `/api/distribution/queue/:id/retry` | yes |
 | POST | `/api/distribution/review/:id/resolve` | yes |
 | POST | `/api/distribution/logs/:id/acknowledge` | yes |
+| GET | `/api/distribution/queue/:id/verification` | |
+| POST | `/api/distribution/queue/:id/release` | yes |
 | GET | `/api/distribution/config` | |
 | PUT | `/api/distribution/config/:wire/:channel` | when the body has a new secret |
 | POST | `/api/distribution/run/:wire` | yes |
@@ -375,6 +377,24 @@ curl -s -X POST "$WIREOPS_SERVER_URL/api/distribution/logs/9001/acknowledge" \
   -d '{
     "confirm": true,
     "reason": "Telegram rejected the chat. This send will not be retried."
+  }'
+```
+
+A publication in `review` ("needs review" on the outgoing list) is verified and released with two calls. Enqueue refuses a `review` row until it is released.
+
+`GET /api/distribution/queue/:id/verification` (`:id` is the entry id) returns `{ entryId, name, wire, entryStatus, queue, state, deliveries, nextStep }`. `state` is `needs_verification` (a send's outcome is unknown), `releasable` (in review with nothing unverified), `sending`, `scheduled`, `withheld`, `done`, or `not_queued`. Each delivery has `logId`, `destination`, `targetId`, `verdict` (`sent`, `not_sent`, `unverified`, `sending`, `closed`, `skipped`), `postText` (the exact text to look for), `claimedAt`, `externalId`, `messageLink` for a public or private channel, and `receiptSaysPosted` (Telegram returned a message id but the receipt write failed, so the post exists). The Bot API cannot read a channel's history, so checking the channel is the verification.
+
+`POST /api/distribution/queue/:id/release` needs `confirm: true` and a `reason` from every caller, and `Idempotency-Key` from a curator key. `deliveries: [{ logId, delivered, externalId }]` must give a verdict for every unverified send, or the call is `409` with `details.unverified`. `delivered: true` marks the send `success` and needs a Telegram message id or a `t.me` message link unless the log already holds one. `delivered: false` marks it `failed`, which frees the send slot. The queue row then leaves `review` (`done`, with a `Released by …` note) and `metadata.publication_releases` records who, why, and each verdict. `dryRun: true` returns the plan and writes nothing. The response is `{ entryId, dryRun, changed, outcome, queueStatus, resolved, enqueued: false, sent: false, nextStep }`; `outcome` is `sent`, `released_for_retry`, or `no_open_destination`. Release never enqueues and never sends. To retry a `released_for_retry` entry, call enqueue, where pacing and the repeat-funder hold apply. Repeating a finished release returns `changed: false`. A live send, a withheld row, or a scheduled row is `409`; a log from another entry is `404`.
+
+```bash
+curl -s -X POST "$WIREOPS_SERVER_URL/api/distribution/queue/20453/release" \
+  -H "Authorization: Bearer $HEDWIG_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: hedwig-release-20453" \
+  -d '{
+    "confirm": true,
+    "reason": "Checked @channel around the claim time; the post is not there.",
+    "deliveries": [{ "logId": 9001, "delivered": false }]
   }'
 ```
 

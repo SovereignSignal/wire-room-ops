@@ -82,12 +82,7 @@ async function dispatchToManagedChannel(
       channelId: mc.id,
       wire: mc.wire,
       postText: posts.telegram,
-      send: async () => {
-        const result = await sendChannelMessage(token, targetId, posts.telegram);
-        return result
-          ? { ok: true, externalId: String(result.messageId) }
-          : { ok: false, errorMessage: 'Telegram API call failed' };
-      },
+      send: () => sendTelegram(token, targetId, posts.telegram),
     });
   }
 
@@ -226,12 +221,7 @@ async function dispatchToChannel(
       channel: 'telegram',
       wire: cfg.wire,
       postText: posts.telegram,
-      send: async () => {
-        const result = await sendChannelMessage(token, channelId, posts.telegram);
-        return result
-          ? { ok: true, externalId: String(result.messageId) }
-          : { ok: false, errorMessage: 'Telegram API call failed' };
-      },
+      send: () => sendTelegram(token, channelId, posts.telegram),
     });
   }
 
@@ -271,13 +261,24 @@ async function dispatchToChannel(
   return 'skipped';
 }
 
+type SendOutcome = { ok: boolean; externalId?: string; errorMessage?: string; definite?: boolean };
+
+async function sendTelegram(token: string, chatId: string, text: string): Promise<SendOutcome> {
+  let rejected: string | null = null;
+  const result = await sendChannelMessage(token, chatId, text, { onRejected: description => { rejected = description; } });
+  if (result) return { ok: true, externalId: String(result.messageId) };
+  return rejected
+    ? { ok: false, definite: true, errorMessage: `Telegram rejected the send (${rejected})` }
+    : { ok: false, errorMessage: 'Telegram API call failed' };
+}
+
 async function sendAfterClaim(params: {
   entryId: number;
   channel: DistributionChannel;
   wire: string;
   channelId?: string;
   postText: string;
-  send: () => Promise<{ ok: boolean; externalId?: string; errorMessage?: string }>;
+  send: () => Promise<SendOutcome>;
 }): Promise<'success' | 'failed' | 'skipped'> {
   const slot = await claimDistributionLog({
     entryId: params.entryId,
@@ -295,9 +296,19 @@ async function sendAfterClaim(params: {
     await flagUncertainDelivery(slot.id, error instanceof Error ? error.message : 'Send outcome unknown');
     return 'failed';
   }
-  // Legacy adapters return null for both network timeouts and API errors.
-  // Without a positive receipt, automatic resend could duplicate publication.
+  // Without a positive receipt or a definite rejection, automatic resend could
+  // duplicate publication, so the claim waits for verification.
   if (!result.ok) {
+    if (result.definite) {
+      try {
+        await finalizeDistributionLog(slot.id, {
+          status: 'failed', postText: params.postText, errorMessage: result.errorMessage || 'Destination rejected the send',
+        });
+        return 'failed';
+      } catch (error) {
+        console.error(`[Distribution] Could not record rejection for claim ${slot.id}`, error);
+      }
+    }
     await flagUncertainDelivery(slot.id, result.errorMessage || 'Send outcome unknown');
     return 'failed';
   }

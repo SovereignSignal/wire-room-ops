@@ -259,7 +259,7 @@ function zoneOffsetMs(date: Date, timeZone: string): number {
   return Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute) - date.getTime();
 }
 
-function zonedTimeToUtc(year: number, month: number, day: number, hour: number, minute: number, timeZone: string): Date {
+export function zonedTimeToUtc(year: number, month: number, day: number, hour: number, minute: number, timeZone: string): Date {
   const guess = new Date(Date.UTC(year, month - 1, day, hour, minute, 0));
   const utc = new Date(guess.getTime() - zoneOffsetMs(guess, timeZone));
   return new Date(guess.getTime() - zoneOffsetMs(utc, timeZone));

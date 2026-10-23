@@ -9,6 +9,7 @@
  * POST /tag-backfill        — batch-extract entity tags for entries missing them
  * POST /summary-sync-backfill — historical Telegram summary import
  * POST /cohort-bridge        — run the Notion cohort bridge (heartbeat + backfill)
+ * POST /close-expired-calls  — close open calls past their deadline (dry run unless apply=true)
  * POST /clean-orgs          — archive junk org profiles (+ matching Notion pages)
  * POST /dedup-orgs          — merge duplicate org profiles
  * POST /enrich-orgs         — LLM-based org profile enrichment
@@ -259,6 +260,22 @@ router.post('/cohort-bridge', async (req: Request, res: Response) => {
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';
     console.error('[Admin] Cohort bridge failed:', error);
     res.status(500).json({ error: errorMsg });
+  }
+});
+
+// POST /close-expired-calls — mark past-deadline open calls closed (dry run unless apply=true)
+router.post('/close-expired-calls', async (req: Request, res: Response) => {
+  const dryRun = req.body?.apply !== true;
+  if (!rateLimit(dryRun ? 'close-expired-calls-dry' : 'close-expired-calls', 6, 15 * 60 * 1000)) {
+    res.status(429).json({ error: 'Open-call expiry recently ran. Please wait a few minutes.' });
+    return;
+  }
+  try {
+    const { closeExpiredOpenCalls } = await import('../services/open-call-expiry');
+    res.json(await closeExpiredOpenCalls(getPool(), { dryRun }));
+  } catch (error) {
+    console.error('[Admin] Open-call expiry failed:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
   }
 });
 
