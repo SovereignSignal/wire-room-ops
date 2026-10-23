@@ -120,15 +120,19 @@ unchanged.
 Counts per group with a status split and two rates.
 
 - `by`: any of `source` (default), `wire`, `submitted_by`, `prompt`
-  (adds `prompt_id` and `prompt_label`), `classification`, `route`
-  (`metadata.operator_route`), `day` (UTC date of `created_at`).
+  (adds `prompt_id` and `prompt_label`), `variant` (`prompt_variant`),
+  `classification`, `route` (`metadata.operator_route`), `day` (UTC date of
+  `created_at`), `week` (the Monday that starts the UTC week).
 - Filters: `source`, `status`, `wire`, `submitted_by`, window on `created_at`
   (default 7 days, max 400 days).
 
 Each group: the `by` keys, `total`, `by_status`, `first_created_at`,
 `last_created_at`, `approval_rate` = approved / (approved + declined) or null,
 `dup_rate` = `duplicate` rows / total (`deduped` is in `by_status` but not in
-the rate). `totals` has the same fields across all groups.
+the rate), and `avg_quality_score` over rows that have a score (one decimal,
+null when none do). `totals` has the same fields across all groups. A caller
+that counts archived rows as rejections (the scout scoreboard does) computes
+its own rate from `by_status`.
 
 ```bash
 # Scan inventory: 7-day rows, approval %, dup % per source
@@ -183,6 +187,8 @@ Window default 7 days, max 90. Filters: `provider`, `job`, `purpose`, `wire`.
 | Digest `digest:queue` | the scouts' rows in N hours | `/entries?source=…&hours=N` |
 | Digest `digest:backlog` | queued count and oldest per wire | `/backlog?status=queued` |
 | Digest `digest:outcomes` | 7-day source × status | `/intake-counts?days=7&source=…` |
+| Scout `bin/scoreboard.sh` | week × source × wire × variant | `/intake-counts?days=30&by=week,source,wire,variant&source=claude-code,grok-scout` |
+| Scout `bin/ab-score.sh` | one source by variant | `/intake-counts?days=30&by=variant&source=claude-code` |
 | Box scan inventory | 7-day rows, approval %, dup % | `/intake-counts?days=7` (`by=prompt` per scan prompt) |
 | Box pre-approval check | queued rows and their metadata | `/entries?status=queued&include=metadata`, `/entries/:id` |
 | Box cost table | `api_usage_log` by day | `/usage-daily` |

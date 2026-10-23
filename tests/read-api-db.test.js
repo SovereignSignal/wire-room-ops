@@ -66,8 +66,8 @@ async function seed() {
       }],
       ['approved', 'Beta Fund', 'crypto', 'telegram', null, 30, 3, { actioned_by: 'user:ops@example.com' }],
       ['approved', 'Gamma Program', 'ai', 'grok-scout', 'agent:grant-wire-grok', 240, 216, { actioned_by: 'agent:hedwig' }],
-      ['declined', 'Delta Grants', 'crypto', 'claude-code', 'agent:grant-wire-scout', 72, 70, {}],
-      ['duplicate', 'Alpha Grants Round 3', 'crypto', 'claude-code', 'agent:grant-wire-scout', 24, null, {}],
+      ['declined', 'Delta Grants', 'crypto', 'claude-code', 'agent:grant-wire-scout', 72, 70, { variant: 'B', quality_score: 40 }],
+      ['duplicate', 'Alpha Grants Round 3', 'crypto', 'claude-code', 'agent:grant-wire-scout', 24, null, { quality_score: null }],
       ['archived', 'Old Archived Thing', 'crypto', 'grok-scout', null, 200 * 24, null, {}],
       ['raw', 'Epsilon OSS', 'oss', 'feed', null, 1, null, {}],
     ];
@@ -78,13 +78,14 @@ async function seed() {
            (name, description, source_url, wire, prompt_variant, scan_source, scan_date, status, submitted_by,
             quality_score, quality_breakdown, metadata, raw_output, actioned_by, decision_at, prompt_id,
             created_at, updated_at)
-         VALUES ($1, $2, $3, $4, 'A', $5, $6::date, $7, $8, 70, $9, $10, 'RAW MODEL OUTPUT', $11, $12, $13, $14, $14)
+         VALUES ($1, $2, $3, $4, $15, $5, $6::date, $7, $8, $16, $9, $10, 'RAW MODEL OUTPUT', $11, $12, $13, $14, $14)
          RETURNING id`,
         [
           name, `${name} description`, extra.source_url || `https://example.org/${encodeURIComponent(name)}-${status}`,
           wire, source, created.toISOString().slice(0, 10), status, submittedBy,
           extra.quality_breakdown || null, extra.metadata || {}, extra.actioned_by || null,
           decidedHoursAgo == null ? null : ago(decidedHoursAgo), extra.prompt_id || null, created,
+          extra.variant || 'A', extra.quality_score === undefined ? 70 : extra.quality_score,
         ],
       );
       ids[`${status}:${name}`] = row.id;
@@ -317,6 +318,8 @@ test('intake-counts: per-source status split with approval and duplicate rates',
   assert.equal(bySource['claude-code'].total, 3);
   assert.equal(bySource['claude-code'].approval_rate, 0);
   assert.equal(bySource['claude-code'].dup_rate, 0.333);
+  assert.equal(bySource['claude-code'].avg_quality_score, 55, 'null scores are left out of the average');
+  assert.equal(bySource['claude-code'].score_sum, undefined);
   assert.equal(bySource.telegram.approval_rate, 1);
   assert.equal(bySource['grok-scout'], undefined, 'outside the window');
   assert.equal(week.body.totals.total, 5);
@@ -331,6 +334,17 @@ test('intake-counts: per-source status split with approval and duplicate rates',
 
   const daily = await get('/api/read/intake-counts?days=7&by=day,source&submitted_by=agent:grant-wire-scout');
   assert.ok(daily.body.groups.every(g => /^\d{4}-\d{2}-\d{2}$/.test(g.day) && g.source === 'claude-code'));
+
+  // scoreboard.sh and ab-score.sh: week x source x wire x variant, and variant alone.
+  const board = await get('/api/read/intake-counts?days=30&by=week,source,wire,variant&source=claude-code,grok-scout');
+  assert.equal(board.status, 200);
+  assert.ok(board.body.groups.every(g => /^\d{4}-\d{2}-\d{2}$/.test(g.week) && new Date(`${g.week}T00:00:00Z`).getUTCDay() === 1));
+  const ab = await get('/api/read/intake-counts?days=30&by=variant&source=claude-code');
+  const byVariant = Object.fromEntries(ab.body.groups.map(g => [g.variant, g]));
+  assert.deepEqual(byVariant.A.by_status, { duplicate: 1, queued: 1 });
+  assert.deepEqual(byVariant.B.by_status, { declined: 1 });
+  assert.equal(byVariant.B.avg_quality_score, 40);
+  assert.equal(ab.body.totals.avg_quality_score, 55);
 
   assert.equal((await get('/api/read/intake-counts?by=model')).status, 400);
 });

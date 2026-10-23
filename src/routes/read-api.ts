@@ -406,28 +406,38 @@ const COUNT_DIMENSIONS: Record<string, { select: string[]; keys: string[] }> = {
   classification: { select: ['e.classification AS classification'], keys: ['classification'] },
   route: { select: [`e.metadata->>'operator_route' AS route`], keys: ['route'] },
   prompt: { select: ['e.prompt_id::text AS prompt_id', 'p.label AS prompt_label'], keys: ['prompt_id', 'prompt_label'] },
+  variant: { select: ['e.prompt_variant AS variant'], keys: ['variant'] },
   day: { select: [`(e.created_at AT TIME ZONE 'UTC')::date::text AS day`], keys: ['day'] },
+  week: { select: [`date_trunc('week', e.created_at AT TIME ZONE 'UTC')::date::text AS week`], keys: ['week'] },
 };
 
-interface CountGroup {
-  [key: string]: unknown;
+interface CountTally {
   total: number;
   by_status: Record<string, number>;
+  score_sum: number;
+  scored: number;
+}
+
+interface CountGroup extends CountTally {
+  [key: string]: unknown;
   first_created_at: Date | null;
   last_created_at: Date | null;
 }
 
-function rates(group: { total: number; by_status: Record<string, number> }) {
+function summarize<T extends CountTally>(group: T) {
+  const { score_sum, scored, ...rest } = group;
   const approved = group.by_status.approved || 0;
   const declined = group.by_status.declined || 0;
   const duplicate = group.by_status.duplicate || 0;
   return {
+    ...rest,
     approval_rate: reviewedApprovalRate(approved, declined),
     dup_rate: group.total > 0 ? Math.round((duplicate / group.total) * 1000) / 1000 : null,
+    avg_quality_score: scored > 0 ? Math.round((score_sum / scored) * 10) / 10 : null,
   };
 }
 
-// Intake counts per source (or wire, producer, prompt, route, day), split by status.
+// Intake counts per source (or wire, producer, prompt, variant, route, day, week), split by status.
 read('/intake-counts', async req => {
   const q = req.query;
   const by = csv(q, 'by', Object.keys(COUNT_DIMENSIONS));
@@ -451,6 +461,7 @@ read('/intake-counts', async req => {
   const statusPosition = select.length + 1;
   const { rows } = await readOnly(db => db.query(
     `SELECT ${select.join(', ')}, e.status AS status, COUNT(*)::int AS n,
+            COALESCE(SUM(e.quality_score), 0)::float8 AS score_sum, COUNT(e.quality_score)::int AS scored,
             MIN(e.created_at) AS first_created_at, MAX(e.created_at) AS last_created_at
      FROM scan_entries e
      ${dimensions.includes('prompt') ? 'LEFT JOIN scan_prompts p ON p.id = e.prompt_id' : ''}
@@ -461,28 +472,30 @@ read('/intake-counts', async req => {
   ));
 
   const groups = new Map<string, CountGroup>();
-  const totals = { total: 0, by_status: {} as Record<string, number> };
+  const totals: CountTally = { total: 0, by_status: {}, score_sum: 0, scored: 0 };
   for (const row of rows) {
     const id = JSON.stringify(keys.map(k => row[k]));
     let group = groups.get(id);
     if (!group) {
-      group = { total: 0, by_status: {}, first_created_at: null, last_created_at: null };
+      group = { total: 0, by_status: {}, score_sum: 0, scored: 0, first_created_at: null, last_created_at: null };
       for (const k of keys) group[k] = row[k];
       groups.set(id, group);
     }
-    group.total += row.n;
-    group.by_status[row.status] = (group.by_status[row.status] || 0) + row.n;
+    for (const tally of [group, totals]) {
+      tally.total += row.n;
+      tally.by_status[row.status] = (tally.by_status[row.status] || 0) + row.n;
+      tally.score_sum += row.score_sum;
+      tally.scored += row.scored;
+    }
     if (!group.first_created_at || row.first_created_at < group.first_created_at) group.first_created_at = row.first_created_at;
     if (!group.last_created_at || row.last_created_at > group.last_created_at) group.last_created_at = row.last_created_at;
-    totals.total += row.n;
-    totals.by_status[row.status] = (totals.by_status[row.status] || 0) + row.n;
   }
 
   return {
     by: dimensions,
     window: windowOut(window),
-    groups: [...groups.values()].map(group => ({ ...group, ...rates(group) })),
-    totals: { ...totals, ...rates(totals) },
+    groups: [...groups.values()].map(summarize),
+    totals: summarize(totals),
   };
 });
 
