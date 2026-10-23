@@ -15,6 +15,7 @@ import { getPool, isCoreWire } from '../db';
 import { QUEUE_CLASSIFICATIONS } from '../db/entry-query';
 import { SCAN_SOURCES, SCAN_STATUSES, DistributionChannel, DistributionStatus } from '../types/intake';
 import { reviewedApprovalRate } from '../services/approval-rate';
+import { RUN_ID_PATTERN, SCOUT_ALERT_COLUMNS, SCOUT_RUN_COLUMNS, SCOUT_RUN_STATUSES } from '../services/scout-ledger';
 import { urlLookupKeys } from '../utils/url';
 
 const router = Router();
@@ -587,6 +588,78 @@ read('/usage-daily', async req => {
     f.params,
   ));
   return { window: windowOut(window), days: rows };
+});
+
+// Scout run log, oldest first by default: the heartbeat and digest read it by
+// run_id prefix (one per producer lane) and window.
+read('/scout-runs', async req => {
+  const q = req.query;
+  const prefixes = csv(q, 'run_id_prefix');
+  if (prefixes.length > 10) throw new HttpError(400, 'Give at most 10 run_id_prefix values');
+  const badPrefixes = prefixes.filter(prefix => !RUN_ID_PATTERN.test(prefix));
+  if (badPrefixes.length) throw new HttpError(400, `Invalid run_id_prefix: ${badPrefixes.join(', ')}`);
+  const statuses = csv(q, 'status', SCOUT_RUN_STATUSES);
+  const wire = wireParam(q);
+  const window = windowParam(q, 7 * 24);
+  const order = single(q, 'order') ?? 'oldest';
+  if (order !== 'newest' && order !== 'oldest') throw new HttpError(400, 'order must be newest or oldest');
+  const limit = integer(q, 'limit', { fallback: 1000, min: 1, max: 5000 });
+
+  const f = new Filters();
+  f.window('r.created_at', window);
+  if (prefixes.length) {
+    f.add(`EXISTS (SELECT 1 FROM unnest(${f.bind(prefixes)}::text[]) AS p(prefix) WHERE starts_with(r.run_id, p.prefix))`);
+  }
+  if (statuses.length) f.add(`r.status = ANY(${f.bind(statuses)}::text[])`);
+  if (wire) f.add(`r.wire = ${f.bind(wire)}`);
+  const direction = order === 'newest' ? 'DESC' : 'ASC';
+
+  const { rows } = await readOnly(db => db.query(
+    `SELECT ${SCOUT_RUN_COLUMNS}
+     FROM scout_runs r
+     ${f.where()}
+     ORDER BY r.created_at ${direction}, r.run_id ${direction}
+     LIMIT ${f.bind(limit + 1)}`,
+    f.params,
+  ));
+  const out = page(rows, limit);
+  return { runs: out.rows, count: out.rows.length, truncated: out.hasMore, window: windowOut(window) };
+});
+
+// Scout alerts, newest first, with an id cursor. undelivered=true keeps the
+// ones no push channel delivered.
+read('/scout-alerts', async req => {
+  const q = req.query;
+  const window = windowParam(q, 7 * 24);
+  const undelivered = single(q, 'undelivered');
+  if (undelivered !== undefined && undelivered !== 'true') throw new HttpError(400, 'undelivered must be true or omitted');
+  const recordedBy = single(q, 'recorded_by');
+  const beforeId = optionalId(q, 'before_id');
+  const limit = integer(q, 'limit', { fallback: 100, min: 1, max: 500 });
+
+  const f = new Filters();
+  f.window('a.created_at', window);
+  if (undelivered) f.add(`COALESCE(NULLIF(a.channels_ok, ''), 'none') = 'none'`);
+  if (recordedBy) f.add(`a.recorded_by = ${f.bind(recordedBy)}`);
+  if (beforeId) f.add(`a.id < ${f.bind(beforeId)}`);
+
+  const { rows } = await readOnly(db => db.query(
+    `SELECT ${SCOUT_ALERT_COLUMNS}, a.body
+     FROM scout_alerts a
+     ${f.where()}
+     ORDER BY a.id DESC
+     LIMIT ${f.bind(limit + 1)}`,
+    f.params,
+  ));
+  const out = page(rows, limit);
+  const last = out.rows[out.rows.length - 1];
+  return {
+    alerts: out.rows,
+    count: out.rows.length,
+    has_more: out.hasMore,
+    next: out.hasMore && last ? { before_id: last.id } : null,
+    window: windowOut(window),
+  };
 });
 
 export { router as readApiRouter };
