@@ -41,6 +41,7 @@ import { scanPromptRouter } from './routes/scan-prompts';
 import { scanEntryRouter } from './routes/scan-entries';
 import { grantsIntelRouter } from './routes/grants-intel';
 import { readApiRouter } from './routes/read-api';
+import { scoutLedgerRouter } from './routes/scout-ledger';
 
 import { drainPublicationQueue } from './services/publication-queue';
 
@@ -120,6 +121,9 @@ app.use('/api/scan', requireAuthOrInternalKey, scanEntryRouter);
 // Read-only views for agents and ops scripts (replaces raw SQL over the public DB proxy).
 // Before the generic /api mounts so a curator read is checked once, here.
 app.use('/api/read', requireAuthOrCurator, readApiRouter);
+
+// Scout run and alert writes (ledger scope only), so the scouts need no database login.
+app.use('/api/scout', requireAuthOrCurator, scoutLedgerRouter);
 
 // Scan execution + forum + feeds triggers (dashboard auth OR internal agent key).
 // MUST come before the session-only /api/feeds and scheduleRouter mounts below: those
