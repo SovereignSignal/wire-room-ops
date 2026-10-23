@@ -12,9 +12,10 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON
   intake_runs, distribution_config, distribution_channels, distribution_logs,
   publication_queue, org_profiles, discovered_contacts, programs, watch_surfaces,
   integration_config, app_state, monitored_accounts, api_providers, model_pricing,
-  source_runs, opportunity_observations, telegram_intake_receipts, generated_files
+  source_runs, opportunity_observations, telegram_intake_receipts, generated_files,
+  scout_runs
 TO :"runtime_role";
-GRANT SELECT, INSERT ON api_usage_log TO :"runtime_role";
+GRANT SELECT, INSERT ON api_usage_log, scout_alerts TO :"runtime_role";
 GRANT SELECT ON wro_schema_migrations TO :"runtime_role";
 -- Shared importer/archive tables are optional in standalone installations.
 SELECT format('GRANT SELECT, INSERT, UPDATE ON public.summaries TO %I', :'runtime_role')
@@ -35,7 +36,7 @@ WHERE table_schema = 'public'
     'programs', 'watch_surfaces', 'integration_config', 'app_state',
     'monitored_accounts', 'api_providers', 'model_pricing', 'source_runs',
     'opportunity_observations', 'telegram_intake_receipts', 'generated_files',
-    'summaries', 'api_usage_log'
+    'scout_runs', 'summaries', 'api_usage_log', 'scout_alerts'
   )
   AND pg_get_serial_sequence(format('%I.%I', table_schema, table_name), column_name) IS NOT NULL
 \gexec

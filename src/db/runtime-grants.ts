@@ -18,10 +18,11 @@ export const RUNTIME_WRITABLE_TABLES: ReadonlyArray<string> = [
   'publication_queue', 'org_profiles', 'discovered_contacts', 'programs', 'watch_surfaces',
   'integration_config', 'app_state', 'monitored_accounts', 'api_providers', 'model_pricing',
   'source_runs', 'opportunity_observations', 'telegram_intake_receipts', 'generated_files',
+  'scout_runs',
 ];
 
 /** Append-only telemetry. */
-export const RUNTIME_INSERT_ONLY_TABLES: ReadonlyArray<string> = ['api_usage_log'];
+export const RUNTIME_INSERT_ONLY_TABLES: ReadonlyArray<string> = ['api_usage_log', 'scout_alerts'];
 
 /** Read-only for the runtime: the version gate must not be writable by the app. */
 export const RUNTIME_READ_ONLY_TABLES: ReadonlyArray<string> = ['wro_schema_migrations'];
