@@ -1,7 +1,9 @@
 /**
  * A funder that already landed on a Telegram wire stays off the queue for a
- * window (default 30 days). Match on org, program, or a normalized funder
- * name taken from the entry name and tags.
+ * window (default 30 days). Match on org, program, or a distinctive funder
+ * name taken from the entry name and tags. Generic labels ("open source",
+ * "program", the wire name) and missing or empty keys are not a funder.
+ * Known organization aliases still count as the same funder.
  *
  * Each EU Horizon topic ID is its own funder: a HORIZON-RAISE send does not
  * hold a HORIZON-BRIDGING topic. The hold lifts for a new program launch or
@@ -11,7 +13,7 @@
 import type { Pool, PoolClient } from 'pg';
 import { getPool } from '../db';
 import { parseAmount } from './intake';
-import { extractOrgFromName } from './org-extractor';
+import { canonicalizeOrgName, extractOrgFromName } from './org-extractor';
 
 const PLEDGE_USD = 1_000_000;
 const NEW_PROGRAM_LAUNCH = /\b(?:new (?:grant |funding )?(?:program|programme|fund|initiative)|(?:program|programme|fund) launch|launch(?:es|ing)|launched (?:a|an|its|their))\b/i;
@@ -19,9 +21,12 @@ const LIQUIDITY_INCENTIVE = /\bliquidity\s+incentiv\w*\b|\bliquidity\s+mining\b|
 const PLEDGE_LANGUAGE = /\b(?:pledg\w*|commit(?:s|ted|ment|ments)?|allocat(?:e|es|ed|ion|ions))\b/i;
 const HORIZON_TOPIC = /\bHORIZON(?:-[A-Z0-9]+)+\b/i;
 
-const NAME_STOP = new Set([
+/** Tokens that never identify a funder, including the wire names. */
+const GENERIC_FUNDER_TOKENS = new Set([
   'the', 'and', 'for', 'new', 'open', 'grant', 'grants', 'starter',
-  'program', 'programs', 'funding', 'fund', 'foundation',
+  'program', 'programs', 'programme', 'programmes', 'funding', 'fund', 'funds',
+  'foundation', 'foundations', 'source', 'sources', 'software', 'oss', 'crypto',
+  'ai', 'foss', 'opensource',
 ]);
 
 export interface RepeatFunderPrior {
@@ -153,16 +158,34 @@ export function normalizeFunderName(value: string | null | undefined): string {
     .replace(/\s+/g, ' ');
 }
 
+function positiveId(value: unknown): number | null {
+  if (value == null || value === '') return null;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) return null;
+  return parsed;
+}
+
+/** True when the key has a token that is not a generic label or a wire name. */
+function distinctiveFunderKey(normalized: string): boolean {
+  if (!normalized) return false;
+  const tokens = normalized.split(' ').filter(Boolean);
+  return tokens.some(token => token.length >= 3 && !GENERIC_FUNDER_TOKENS.has(token));
+}
+
 function addName(keys: Set<string>, value: string | null | undefined): void {
-  const normalized = normalizeFunderName(value);
-  if (normalized.length < 3 || NAME_STOP.has(normalized)) return;
+  const raw = (value ?? '').trim();
+  if (!raw) return;
+  const known = extractOrgFromName(raw);
+  const normalized = normalizeFunderName(known || canonicalizeOrgName(raw));
+  if (!distinctiveFunderKey(normalized)) return;
   keys.add(normalized);
 }
 
 /**
  * Funder-name keys from an explicit tag, the org parsed out of the title,
  * or the title text before a dash or colon. A bare first word is not a key,
- * so "Crypto A" and "Crypto B" stay different funders.
+ * so "Crypto A" and "Crypto B" stay different funders. Generic labels and
+ * empty strings are not keys. Known aliases collapse to the canonical org.
  */
 export function funderNameKeys(name: string | null | undefined, tags: string[] | null | undefined): string[] {
   const keys = new Set<string>();
@@ -179,8 +202,8 @@ function identityOf(row: FunderFields & { id: number }): Identity {
   const program = row.programId ?? row.program_id;
   return {
     id: Number(row.id),
-    orgId: org == null ? null : Number(org),
-    programId: program == null ? null : Number(program),
+    orgId: positiveId(org),
+    programId: positiveId(program),
     names: funderNameKeys(row.name, tags),
     rawName: row.name || '',
     rawTags: tags,
@@ -201,7 +224,9 @@ export function sameRepeatFunder(candidate: FunderFields & { id?: number }, prio
 }
 
 function mentions(identity: Identity, key: string): boolean {
+  if (!distinctiveFunderKey(key)) return false;
   const haystack = normalizeFunderName([identity.rawName, ...identity.rawTags].join(' '));
+  if (!haystack) return false;
   const needle = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/ /g, '\\s+');
   return new RegExp(`(?:^|\\s)${needle}(?:\\s|$)`).test(haystack);
 }
@@ -227,8 +252,10 @@ function sameFunder(candidate: Identity, prior: Identity): boolean {
   if (candidateTopic && priorTopic) return candidateTopic === priorTopic;
   if (candidate.orgId != null && candidate.orgId === prior.orgId) return true;
   if (candidate.programId != null && candidate.programId === prior.programId) return true;
-  if (candidate.names.some(name => prior.names.includes(name))) return true;
-  return candidate.names.some(name => mentions(prior, name)) || prior.names.some(name => mentions(candidate, name));
+  const candidateNames = candidate.names.filter(distinctiveFunderKey);
+  const priorNames = prior.names.filter(distinctiveFunderKey);
+  if (candidateNames.some(name => priorNames.includes(name))) return true;
+  return candidateNames.some(name => mentions(prior, name)) || priorNames.some(name => mentions(candidate, name));
 }
 
 export function repeatFunderPayload(error: RepeatFunderHoldError): Record<string, unknown> {
