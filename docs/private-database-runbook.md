@@ -21,7 +21,7 @@ Related: `docs/read-api.md` (the read API), `docs/railway-deploy.md`
 | Client | Where it runs | Variable | What it does | Moves to |
 |---|---|---|---|---|
 | grants.watch web | `grants-dot-watch` project | `WIRE_DATABASE_URL` | Three readers: the Wire handoff change feed (`src/lib/wire-handoff.ts`), the keyed `/api/v1/updates` pager (`src/lib/wire-updates.ts`), and ingest (`src/lib/ingest.ts`) | Read endpoints, follow-up (section 2.4) |
-| grant-wire-scout (Claude scout) | `grant-wire-scout` project | `DATABASE_URL` | Reads `scan_entries` in `lib/known_programs.py`, `lib/name_dedup.py`, `lib/skip_if_fed.py`; writes the `scout_runs` ledger (`lib/ledger.py`) and `scout_alerts` (`lib/notify.py`) | Reads: `/api/read`. Ledger: section 2.2 |
+| grant-wire-scout (Claude scout) | `grant-wire-scout` project | `DATABASE_URL` | Reads `scan_entries` in `lib/known_programs.py`, `lib/name_dedup.py`, `lib/skip_if_fed.py`; writes the `scout_runs` ledger (`lib/ledger.py`) and `scout_alerts` (`lib/notify.py`) | `/api/read` for reads, `/api/scout` for the ledger (section 2.2). No `DATABASE_URL` afterwards |
 | grant-wire-grok | `grant-wire-scout` project | `DATABASE_URL` | Same code as the Claude scout | Same |
 | grant-wire-heartbeat | `grant-wire-scout` project | `DATABASE_URL` | `lib/heartbeat.py` counts plus `scout_runs` reads; `lib/digest.py` queue, backlog, outcomes plus `scout_runs` reads; `scout_alerts` writes | Same |
 | Scout score scripts | wherever someone runs them | `DATABASE_URL` | `bin/scoreboard.sh`, `bin/ab-score.sh` (psql) | `/api/read/intake-counts` |
@@ -34,7 +34,8 @@ Related: `docs/read-api.md` (the read API), `docs/railway-deploy.md`
 The scouts already use HTTP for URL dedup (`lib/dedup.py`, `GET /api/scan/seen-urls`)
 and for submitting (`lib/submit.py`). Their `INTERNAL_API_KEY` variable holds
 the scoped `grant-wire-scout` / `grant-wire-grok` key, which already has
-`read_queue`.
+`read_queue`. Each key also needs the new `ledger` scope, added after this PR
+is deployed (section 2.2).
 
 ### Inside `wire-room-db` (not proxy clients, but check their variables)
 
@@ -86,8 +87,13 @@ No Railway service references the grants.watch proxy.
 
 ### 2.2 Scouts (grant-wire-scout repo)
 
-Reads move first. Each change keeps the module's current best-effort contract:
-an HTTP error returns what a DB error returns today.
+Sov chose option A on 2026-10-23: wire-room-ops owns the scout ledger, and
+the three scout services stop using a database login. Reads and ledger writes
+both move to HTTP. Each change keeps the module's current best-effort
+contract: an HTTP error returns what a DB error returns today, and a failed
+ledger write never fails a run.
+
+#### Reads
 
 | File | Today | Read API |
 |---|---|---|
@@ -95,7 +101,10 @@ an HTTP error returns what a DB error returns today.
 | `lib/name_dedup.py` | declined/archived names | `/api/read/names?wire=W&days=180&limit=10000&status=declined,archived` |
 | `lib/skip_if_fed.py` | another lane's rows in N hours | `/api/read/intake-counts?hours=N&wire=W&source=<others>&by=wire` |
 | `lib/heartbeat.py` (`hb:counts`) | per-wire count for the scout sources | `/api/read/intake-counts?hours=N&source=claude-code,grok-scout&by=wire` |
+| `lib/heartbeat.py` (`hb:runs`, `hb:lanes`, `hb:trend`) | `scout_runs` by `run_id LIKE ANY(…)` and window | `/api/read/scout-runs?hours=N&run_id_prefix=claude-code-,grok-build-`; the trend adds `days=30&until=…&status=ok,skipped` and sums per wire and day itself |
 | `lib/digest.py` (queue, backlog, outcomes) | rows, queued count, source × status | `/api/read/entries?source=…&hours=N`, `/api/read/backlog?status=queued`, `/api/read/intake-counts?days=7&source=…` |
+| `lib/digest.py` (runs, spend, lane runs) | `scout_runs` in N hours, 31 days by model, 7 days | `/api/read/scout-runs` with `hours=N`, `days=31`, `days=7` and the run id prefixes; spend is grouped by the caller |
+| `lib/heartbeat.py`, `lib/digest.py` (`hb:funnel`, `digest:funnel`) | `information_schema` check for `found_count` | Drop it: `/scout-runs` always returns `found_count` and `dedup_dropped` |
 | `bin/scoreboard.sh` | week × source × wire × variant | `/api/read/intake-counts?days=30&by=week,source,wire,variant&source=claude-code,grok-scout` |
 | `bin/ab-score.sh` | one source by variant | `/api/read/intake-counts?days=30&by=variant&source=claude-code` |
 
@@ -103,8 +112,8 @@ Notes:
 
 - The scouts reuse `WIRE_ROOM_API` and their existing key. The heartbeat has
   neither today: give it `WIRE_ROOM_API` and its own key
-  (`--name grant-wire-heartbeat --scopes read_queue`) so it can be revoked
-  on its own.
+  (`--name grant-wire-heartbeat --scopes read_queue,ledger`, since it also
+  records alerts) so it can be revoked on its own.
 - `scoreboard.sh` also lists `grok-build`, which is not a `scan_source` yet.
   The read API returns `400` for unknown sources, so drop it from the list
   until the enum exists.
@@ -112,26 +121,104 @@ Notes:
   `by_status`. `avg_quality_score` is returned per group.
 - One key allows 120 reads per 5 minutes. A scout run makes a handful.
 
-The ledger is what stays on SQL: `ledger.py` upserts `scout_runs`,
-`notify.py` inserts `scout_alerts`, and `heartbeat.py` and `digest.py` read
-`scout_runs` (including an `information_schema` check for the funnel
-columns). Neither table's DDL is in this repo. Two ways to finish, for Sov to
-choose:
+#### Ledger writes
 
-- **A. wire-room-ops adopts the ledger.** Capture the DDL through the
-  operator path (`pg_dump --schema-only -t scout_runs -t scout_alerts`, which
-  prints schema, no data). Add it to `STARTUP_MIGRATIONS` with a version
-  bump and to the runtime grants. Add `POST /api/scout/runs` (upsert by run
-  id), `POST /api/scout/alerts` and `GET /api/read/scout-runs`, behind a new
-  scope that ships before any key uses it. The scouts then hold no database
-  credential and do not need to be recreated in `wire-room-db`.
-- **B. Keep SQL for the ledger only.** Recreate the three scout services in
-  `wire-room-db` (plan step 4) with `DATABASE_URL` as a private reference to
-  a new login that can only `SELECT`, `INSERT` and `UPDATE` those two tables.
-  Less code, one more database login.
+| File | Today | API |
+|---|---|---|
+| `lib/ledger.py` | upsert into `scout_runs` | `PUT /api/scout/runs/<run_id>` |
+| `lib/notify.py` (`_record_alert`) | insert into `scout_alerts` | `POST /api/scout/alerts` with an `Idempotency-Key` |
 
-Do the reads first either way. A is more work in this repo; B keeps a
-database login outside wire-room-ops.
+Contract and validation rules: "Scout ledger writes" in `docs/read-api.md`.
+The upsert keeps `ledger.py`'s rules (earliest `started_at` kept, outcome
+fields replaced), so SQL writes and API writes can overlap during the switch.
+A run belongs to the key that first writes it through the API, and another
+key gets `409`.
+
+#### What this PR does to the database
+
+Schema version 14 (`src/db/scout-ledger.ts`), applied by the pre-deploy
+migration:
+
+- If `scout_runs` and `scout_alerts` do not exist, it creates them.
+- If they exist (the scouts made them by hand), it adopts them in place. It
+  adds only the columns it is missing (`found_count`, `dedup_dropped`,
+  `recorded_by` on runs; `id`, `recorded_by`, `idempotency_key` on alerts),
+  a unique index on `run_id` if there is none, and `created_at` indexes. It
+  changes no column type, adds no constraint that existing rows could fail,
+  and deletes nothing. Adding `id` rewrites `scout_alerts` once; the table
+  is small.
+- The runtime login gets `SELECT, INSERT, UPDATE` on `scout_runs` and
+  `SELECT, INSERT` on `scout_alerts`.
+
+**Pre-check (Sov).** `ALTER TABLE` and `GRANT` on an existing table need its
+owner or a superuser. Through 4.2, read-only:
+
+```sql
+SELECT tablename, tableowner FROM pg_tables
+WHERE schemaname = 'public' AND tablename IN ('scout_runs', 'scout_alerts');
+```
+
+No rows: nothing to check. Both tables owned by the migration login (the one
+in `MIGRATION_DATABASE_URL`; `docs/railway-deploy.md` describes it): fine.
+If that login is a superuser, any owner is fine. Otherwise, any other owner
+makes the pre-deploy migration fail with exit 1, and the previous deployment
+stays live. Fix it first, as a superuser through 4.2, with Sov's approval:
+`ALTER TABLE scout_runs OWNER TO <migration login>;` and the same for
+`scout_alerts`. Then run the migration dry run in 4.5; its plan should list
+`scout-ledger` at version 14.
+
+#### Keys
+
+`ledger` is a new scope. An unknown scope makes the whole
+`WIRE_ROOM_CURATOR_KEYS` list invalid, so add it only after this PR is live:
+
+- `grant-wire-scout` and `grant-wire-grok`: edit each entry's `scopes` to add
+  `ledger`. The token and its hash do not change.
+- `grant-wire-heartbeat`: mint it with `read_queue,ledger`.
+
+Validate the edited list with `loadCuratorKeys()` before setting it. Check
+each token without writing a row: `PUT /api/scout/runs/scope-check` with the
+body `{}` returns `400` (status missing) for a key with `ledger`, and `403`
+for one without.
+
+#### Copying existing ledger rows
+
+The scouts' `DATABASE_URL` goes through the wire-room-db proxy, and the same
+connection reads `scan_entries`, so the ledger rows are most likely already
+in this database. The migration then adopts them and there is nothing to
+copy. `src/scripts/copy-scout-ledger.ts` settles it either way: its dry run
+compares the scouts' database with this one and reports `to_copy` per table,
+which is `0` for both when they are the same database.
+
+Run it after every scout lane writes through the API (so no new rows land in
+the old place) and before the scouts' `DATABASE_URL` or the proxy it uses
+is removed. It runs inside the wire-room-ops container, so the target is the
+app's own `DATABASE_URL`. The source URL goes in on stdin and is never
+printed; this pipes it from the scout service's variables without showing it.
+In a directory linked to the `grant-wire-scout` project:
+
+```bash
+railway run -s grant-wire-scout -- sh -c 'printf %s "$DATABASE_URL"' \
+  | (cd ~/ops/wire-room-db && railway ssh -s wire-room-ops -- node dist/scripts/copy-scout-ledger.js)
+```
+
+The output is a JSON report per table: `found`, `columns`, `source_rows`,
+`already_here`, `to_copy`. If both `to_copy` values are `0`, stop: nothing
+to copy. Otherwise, with Sov's approval, run the same command with
+`copy-scout-ledger.js --apply`. It inserts the missing rows in one
+transaction, never changes a row that is already here (runs match on
+`run_id`, alerts on `subject` and `created_at`), and marks copied rows
+`recorded_by = 'copy:scout-ledger'`. A rerun copies nothing. The source
+connection uses the app's `DB_SSL_REJECT_UNAUTHORIZED` setting.
+
+#### Removing the database login
+
+When the reads and ledger writes are on HTTP and the copy check is done,
+remove `DATABASE_URL` from `grant-wire-scout`, `grant-wire-grok` and
+`grant-wire-heartbeat`. Check: the next run of each lane appears in
+`/api/read/scout-runs` with its own `recorded_by`, and the heartbeat still
+reports. If the scouts had a login of their own, drop it (section 9).
+The scouts stay in their project; they are not recreated in `wire-room-db`.
 
 ### 2.3 tele-sum
 
@@ -468,60 +555,73 @@ Sov's approval first; the list in section 10 repeats them in order.
 
 ### Phase 1: read API live
 
-1. **(Sov)** Merge the read API PR. Railway deploys `main`. No schema change
-   and no new variable. Check: `/ready` passes and
-   `GET /api/read/backlog` with a `read_queue` key returns `200`; a `POST`
-   returns `403`.
-2. **(Sov)** Mint `ops-box` and `grant-wire-heartbeat` keys, add their
-   hashes to `WIRE_ROOM_CURATOR_KEYS`, redeploy. Check: each token gets
-   `200` from `/api/read/intake-counts?days=1`.
+1. **(Sov)** Before merging: the scout ledger table-owner pre-check
+   (section 2.2) and the migration dry run (4.5). The plan should list
+   `scout-ledger` at schema version 14.
+2. **(Sov)** Merge this PR. Railway deploys `main`, and the pre-deploy
+   migration applies schema version 14 (the scout ledger tables). No new
+   variable. Check: `/ready` passes; `GET /api/read/backlog` with a
+   `read_queue` key returns `200` and a `POST` returns `403`;
+   `GET /api/read/scout-runs?days=1` returns the scouts' recent runs if the
+   tables were adopted.
+3. **(Sov)** Edit `WIRE_ROOM_CURATOR_KEYS`: mint `ops-box` (`read_queue`) and
+   `grant-wire-heartbeat` (`read_queue,ledger`), and add `ledger` to the
+   `grant-wire-scout` and `grant-wire-grok` entries. Validate with
+   `loadCuratorKeys()`, then redeploy. Check: each read token gets `200` from
+   `/api/read/intake-counts?days=1`, and each ledger token gets `400` (not
+   `403`) from `PUT /api/scout/runs/scope-check` with `{}`.
 
 ### Phase 2: clients moved
 
-3. **(Sov)** Switch the box scripts and the local MCP to the read API
+4. **(Sov)** Switch the box scripts and the local MCP to the read API
    (section 2.1).
-4. **(Sov)** Merge the scout read change in grant-wire-scout and give the
-   heartbeat `WIRE_ROOM_API` and its key. Check: one run per lane with the
-   same counts as the previous day's SQL output.
-5. **(Sov)** Choose the scout ledger option (A or B) and roll it out.
-6. **(Sov)** Recreate tele-sum inside `wire-room-db` (plan step 5).
-7. **(Sov)** grants.watch wire readers on the API (follow-up PRs in both
+5. **(Sov)** Merge the scout change in grant-wire-scout (reads and ledger on
+   HTTP; see this PR's description) and give the heartbeat `WIRE_ROOM_API`
+   and its key. Check: one run per lane appears in `/api/read/scout-runs`
+   with that lane's `recorded_by`, and the heartbeat and digest show the same
+   counts as the previous day's SQL output.
+6. **(Sov)** Scout ledger copy check (section 2.2): dry run, then `--apply`
+   only if a `to_copy` is above `0`.
+7. **(Sov)** Remove `DATABASE_URL` from the three scout services. Check: the
+   next run of each lane is recorded and the heartbeat still reports.
+8. **(Sov)** Recreate tele-sum inside `wire-room-db` (plan step 5).
+9. **(Sov)** grants.watch wire readers on the API (follow-up PRs in both
    repos), flag on. Check: grants.watch pages and `/api/v1/updates` match
    before and after.
-8. **(Sov)** Backup crons in both projects, side by side for 5 days, then
-   disable `backup-db.yml`.
-9. **(Sov)** Desk sync cron (section 6).
-10. **(Sov)** Confirm section 3: every in-project variable is private.
-11. **(Sov)** Retire wro-ro-query or remove its public domain.
+10. **(Sov)** Backup crons in both projects, side by side for 5 days, then
+    disable `backup-db.yml`.
+11. **(Sov)** Desk sync cron (section 6).
+12. **(Sov)** Confirm section 3: every in-project variable is private.
+13. **(Sov)** Retire wro-ro-query or remove its public domain.
 
 ### Phase 3: operator path tested
 
-12. **(Sov)** On both projects: `railway ssh -s Postgres` read-only `psql`,
+14. **(Sov)** On both projects: `railway ssh -s Postgres` read-only `psql`,
     `railway connect Postgres --ssh`, and both tunnels.
-13. **(Sov)** Migration dry run through `railway ssh` on wire-room-ops.
-14. **(Sov)** Rotation toolkit dry runs through both tunnels.
+15. **(Sov)** Migration dry run through `railway ssh` on wire-room-ops.
+16. **(Sov)** Rotation toolkit dry runs through both tunnels.
 
 ### Phase 4: proxies deleted
 
-15. **(Sov)** Delete the wire-room-db proxy after 7 days with no proxied
+17. **(Sov)** Delete the wire-room-db proxy after 7 days with no proxied
     connections (section 3 query plus Railway's proxy metrics), a fresh
     backup and a passing `test-restore.yml`. Check: every service healthy
     for 24 hours and the next backup lands.
-16. **(Sov)** Delete the grants.watch proxy after steps 8 and 9 and the same
-    quiet period.
-17. **(Sov)** Remove what pointed at them: the `DATABASE_URL` and
+18. **(Sov)** Delete the grants.watch proxy after steps 10 and 11 and the
+    same quiet period.
+19. **(Sov)** Remove what pointed at them: the `DATABASE_URL` and
     `GRANTSWATCH_DATABASE_URL` Actions secrets here, `SYNC_DATABASE_URL` and
     the workflow in grants-dot-watch, `WIRE_DATABASE_URL` on grants.watch,
-    and the old tele-sum and scout services.
+    and the old tele-sum service.
 
-Rollback for 15 and 16: create a new TCP proxy (it gets a new host and port)
+Rollback for 17 and 18: create a new TCP proxy (it gets a new host and port)
 and point the one affected client at it. The old address cannot be
 recovered, which is why deletion comes after everything else has moved.
 
 ### Phase 5: both database passwords rotated
 
-18. **(Sov)** Rotate every login on the wire-room-db Postgres (section 9).
-19. **(Sov)** Rotate every login on the grants.watch Postgres.
+20. **(Sov)** Rotate every login on the wire-room-db Postgres (section 9).
+21. **(Sov)** Rotate every login on the grants.watch Postgres.
 
 ## 9. Rotating after the proxies are gone
 
@@ -532,8 +632,9 @@ existed, so rotate all of them, not only the superuser. List them through 4.2:
 SELECT rolname FROM pg_roles WHERE rolcanlogin ORDER BY 1;
 ```
 
-Drop a login nothing uses any more (for example grants.watch's wire reader
-after step 7) instead of rotating it.
+Drop a login nothing uses any more (for example a login only the scouts used,
+after step 7, or grants.watch's wire reader after step 9) instead of
+rotating it.
 
 **Superuser.** The Postgres service's `PGPASSWORD`, `DATABASE_URL` and
 `DATABASE_PUBLIC_URL` follow `POSTGRES_PASSWORD` by reference, but the image
@@ -566,22 +667,24 @@ through the tunnel (section 5).
 Nothing in this PR changes Railway, GitHub settings, variables or passwords.
 Each step needs Sov's go:
 
-1. Merge this PR (deploys the read API; no schema change).
-2. Mint the `ops-box` and `grant-wire-heartbeat` read keys and add them to `WIRE_ROOM_CURATOR_KEYS`.
-3. Move the box scripts and the local MCP to the read API.
-4. Merge the scout read change and give the heartbeat its API variables.
-5. Decide the scout ledger option (A: wire-room-ops endpoints, B: recreate with a ledger-only login) and roll it out.
-6. Recreate tele-sum inside `wire-room-db`.
-7. Build and switch the grants.watch wire readers to the API (follow-up).
-8. Create both backup crons; disable `backup-db.yml` after 5 days.
-9. Create the Desk sync token and cron; switch ownership from the workflow.
-10. Confirm every in-project database variable uses the private host.
-11. Retire wro-ro-query or remove its public domain.
-12. Test the operator path on both projects (ssh psql, `railway connect --ssh`, tunnels).
-13. Dry-run the migration over `railway ssh`.
-14. Update the rotation toolkit and dry-run it through the tunnels.
-15. Delete the wire-room-db proxy after 7 quiet days.
-16. Delete the grants.watch proxy after Desk sync and backups have moved.
-17. Remove the dead secrets, variables, workflows and old services.
-18. Rotate every login on the wire-room-db Postgres.
-19. Rotate every login on the grants.watch Postgres.
+1. Check who owns `scout_runs` and `scout_alerts` (fix the owner if needed), and dry-run the migration.
+2. Merge this PR (deploys the read API and the scout ledger endpoints; the pre-deploy migration applies schema version 14).
+3. Mint the `ops-box` and `grant-wire-heartbeat` keys and add `ledger` to the two scout keys in `WIRE_ROOM_CURATOR_KEYS`.
+4. Move the box scripts and the local MCP to the read API.
+5. Merge the scout change (reads and ledger on HTTP) and give the heartbeat its API variables.
+6. Run the scout ledger copy dry run; apply only if it finds rows to copy.
+7. Remove `DATABASE_URL` from the three scout services.
+8. Recreate tele-sum inside `wire-room-db`.
+9. Build and switch the grants.watch wire readers to the API (follow-up).
+10. Create both backup crons; disable `backup-db.yml` after 5 days.
+11. Create the Desk sync token and cron; switch ownership from the workflow.
+12. Confirm every in-project database variable uses the private host.
+13. Retire wro-ro-query or remove its public domain.
+14. Test the operator path on both projects (ssh psql, `railway connect --ssh`, tunnels).
+15. Dry-run the migration over `railway ssh`.
+16. Update the rotation toolkit and dry-run it through the tunnels.
+17. Delete the wire-room-db proxy after 7 quiet days.
+18. Delete the grants.watch proxy after Desk sync and backups have moved.
+19. Remove the dead secrets, variables, workflows and old services.
+20. Rotate every login on the wire-room-db Postgres.
+21. Rotate every login on the grants.watch Postgres.

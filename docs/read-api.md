@@ -5,6 +5,11 @@ agents and ops scripts ran over the public database proxy: the `wro-ro-query`
 service, the scout heartbeat and digest, and the box QC scripts. Code:
 `src/routes/read-api.ts`. Tests: `tests/read-api-db.test.js`.
 
+The scout ledger (`scout_runs`, `scout_alerts`) also has two small write
+routes under `/api/scout`, so the scouts record runs and alerts without a
+database login. See [Scout ledger writes](#scout-ledger-writes). Tests:
+`tests/scout-ledger-db.test.js`.
+
 ## Auth
 
 Mounted at `/api/read` behind `requireAuthOrCurator`, the same door the
@@ -32,7 +37,9 @@ strings and secret-shaped keys come back as `****`.
   classification, wire, delivery status, and channel are checked against the
   same lists the rest of the app uses (`SCAN_STATUSES`, `SCAN_SOURCES`,
   `QUEUE_CLASSIFICATIONS`, `CORE_WIRES`).
-- No schema change. The routes read tables the runtime role can already read.
+- The routes read tables the runtime role can already read. The scout ledger
+  tables arrive with schema version 14 (`src/db/scout-ledger.ts`); every other
+  route reads tables that existed before.
 
 ## Common parameters
 
@@ -176,6 +183,112 @@ curl -s -H "Authorization: Bearer $TOKEN" "$WIREOPS_SERVER_URL/api/read/names?wi
 Window default 7 days, max 90. Filters: `provider`, `job`, `purpose`, `wire`.
 `GET /api/usage/summary` and `/api/usage/recent` are unchanged.
 
+### `GET /api/read/scout-runs`
+
+`scout_runs`, oldest first by default (the order the heartbeat and digest
+read it).
+
+Filters: `run_id_prefix` (comma-separated, up to 10, for example
+`claude-code-,grok-build-`; a prefix match, not a pattern), `status` (`ok`,
+`skipped`, `auth`, `quota`, `empty`, `timeout`, `delivery`, `failed`,
+`other`), `wire`, window on `created_at` (default 7 days, max 400 days),
+`order=oldest|newest`, `limit` (default 1000, max 5000; `truncated` is true
+when more exist).
+
+Each row: `run_id, wire, variant, model, status, opportunity_count,
+found_count, dedup_dropped, error_class, cost_usd, duration_ms, started_at,
+finished_at, created_at, recorded_by`. Counts are integers and `cost_usd` and
+`duration_ms` are numbers, whatever the column type. `found_count` and
+`dedup_dropped` are always present (null when not recorded), so a reader no
+longer checks `information_schema` for them.
+
+```bash
+# Heartbeat: the last 26 hours of both lanes
+curl -s -H "Authorization: Bearer $TOKEN" "$WIREOPS_SERVER_URL/api/read/scout-runs?hours=26&run_id_prefix=claude-code-,grok-build-"
+# Heartbeat trend: ok and skipped runs from 30 days ago up to the start of that window
+curl -s -H "Authorization: Bearer $TOKEN" "$WIREOPS_SERVER_URL/api/read/scout-runs?days=30&until=$CUTOFF&status=ok,skipped&run_id_prefix=claude-code-"
+```
+
+### `GET /api/read/scout-alerts`
+
+`scout_alerts`, newest id first, with `body`.
+
+Filters: window on `created_at` (default 7 days), `undelivered=true` (only
+alerts whose `channels_ok` is `none` or empty), `recorded_by` (exact, for
+example `agent:grant-wire-scout`), `before_id`, `limit` (default 100, max 500).
+Paged with `has_more` and `next.before_id`.
+
+## Scout ledger writes
+
+`PUT /api/scout/runs/:runId` and `POST /api/scout/alerts`. Code:
+`src/routes/scout-ledger.ts`, `src/services/scout-ledger.ts`.
+
+- Only a curator key with the `ledger` scope reaches them. A dashboard session
+  and a key without `ledger` get `403`; the internal master key gets `401`.
+  Any other method or path under `/api/scout` is `403`.
+- `ledger` opens nothing else. A scout key that also reads its ledger needs
+  `read_queue` as well.
+- Writes count against the agent write limit (40 per 5 minutes per key).
+- Unknown body fields, wrong types, and out-of-range values are `400`, and
+  nothing is written.
+
+### `PUT /api/scout/runs/:runId`
+
+Record or update one run. `:runId` is 1-200 characters from `A-Z a-z 0-9 . _
+: -`, starting with a letter or digit (`claude-code-2026-10-23T041500Z`,
+`grok-build-…-skipped`).
+
+| Field | Rule |
+|---|---|
+| `status` | Required. `ok`, `skipped`, `auth`, `quota`, `empty`, `timeout`, `delivery`, `failed`, `other` |
+| `wire` | `crypto`, `ai`, `oss`, or empty/omitted when unknown |
+| `variant` | Up to 32 characters from `A-Z a-z 0-9 . _ -` |
+| `model` | Up to 200 printable characters |
+| `opportunity_count`, `found_count`, `dedup_dropped` | Whole numbers, 0 to 1,000,000 |
+| `error_class` | Up to 100 characters from `A-Z a-z 0-9 . _ : -` |
+| `cost_usd` | Number, 0 to 100,000 |
+| `duration_ms` | Whole number, 0 to 2,147,483,647 |
+| `started_at`, `finished_at` | ISO 8601, no more than 10 minutes in the future, start not after finish |
+| `run_id` | Optional; must equal the path |
+
+The upsert matches `lib/ledger.py`. The first write creates the row (`201`). A
+later write (`200`) replaces `status`, the three counts, `error_class`,
+`cost_usd`, `duration_ms`, and `finished_at` (the server's clock when
+omitted). It keeps the earliest `started_at`, and `wire`, `variant`, and
+`model` fill in only while the row has none. Send `finished_at` and a retry
+of the same body leaves the row exactly as it was.
+
+A run belongs to the key that first wrote it through this route
+(`recorded_by`, for example `agent:grant-wire-scout`). Another key gets `409`.
+Rows written by direct SQL have no owner, and the first key to write one
+takes it over. Rows copied by `copy-scout-ledger` belong to
+`copy:scout-ledger` and cannot be changed here.
+
+Response: `{ run, created }`, where `run` has the `/scout-runs` row fields.
+
+```bash
+curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"status":"ok","wire":"crypto","variant":"A","model":"<model>","opportunity_count":3,"found_count":7,"dedup_dropped":4,"cost_usd":1.2,"duration_ms":900000,"started_at":"2026-10-23T04:15:00Z","finished_at":"2026-10-23T04:30:00Z"}' \
+  "$WIREOPS_SERVER_URL/api/scout/runs/claude-code-2026-10-23T041500Z"
+```
+
+### `POST /api/scout/alerts`
+
+Record one alert. Body: `subject` (required, up to 500 characters after
+trimming), `body` (string, up to 32,000 characters), `channels_ok` (the
+channels that delivered it: lowercase names joined by commas, such as
+`resend`, `webhook`, or `none`; default `none`). Connection strings in
+`subject` or `body` are stored as `postgresql://****`.
+
+Without an `Idempotency-Key` header every POST is a new alert (`201`). With
+one (8-128 characters from `A-Z a-z 0-9 . _ : -`), a retry of the same alert
+returns the stored row with `200` and `Idempotent-Replayed: true`, and the
+same key with a different alert is `409`. Keys are scoped to the calling key.
+
+Response: `{ alert, created }`, where `alert` is `id, subject, channels_ok,
+created_at, recorded_by`. The audit log records the subject and channels, not
+the body. The runtime role can insert alerts but not change or delete them.
+
 ## What each old raw query maps to
 
 | Caller | Old SQL | Read API |
@@ -195,8 +308,14 @@ Window default 7 days, max 90. Filters: `provider`, `job`, `purpose`, `wire`.
 | QC: recent approvals | approved rows and delivery state | `/approvals` |
 | QC: delivery logs | `distribution_logs` | `/deliveries` |
 | QC: seen URLs | `seen_urls` lookup | `/seen-urls?url=` |
+| Scout `lib/ledger.py` | upsert into `scout_runs` | `PUT /api/scout/runs/:runId` |
+| Scout `lib/notify.py` | insert into `scout_alerts` | `POST /api/scout/alerts` with an `Idempotency-Key` |
+| Heartbeat `hb:funnel`, digest `digest:funnel` | `information_schema` check for `found_count` | Not needed: `/scout-runs` always returns the funnel fields |
+| Heartbeat `hb:runs`, `hb:lanes` | runs in N hours by `run_id LIKE ANY(…)` | `/scout-runs?hours=N&run_id_prefix=…` |
+| Heartbeat `hb:trend` | ok/skipped runs, 30 days up to N hours ago, summed per wire and day | `/scout-runs?days=30&until=…&status=ok,skipped&run_id_prefix=…`, summed by the caller |
+| Digest `digest:runs` | runs in N hours | `/scout-runs?hours=N&run_id_prefix=…` |
+| Digest `digest:spend` | cost and run counts by model, 31 days | `/scout-runs?days=31&run_id_prefix=…`, grouped by the caller |
+| Digest `digest:lane_runs` | runs in 7 days | `/scout-runs?days=7&run_id_prefix=…` |
 
-Not covered: the scout ledger tables `scout_runs` and `scout_alerts` (no
-schema in this repo; see `docs/private-database-runbook.md`), and the
-grants.watch wire readers (`WIRE_DATABASE_URL`), which need their own
-contract.
+Not covered: the grants.watch wire readers (`WIRE_DATABASE_URL`), which need
+their own contract.

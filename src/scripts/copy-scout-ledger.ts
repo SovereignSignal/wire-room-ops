@@ -8,9 +8,9 @@
  * recorded_by = 'copy:scout-ledger'. Safe to rerun.
  *
  * The source URL is read from stdin so it is never in argv, shell history or
- * output. Run inside the wire-room-ops container (target = its DATABASE_URL);
- * see docs/private-database-runbook.md section 2.2:
- *   printf '%s' "$SRC" | railway ssh -s wire-room-ops -- node dist/scripts/copy-scout-ledger.js [--apply]
+ * output. Run inside the wire-room-ops container (target = its DATABASE_URL),
+ * piping the URL from the scout service's variables; the exact command is in
+ * docs/private-database-runbook.md section 2.2.
  */
 import { readFileSync } from 'fs';
 import { Pool } from 'pg';
