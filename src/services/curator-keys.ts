@@ -5,9 +5,10 @@
  * SHA-256 of the bearer (sha256), scopes, UTC expires_at, and revoked.
  * The raw token is never stored. Checked on every request.
  *
- * Scopes: read_queue, decide, propose, intake. A key only receives the scopes listed.
+ * Scopes: read_queue, decide, propose, intake, ledger. A key only receives the scopes listed.
  * intake is the producer scope: it opens POST /telegram-batch and nothing else,
  * so a batch producer gets its own agent:<name> identity without the internal key.
+ * ledger opens the scout run and alert writes under /api/scout and nothing else.
  *
  * Dashboard reads use read_queue and dashboard writes use decide, so Hedwig's
  * existing scopes open the same controls the dashboard session can use.
@@ -17,7 +18,7 @@
 
 import crypto from 'crypto';
 
-export const CURATOR_SCOPES = ['read_queue', 'decide', 'propose', 'intake'] as const;
+export const CURATOR_SCOPES = ['read_queue', 'decide', 'propose', 'intake', 'ledger'] as const;
 export type CuratorScope = typeof CURATOR_SCOPES[number];
 
 export interface CuratorKey {
@@ -153,6 +154,17 @@ export function requiredCuratorScope(method: string, rawPath: string): CuratorSc
 
   // Rows from a scoped key start raw like any agent batch (handleTextIntake keys off isAgent).
   if (m === 'POST' && path === '/api/scan/telegram-batch') return 'intake';
+
+  // The read API has no write routes; refuse other methods before any router sees them.
+  if (path === '/api/read' || path.startsWith('/api/read/')) {
+    return m === 'GET' || m === 'HEAD' ? 'read_queue' : 'forbidden';
+  }
+
+  if (path === '/api/scout' || path.startsWith('/api/scout/')) {
+    if (m === 'PUT' && /^\/api\/scout\/runs\/[^/]+$/.test(path)) return 'ledger';
+    if (m === 'POST' && path === '/api/scout/alerts') return 'ledger';
+    return 'forbidden';
+  }
 
   if (m === 'GET' && (
     path === '/api/scan/queue' ||

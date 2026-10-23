@@ -13,7 +13,7 @@ Set `WIRE_ROOM_CURATOR_KEYS` to a JSON array. Each object:
 | `id` | Stable key id, used in the idempotency storage key |
 | `name` | Display name. The principal is `agent:<slug>` (`Hedwig` → `agent:hedwig`) |
 | `sha256` | Lowercase hex SHA-256 of the bearer token. The token itself is not stored |
-| `scopes` | Any of `read_queue`, `decide`, `propose`, `intake` |
+| `scopes` | Any of `read_queue`, `decide`, `propose`, `intake`, `ledger` |
 | `expires_at` | UTC ISO timestamp. Expired keys do not match |
 | `revoked` | `true` disables the key. A past `revoked_at` does the same |
 
@@ -46,6 +46,7 @@ Monitored accounts, registry watch, and source feeds are dashboard controls. Rea
 - `/api/scan/agent/approval-patterns`
 - `/api/scan/status-counts`
 - `/api/scan/deadline-digest`
+- `/api/read/*`, the read-only views for scouts and ops scripts (entries, approvals, deliveries, seen URLs, intake counts, backlog, names, daily usage, scout runs, scout alerts). Any method other than `GET` or `HEAD` is `403`. See `docs/read-api.md`.
 - Every dashboard GET listed under [Dashboard](#dashboard). `raw_output` is still omitted on queue, list, and single-entry responses.
 
 `raw_output` is omitted on queue, list, and single-entry responses for curator keys. Internal-key responses are unchanged.
@@ -75,6 +76,13 @@ Curator submits set `submitted_by` to `agent:<name>` so the digest's silent-prod
 - `POST /api/scan/telegram-batch`
 
 The producer scope, for a batch poster such as the `Grok Telegram Batch` workflow (`.github/workflows/grok-scout-submit.yml`). Rows start `raw` and are classified by the process-raw cycle, the same as an internal-key batch, and `submitted_by` is `agent:<name>`. No evidence or `Idempotency-Key` is required. Grant it on its own: a key with only `intake` cannot read the queue, decide, or propose.
+
+### `ledger`
+
+- `PUT /api/scout/runs/:runId`
+- `POST /api/scout/alerts`
+
+The scout ledger scope, for grant-wire-scout's run log and alerts. Nothing else under `/api/scout` exists, and a dashboard session cannot write there. Rows record `recorded_by = agent:<name>`, and a run belongs to the key that first wrote it. `Idempotency-Key` is optional on alerts. A key with only `ledger` cannot read anything, including its own runs: add `read_queue` for `/api/read/scout-runs`. Contract: `docs/read-api.md`. Add this scope to a key only after the code that defines it is deployed; an unknown scope makes the whole list invalid.
 
 ```bash
 npm run curator-key:mint -- --name grok-batch --scopes intake
