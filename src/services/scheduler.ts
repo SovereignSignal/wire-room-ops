@@ -426,8 +426,12 @@ function createJobExecutor(schedule: ScheduleConfig) {
 
         // First, so grants.watch never reads a past-deadline row as an open call.
         try {
-          const { closeExpiredOpenCalls } = await import('./open-call-expiry');
-          await closeExpiredOpenCalls(pool);
+          const { closeExpiredOpenCalls, openCallAutoCloseEnabled } = await import('./open-call-expiry');
+          if (openCallAutoCloseEnabled()) {
+            await closeExpiredOpenCalls(pool);
+          } else {
+            console.log('[Scheduler] Open-call expiry skipped (OPEN_CALL_AUTO_CLOSE_ENABLED != true)');
+          }
         } catch (e) {
           console.error('[Scheduler] Open-call expiry failed (non-fatal):', e instanceof Error ? e.message : e);
           anomalies.push(`Open-call expiry failed: ${e instanceof Error ? e.message : String(e)}`);

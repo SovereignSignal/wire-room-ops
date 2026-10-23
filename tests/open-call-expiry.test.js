@@ -50,11 +50,22 @@ test('the grace period runs after the close, and its setting is bounded', () => 
   assert.equal(expiry.expiryGraceHours({ OPEN_CALL_EXPIRY_GRACE_HOURS: '500' }), expiry.MAX_GRACE_HOURS);
 });
 
+test('auto-close is off unless OPEN_CALL_AUTO_CLOSE_ENABLED is exactly true, and archived rows are out of scope', () => {
+  assert.equal(expiry.openCallAutoCloseEnabled({}), false);
+  assert.equal(expiry.openCallAutoCloseEnabled({ OPEN_CALL_AUTO_CLOSE_ENABLED: 'false' }), false);
+  assert.equal(expiry.openCallAutoCloseEnabled({ OPEN_CALL_AUTO_CLOSE_ENABLED: '1' }), false);
+  assert.equal(expiry.openCallAutoCloseEnabled({ OPEN_CALL_AUTO_CLOSE_ENABLED: 'true' }), true);
+  assert.deepEqual([...expiry.EXPIRY_STATUSES], ['approved', 'queued']);
+});
+
 test('the daily cycle runs the expiry pass before every discovery lane and the digest', () => {
   const source = fs.readFileSync(path.join(__dirname, '../src/services/scheduler.ts'), 'utf8');
   const branch = source.slice(source.indexOf("scheduleType === 'daily-digest') {\n        // ---- Daily Digest Job"));
   const expiryAt = branch.indexOf('closeExpiredOpenCalls(pool)');
   assert.ok(expiryAt > 0, 'daily-digest branch calls closeExpiredOpenCalls');
+  const gateAt = branch.indexOf('if (openCallAutoCloseEnabled())');
+  assert.ok(gateAt > 0 && gateAt < expiryAt, 'the write is gated on OPEN_CALL_AUTO_CLOSE_ENABLED');
+  assert.match(branch, /Open-call expiry skipped \(OPEN_CALL_AUTO_CLOSE_ENABLED != true\)/);
   for (const lane of ['runScanExecution(pool', 'runForumScan(pool', 'runSourceFeeds(pool', 'runCohortBridge(pool', 'assembleAndSendDailyDigest(']) {
     const at = branch.indexOf(lane);
     assert.ok(at < 0 || at > expiryAt, `${lane} runs after the expiry pass`);
@@ -119,13 +130,13 @@ if (!process.env.DATABASE_URL) {
     ];
 
     const preview = await expiry.closeExpiredOpenCalls(pool, { now: NOW, graceHours: 6, dryRun: true });
-    assert.deepEqual(preview.closed.map(call => call.id).sort(), [expired, legacy, registry, stated].sort());
+    assert.deepEqual(preview.closed.map(call => call.id).sort(), [expired, legacy, stated].sort());
     assert.equal((await read(expired)).classification, 'GRANT', 'dry run writes nothing');
     assert.equal(await db.getAppState(expiry.OPEN_CALL_EXPIRY_STATE_KEY), null);
 
     const result = await expiry.closeExpiredOpenCalls(pool, { now: NOW, graceHours: 6 });
-    assert.deepEqual(result.closed.map(call => call.id).sort(), [expired, legacy, registry, stated].sort());
-    assert.equal(result.checked, 5, 'the far-future row is not even read');
+    assert.deepEqual(result.closed.map(call => call.id).sort(), [expired, legacy, stated].sort());
+    assert.equal(result.checked, 4, 'archived and far-future rows are not even read');
     assert.equal(result.stillOpen, 1);
 
     const closed = await read(expired);
@@ -140,7 +151,11 @@ if (!process.env.DATABASE_URL) {
     assert.equal(closed.metadata.auto_closed.grace_hours, 6);
     assert.equal((await read(legacy)).metadata.auto_closed.prior_lifecycle, null);
     assert.equal((await read(legacy)).status, 'queued');
-    assert.equal((await read(registry)).status, 'archived');
+    const archived = await read(registry);
+    assert.equal(archived.status, 'archived');
+    assert.equal(archived.classification, 'GRANT', 'archived rows are never reclassified');
+    assert.equal(archived.lifecycle, 'open');
+    assert.equal(archived.metadata.auto_closed, undefined);
 
     for (const id of [inGrace, future]) {
       const open = await read(id);
@@ -152,7 +167,7 @@ if (!process.env.DATABASE_URL) {
     assert.equal(Number((await pool.query('SELECT count(*) FROM scan_entries')).rows[0].count), 12, 'nothing is deleted');
 
     const summary = await db.getAppState(expiry.OPEN_CALL_EXPIRY_STATE_KEY);
-    assert.equal(summary.closed.length, 4);
+    assert.equal(summary.closed.length, 3);
 
     const rerun = await expiry.closeExpiredOpenCalls(pool, { now: NOW, graceHours: 6 });
     assert.equal(rerun.closed.length, 0);
@@ -171,5 +186,17 @@ if (!process.env.DATABASE_URL) {
     const result = await expiry.closeExpiredOpenCalls(pool, { now: NOW, graceHours: 6 });
     assert.equal(result.closed.length, 0);
     assert.equal((await read(id)).classification, 'NEWS');
+  });
+
+  test('a row archived between read and write is not closed', async (t) => {
+    const id = await row('Archived mid-run', { deadlineParsed: '2026-10-01' });
+    const original = pool.query.bind(pool);
+    t.mock.method(pool, 'query', async (sql, params) => {
+      if (/UPDATE scan_entries se/.test(sql)) await original(`UPDATE scan_entries SET status = 'archived' WHERE id = $1`, [id]);
+      return original(sql, params);
+    });
+    const result = await expiry.closeExpiredOpenCalls(pool, { now: NOW, graceHours: 6 });
+    assert.equal(result.closed.length, 0);
+    assert.equal((await read(id)).classification, 'GRANT');
   });
 }
