@@ -154,6 +154,11 @@ export function requiredCuratorScope(method: string, rawPath: string): CuratorSc
   // Rows from a scoped key start raw like any agent batch (handleTextIntake keys off isAgent).
   if (m === 'POST' && path === '/api/scan/telegram-batch') return 'intake';
 
+  // The read API has no write routes; refuse other methods before any router sees them.
+  if (path === '/api/read' || path.startsWith('/api/read/')) {
+    return m === 'GET' || m === 'HEAD' ? 'read_queue' : 'forbidden';
+  }
+
   if (m === 'GET' && (
     path === '/api/scan/queue' ||
     path === '/api/scan/entries' ||
